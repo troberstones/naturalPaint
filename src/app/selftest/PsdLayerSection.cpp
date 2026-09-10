@@ -450,23 +450,29 @@ bool runPsdLayerSectionTest() {
           "layers: an Adjustment layer warns by name that its op stack was lost");
   }
 
-  // --- F. A Group becomes its two bracketing records ---------------------
+  // --- F. A Group survives the whole round trip, as a Group --------------
   //
-  // **Rewritten at gather.** This section used to assert the opposite -- that
-  // a Group wrote NO record and warned that its structure was dropped -- which
-  // was the correct assertion while group expansion was a neighbouring track's
-  // unmerged work. It is now wired in (io/PsdLayerExtras' `planPsdRecords()`),
-  // so the old assertions were not a regression when they reddened; they were
-  // a scope note that had expired. Replaced rather than deleted, because what
-  // replaces them is strictly stronger.
+  // **Rewritten at gather, twice, and the second rewrite is the interesting
+  // one.** This section originally asserted that a Group wrote NO record and
+  // warned that its structure was dropped -- correct while group expansion
+  // was a neighbouring track's unmerged work, and stale the moment
+  // io/PsdLayerExtras' `planPsdRecords()` was wired in.
   //
-  // **The order is the trap.** PSD records run bottom-first, so the DIVIDER
-  // opens the group from below and the HEADER closes and names it from above
-  // -- the opposite of the intuitive reading, and the thing
-  // docs/psd-import-gaps.md section 3 records as inverting every group's
-  // membership silently when it is got backwards. Our own importer does not
-  // reconstruct groups, so a round trip sees the three records flat, in file
-  // order, which is exactly the level this assertion needs to work at.
+  // The obvious replacement was to assert three FLAT records coming back
+  // (divider, member, header), on the assumption that our importer does not
+  // reconstruct groups. **That assumption was wrong**: io/PsdImport.cpp
+  // consumes a divider into a group frame and turns the header into a real
+  // `LayerKind::Group` (docs/psd-import-gaps.md section 3 is closed on the
+  // read side). So the round trip is a stronger check than a flat record
+  // count -- it round-trips group STRUCTURE, and that is what is asserted
+  // here instead.
+  //
+  // The ordering trap still bites, just one level down: PSD records run
+  // bottom-first, so the divider opens the group from below and the header
+  // closes and names it from above. Emit them the other way round and the
+  // importer refuses outright with "a group header appeared with no matching
+  // bounding-section divider", which is a much louder failure than the
+  // silent membership inversion the same mistake causes in a reader.
 
   {
     Document doc;
@@ -484,20 +490,24 @@ bool runPsdLayerSectionTest() {
     doc.layers.push_back(std::move(group));
 
     const RoundTrip rt = roundTrip(doc);
-    check(rt.ok && rt.document.layers.size() == 3,
-          "groups: a group and one member write three records, not two");
-    check(rt.ok && rt.document.layers.size() == 3 &&
-              rt.document.layers[0].name == kPsdGroupDividerName &&
-              rt.document.layers[1].name == "Inside the group" &&
-              rt.document.layers[2].name == "A folder",
-          "groups: divider FIRST, member, then the naming header LAST");
-    check(rt.ok && rt.document.layers.size() == 3 &&
-              std::lround(rt.document.layers[2].opacity * 255.0f) == 128,
+    check(rt.ok && rt.document.layers.size() == 2,
+          "groups: three records in, a member and a Group back out");
+    check(rt.ok && rt.document.layers.size() == 2 &&
+              rt.document.layers[0].name == "Inside the group" &&
+              rt.document.layers[1].name == "A folder" &&
+              rt.document.layers[1].kind == LayerKind::Group,
+          "groups: the header record comes back as a real Group, not an empty layer");
+    check(rt.ok && rt.document.layers.size() == 2 &&
+              !rt.document.layers[1].groupTag.empty() &&
+              rt.document.layers[0].parent == rt.document.layers[1].groupTag,
+          "groups: membership survives -- the member still points at its group");
+    check(rt.ok && rt.document.layers.size() == 2 &&
+              std::lround(rt.document.layers[1].opacity * 255.0f) == 128,
           "groups: the header record carries the group's own opacity");
 
     // The old warning must be GONE. A warning saying group structure was
     // dropped, emitted by a build that carries it, is worse than no warning
-    // at all -- it would send someone looking for a bug that is fixed.
+    // at all -- it sends someone looking for a bug that is fixed.
     bool groupWarned = false;
     for (const std::string& warning : rt.warnings)
       if (warning.find("A folder") != std::string::npos &&
