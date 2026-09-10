@@ -102,6 +102,20 @@ std::optional<Tool> canvasCursorToolRequest();
 // does not do. Clamped, so an index past the end is not an error here.
 void setLayersPanelSelection(OpenDocument& doc, size_t layerIndex);
 
+// The height of the LAYERS panel's `##layerrows` scroll box, exposed for
+// app/selftest/LayerListHeight.cpp. `rowCount` is an input this function is
+// required to ignore -- see the definition in ui/MacPaintUI.cpp for why the
+// count is passed at all, and what moved around the panel when it was not
+// ignored.
+float layerRowsChildHeight(float availY, float reserveBelowY, float rowH, float windowPaddingY,
+                           std::size_t rowCount) noexcept;
+
+// The blank height above the first row, which is what puts the layer stack on
+// the BOTTOM of its box: layer 0 rests on the floor and additions grow upward.
+// Exposed for app/selftest/LayerListHeight.cpp; see the definition for why
+// top-aligning it moved rows a user was aiming at.
+float layerRowsTopSpacer(float innerAvailY, std::size_t rowCount, float rowH) noexcept;
+
 // The whole multi-selection (PLAN.md Phase 5 step 11), for the one caller
 // `setLayersPanelSelection()` exists for: main.cpp's `--ui-multiselect-demo`,
 // which presses the set commands directly and would otherwise leave the panel
@@ -272,6 +286,21 @@ std::array<float, 4> foregroundLinearRgba(int pigmentIndex);
 // is the one every call site in the running application wants. Collapsing them
 // into one would have made the palette test un-writable without a BrushState.
 std::array<float, 4> foregroundLinearRgba(const BrushState& brush);
+
+// The paint a newly placed Pen/Curve shape gets: `st.vectorStyle` with
+// `stroke.rgba` (and `fill.rgba`) taken from the FOREGROUND, the way the Text
+// tool's frame-drag end takes `made.fill.rgba` from `foregroundLinearRgba()`.
+// app/AppState.hpp's rule -- one foreground colour for the whole build --
+// applied to the one tool that had no colour at all.
+//
+// **A named function rather than four lines at the call site, so `--selftest`
+// can reach it.** The defect this whole change exists to fix was a call site
+// that stamped nothing; a call site that stamps the wrong colour is the same
+// class of defect and is equally invisible on screen (the stroke would be
+// roughly twice as dark, which is a thing you notice only if you already
+// suspect it). Neither is checkable while the answer is computed inline in a
+// canvas gesture block.
+VectorStyle penVectorStyle(const AppState& st);
 
 // The exact `ImGuiColorEditFlags` the COLOR panel's RGB picker is drawn with.
 //

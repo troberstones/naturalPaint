@@ -163,6 +163,19 @@ bool runSolverFootprintTest(GpuContext& gpu, PaintSim& sim);
 // scope-correct action for a scoped-only binding.
 bool runKeymapTest();
 
+// docs/shortcuts.md §1's tool letters, and the bidirectional assertion that
+// keeps `ui/AtelierChrome.cpp`'s `shortcut` column from going back to being
+// decorative text. Every row that reserves a letter must have exactly one
+// global `tool_<slug>` binding in keymaps/default.json on exactly that chord,
+// and every `tool_*` binding in that file must name a slug some `Tool`
+// declares. Also: the slug column is unique and reversible, one real chord is
+// followed through `resolve()` -> `toolFromSelectAction()` -> `setActiveTool()`
+// (the route main.cpp's key-down handler takes), and every bound tool chord is
+// proven to be refused by `keyChordReachesKeymap()` while a text session is
+// live -- twenty-one bare letters that would otherwise retype a caption as a
+// sequence of tool changes. Headless and GPU-free.
+bool runToolHotkeysTest();
+
 // Headless, GPU-free check on ui/Fonts -- the glyph coverage the layers panel
 // depends on. **This section exists because nine other sections could not
 // have caught the bug it guards**: nine of them assert `layerKindGlyph()`
@@ -1190,6 +1203,12 @@ bool runEllipseMarqueePreviewTest();
 // pinned by an assertion that fails the moment the number or the binding
 // appears, because an omission with only a comment behind it is one a later
 // revision reverses by reaching for a plausible-looking value.
+// The LAYERS panel's list box is sized by the dock, not by the number of
+// layers in it -- the negative property no screenshot can prove, since a
+// screenshot only ever photographs one row count. See the section's own
+// comment for what used to move around the panel.
+bool runLayerListHeightTest();
+
 bool runLayerPanel2aTest();
 
 // ops/Transform (PLAN.md "Phase 6 -- Filter and transform it"; PRD D14, D15,
@@ -5526,6 +5545,60 @@ bool runSvgImportTest();
 // priority order is exactly docs/vector-editing.md section 3's, with
 // `gnomonSuppressed` proven to make the next tier down reachable. See
 // app/selftest/PenTool.cpp.
+// app/PathOps -- the PATHS panel's verbs (docs/path-editing-plan.md section
+// 1): CLOSE / OPEN / JOIN / REVERSE over subpaths, SMOOTH / CORNER / BREAK /
+// INSERT / DELETE over anchors, COMPOUND / RELEASE over shapes, and the
+// refusal enum that is their specification. Plus the two primitives promoted
+// into `core/Path` for them, `reverseSubPath()` and `fitAnchorTangent()`.
+//
+// The three assertions this section exists for, each guarding a defect a
+// count-based check cannot see:
+//
+//   * `reverseSubPath()` swaps every anchor's two HANDLES as well as
+//     flipping the order -- `in` controls the arriving segment and `out` the
+//     leaving one, so a reversal exchanges them. Reversing the order alone
+//     yields identical anchor positions, an identical bounds and a different
+//     curve.
+//   * JOIN's four endpoint combinations (head-head, head-tail, tail-head,
+//     tail-tail) each produce the right anchor ORDER, asserted by position.
+//     A normalisation slip gives the correct COUNT in an order that makes the
+//     joined path double back on itself.
+//   * INSERT leaves the curve UNCHANGED: the de Casteljau split's two halves
+//     are evaluated and checked against the original cubic's own points, so
+//     an arithmetic slip that still inserts one anchor in the right slot --
+//     while rounding off the user's shape -- fails.
+//
+// Headless, GPU-free; writes no files; touches no `ui/` file and no
+// `AppState`. See app/selftest/PathOps.cpp.
+bool runPathOpsTest();
+
+// The PATHS panel (docs/path-editing-plan.md section 4) -- `app/PathsPanel`
+// plus the two `PathEditState` transitions the panel needs and the canvas did
+// not.
+//
+// Four things, and the third is the one with teeth:
+//
+//   * REGISTRATION in three of the four tables a section must appear in --
+//     `controlsSections()`'s spec, `PanelLayout`'s persistence key in both
+//     directions, and the flyout placement a fresh layout gives it. The
+//     fourth, `drawPanelBody()`'s switch, is enforced by `-Werror=switch` and
+//     is a build failure rather than an assertion.
+//   * THE GREYING RULE, per verb, against `pathOpCanRun()`'s own answer --
+//     so a sweep returning the right set of refusals against the wrong slots
+//     fails. The fixtures are asserted to produce five distinct refusals
+//     between them, because a set of fixtures that all answered the same
+//     thing would let a sweep ignoring the verb pass.
+//   * `pathEditPruneSelection()` against an erased shape id, against a stale
+//     subpath INDEX with no id gone at all, against an open placement session
+//     on both, and -- the assertion that makes the other four mean something
+//     -- against geometry that still resolves, where it must do nothing.
+//   * The MAKE FILL / MAKE STROKE target rule, over a stack whose Fill and
+//     Stroke answers are deliberately DIFFERENT layers.
+//
+// Headless, GPU-free; writes no files; opens no window. See
+// app/selftest/PathsPanel.cpp.
+bool runPathsPanelTest();
+
 bool runPenToolTest();
 
 // app/PenTool section 9 -- Pen/Curve PLACEMENT: `pathEditBeginPen()`
@@ -5539,6 +5612,33 @@ bool runPenToolTest();
 // Headless and GPU-free; writes no files; touches no ui/ file. See
 // app/selftest/PenDraw.cpp.
 bool runPenDrawTest();
+
+// app/VectorStyle -- the Pen's PAINT (docs/path-editing-plan.md section 2).
+//
+// The section exists because a pen-drawn path was invisible: the shape was
+// default-constructed, `Paint::on` is false on both the fill and the stroke,
+// and `core/VectorRaster.cpp` gates on exactly those two flags. The overlay
+// drew the path anyway, so the defect only showed on a tool switch.
+//
+// The four things asserted, each guarding a failure a count-based check
+// cannot see:
+//
+//   * the default style is stroke-ON / fill-OFF, and a bare `VectorShape` is
+//     neither -- the two states named side by side rather than assumed apart.
+//   * a placed shape carries the style's WIDTH and both ALPHAS, not merely
+//     its on-flags. The fixture uses 7.25 px and alpha 0.5 so a stamp that
+//     forgot `strokeStyle` (leaving `StrokeStyle`'s own 1.0) or premultiplied
+//     the colour cannot coincide with the right answer.
+//   * selection-first-else-default, over a layer whose shapes are in an order
+//     that is NOT id order, including a component selection resolving to its
+//     shapes and a stale selection naming a deleted id.
+//   * the colour path is LINEAR: `foregroundLinearRgba()` decodes, and the
+//     fixture avoids 0.0 and 1.0 -- the two values where an sRGB encode and a
+//     decode agree, and therefore where the assertion would survive its own
+//     sabotage.
+//
+// Headless and GPU-free; writes no files. See app/selftest/VectorStyle.cpp.
+bool runVectorStyleTest();
 
 // app/TextTool -- the headless core of PLAN.md phase 14's Text tool: the
 // gate predicate (`toolEditsText()`), the caret-editing session's UTF-8-safe

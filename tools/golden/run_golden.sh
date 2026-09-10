@@ -1006,8 +1006,8 @@ measure_only=("${@:3}")
 #     panel chrome, static text, no canvas, no anti-aliased overlay -- and it
 #     matches what the `crop_options` band views measured for the same
 #     reasons.
-view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout color_overrange fg_well_overrange gradient_overrange export_as export_as_blocked export_states crop_options crop_options_perspective crop_drag crop_perspective crop_refused layer_thumbs mask_target mask_content vector_shape vector_components vector_marquee text_options text_options_paragraph text_point text_paragraph text_frame tools_lower munsell_page grade_kinds pen_options pen_options_component vector_thumb pen_drawing flats_tools flats_segmentation bucket_options_flats tools_flats_active flats_edits)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo" "--demo-document --overrange-demo" "--demo-document --overrange-demo" "--demo-document --gradient-demo --overrange-demo" "--demo-document --open-export-as" "--no-document --open-export-as" "--demo-document --open-export-states ." "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo bowtie" "--demo-document" "--demo-document --mask-demo" "--demo-document --mask-demo content" "--demo-document --vector-demo" "--demo-document --vector-demo components" "--demo-document --vector-demo marquee" "--demo-document --text-demo" "--demo-document --text-demo paragraph" "--demo-document --text-demo" "--demo-document --text-demo paragraph" "--demo-document --text-demo frame" "--demo-document" "--demo-document --munsell-demo" "--demo-document --grade-kinds-demo" "--demo-document --vector-demo" "--demo-document --vector-demo components" "--demo-document --vector-demo" "--demo-document --vector-demo pendraw" "--demo-document --flats-demo" "--demo-document --flats-demo" "--demo-document --wand-demo flats" "--demo-document --flats-demo" "--demo-document --flats-demo edits")
+view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout color_overrange fg_well_overrange gradient_overrange export_as export_as_blocked export_states crop_options crop_options_perspective crop_drag crop_perspective crop_refused layer_thumbs mask_target mask_content vector_shape vector_components vector_marquee text_options text_options_paragraph text_point text_paragraph text_frame tools_lower munsell_page grade_kinds pen_options pen_options_component vector_thumb pen_drawing flats_tools flats_segmentation bucket_options_flats tools_flats_active flats_edits paths_panel paths_panel_component)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo" "--demo-document --overrange-demo" "--demo-document --overrange-demo" "--demo-document --gradient-demo --overrange-demo" "--demo-document --open-export-as" "--no-document --open-export-as" "--demo-document --open-export-states ." "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo bowtie" "--demo-document" "--demo-document --mask-demo" "--demo-document --mask-demo content" "--demo-document --vector-demo" "--demo-document --vector-demo components" "--demo-document --vector-demo marquee" "--demo-document --text-demo" "--demo-document --text-demo paragraph" "--demo-document --text-demo" "--demo-document --text-demo paragraph" "--demo-document --text-demo frame" "--demo-document" "--demo-document --munsell-demo" "--demo-document --grade-kinds-demo" "--demo-document --vector-demo" "--demo-document --vector-demo components" "--demo-document --vector-demo" "--demo-document --vector-demo pendraw" "--demo-document --flats-demo" "--demo-document --flats-demo" "--demo-document --wand-demo flats" "--demo-document --flats-demo" "--demo-document --flats-demo edits" "--demo-document --vector-demo" "--demo-document --vector-demo anchorpair")
 #
 #   pen_options / pen_options_component -- the Pen's and Curve's MODE segment
 #     and its SELECTED readout, one crop in two states, exactly as the
@@ -1060,6 +1060,90 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 #     That is the control: a vector thumbnail that came back blank, transposed
 #     or letterboxed differently from its neighbours is obvious in this frame
 #     and would need a reference diff to spot in a one-row crop.
+#
+#   paths_panel / paths_panel_component -- the PATHS panel, whose whole claim
+#     is that its eleven verbs GREY THEMSELVES against the selection
+#     (app/PathOps.hpp section 2). `--selftest` proves `pathOpAvailability()`
+#     headlessly; only a photograph proves the buttons wear what it returns.
+#
+#     Both crop the flyout at (1192, 188, 644, 840) -- the same slot
+#     `flats_tools` shoots one panel over, aimed off a HARNESS capture rather
+#     than a hand-run `--screenshot`, which reads the developer's own saved
+#     panel layout and would have put the rectangle 100 px out.
+#
+#     **The second view is NOT the one the plan asked for, and the substitution
+#     is the useful part.** docs/path-editing-plan.md section 5 wanted
+#     "Component mode: the ANCHOR group lit", on the assumption that
+#     SMOOTH/CORNER/BREAK/DELETE are Component-only. They are not --
+#     `app/PathOps.cpp`'s own comment makes them valid in BOTH modes, Shape
+#     mode meaning "every anchor of the selected shapes". Photographed,
+#     `--vector-demo components` renders a PATHS panel differing from the
+#     default mode's by exactly ONE pixel out of 540 960, measured. That view
+#     would have asserted nothing and passed forever, which is worse than
+#     having no view at all.
+#
+#     So the second view is `--vector-demo anchorpair`: exactly TWO ADJACENT
+#     anchors, the one selection Shape mode cannot express and the only thing
+#     Component mode buys this panel. INSERT lights there and nowhere else;
+#     JOIN stays greyed on `NotAnEndpoint` because the subpath is closed. It
+#     differs from `paths_panel` by 3 254 px, which is a view.
+#
+#   paths_panel_component's threshold (magnitude 24, changed px 8) -- MEASURED,
+#     and scoped to this one view on purpose. `paths_panel` is bit-identical
+#     across `measure 8` and keeps (0, 0); its neighbour is bimodal at TWO
+#     pixels -- crop (17, 468) and (17, 469), the left anti-aliased edge of the
+#     "J" in the JOIN chips label -- flipping between R 48 and R 68/64 in
+#     roughly a third to two thirds of launches. Every pixel around them is
+#     identical, and the same label is stable in `paths_panel`.
+#
+#     Two stable coverages of one glyph edge is not noise, and it is not
+#     understood; what is known is its size. 24 and 8 are ~1.2x and 4x the
+#     measured 20 and 2, against a real regression in this view -- a verb
+#     changing its greyed state -- that runs to hundreds of pixels: INSERT
+#     alone is the 3 254-pixel difference between these two views.
+#
+#   flats_tools' threshold (magnitude 24, changed px 96) -- the SAME cause as
+#     pen_drawing's just below, and the pair is why both are documented
+#     together rather than as two unrelated tolerances.
+#
+#     Adding ONE tool icon to the Lucide atlas (`Tool::PathSelect`'s
+#     `mouse-pointer-2`, via `toolIconCodepoints()`) re-packs the whole glyph
+#     texture. That is not a local change: eleven views across the suite --
+#     titlebar, the three export dialogs, layer_thumbs, both mask views,
+#     grade_kinds, color_overrange and these two -- shifted by a few dozen
+#     pixels at channel diffs of 8 to 22, everywhere text is drawn. It was
+#     confirmed by NEUTRALISING rather than by argument: giving PathSelect a
+#     codepoint already in the atlas dropped the failures from 14 to 3, and
+#     the 3 that remained were the genuine behavioural change (the gnomon is
+#     no longer drawn under the Pen).
+#
+#     **Expect this of every future tool.** A new tool with a distinct icon
+#     re-blesses roughly a fifth of this suite and can leave a view that was
+#     exact newly sensitive to -j. Both of these are exact at -j 1 --
+#     `measure 10` on flats_tools is bit-identical across all ten launches --
+#     and wobble only under concurrency, in dark panel chrome, at magnitudes
+#     no eye resolves. Measured at 36 px / channel 12 over repeated -j 6
+#     runs; 24 and 96 are ~2x that, against a real regression in this view
+#     that would run to tens of thousands of pixels.
+#
+#   pen_drawing's threshold (magnitude 8, changed px 16) -- MEASURED, not
+#     guessed, per this file's own rule two paragraphs up. This view was exact
+#     (0, 0) and stayed exact until the PATHS panel landed: the panel changed
+#     what is drawn at the right edge of the crop, and the chrome greys there
+#     now settle one to three levels apart between launches. The measurement,
+#     both from `measure 8` at -j 1 and from a real -j 6 failure, is the same
+#     five pixels at max channel diff 3, around x=1055..1107, rgb ~(56..82)
+#     -- dark panel chrome, not the drawn path.
+#
+#     **The stroked path itself is bit-exact**, which is the distinction worth
+#     keeping: `pen_drawing` became the first view where a Pen path is visible
+#     in the COMPOSITE rather than only in the editing overlay, so the obvious
+#     reading of a new flake here is "the vector rasteriser is
+#     non-deterministic". It is not -- the differing pixels are nowhere near
+#     the path. 8 and 16 are roughly 2.5x and 3x the measured noise, which
+#     still leaves three orders of magnitude of headroom against a real
+#     regression in this view (the re-blessing diff that preceded this was
+#     39,935 px at channel 216).
 #
 #   pen_drawing -- `--vector-demo pendraw`: three anchors placed through the
 #     REAL `pathEditBeginPen()` transition (app/PenTool.hpp section 9), left
@@ -1411,11 +1495,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 #   animated once the ant clock is pinned, and it would stop holding the
 #   moment a suggestion, a lasso in progress or a box-select drag entered the
 #   crop.
-view_crop_x=(0 1916 920 0 0 0 900 1000 1830 1900 1900 40 480 40 480 480 390 390 40 40 40 0 0 0 1920 0 40 612 612 612 40 40 350 320 40 1916 1916 1916 340 340 340 0 0 440 440 440 0 1920 1920 0 0 1946 340 1200 1916 40 0 200)
-view_crop_y=(5 927 965 148 664 0 628 1000 158 166 1462 76 560 76 560 560 370 370 76 76 76 148 0 664 235 1370 76 232 232 136 76 76 350 420 76 940 940 940 370 370 370 76 76 540 540 540 930 235 176 76 76 950 370 200 565 76 230 300)
-view_crop_w=(1400 640 384 100 400 2560 700 900 100 660 660 1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100 900 400 600 90 1090 1336 1336 1336 1000 1000 1060 1220 2400 640 640 640 1340 1340 1340 1500 1500 1240 1240 1240 110 632 640 1500 1500 590 1340 630 620 1800 100 900)
-view_crop_h=(166 190 192 402 350 77 500 400 500 64 64 76 800 76 800 800 550 550 76 76 76 1240 77 350 280 120 76 1116 1116 1308 76 76 830 830 76 240 240 240 960 960 960 100 100 740 740 740 300 290 800 100 100 290 960 820 600 76 680 1160)
-view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
+view_crop_x=(0 1916 920 0 0 0 900 1000 1830 1900 1900 40 480 40 480 480 390 390 40 40 40 0 0 0 1920 0 40 612 612 612 40 40 350 320 40 1916 1916 1916 340 340 340 0 0 440 440 440 0 1920 1920 0 0 1946 340 1200 1916 40 0 200 1192 1192)
+view_crop_y=(5 927 965 148 664 0 628 1000 158 166 1462 76 560 76 560 560 370 370 76 76 76 148 0 664 235 1370 76 232 232 136 76 76 350 420 76 940 940 940 370 370 370 76 76 540 540 540 930 235 176 76 76 950 370 200 565 76 230 300 188 188)
+view_crop_w=(1400 640 384 100 400 2560 700 900 100 660 660 1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100 900 400 600 90 1090 1336 1336 1336 1000 1000 1060 1220 2400 640 640 640 1340 1340 1340 1500 1500 1240 1240 1240 110 632 640 1500 1500 590 1340 630 620 1800 100 900 644 644)
+view_crop_h=(166 190 192 402 350 77 500 400 500 64 64 76 800 76 800 800 550 550 76 76 76 1240 77 350 280 120 76 1116 1116 1308 76 76 830 830 76 240 240 240 960 960 960 100 100 740 740 740 300 290 800 100 100 290 960 820 600 76 680 1160 840 840)
+view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -1551,7 +1635,7 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 9
 # the options band only, so it contains no canvas, no marching ants and no
 # rounded button geometry -- two combos, three sliders and a line of text, all
 # of which land on the same pixels every launch.
-view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 48 0 0 0)
+view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 8 24 48 0 0 0 0 24)
 # **Twenty-one views were re-blessed when the FLATS TOOLS palette gained its
 # nine Lucide icons, and none of it was a content change.** Adding glyphs to
 # the merge repacks the font atlas, which moves where each glyph's bitmap
@@ -1618,7 +1702,7 @@ view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 
 # note in cmd_measure on what that mode is for. The five `crop_*` views are 0
 # here because their magnitude threshold is 0 too -- see the paragraph above
 # `view_threshold` for the measurement.
-view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 160 0 0 0)
+view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 16 96 160 0 0 0 0 8)
 
 # --- launch sharing --------------------------------------------------------
 #

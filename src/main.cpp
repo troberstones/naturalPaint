@@ -443,7 +443,8 @@ void runMaskDemo(np::OpenDocument& od, bool maskTarget) {
                   : 0);
 }
 
-// --vector-demo [components|marquee] (PLAN.md Phase 13; docs/vector-editing.md):
+// --vector-demo [components|anchorpair|marquee|pendraw] (PLAN.md Phase 13;
+// docs/vector-editing.md):
 // puts a `LayerKind::Vector` layer on the session's document, selects
 // `Tool::Pen`, and drives `app/PenTool`'s real pen-down/pen-up transitions so
 // the on-canvas path overlay can be photographed.
@@ -469,6 +470,12 @@ void runMaskDemo(np::OpenDocument& od, bool maskTarget) {
 //   components    Component mode: the same click, which in that mode selects
 //                 every anchor of the shape -- so the picture carries the
 //                 tangent handles, which are drawn for selected anchors ONLY.
+//   anchorpair    Component mode with exactly TWO ADJACENT anchors selected --
+//                 the blob's north and east. The only selection Shape mode
+//                 cannot express, and the only one that makes the PATHS panel
+//                 look different in Component mode at all (INSERT lights).
+//                 See `runVectorDemo()`'s own mode-4 comment for the measured
+//                 reason the obvious four-anchor state was not used.
 //   marquee       A marquee held open mid-drag: pen-down on empty canvas and a
 //                 move, with no pen-up. The rubber band exists only while the
 //                 pointer is down, so it is unphotographable any other way --
@@ -576,8 +583,7 @@ void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
     const np::PathPoint p3{650.0f, 360.0f};
     for (const np::PathPoint& p : {p1, p2, p3}) {
       np::pathEditBeginPen(&st.pathEdit, &shapes, &od.document.layers[at].nextShapeId, p,
-                           pickTexels, false, np::SelectionCombine::Replace, od.id,
-                           /*curveMode=*/false);
+                           pickTexels, od.id, /*curveMode=*/false, np::penVectorStyle(st));
       np::pathEditEnd(&st.pathEdit, shapes);
     }
     // The rubber band's destination, PINNED rather than read from a live
@@ -588,6 +594,43 @@ void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
     std::printf("[vector-demo] pendraw: %zu anchors placed, open=%d\n",
                 shapes.back().path.subpaths[0].anchors.size(),
                 static_cast<int>(np::pathEditHasOpenPath(st.pathEdit)));
+    return;
+  }
+
+  if (mode == 4) {
+    // **Two ADJACENT anchors, which is the one selection Shape mode cannot
+    // express** -- and therefore the only thing that makes a PATHS-panel
+    // photograph of Component mode differ from one of Shape mode at all.
+    //
+    // That is not what this view was originally planned to show. The plan
+    // (docs/path-editing-plan.md section 5) asked for "Component mode: the
+    // ANCHOR group lit", on the assumption that SMOOTH/CORNER/BREAK/DELETE are
+    // Component-only. They are not: `app/PathOps.cpp`'s own comment makes them
+    // valid in BOTH modes, Shape mode meaning "every anchor of the selected
+    // shapes". So `--vector-demo components` -- four anchors -- renders a PATHS
+    // panel pixel-identical to the default mode's but for ONE pixel, measured.
+    // A golden view of that would have asserted nothing and passed forever.
+    //
+    // JOIN and INSERT are what Component mode really buys: both need exactly
+    // two anchors named individually (`twoAnchorPrecondition()`). The blob's
+    // anchors sit at the compass points, so north and east are neighbours on
+    // one subpath -- INSERT's precondition exactly -- and it lights here and
+    // nowhere else. JOIN stays greyed on `NotAnEndpoint`, the subpath being
+    // closed, which is correct and is itself worth photographing.
+    np::pathEditSetSelectMode(&st.pathEdit, np::PathSelectMode::Component, shapes);
+    np::pathEditBegin(&st.pathEdit, shapes, np::PathPoint{400.0f, 190.0f}, pickTexels, false,
+                      np::SelectionCombine::Replace, od.id);
+    np::pathEditEnd(&st.pathEdit, shapes);
+    np::pathEditBegin(&st.pathEdit, shapes, np::PathPoint{590.0f, 380.0f}, pickTexels, false,
+                      np::SelectionCombine::Add, od.id);
+    np::pathEditEnd(&st.pathEdit, shapes);
+    std::printf("[vector-demo] anchorpair: %zu components selected\n",
+                st.pathEdit.selection.components.size());
+    if (st.pathEdit.selection.components.size() != 2)
+      std::fprintf(stderr,
+                   "[vector-demo] anchorpair wanted exactly two anchors and got %zu -- the "
+                   "presses missed, and INSERT will be greyed in the photograph\n",
+                   st.pathEdit.selection.components.size());
     return;
   }
 
@@ -1486,9 +1529,10 @@ int main(int argc, char** argv) {
   bool smudgeDemo = false;
   bool maskDemo = false;
   bool maskDemoTarget = true;
-  // --vector-demo [components|marquee|pendraw]: see runVectorDemo().
+  // --vector-demo [components|anchorpair|marquee|pendraw]: see runVectorDemo().
   bool vectorDemo = false;
-  int vectorDemoMode = 0;  // 0 = shape, 1 = components, 2 = marquee, 3 = pendraw
+  int vectorDemoMode = 0;  // 0 = shape, 1 = components, 2 = marquee, 3 = pendraw,
+                           // 4 = anchorpair
 
   // --text-demo [paragraph|frame]: see runTextDemo().
   bool textDemo = false;
@@ -1907,6 +1951,9 @@ int main(int argc, char** argv) {
           ++i;
         } else if (arg == "pendraw") {
           vectorDemoMode = 3;
+          ++i;
+        } else if (arg == "anchorpair") {
+          vectorDemoMode = 4;
           ++i;
         }
       }
@@ -2425,6 +2472,12 @@ int main(int argc, char** argv) {
     // Phase 2 step 15: app/Keymap load, conflict detection and resolve().
     // Headless, GPU-free -- pure CPU/file-IO, no PaintSim involvement.
     const bool keymapOk = np::runKeymapTest();
+    // docs/shortcuts.md §1's tool letters: the two-directional check that
+    // `kToolMeta`'s shortcut column and keymaps/default.json say the same
+    // thing. That column was display-only text for the whole life of the
+    // build -- twenty-one tooltips promising a key nothing read -- and this
+    // is what makes going back to that state a red line. Headless, GPU-free.
+    const bool toolHotkeysOk = np::runToolHotkeysTest();
     // UI detour: ui/Fonts -- ImGui's built-in ProggyClean holds no glyph above
     // U+00FF, so six of docs/ui.md 3.2's seven layer-kind glyphs could not be
     // drawn at all. Headless and GPU-free: it bakes a real font atlas on the
@@ -2760,12 +2813,34 @@ int main(int argc, char** argv) {
     // shape-vs-component affine asymmetry between them, and toolEditsPath().
     // Headless and GPU-free; writes no files; touches no ui/ file.
     const bool penToolOk = np::runPenToolTest();
+    // app/PathOps -- the PATHS panel's verbs: close/open/join/reverse over
+    // subpaths, smooth/corner/break/insert/delete over anchors,
+    // compound/release over shapes, and the refusal enum that specifies them.
+    // Also covers `reverseSubPath()`'s handle swap and `fitAnchorTangent()`,
+    // both promoted into core/Path so Curve mode and the SMOOTH button share
+    // one implementation. Headless and GPU-free; writes no files.
+    const bool pathOpsOk = np::runPathOpsTest();
+    // The PATHS panel (docs/path-editing-plan.md section 4): its registration
+    // in three of the four tables a section must appear in, that every verb
+    // button greys on its own `pathOpCanRun()` answer, that
+    // `pathEditPruneSelection()` repairs the selection and the open placement
+    // session after a verb erases geometry, and the layer-below rule MAKE
+    // FILL and MAKE STROKE need and no other paint command in this build
+    // does. Headless and GPU-free; writes no files; opens no window.
+    const bool pathsPanelOk = np::runPathsPanelTest();
     // app/PenTool section 9 -- Pen/Curve placement: a press creating and
     // extending a shape, a press on its own first anchor closing it, a drag
     // setting a mirrored tangent, Escape leaving what was placed, and
     // Curve's Catmull-Rom tangent fit proven C1-continuous numerically.
     // Headless and GPU-free; writes no files; touches no ui/ file.
     const bool penDrawOk = np::runPenDrawTest();
+    // app/VectorStyle -- the Pen's paint: the stroke-on/fill-off default,
+    // `pathEditBeginPen()` stamping it onto the shape it creates (without
+    // which every pen-drawn path rasterised to nothing), the options bar's
+    // selection-first-else-default rule and its mixed readout, and the
+    // linear-not-sRGB colour path from the foreground to `Paint::rgba`.
+    // Headless and GPU-free; writes no files.
+    const bool vectorStyleOk = np::runVectorStyleTest();
     // app/TextTool -- the headless core of PLAN.md phase 14's Text tool: the
     // gate predicate, the caret-editing session's UTF-8-safe string edits
     // (insert/backspace/forward-delete/caret movement, all routed through
@@ -3423,6 +3498,9 @@ int main(int argc, char** argv) {
     // of 2a that are deliberately NOT drawn, each pinned so a later revision
     // cannot quietly invent the number behind it.
     const bool layerPanel2aOk = np::runLayerPanel2aTest();
+    // The same panel's list box: fixed to the dock's height, so the command
+    // row below it does not walk up and down as layers are added and deleted.
+    const bool layerListHeightOk = np::runLayerListHeightTest();
     // Phase 12 / PRD G7, G9: io/Descriptor, the Action Descriptor reader, against
     // synthetic fixtures parsed out of guard-paged mappings.
     const bool descriptorOk = np::runDescriptorTest();
@@ -3663,7 +3741,8 @@ int main(int argc, char** argv) {
                     smudgeOptionsOk &&
                     pigmentSelectionOk && bucketRefusalOk &&
                     pigmentSelectionOk && cloneStampOk && bucketRefusalOk &&
-                    layerMultiSelectOk && layerPanel2aOk && toolCursorOk &&
+                    layerMultiSelectOk && layerPanel2aOk && layerListHeightOk &&
+                    toolCursorOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
@@ -3675,8 +3754,8 @@ int main(int argc, char** argv) {
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
-                    penToolOk && penDrawOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
-                    textKeyCaptureOk && noDocumentCanvasOk;
+                    penToolOk && pathOpsOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
+                    textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -4608,8 +4687,24 @@ int main(int argc, char** argv) {
         // `mirror_x`/`delete_selection`. Cmd/Ctrl chords still reach
         // `resolve()` (Cmd+Z etc.), and every chord does when no session is
         // live, which is every key-down before this gate existed.
+        //
+        // **`io.WantTextInput` is the second half of that same sentence, and
+        // it was missing.** `textSessionActive()` knows about the canvas Text
+        // tool and nothing else; an ImGui `InputText` -- the layer-rename box
+        // is the one every user meets -- is just as much a text-editing
+        // session and was reaching `resolve()` unfiltered, so typing a layer
+        // name containing an `f` already toggled the mirror. That was one
+        // stray letter and survived unnoticed; with the twenty-one tool
+        // bindings below it becomes "rename a layer to Background and land on
+        // the Gradient tool", which is why the gate is widened in the same
+        // commit that adds them rather than left as someone else's bug.
+        // `ui/MacPaintUI.cpp` already guards every bare key it reads directly
+        // (the spring Hand, the nudge arrows, the flats keys) on exactly this
+        // flag; this is that rule applied at the one place it was not.
+        const bool typingIntoAWidget =
+            np::textSessionActive(st.textEdit) || ImGui::GetIO().WantTextInput;
         const std::optional<std::string> action =
-            np::keyChordReachesKeymap(chord, np::textSessionActive(st.textEdit))
+            np::keyChordReachesKeymap(chord, typingIntoAWidget)
                 ? keymap.resolve(chord, activeScope)
                 : std::nullopt;
         if (action == "toggle_pause") st.paused = !st.paused;
@@ -4758,6 +4853,30 @@ int main(int argc, char** argv) {
         else if (action == "toggle_guides") st.showGuides = !st.showGuides;
         else if (action == "toggle_snapping") st.snappingEnabled = !st.snappingEnabled;
         else if (action == "toggle_grid") st.showGrid = !st.showGrid;
+        // docs/shortcuts.md §1, "unmodified letters are tools" -- **one arm,
+        // not twenty-one.**
+        //
+        // Every other line in this chain is a literal action name, and the
+        // obvious way to write this one was twenty-one more of them. The
+        // reason it is a table walk instead is the defect this commit exists
+        // to fix: `kToolMeta`'s shortcut column had been display-only text for
+        // the whole life of the build, twenty-one tooltips promising a letter
+        // no code read, precisely because "wire the key too" was a separate
+        // per-tool edit that nobody made. A prefix plus
+        // `ui/AtelierChrome`'s own table makes the next tool's hotkey a row in
+        // the data, and `app/selftest/ToolHotkeys.cpp` fails if that row is
+        // missing -- neither of which is true of an `else if` chain.
+        //
+        // `MenuAction::ToolItem` (ui/MacPaintUI.cpp) is the precedent and the
+        // sibling: one menu arm carrying the `Tool` as its param, calling the
+        // same `setActiveTool()`. Both routes end in app/ToolSwitch's single
+        // writer of `st.brush.tool`, so the key, the menu row and the palette
+        // cell cannot disagree about what picking a tool does.
+        else if (const std::optional<np::Tool> picked =
+                     action ? np::toolFromSelectAction(*action) : std::nullopt;
+                 picked.has_value()) {
+          np::setActiveTool(st, *picked);
+        }
       }
     }
 
@@ -5005,7 +5124,15 @@ int main(int argc, char** argv) {
     // per-tool bitmap over the system shape above. That is now the normal
     // path -- `bitmapCursorsEnabled()` defaults to true -- and the system
     // shape is the fallback for a bitmap that failed to rasterise.
-    cursors.apply(np::canvasCursorRequest(), np::canvasCursorToolRequest());
+    //
+    // The third is §9's: Caps Lock, read here rather than inside `apply()`
+    // because `apply()` is the one function in ui/ToolCursor no test can
+    // reach, and the rule it feeds -- `shouldUsePreciseCursor()` -- is
+    // covered exhaustively by `--selftest` precisely because it takes this
+    // as an argument. `SDL_GetModState()` reports the LATCHED Caps state, not
+    // a key that is down, which is what makes it a toggle rather than a hold.
+    cursors.apply(np::canvasCursorRequest(), np::canvasCursorToolRequest(),
+                  (SDL_GetModState() & SDL_KMOD_CAPS) != 0);
 
     ImGui::Render();
     const uint64_t renderNs = frameTrace ? SDL_GetTicksNS() : 0;

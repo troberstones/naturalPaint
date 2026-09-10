@@ -26,6 +26,7 @@
 #include "app/StrokeBake.hpp"
 #include "app/TransformSession.hpp"
 #include "app/UserBrushLibrary.hpp"
+#include "app/VectorStyle.hpp"
 #include "core/Clipboard.hpp"
 #include "flats/FlatsLayer.hpp"
 #include "flats/Model.hpp"
@@ -123,6 +124,22 @@ enum class Tool {
   Text,
   Shape,
   Slice,
+  // PLAN/docs/path-editing-plan.md section 3.1. **Appended here rather than
+  // inserted beside `Pen`**, which is where it belongs on screen: ui/
+  // AtelierChrome's `kToolMeta` is one row per value in THIS order with a
+  // static_assert on the count, so a tool's slot in the enum is load-bearing
+  // and its slot in the PALETTE is `kToolGroups`' business. This is the rule
+  // Eraser, Lasso, PaintBucket and the rest already follow -- "a tool
+  // shipping moves its comment, never its slot" -- read the other way round:
+  // a tool ARRIVING takes the next slot, wherever it is displayed.
+  //
+  // It joins `Pen` and `Curve` in their flyout group, which holds four, so
+  // this adds no palette CELL -- docs/ui.md section 2's 28-cell count is
+  // untouched. That mattered: the SHAPE/COMPONENT mode segment exists
+  // precisely because a black-arrow/white-arrow pair would have added two
+  // cells the UI spec does not have. One flyout sibling is not two cells,
+  // so the segment survives and becomes this tool's own options row.
+  PathSelect,
   Count
 };
 
@@ -758,7 +775,7 @@ inline constexpr FlatsToolRow kFlatsTools[kFlatsToolCount] = {
     {FlatsTool::DeleteFill, "DELETE", "K",
      "Click a fill to delete it. Recorded as a mark at that point, so the fill stays deleted "
      "when the line art changes and the drawing re-flats.", "square-minus", 57713u},
-    {FlatsTool::MergePair, "MERGE", "M",
+    {FlatsTool::MergePair, "MERGE", "U",
      "Click one fill, then another: the second merges into the first. Recorded as the two "
      "points, never as the two region ids they resolved to.", "combine", 58444u},
     {FlatsTool::Carve, "CARVE", "â¥G",
@@ -1095,6 +1112,27 @@ struct AppState {
   // colour the user set that nothing painted with.
   TextStyle textStyle;
   TextAlign textAlign = TextAlign::Left;
+
+  // **The style the NEXT pen-drawn shape gets, and what the options bar's
+  // STROKE/FILL controls edit when nothing is selected.** `textStyle` above
+  // is the exact precedent and the argument for both is the same one, so it
+  // is not restated here; `app/VectorStyle.hpp` carries the rest, including
+  // why the defaults are stroke-ON / fill-OFF (a pen is a line, and filling
+  // an open path means implicitly closing it, which draws an edge the user
+  // never made).
+  //
+  // The difference from `textStyle` is section 3 of that header: these
+  // controls are **selection-first**. With shapes selected they edit those
+  // shapes and record a document edit; only with nothing selected do they
+  // write here. That is why the row shows the SELECTION's width and colour
+  // rather than this struct's whenever a selection exists.
+  //
+  // `stroke.rgba` is overwritten by `foregroundLinearRgba()` on the way into
+  // a newly placed shape (`ui/MacPaintUI.hpp`'s `penVectorStyle()`), for the
+  // reason `textStyle`'s own comment gives for having no `fill`: a third
+  // colour store beside the foreground and the shape would be a colour the
+  // user set that nothing painted with.
+  VectorStyle vectorStyle;
 
   // `--text-demo frame`'s pin, `pathEditDemo` above's exact twin and for the
   // identical reason: the paragraph-frame rubber band exists ONLY while the

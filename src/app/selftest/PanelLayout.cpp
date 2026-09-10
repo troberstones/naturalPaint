@@ -22,6 +22,7 @@ constexpr ControlsSection kAllSections[] = {
     ControlsSection::FlatsSegmentation,
     ControlsSection::Grade,        ControlsSection::Histogram, ControlsSection::BrushLibrary,
     ControlsSection::Brush,        ControlsSection::FlatsTools,
+    ControlsSection::Paths,
     ControlsSection::Pigment,      ControlsSection::Medium,
     ControlsSection::BoardTilt,    ControlsSection::Grid,      ControlsSection::Solver,
 };
@@ -110,8 +111,11 @@ bool runPanelLayoutTest() {
       // starts on the rail rather than spending a grip of a dock that does
       // not scroll. app/PanelLayout's `defaultPlacementFor()` carries the
       // argument in full.
+      // PATHS is the same exception for the same reason, one layer kind
+      // later -- app/PanelLayout.cpp's `defaultPlacementFor()` says so in
+      // those words.
       if (e.section == ControlsSection::Tools || e.section == ControlsSection::Options ||
-          e.section == ControlsSection::FlatsTools)
+          e.section == ControlsSection::FlatsTools || e.section == ControlsSection::Paths)
         continue;
       // PIGMENT is Simulation-rolled but starts Hidden, not Flyout -- see
       // `defaultPlacementFor()`'s own comment (app/PanelLayout.cpp) and
@@ -137,10 +141,13 @@ bool runPanelLayoutTest() {
     // recorded here because a count assertion is exactly where a merge
     // resolved by picking a side goes green while describing a rail nobody
     // has.
-    check(layout.sectionsIn(PanelPlacement::Flyout).size() == 7,
-          "panel layout: which is seven panels on the rail -- the four remaining View/Simulation "
-          "sections, GRADE, HISTOGRAM and FLATS TOOLS -- and the rail is not empty on a first "
-          "run, which is the mode the revamp was asked for by name");
+    // Eight as of the PATHS panel (docs/path-editing-plan.md section 4),
+    // which is FLATS TOOLS' exception taken a second time for a second layer
+    // kind. 7 + 1.
+    check(layout.sectionsIn(PanelPlacement::Flyout).size() == 8,
+          "panel layout: which is eight panels on the rail -- the four remaining View/Simulation "
+          "sections, GRADE, HISTOGRAM, FLATS TOOLS and PATHS -- and the rail is not empty on a "
+          "first run, which is the mode the revamp was asked for by name");
 
     // Whatever is in the right dock is in `controlsSections()`'s own order --
     // i.e. the outgoing column's order with the flyout sections lifted out.
