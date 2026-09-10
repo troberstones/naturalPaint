@@ -557,9 +557,37 @@ Baseline on that base: **8619 pass, 0 FAIL**, `--selftest` exit 0.
 - [x] ACTIONS panel: record / stop / play, step list, reorder, delete — with the model in a
       function that takes state and returns what to draw, so it can be asserted without a
       frame. Sabotage: the holed-take rule → 3 red, including the exhaustive 16-state one
-- [ ] BATCH dialog: action, sources, output dir, preset, template, dry run, report
-- [ ] golden views: panel idle, panel recording, dialog plan, dialog report — **none added.**
-      `run_golden.sh` still has 58 views in each of its nine parallel arrays
+- [x] BATCH dialog: action, sources, output dir, preset, template, dry run, report —
+      model in `app/BatchDialog`, chrome in `ui/MacPaintUI.cpp`, reusing Export As's own
+      preset and settings controls whole rather than growing a second set
+- [x] **the split the dialog is built on:** the buttons answer only what is free to
+      answer (no action, no sources, no destination); everything that touches the disk
+      stays in `planBatch()` and arrives as a refusal in the report. A dialog that
+      re-derived those checks would be a second opinion that could silently disagree with
+      the run
+- [x] **PREVIEW is `planBatch()`**, not a `bool dryRun` threaded through `runBatch()` — a
+      mode flag is the arrangement where a check can be skipped in one mode and not the
+      other, and the check in question is the one that stops a batch overwriting its
+      inputs. Asserted, not just argued: a preview and a run of a colliding request must
+      refuse with the *same sentence*
+- [x] golden views: `actions_panel`, `actions_panel_recording`, `batch_dialog`,
+      `batch_dialog_report` — added and **blessed**; 58 → 62 views, all nine parallel
+      arrays checked for alignment
+- [x] sabotage: PREVIEW calling `runBatch()` → red; a load keeping the previous action's
+      report → red; the UNCHANGED row losing its highlight → `batch_dialog_report` red
+
+**Three defects the golden views caught**, which is the argument for having them: every
+successful row rendered **red** (the chrome compared against `"Written"`, and
+`exportItemOutcomeName()` returns `"written"`); the name-template help was the
+export-states sentence, which calls `{name}` "the comp's or layer's name" and is false
+here; and the report table's fixed height pushed the summary — the line naming the
+UNCHANGED files — off the bottom of the window.
+
+**The ACTIONS panel was photographing `$HOME`.** Its empty-library line named the
+Application Support directory in full. That is not something a reference image can depend
+on, and the view would also have changed the moment anyone saved an action. The path moved
+into Refresh's tooltip (which already had it), and `run_golden.sh` now isolates
+`NP_ACTION_DIR` alongside the other six libraries it already isolated.
 
 ### Step 8 — the parked P2 image ops (severable)
 
