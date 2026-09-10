@@ -23,6 +23,7 @@
 #include "app/AbrReport.hpp"
 #include "app/Batch.hpp"
 #include "app/ProfileToggle.hpp"
+#include "app/PsdExportCli.hpp"
 #include "app/PsdReport.hpp"
 #include "app/DabLibrary.hpp"
 #include "app/BrushSheet.hpp"
@@ -1651,6 +1652,13 @@ int main(int argc, char** argv) {
   // every hidden layer shown, a blend key quietly downgraded -- and none of
   // them is visible from a canvas.
   const char* psdReportPath = nullptr;
+  // --psd-export <out.psd> : write a synthesised document through io/PsdExport
+  // and, beside it, the SAME document as an 8-bit sRGB PNG through io/Export's
+  // existing encoder. Headless. This exists so an external reader (psd-tools)
+  // can judge the PSD against a reference this project's PSD code had no hand
+  // in -- see app/PsdExportCli.hpp for why a round trip through our own
+  // importer cannot answer that question.
+  const char* psdExportPath = nullptr;
   // --profile-toggle <file.psd> <layer-index> <iterations> : headless
   // benchmarking scaffold, see app/ProfileToggle.hpp. Temporary.
   const char* profileTogglePath = nullptr;
@@ -1710,6 +1718,8 @@ int main(int argc, char** argv) {
       if (i + 1 < argc) abrReportPath = argv[++i];
     } else if (a == "--psd-report") {
       if (i + 1 < argc) psdReportPath = argv[++i];
+    } else if (a == "--psd-export") {
+      if (i + 1 < argc) psdExportPath = argv[++i];
     } else if (a == "--profile-toggle") {
       if (i + 1 < argc) profileTogglePath = argv[++i];
       if (i + 1 < argc) profileToggleLayer = std::atoi(argv[++i]);
@@ -2376,6 +2386,7 @@ int main(int argc, char** argv) {
   // the GPU path does.
   if (abrReportPath != nullptr) return np::runAbrReport(abrReportPath);
   if (psdReportPath != nullptr) return np::runPsdReport(psdReportPath);
+  if (psdExportPath != nullptr) return np::runPsdExportDemo(psdExportPath);
   if (profileTogglePath != nullptr)
     return np::runProfileToggle(profileTogglePath, profileToggleLayer, profileToggleIterations);
   if (abrKeysPath != nullptr) return np::runAbrKeyCensus(abrKeysPath);
@@ -3016,6 +3027,9 @@ int main(int argc, char** argv) {
     // that a new core::BlendMode must be triaged into the table or into a
     // named "no PSD key" list rather than exporting as Normal by omission.
     const bool psdBlendKeysOk = np::runPsdBlendKeysTest();
+    // io/PsdExport: the PSD container and its flattened composite (PSD export
+    // tier 1). Headless and GPU-free.
+    const bool psdExportOk = np::runPsdExportTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD M1, M3, M4, M5, M8): the
     // internal clipboard's copy/cut/paste, its copy-on-write sharing, and the
     // two different coverage-weighting rules RGB and Pigment tiles take. Also
@@ -3914,7 +3928,7 @@ int main(int argc, char** argv) {
                     gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
                     textShaperOk && vectorLayerOk && textContentOk &&
                     transformPreviewTextureOk &&
-                    transformCompositeSplitOk && packBitsOk && psdWriteOk && psdBlendKeysOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && inpaintOk && curveEditOk &&
+                    transformCompositeSplitOk && packBitsOk && psdWriteOk && psdBlendKeysOk && psdExportOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && inpaintOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
                     multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk &&
                     userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&

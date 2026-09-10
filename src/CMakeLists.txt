@@ -31,6 +31,7 @@ add_executable(naturalPaint
   app/PenTool.cpp
   app/VectorStyle.cpp
   app/TextTool.cpp
+  app/PsdExportCli.cpp
   app/PsdReport.cpp
   app/SvgReport.cpp
   app/ProfileToggle.cpp
@@ -220,6 +221,7 @@ add_executable(naturalPaint
   app/selftest/PackBits.cpp
   app/selftest/PsdWrite.cpp
   app/selftest/PsdBlendKeys.cpp
+  app/selftest/PsdExport.cpp
   app/selftest/PsdImport.cpp
   app/selftest/QuitGuard.cpp
   app/selftest/RecoveryJournal.cpp
@@ -397,6 +399,7 @@ add_executable(naturalPaint
   io/PackBits.cpp
   io/PsdWrite.cpp
   io/PsdBlendKeys.cpp
+  io/PsdExport.cpp
   io/PathSerial.cpp
   io/PsPatterns.cpp
   io/PsdImport.cpp
