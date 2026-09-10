@@ -84,19 +84,40 @@ already exists.
 
 ---
 
-## 3. What is already true (surveyed 2026-09-08 — checked, not assumed)
+## 3. What is already true (surveyed 2026-09-08, **recounted 2026-09-10** — checked, not assumed)
+
+> **The counts below rot, so here is how to reproduce them.** Strip `//` and
+> `/* */` comments first — several of these names appear in prose and an
+> uncorrected `grep` over-counts. Then, over the stripped text:
+>
+> * *command vocabulary* — comma-separated enumerators of `enum class
+>   MenuAction` in `ui/MenuModel.hpp`, `Count` included.
+> * *public appliers* — declarations in `app/FilterOps.hpp` and
+>   `app/AdjustmentOps.hpp` returning `FilterOpResult` / `DocumentOpOutcome`
+>   and named `apply*`.
+> * *bridge call sites* — `computePixelFilter(` and `applyPixelFilter(` inside
+>   `app/FilterOps.cpp` and `app/AdjustmentOps.cpp`.
+> * *UI call sites* — those applier names, called anywhere under `src/ui/`.
+>
+> At the 2026-09-08 survey SHA (`36f5509`) this method reproduces **94
+> enumerators** and **28 public appliers** exactly. It gives 28 where that
+> edition reported 29 UI applier call sites and 15 where it reported 16 layer
+> setters, and it does **not** reproduce that edition's "30 bridge call sites
+> (21 + 9)" or its "4 layer-command sites" at all — it counts 46 and 1. Those
+> two figures were arrived at some other way; treat them as unverified rather
+> than as a baseline to diff against.
 
 The recorder is cheap because the command layer is already built, and mostly already
 funnelled. This table is the reason the estimate in §6 is days rather than weeks.
 
 | finding | evidence |
 |---|---|
-| **A named command vocabulary exists**: 94 enumerators, plus an `int param` for six "family" actions | `ui/MenuModel.hpp:109` `enum class MenuAction : uint16_t` |
+| **A named command vocabulary exists**: **99** enumerators, 94 at the 2026-09-08 survey. `Pigment` arrived between that survey and the phase 8/9 wave's base; the wave itself added **four** — `Inpaint`, `RemoveLightingGradient`, `Offset` and `TilePreview`. New Strokes Layer is *not* among them: it is a `LayerCommand`, which is a separate vocabulary this table's next row covers, and a first draft of this line miscounted it in. Plus an `int param` for six "family" actions | `ui/MenuModel.hpp:109` `enum class MenuAction : uint16_t` |
 | **One dispatch entry point**, which both menu backends route through — "neither contains an action of its own, which is the property that makes the two menu bars incapable of disagreeing" | `ui/MenuModel.hpp:730` `performMenuAction()` |
 | **A command queue already exists**, drained at the top of a frame | `ui/MenuModel.hpp:746`–`747` `enqueueMenuAction()` / `dequeueMenuAction()` |
 | **A per-command precondition oracle already exists** — the replayer's "is this step legal here?" | `ui/MenuModel.hpp:774` `menuItemEnabled(action, param)` |
 | **Layer gestures are already a walked table**, with the "a command not in this enum is a command exactly one menu can reach" discipline written down | `app/LayerEditor.hpp:157` `allLayerCommands()` → `:217` `applyLayerCommand(OpenDocument&, LayerCommand, size_t)`; `core/LayerSetOps.hpp:375` / `app/LayerEditor.hpp:261` for the multi-selection set |
-| **Every menu-driven pixel op runs through one choke point** — 19 adjustments + 7 filters | `app/PixelOpBridge.hpp` `computePixelFilter()` / `applyPixelFilter()`; 30 call sites, all inside `app/AdjustmentOps.cpp` (21) and `app/FilterOps.cpp` (9), **none in the UI** |
+| **Every menu-driven pixel op runs through one choke point** — 19 adjustments + 7 filters | `app/PixelOpBridge.hpp` `computePixelFilter()` / `applyPixelFilter()`; **52** call sites by the method above — `app/AdjustmentOps.cpp` **32** (unmoved) and `app/FilterOps.cpp` **20**, up from 14 as phase 8/9 added three ops each with an `apply` and a `preview`. **Still none in the UI**, re-checked: the two `src/ui/` matches are prose inside comments and predate the wave. That property is the load-bearing one — the counts are not. |
 | **Every public applier is already `(OpenDocument&, Params)`** and already headless | e.g. `app/FilterOps.hpp:177` `applyGaussianBlur(doc, sigma)`, `app/AdjustmentOps.hpp:172` `applyThresholdAdjustment(doc, params)` |
 | **"Resize to 512×512" is already one call** | `app/FilterOps.hpp:277` `applyImageSize(doc, w, h, ResampleKernel)` |
 | **Value mutations are already a table of setters through one recording funnel** | `core/LayerOps.hpp:272`–`508` (`setLayerBlend`, `setLayerOpacity`, `setLayerName`, …), all via `recordLayerEdit()` (`app/DocumentLifecycle.hpp:730`) |
@@ -120,7 +141,7 @@ the recorder's tap. The undo stack tells you *that* something happened, never *w
 | gap | fix | est. |
 |---|---|---|
 | **No single "apply a command to a document" function.** The vocabulary exists; the appliers exist; nothing joins a stable command id to a params bag to an applier | `app/Command`: a `Command{id, params}`, a registry, `applyCommand(OpenDocument&, const Command&)` | 2 d |
-| **49 UI call sites call appliers directly** — 29 across the 28 public `FilterOps`/`AdjustmentOps` appliers, 4 layer-command sites and 16 layer-setter sites — so a recorder tapping anything below them sees pixels, not intent | migrate each to `applyCommand()`. One-line changes, no new behaviour; the appliers keep their signatures and their tests | 2 d |
+| **UI call sites call appliers directly** — **31** across the now **31** public `FilterOps`/`AdjustmentOps` appliers (28 at the survey; the phase 8/9 wave added Inpaint, Remove Lighting Gradient and Offset, each of which dials its params in a modal and then calls its applier straight from `ui/MacPaintUI.cpp`), plus the layer-command and layer-setter sites the survey put at 4 and 16 and this recount cannot reproduce (it finds 1 and 15, both unmoved since). So a recorder tapping anything below them sees pixels, not intent. **The wave grew this debt by exactly three, and correctly**: there is no `applyCommand()` to call yet, so following the established dialog shape was the only option available | migrate each to `applyCommand()`. One-line changes, no new behaviour; the appliers keep their signatures and their tests | 2 d |
 | **No recorder** | `app/Recorder`: armed / recording / stopped, appending to a `std::vector<Command>` from inside `applyCommand()` | 0.5 d |
 | **No action model or file** | `ops/Action` (model) + `io/ActionFile` (text form), split the way `core/OpStack` + `io/OpSerial` already are | 1.5 d |
 | **`npops1:` is hex — it fails P5 outright** ("human-readable, and diffable") | the action file gets a **text** encoding; `np:ops` keeps hex, because an EXR header attribute must. One op list, two encodings — see the drift trap | folded above |
