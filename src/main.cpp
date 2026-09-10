@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "app/AbrReport.hpp"
+#include "app/Batch.hpp"
 #include "app/ProfileToggle.hpp"
 #include "app/PsdReport.hpp"
 #include "app/DabLibrary.hpp"
@@ -1572,6 +1573,17 @@ int main(int argc, char** argv) {
   // extract a pack's scanned patterns into patterns-imported/ and report what
   // landed. See app/DabLibrary's extractAbrPatterns().
   const char* pattWritePath = nullptr;
+  // --batch <action.npaction> <output-dir> <file...> : docs/automation-plan.md
+  // step 6. One action over many files, headless, before SDL_Init -- which is
+  // what makes it usable from a shell on a box with no display and drivable
+  // from --selftest. See app/Batch.hpp; the two optional flags below are the
+  // only settings it takes, because everything else a run needs is either in
+  // the action file or in the ExportRequest defaults PRD I1 guarantees.
+  const char* batchActionPath = nullptr;
+  const char* batchOutputDir = nullptr;
+  std::vector<std::string> batchSources;
+  const char* batchFormatToken = nullptr;
+  const char* batchNameTemplate = nullptr;
   const char* dabDemoId = nullptr;
   bool brushSettingsDemo = false;
   int brushSettingsDemoTab = -1;
@@ -2134,6 +2146,21 @@ int main(int argc, char** argv) {
       openLayerProperties = true;
     } else if (a == "--patt-write") {
       if (i + 1 < argc) pattWritePath = argv[++i];
+    } else if (a == "--batch") {
+      // <action> <output-dir> then EVERY remaining non-flag argument, taken
+      // greedily here rather than left to the positional collector below --
+      // `naturalPaint --batch a.npaction out/ p1.exr p2.exr` must not also
+      // open p1 and p2 as documents, and this branch claiming them is what
+      // stops that. `looksLikePositionalArgument()`'s rule is reused for
+      // "non-flag" so there is one spelling of that test, not two.
+      if (i + 1 < argc) batchActionPath = argv[++i];
+      if (i + 1 < argc) batchOutputDir = argv[++i];
+      while (i + 1 < argc && np::looksLikePositionalArgument(argv[i + 1]))
+        batchSources.emplace_back(argv[++i]);
+    } else if (a == "--batch-format") {
+      if (i + 1 < argc) batchFormatToken = argv[++i];
+    } else if (a == "--batch-template") {
+      if (i + 1 < argc) batchNameTemplate = argv[++i];
     } else if (a == "--advanced-dynamics") {
       // --advanced-dynamics : reopen the shelved 10x12 LINK MATRIX editor
       // (ui/DynamicsMatrixPanel.hpp) in the BRUSH column. Off by default now
@@ -2167,6 +2194,15 @@ int main(int argc, char** argv) {
   if (abrKeysPath != nullptr) return np::runAbrKeyCensus(abrKeysPath);
   if (dabImportPath != nullptr) return np::runDabImport(dabImportPath);
   if (pattWritePath != nullptr) return np::runPattWrite(pattWritePath);
+  // Before SDL for the same reason every branch around it is, and for one
+  // more: a batch is the mode most likely to be run on a machine with no
+  // display at all -- a render farm node, a CI box, a shell over ssh -- and
+  // `SDL_Init(SDL_INIT_VIDEO)` fails there. Nothing in app/Batch touches a
+  // window, a device or a surface; the composite it exports runs on the CPU
+  // (core/Composite), which is what makes that true rather than hopeful.
+  if (batchActionPath != nullptr)
+    return np::runBatchCli(batchActionPath, batchOutputDir, batchSources, batchFormatToken,
+                           batchNameTemplate);
   if (dabScan) return np::runDabScan();
   if (brushSheetAbr != nullptr && brushSheetOut != nullptr)
     return np::runBrushSheet(brushSheetAbr, brushSheetOut, brushSheetExperiment);
@@ -3248,6 +3284,11 @@ int main(int argc, char** argv) {
     const bool recorderOk = np::runRecorderTest();
     const bool actionFileOk = np::runActionFileTest();
     const bool replayOk = np::runReplayTest();
+    // app/Batch: one action over many files, and the pre-flight that makes PRD
+    // P4 -- "never partially overwrites an input" -- a property of the module
+    // rather than a promise about it. A thirty-file run, headless, into a temp
+    // directory, with every input hashed on both sides. See app/SelfTest.hpp.
+    const bool batchOk = np::runBatchTest();
     // app/CommandsOpStack: the rows that carry an op as a parameter, keyed by
     // kind NAME, and the selection rows that cross the session/document line.
     // See app/SelfTest.hpp.
@@ -3610,6 +3651,7 @@ int main(int argc, char** argv) {
                     commandsLayersOk &&
                     recorderOk &&
                     actionFileOk && replayOk &&
+                    batchOk &&
                     commandsOpStackOk &&
                     commandOk && jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     commandsImageOk &&

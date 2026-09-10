@@ -3667,6 +3667,32 @@ bool runRecorderTest();
 // targeting by name, the refusal that touches nothing, and the one history
 // entry. See app/Replay.hpp.
 bool runReplayTest();
+
+// docs/automation-plan.md step 6: `app/Batch` -- one action over many files.
+//
+// **What it proves:**
+//  - **PRD P4, on bytes.** A thirty-file run hashes every input before and
+//    after and asserts the two digests are identical. Not an mtime: a
+//    truncating `fopen` on an input would leave the mtime moving and the bytes
+//    gone, and only the second of those is the thing P4 is about.
+//  - **The input/output collision pre-flight refuses the WHOLE run**, before
+//    anything is opened, and refuses it for paths that are *spelled
+//    differently* -- string equality already handles the easy case, so the
+//    assertions are aimed at `.`/`..` segments, a trailing slash, and an
+//    ASCII case difference on a case-insensitive filesystem.
+//  - **The run stops at the first `Failed`** and every later file reports
+//    `NotAttempted` rather than `Skipped` or silence, with nothing written for
+//    any of them.
+//  - **Import warnings, replay warnings and encoder warnings all reach the
+//    per-file report**, each prefixed with where it came from.
+//  - **A file the action changed nothing in is conspicuous**: counted, and
+//    named in the summary sentence.
+//  - **The pixel-unit table is held to the command registry in both
+//    directions**, so a renamed parameter and a new command reusing `radius`
+//    both fail here rather than quietly widening what a batch accepts.
+//
+// See app/Batch.hpp, whose §1 and §2 are the arguments these assert.
+bool runBatchTest();
 // app/CommandsOpStack -- the command rows that carry an *op* as a parameter,
 // and the selection rows that make every destructive step around them mean
 // what it meant when it was recorded (docs/automation-plan.md step 1).

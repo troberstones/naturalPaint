@@ -7,6 +7,7 @@ add_executable(naturalPaint
   app/BrushRowIcon.cpp
   app/CloseDecision.cpp
   app/Action.cpp
+  app/Batch.cpp
   app/Command.cpp
   app/CommandCoverage.cpp
   app/CommandsImage.cpp
@@ -167,6 +168,7 @@ add_executable(naturalPaint
   app/selftest/CommandsLayers.cpp
   app/selftest/Recorder.cpp
   app/selftest/Replay.cpp
+  app/selftest/Batch.cpp
   app/selftest/CommandsOpStack.cpp
   app/selftest/CommandsImage.cpp
   app/selftest/Json.cpp
