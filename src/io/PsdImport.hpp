@@ -185,32 +185,63 @@
 // attempt.
 //
 // **Blend mode mapping.** PSD's blend-mode key maps onto this codebase's
-// `core::BlendMode` (core/Blend.hpp) where an equivalent exists --
-// `norm`->Normal, `mul `->Multiply, `scrn`->Screen, `dark`->Min (Photoshop's
-// Darken is an exact per-channel minimum, the same arithmetic `BlendMode::
-// Min` implements), `lite`->Max (Lighten is the per-channel maximum,
-// symmetrically), `lddg`->Plus (Linear Dodge/Add is `Cs + Cb`, the same
-// arithmetic `BlendMode::Plus` implements) -- and is reported by name and
-// imported as Normal, **explicitly, with a warning naming the PSD key**,
-// for every key with no equivalent (`over`/Overlay, `sLit`/Soft Light,
-// `hLit`/Hard Light, `colr`/Color, and the rest of Photoshop's
-// non-separable and second-generation modes). Never a silent substitution:
+// `core::BlendMode` (core/Blend.hpp) through **one shared table**, which
+// lives in io/PsdBlendKeys.hpp rather than in this reader's own translation
+// unit: PLAN.md phase 15's PSD *writer* needs the same rows in the opposite
+// direction, and a second table would be a second place for `"mul"` to lose
+// its trailing space -- invisible in a file that opens.
+//
+// **This paragraph used to say Overlay, Soft Light, Hard Light and Color had
+// no equivalent and imported as Normal with a warning. That has been false
+// since docs/blend-mode-gaps.md's Stages 1-3 landed**, and is recorded here
+// rather than quietly deleted, because a header that says a feature is
+// missing when it exists is a defect in this project's terms -- it has caused
+// real mis-planning here before. **The table now carries 26 rows -- every
+// Photoshop blend key this project knows of except one -- and every row maps
+// to a real `core::BlendMode`**: the original six (`norm`, `mul `,
+// `scrn`, `dark`, `lite`, `lddg`), Stage 1's seven separable modes (`diff`,
+// `smud`, `fsub`, `lbrn`, `div `, `idiv`, `fdiv`), Stage 2's seven
+// light-family modes (`hLit`, `over`, `vLit`, `lLit`, `pLit`, `sLit`,
+// `hMix`) and Stage 3's six non-separable ones (`hue `, `sat `, `colr`,
+// `lum `, `dkCl`, `lgCl`). Photoshop's `diss` (Dissolve) is the one real
+// blend mode with no row, and docs/blend-mode-gaps.md scopes it out on
+// purpose -- it is not a deterministic two-pixel function. (`pass` is a
+// group-compositing flag, not a blend, and is handled before the table.)
+//
+// **The fallback is still real and still warns.** A key that is not in the
+// table -- `diss`, a mode from a Photoshop newer than this table, or a
+// corrupt four bytes -- is imported as Normal **explicitly, with a warning
+// naming the PSD key**. Never a silent substitution:
 // `PsdImportResult::warnings` names every layer whose blend mode was not
 // carried across, the same "say what was dropped rather than approximate
 // it" discipline io/AbrBrushes.hpp already holds itself to for a different
-// Photoshop artifact.
+// Photoshop artifact. The reverse direction obeys the same rule from the
+// other side: `psdBlendKeyFor()` returns `nullptr`, and its caller warns,
+// for a `core::BlendMode` with no Photoshop key -- exactly `Mix` today.
 //
-// **Only `dark` and `lite` are an EXACT match, and `lddg` must not be read
-// as a third.** Min and max are order-preserving, so they commute with any
-// monotone transfer function -- Photoshop's per-channel Darken/Lighten and
-// this codebase's `Min`/`Max` agree exactly regardless of which space the
-// comparison happens in. Addition does not commute with a transfer
-// function: Photoshop's Linear Dodge adds in gamma space by default
-// ("Blend RGB Colors Using Gamma 1.0" off) and `BlendMode::Plus` here adds
-// in linear light. That is the identical compromise `mul `/`scrn` already
-// carry (both are exact only in the space they are computed in, and this
-// codebase computes every blend in linear light) -- consistent with what
-// this table already does, but genuinely inexact, not a second exact row.
+// **Only `dark` and `lite` are an EXACT match, and nothing that has landed
+// since changes that.** Min and max are order-preserving, so they commute
+// with any monotone transfer function -- Photoshop's per-channel
+// Darken/Lighten and this codebase's `Min`/`Max` agree exactly regardless of
+// which space the comparison happens in. **Every other row is an
+// approximation, for one shared reason: this codebase composites in
+// premultiplied LINEAR light and Photoshop's default is to blend in the
+// document's usually gamma-encoded space** ("Blend RGB Colors Using Gamma
+// 1.0" off). Addition does not commute with a transfer function, so
+// `lddg`->Plus is not a third exact row; neither is multiplication, so
+// `mul `/`scrn` are not either; and none of the light-family or
+// non-separable formulas is invariant to the choice of space. Do not read
+// the Stage 1-3 work as having closed that gap -- **the modes are now
+// SELECTED correctly, in both directions, and the linear-vs-gamma
+// difference remains**, so a Photoshop file carrying one of these keys
+// round-trips through this build with the right blend *mode* and not
+// bit-identical pixels.
+//
+// Note that `mapBlendKey()`'s `exactMatch` flag answers "was this key in the
+// table?", which is what the caller needs in order to decide whether to
+// warn. It is deliberately not a claim about arithmetic; there is no third
+// bucket between "in the table" and "unknown key, warn and fall back to
+// Normal".
 //
 // --- What has since been verified against real Photoshop files --------------
 //

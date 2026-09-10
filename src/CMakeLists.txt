@@ -219,6 +219,7 @@ add_executable(naturalPaint
   app/selftest/Probe.cpp
   app/selftest/PackBits.cpp
   app/selftest/PsdWrite.cpp
+  app/selftest/PsdBlendKeys.cpp
   app/selftest/PsdImport.cpp
   app/selftest/QuitGuard.cpp
   app/selftest/RecoveryJournal.cpp
