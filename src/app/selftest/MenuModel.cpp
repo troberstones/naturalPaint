@@ -198,12 +198,18 @@ bool runMenuModelTest() {
   // 92 -> 93: `Pigment` (Window > Pigment), the check item that turns
   // `ControlsSection::Pigment`'s Hidden-by-default placement on -- counted
   // the same way, off `MenuAction`'s enumerators (94 including `Count`).
-  check(kMenuActionCount == 93,
-        "ids: exactly 93 actions -- the original 41-item extraction plus D1/D2's "
+  // 93 -> 95: PRD D8's two make-tileable pixel ops, Filter > Remove Lighting
+  // Gradient and Filter > Offset (app/FilterOps.hpp). Counted the way this
+  // comment's own rule demands -- off `MenuAction`'s enumerators in the header
+  // (96 including `Count`) rather than by adding two to 93, because a parallel
+  // track adding its own item would make either arithmetic green while
+  // under-counting the other.
+  check(kMenuActionCount == 95,
+        "ids: exactly 95 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
-        "dialog, Brush Settings, the crop pair and Pigment, so an item lost in a "
-        "later edit fails here");
+        "dialog, Brush Settings, the crop pair, Pigment and D8's make-tileable "
+        "pair, so an item lost in a later edit fails here");
 
   {
     std::set<MenuAction> seen;

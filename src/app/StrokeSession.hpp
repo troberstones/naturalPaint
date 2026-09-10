@@ -876,11 +876,28 @@ std::string cloneSourceRefusal(const AppState::CloneSourceState& clone);
 // about, arriving through the one tool in the build that had not been given a
 // refusal. The brush had had one since the RGB route landed; the bucket and the
 // gradient had not.
+//
+// **Three of the four are questions about the TARGET; the fourth is not, and
+// it is worth saying which.** `pixelOpRefusalFor()` below answers the first
+// three from a `Layer*` alone and can never return `SelectionActive` -- that
+// one belongs to an op whose refusal is about the DOCUMENT's state rather
+// than the layer's, and app/FilterOps.hpp's `offsetRefusalFor()` is the
+// function that asks both halves in order. It shares this enum rather than
+// starting a second refusal vocabulary for the reason app/FilterOps.hpp
+// states about the first three: one message table means a user gets the same
+// voice, and the same "here is the fix" sentence shape, whichever op they
+// tripped over. The enum's name -- what stopped this pixel op -- was always
+// wider than the function that answers most of it.
 enum class PixelOpRefusal {
   None,        // the layer can take the fill
   NoLayer,     // no document, or a document with no layer to have aimed at
   Locked,      // the layer is locked -- the one of the three a user can fix
   NoRgbStore,  // the kind holds no RGB tiles, or its store was never allocated
+  // A selection is active and the op is one a selection cannot bound --
+  // Offset, and so far only Offset. app/FilterOps.hpp's `offsetRefusalFor()`
+  // carries the argument for why "offset within this marquee" is a request
+  // with no honest meaning. Fixable, like `Locked`, and the message says how.
+  SelectionActive,
 };
 
 // Whether `tool` is one of the pixel-writing ops this section covers -- the

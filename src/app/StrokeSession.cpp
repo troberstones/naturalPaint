@@ -732,6 +732,16 @@ std::string pixelOpRefusalMessage(PixelOpRefusal reason, const Layer* target,
       return "\"" + name + "\" is " +
              (target != nullptr ? layerKindName(target->kind) : "?") +
              " and has no RGB pixels for the " + op + ". Pick an RGB layer in LAYERS.";
+    case PixelOpRefusal::SelectionActive:
+      // Names neither the layer nor its kind, because neither is the problem:
+      // this refusal is about the document's selection and the fix is one
+      // command away. `Cmd+D` is spelled out because the menu item's own
+      // label ("Deselect") is what the user has to find, and a sentence that
+      // said only "a selection is active" would leave them looking for a
+      // setting on the op instead.
+      return "the " + op +
+             " moves the whole layer, so a selection cannot bound it. Deselect first "
+             "(Select > Deselect, Cmd+D).";
   }
   return {};
 }

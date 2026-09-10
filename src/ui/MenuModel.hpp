@@ -277,6 +277,15 @@ enum class MenuAction : uint16_t {
   Median,
   MotionBlur,
 
+  // PRD D8 / PLAN.md phase 9 ("Tile it"): the two make-tileable pixel ops,
+  // through app/FilterOps.hpp's `applyRemoveLightingGradient`/`applyOffset`
+  // and their `preview*` twins. **Two and not four**: D8 also names seam heal
+  // and a 3x3 repeat preview, and this header's own rule above holds -- an
+  // operation with no engine behind it stays out of the menu rather than
+  // appearing and doing nothing.
+  RemoveLightingGradient,
+  Offset,
+
   // --- Image ------------------------------------------------------------
   //
   // ops/DocumentTransform, Photoshop-style: geometry that changes the
