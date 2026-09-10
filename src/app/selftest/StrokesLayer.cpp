@@ -635,6 +635,10 @@ bool runStrokesLayerTest() {
   }
 
   strokesForgetAll();
+  // Named the way every neighbouring suite names itself. The sections above
+  // print their letters but not the suite they belong to, so a `FAIL` in a
+  // nine-thousand-line log had no word in it to grep back to this file.
+  std::printf("[selftest] strokes layer %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }
 
