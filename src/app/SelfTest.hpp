@@ -5927,4 +5927,34 @@ bool runPathConsumersTest();
 // writes no files. See app/selftest/TextKeyCapture.cpp.
 bool runTextKeyCaptureTest();
 
+// The UI -> command-layer reroute (docs/automation-plan.md step 2) -- that
+// every migrated route reaches `app::applyCommand()`, and that reaching it
+// changed nothing.
+//
+// **What it PROVES**, as distinct from what it exercises:
+//
+//  * that the three UI boundaries `ui/MacPaintUI.hpp` publishes --
+//    `runPixelCommand()`, `runLayerGesture()`, `runActiveLayerSetter()` --
+//    each produce a RECORDED STEP with the control's own parameter in it.
+//    That is the assertion a missed site fails: a dialog that called its
+//    applier directly would still paint the right pixels and still pass every
+//    other section in this suite, and would be a user action no recorder can
+//    ever see;
+//  * that the reroute is pixel-identical. All twenty-six pixel commands the
+//    UI can now issue are run against the applier the control used to call,
+//    on two copies of one fixture, and compared BIT-EXACTLY -- with the count
+//    of cases that actually moved a texel asserted beside the match count, so
+//    a fixture that had gone flat could not make the comparison vacuous;
+//  * that every key an ENCODER writes is a key its row advertises. This is
+//    the reverse of app/selftest/CommandsImage.cpp's own check and catches
+//    the one bug the pixel comparison cannot: a misspelt optional key whose
+//    silent default happens to equal the fixture's value;
+//  * that a refusal is still not a step on the UI path, and that the
+//    dialogs' three-way outcome still maps the way it did -- including the
+//    one case step 2 knowingly changed, an identity parameter refused by name
+//    rather than run as a no-op.
+//
+// Headless, GPU-free, writes no files. See app/selftest/CommandCallsites.cpp.
+bool runCommandCallsitesTest();
+
 }  // namespace np

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "app/AdjustmentOps.hpp"
+#include "app/CommandsImage.hpp"
 #include "app/CommandSupport.hpp"
 #include "app/CropTool.hpp"
 #include "app/FilterOps.hpp"
@@ -941,5 +942,263 @@ void registerImageCommands(std::vector<CommandSpec>* out) {
       {"adjust_equalize", "Equalize", {"clip_fraction"}, pixelOpUnavailable, doEqualize,
        /*selectionBounded=*/true});
 }
+
+
+// ==========================================================================
+// The encoders (app/CommandsImage.hpp)
+// ==========================================================================
+//
+// Directly under the readers they feed, which is the whole of this header's
+// argument for where they live. Every key spelled below appears verbatim in a
+// `read*()` call above; nothing here validates, and nothing here defaults --
+// see app/CommandsImage.hpp §2 and §3.
+namespace {
+
+// The two shapes repeated often enough to be worth naming: a fixed float
+// triple (`luma_weights`, a colour, a colour-balance band) and a bare object.
+JsonValue jsonTriple(const std::array<float, 3>& v) {
+  JsonValue a = JsonValue::array();
+  for (float f : v) a.push(JsonValue::number(f));
+  return a;
+}
+
+Command command(const char* id, JsonValue params) {
+  Command c;
+  c.id = id;
+  c.params = std::move(params);
+  return c;
+}
+
+}  // namespace
+
+Command gaussianBlurCommand(float sigma) {
+  JsonValue p = JsonValue::object();
+  p.set("sigma", JsonValue::number(sigma));
+  return command("filter_gaussian_blur", std::move(p));
+}
+
+Command sharpenCommand(float strength) {
+  JsonValue p = JsonValue::object();
+  p.set("strength", JsonValue::number(strength));
+  return command("filter_sharpen", std::move(p));
+}
+
+Command unsharpMaskCommand(const UnsharpParams& u) {
+  // One `radius` key whose meaning follows `blur_kind`, exactly as
+  // `doUnsharpMask()` reads it -- see its own comment on why two keys would be
+  // worse. So the encoder must consult the kind too, and writing the field
+  // that does not belong to it would produce a step the reader ignores.
+  JsonValue p = JsonValue::object();
+  p.set("blur_kind", JsonValue::string(blurKindName(u.blur.kind)));
+  p.set("radius", JsonValue::number(u.blur.kind == BlurKind::Box
+                                        ? static_cast<double>(u.blur.boxRadius)
+                                        : static_cast<double>(u.blur.sigma)));
+  p.set("amount", JsonValue::number(u.amount));
+  p.set("threshold", JsonValue::number(u.threshold));
+  return command("filter_unsharp_mask", std::move(p));
+}
+
+Command addNoiseCommand(const NoiseParams& n) {
+  JsonValue p = JsonValue::object();
+  p.set("amount", JsonValue::number(n.amount));
+  p.set("distribution", JsonValue::string(noiseDistributionName(n.distribution)));
+  p.set("monochrome", JsonValue::boolean(n.monochrome));
+  // `doAddNoise()` refuses a seed above 2^53 because a JSON number is a double
+  // and a larger one would round. The dialog's own seed is a small counter, so
+  // this cannot fire from the UI -- but the cast is written as the reader's
+  // own bound rather than as an assumption about the dialog, because the next
+  // caller of this function may not be a dialog.
+  p.set("seed", JsonValue::number(static_cast<double>(n.seed)));
+  return command("filter_add_noise", std::move(p));
+}
+
+Command embossCommand(const EmbossParams& e) {
+  JsonValue p = JsonValue::object();
+  p.set("dx", JsonValue::number(e.dx));
+  p.set("dy", JsonValue::number(e.dy));
+  p.set("depth", JsonValue::number(e.depth));
+  p.set("amount", JsonValue::number(e.amount));
+  return command("filter_emboss", std::move(p));
+}
+
+Command medianCommand(const MedianParams& m) {
+  JsonValue p = JsonValue::object();
+  p.set("radius", JsonValue::number(m.radius));
+  return command("filter_median", std::move(p));
+}
+
+Command motionBlurCommand(const MotionBlurParams& m) {
+  JsonValue p = JsonValue::object();
+  p.set("radius", JsonValue::number(m.radius));
+  p.set("angle_radians", JsonValue::number(m.angleRadians));
+  return command("filter_motion_blur", std::move(p));
+}
+
+Command levelsCommand(const std::array<LevelsParams, 3>& channels) {
+  JsonValue list = JsonValue::array();
+  for (const LevelsParams& c : channels) {
+    JsonValue one = JsonValue::object();
+    one.set("black_in", JsonValue::number(c.blackIn));
+    one.set("white_in", JsonValue::number(c.whiteIn));
+    one.set("gamma", JsonValue::number(c.gamma));
+    one.set("black_out", JsonValue::number(c.blackOut));
+    one.set("white_out", JsonValue::number(c.whiteOut));
+    list.push(std::move(one));
+  }
+  JsonValue p = JsonValue::object();
+  p.set("channels", std::move(list));
+  return command("adjust_levels", std::move(p));
+}
+
+Command curvesCommand(const std::array<Curve, 3>& channels) {
+  JsonValue list = JsonValue::array();
+  for (const Curve& curve : channels) {
+    JsonValue points = JsonValue::array();
+    for (const CurvePoint& cp : curve) {
+      JsonValue one = JsonValue::object();
+      one.set("x", JsonValue::number(cp.x));
+      one.set("y", JsonValue::number(cp.y));
+      points.push(std::move(one));
+    }
+    // An EMPTY list is written, not skipped: `doCurves()` reads a channel with
+    // fewer than two points as the identity for that channel, which is what a
+    // dialog whose blue curve was never touched means. Skipping it would make
+    // the array shorter than three and the whole step a refusal.
+    list.push(std::move(points));
+  }
+  JsonValue p = JsonValue::object();
+  p.set("channels", std::move(list));
+  return command("adjust_curves", std::move(p));
+}
+
+Command exposureCommand(const ExposureParams& e) {
+  JsonValue p = JsonValue::object();
+  p.set("stops", JsonValue::number(e.stops));
+  return command("adjust_exposure", std::move(p));
+}
+
+Command channelMixerCommand(const ChannelMixerParams& m) {
+  JsonValue rows = JsonValue::array();
+  for (const std::array<float, 4>& row : m.matrix) {
+    JsonValue one = JsonValue::array();
+    for (float v : row) one.push(JsonValue::number(v));
+    rows.push(std::move(one));
+  }
+  JsonValue p = JsonValue::object();
+  p.set("matrix", std::move(rows));
+  return command("adjust_channel_mixer", std::move(p));
+}
+
+Command desaturateCommand() { return command("adjust_desaturate", JsonValue::object()); }
+
+Command brightnessContrastCommand(const GainOffsetGammaParams& g) {
+  JsonValue p = JsonValue::object();
+  p.set("gain", JsonValue::number(g.gain));
+  p.set("offset", JsonValue::number(g.offset));
+  p.set("gamma", JsonValue::number(g.gamma));
+  return command("adjust_brightness_contrast", std::move(p));
+}
+
+Command hueSaturationCommand(const HueSaturationParams& h) {
+  JsonValue p = JsonValue::object();
+  p.set("hue_degrees", JsonValue::number(h.hueDegrees));
+  p.set("saturation", JsonValue::number(h.saturation));
+  p.set("lightness", JsonValue::number(h.lightness));
+  p.set("colorize", JsonValue::boolean(h.colorize));
+  p.set("colorize_hue_degrees", JsonValue::number(h.colorizeHueDegrees));
+  p.set("colorize_saturation", JsonValue::number(h.colorizeSaturation));
+  return command("adjust_hue_saturation", std::move(p));
+}
+
+Command vibranceCommand(const VibranceParams& v) {
+  JsonValue p = JsonValue::object();
+  p.set("amount", JsonValue::number(v.amount));
+  p.set("luma_weights", jsonTriple(v.lumaWeights));
+  return command("adjust_vibrance", std::move(p));
+}
+
+Command colorBalanceCommand(const ColorBalanceParams& c) {
+  JsonValue p = JsonValue::object();
+  p.set("shadows", jsonTriple(c.shadowsLift));
+  p.set("midtones", jsonTriple(c.midtonesGamma));
+  p.set("highlights", jsonTriple(c.highlightsGain));
+  p.set("preserve_luminosity", JsonValue::boolean(c.preserveLuminosity));
+  return command("adjust_color_balance", std::move(p));
+}
+
+Command blackAndWhiteCommand(const BlackAndWhiteParams& b) {
+  JsonValue p = JsonValue::object();
+  p.set("reds", JsonValue::number(b.reds));
+  p.set("yellows", JsonValue::number(b.yellows));
+  p.set("greens", JsonValue::number(b.greens));
+  p.set("cyans", JsonValue::number(b.cyans));
+  p.set("blues", JsonValue::number(b.blues));
+  p.set("magentas", JsonValue::number(b.magentas));
+  return command("adjust_black_and_white", std::move(p));
+}
+
+Command photoFilterCommand(const PhotoFilterParams& f) {
+  JsonValue p = JsonValue::object();
+  p.set("density", JsonValue::number(f.density));
+  p.set("color", jsonTriple(f.color));
+  p.set("preserve_luminosity", JsonValue::boolean(f.preserveLuminosity));
+  return command("adjust_photo_filter", std::move(p));
+}
+
+Command posterizeCommand(const PosterizeParams& p2) {
+  JsonValue p = JsonValue::object();
+  p.set("levels", JsonValue::number(p2.levels));
+  return command("adjust_posterize", std::move(p));
+}
+
+Command thresholdCommand(const ThresholdParams& t) {
+  JsonValue p = JsonValue::object();
+  p.set("threshold", JsonValue::number(t.threshold));
+  p.set("amount", JsonValue::number(t.amount));
+  return command("adjust_threshold", std::move(p));
+}
+
+Command gradientMapCommand(const GradientMapParams& g) {
+  JsonValue stops = JsonValue::array();
+  for (const ColorStop& s : g.stops.colorStops) {
+    JsonValue one = JsonValue::object();
+    one.set("position", JsonValue::number(s.position));
+    one.set("color", jsonTriple(s.color));
+    one.set("midpoint", JsonValue::number(s.midpoint));
+    stops.push(std::move(one));
+  }
+  // The opacity ramp is deliberately not written: `applyGradientMapAdjustment()`
+  // never consults it, and `doGradientMap()` therefore has no key for it. See
+  // that adapter's own note.
+  JsonValue p = JsonValue::object();
+  p.set("stops", std::move(stops));
+  p.set("luma_weights", jsonTriple(g.lumaWeights));
+  return command("adjust_gradient_map", std::move(p));
+}
+
+Command invertCommand() { return command("adjust_invert", JsonValue::object()); }
+Command autoToneCommand() { return command("adjust_auto_tone", JsonValue::object()); }
+Command autoContrastCommand() { return command("adjust_auto_contrast", JsonValue::object()); }
+Command autoColorCommand() { return command("adjust_auto_color", JsonValue::object()); }
+Command equalizeCommand() { return command("adjust_equalize", JsonValue::object()); }
+
+Command imageSizeCommand(uint32_t width, uint32_t height, ResampleKernel kernel) {
+  JsonValue p = JsonValue::object();
+  p.set("width", JsonValue::number(width));
+  p.set("height", JsonValue::number(height));
+  p.set("kernel", JsonValue::string(resampleKernelName(kernel)));
+  return command("image_size", std::move(p));
+}
+
+Command canvasSizeCommand(uint32_t width, uint32_t height, CanvasAnchor anchor) {
+  JsonValue p = JsonValue::object();
+  p.set("width", JsonValue::number(width));
+  p.set("height", JsonValue::number(height));
+  p.set("anchor", JsonValue::string(canvasAnchorName(anchor)));
+  return command("canvas_size", std::move(p));
+}
+
+Command cropToSelectionCommand() { return command("crop_to_selection", JsonValue::object()); }
+Command trimToContentCommand() { return command("trim_to_content", JsonValue::object()); }
 
 }  // namespace np

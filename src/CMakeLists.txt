@@ -169,6 +169,7 @@ add_executable(naturalPaint
   app/selftest/Replay.cpp
   app/selftest/CommandsOpStack.cpp
   app/selftest/CommandsImage.cpp
+  app/selftest/CommandCallsites.cpp
   app/selftest/Json.cpp
   app/selftest/Keymap.cpp
   app/selftest/LayerComp.cpp

@@ -120,7 +120,7 @@ the recorder's tap. The undo stack tells you *that* something happened, never *w
 | gap | fix | est. |
 |---|---|---|
 | **No single "apply a command to a document" function.** The vocabulary exists; the appliers exist; nothing joins a stable command id to a params bag to an applier | `app/Command`: a `Command{id, params}`, a registry, `applyCommand(OpenDocument&, const Command&)` | 2 d |
-| **49 UI call sites call appliers directly** — 29 across the 28 public `FilterOps`/`AdjustmentOps` appliers, 4 layer-command sites and 16 layer-setter sites — so a recorder tapping anything below them sees pixels, not intent | migrate each to `applyCommand()`. One-line changes, no new behaviour; the appliers keep their signatures and their tests | 2 d |
+| ~~**49 UI call sites call appliers directly**~~ **DONE (step 2).** 46 sites, counted against the tree: 29 pixel, 4 layer-command, 13 layer-setter — not 16; the other six `setLayerX()` calls outside `core/` and `app/` are main.cpp fixture builders, not user routes. 40 migrated, 6 named exceptions | done: each site calls `applyCommand()`, through `ui/MacPaintUI.hpp`'s three boundary functions. The appliers kept their signatures and their tests. See "step 2, as built" in §6 | done |
 | **No recorder** | `app/Recorder`: armed / recording / stopped, appending to a `std::vector<Command>` from inside `applyCommand()` | 0.5 d |
 | **No action model or file** | `app/Action` (model) + `io/ActionFile` (text form), split the way `core/OpStack` + `io/OpSerial` already are | 1.5 d |
 | **`npops1:` is hex — it fails P5 outright** ("human-readable, and diffable") | the action file gets a **text** encoding; `np:ops` keeps hex, because an EXR header attribute must. One op list, two encodings — see the drift trap | folded above |
@@ -214,11 +214,59 @@ with a stated reason, and the table starts empty except for the `AppState`-only 
 of §1. A command added later without a registration fails this test rather than being
 silently unrecordable.
 
-**2 — Migrate the call sites (2 d).** Each UI site calls `applyCommand()` instead of
-the applier. No behaviour changes and no applier signature changes; this is what puts
-every route — menu, panel, dialog, key binding — through one door.
+**2 — Migrate the call sites (2 d). DONE.** Each UI site calls `applyCommand()`
+instead of the applier. No behaviour changes and no applier signature changes; this is
+what puts every route — menu, panel, dialog, key binding — through one door.
 *Gate:* zero diff in `--selftest` beyond additions; the Filter and Adjustments golden
 views unchanged.
+
+> **Step 2, as built.** Five things this section got wrong or left implicit, each
+> found by doing it rather than by re-reading it.
+>
+> **The count is 46, not 49.** 29 pixel sites and 4 layer-command sites are exact.
+> There are **13** layer-setter sites, all in `ui/MacPaintUI.cpp`; the other six
+> `setLayerX()` calls outside `core/` and `app/` are `buildDemoDocument()` and
+> `--comps-demo` writing a document state before a screenshot. They address layers
+> by index and are not user routes.
+>
+> **Six sites cannot be migrated, and they are one problem.** The LAYERS panel's
+> eye, padlock and inline rename act on **any row**, and clicking the eye
+> deliberately does not select it. `applyCommand()` addresses a layer by NAME —
+> that is the property that makes an action replayable — and layer names are
+> explicitly not unique, so a name taken from a row would resolve to the *first*
+> layer sharing it, which is a document a Duplicate Layer produces.
+> `runLayerSetCommand()` has that problem plus two of its own:
+> `resolveLayerSet()` refuses a name list that does not resolve one-to-one (right
+> for a file, fatal for a button), and `CommandResult` cannot carry
+> `LayerSetEditResult::selection`, which the panel assigns. `--ui-merge-demo` and
+> `--ui-multiselect-demo` address layers by index on purpose and are not user
+> actions. **What closes all six is a stable `Layer::id`**, which is 0 on every
+> layer this build creates (`app/StrokeSession.hpp` §5) — a separate piece of
+> work, and the one thing that would let a command name a row unambiguously.
+>
+> **One behaviour DID change, knowingly.** The command layer refuses a parameter
+> at its documented identity — sigma 0, strength 0, amount 0, density 0 — where
+> the applier would have run and changed nothing, because §7 makes that the
+> command layer's rule and refusing in a batch but not in the UI would be the two
+> paths differing. In the dialog it shows as an explanation where the old code
+> closed the popup and said nothing legible: its "Nothing changed" line was drawn
+> for exactly one frame, because `CloseCurrentPopup()` takes effect at
+> `EndPopup()`. Pinned by an assertion, so changing it back is a decision somebody
+> makes on purpose.
+>
+> **There are no Filter or Adjustments golden views to keep unchanged.** The gate
+> above names views that do not exist: `run_golden.sh`'s 58 views include no
+> launch flag that opens a Filter or an Image > Adjustments modal, and the three
+> chorded adjustments are keymap actions, which the harness does not press. The
+> reroute could not move any of the 58 anyway — every line it changed is inside a
+> button's `if` body or a lambda only a click reaches, and no widget, string or
+> layout moved.
+>
+> **The migration needed a direction the command layer did not have**: an
+> *encoder*, turning the params struct a dialog holds into the JSON its own
+> adapter reads. `app/CommandsImage.hpp` and `app/CommandsLayers.hpp` publish
+> thirty-seven of them, beside the readers they feed, for the reason
+> `app/CommandsOpStack.hpp` already gives about the hex/text pair.
 
 **3 — `app/Recorder` (0.5 d).** A session sink `applyCommand()` appends to while armed.
 *Gate:* recording *"flatten, blur, set blend, threshold"* by driving `applyCommand()`
@@ -331,8 +379,21 @@ threshold* replayed onto a document whose layer names match and one whose names 
 Mechanically: `app/selftest/Command.cpp` (the exhaustiveness table, the registry round
 trip), `app/selftest/Action.cpp` (hand-typed fixture, cross-document resolution
 refusals), `app/selftest/Batch.cpp` (the thirty-file run, stop-clean-on-failure, the
-input-hash assertion, the input/output collision refusal). Golden gains the ACTIONS panel
-and BATCH dialog views.
+input-hash assertion, the input/output collision refusal), and
+`app/selftest/CommandCallsites.cpp` (step 2's own: that each UI boundary reaches
+`applyCommand()` at all, driven with a `Recorder` armed, and that reaching it left the
+pixels of all twenty-six pixel commands bit-identical to the applier the control used to
+call). Golden gains the ACTIONS panel and BATCH dialog views.
+
+> **What `CommandCallsites.cpp` cannot see, stated because a sabotage proved it.**
+> Un-migrating ONE call site — putting the OPACITY meter back on
+> `setLayerOpacity()` — leaves the whole suite green. The section asserts that the
+> three boundary functions reach `applyCommand()`, not that each of the forty
+> controls calls a boundary; the controls are inside ImGui frames nothing headless
+> can drive. Nineteen of the forty are safe structurally (they share one tail,
+> `drawAdjustmentButtons()` / `performImmediateAdjustment()`, and a site that
+> skipped the tail would draw no button); the rest are covered only by review. A
+> NEW site added around the door is the case to watch for.
 
 **Sabotage, at gather:** break the input/output collision check; break the non-`PointA`
 refusal; break the `select_layer` emission so the recorder omits it. All three are
@@ -414,12 +475,19 @@ Baseline on that base: **8619 pass, 0 FAIL**, `--selftest` exit 0.
 - [x] sabotage: a claimed-but-unregistered id goes red, and adding a `MenuAction`
       enumerator fails the build by name in `CommandCoverage.cpp`
 
-### Step 2 — migrate the call sites (49)
+### Step 2 — migrate the call sites (46, not 49 — see §6's "step 2, as built")
 
-- [ ] 29 sites across the 28 public `FilterOps`/`AdjustmentOps` appliers
-- [ ] 4 `applyLayerCommand` / `applyLayerSetCommand` sites
-- [ ] 16 `core/LayerOps` setter sites
-- [ ] **gate:** Filter and Adjustments golden views unchanged; `--selftest` additions-only
+- [x] 29 sites across the 28 public `FilterOps`/`AdjustmentOps` appliers — all migrated
+- [x] 4 `applyLayerCommand` / `applyLayerSetCommand` sites — 1 migrated,
+      3 named exceptions (`runLayerSetCommand()`, and both demo drivers)
+- [x] ~~16~~ **13** `core/LayerOps` setter sites — 10 migrated, 3 named exceptions
+      (the eye, the padlock, the inline rename: they address a ROW, and a row has no
+      unambiguous name)
+- [x] the encoders the migration needed: `app/CommandsImage.hpp` (30) and
+      `app/CommandsLayers.hpp` (7), beside the readers they feed
+- [x] **gate:** `--selftest` additions-only, 9095 → 9121, 0 FAIL, exit 0
+- [x] **gate:** golden — argued, not run. **There are no Filter or Adjustments views
+      to move**, and no launch flag reaches a migrated line in any of the 58
 
 ### Step 3 — `app/Recorder`
 
@@ -559,3 +627,7 @@ Filled in as steps complete. Empty until step 0 runs.
 | 2026-09-09 | 3 | **The recorder's marquee guard was under-refusing, not only over-refusing.** `app/Recorder.hpp` §4 described `changesPixels` as a deliberate over-approximation. It was also an under-approximation: `define_pattern` reports no texel change and its source rectangle *is* the selection's bounds, so it was never policed and replayed as a whole-canvas pattern, reporting success. |
 | 2026-09-09 | 3 | **`CommandResult::changesPixels` is set by three of the five `from*()` bridges.** `fromLayerEdit()` and `fromDocumentOpResult()` do not set it, so every `LayerCommand`, every layer setter and every op-stack row reports `false` — `flatten_image` and `merge_down` included. Found by a sabotage: restoring the old proxy left the "a flatten under a marquee is recorded" assertion green, because the flatten had never reached the guard. The field now has **no production consumer at all**; step 5 wants it for the zero-texel warning and must fix it first. |
 | 2026-09-09 | 1 | **`applySelectColourRangeAction()` reads a dialog swatch, not the foreground colour.** The gap's stated reason said it "additionally reads the foreground colour, which is AppState". It reads a `static float swatchSrgb[3]` local to the popup. The conclusion the reason drew was right for the wrong noun, and the fix is the same either way: the parameter carries the colour. |
+| 2026-09-09 | 2 | The count was 49 and is 46: the layer-setter figure was 16, and thirteen of those are UI sites — the other six are main.cpp fixture builders. |
+| 2026-09-09 | 2 | **Six sites cannot be migrated at all, and they are one problem**: a layer name is not unique, so a control that acts on a ROW has no target a command can name. `Layer::id` is what would close all six. **Corrected at gather:** the track reported it as "0 on every layer this build creates", which is true at creation and misleading as a estimate of the work. The identity machinery already exists in full — `Layer::id` is a `uint64_t`, `Document::nextLayerId` is its counter, `core::normalizeLayerIds()` assigns and de-duplicates with a documented bottom-to-top rule, and it already round-trips through `np:comps`. Ids are handed out **lazily**, and `captureLayerComp()` is the only caller. So closing the six is "call the existing normalizer earlier, and let a command address a layer by id as well as by name", not "invent stable layer identity". |
+| 2026-09-09 | 2 | The step's own gate names golden views that do not exist. There is no launch flag that opens a Filter or an Adjustments modal, so the harness has never photographed one. |
+| 2026-09-09 | 2 | Un-migrating ONE call site leaves the suite green — an inert sabotage, recorded because it bounds what the new section proves. It asserts the three boundaries reach `applyCommand()`, not that each of the forty controls calls a boundary. |

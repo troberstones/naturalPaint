@@ -589,6 +589,66 @@ const char* layerSetCommandId(LayerSetCommand command) noexcept {
   return nullptr;
 }
 
+// --- the value setters' encoders (app/CommandsLayers.hpp) ------------------
+//
+// Directly beneath the `requireBool()` / `requireNumber()` / `requireString()`
+// readers they feed, which is the whole of that header's argument for where
+// they live. Each writes exactly the one key its adapter requires, and no
+// `"layer"` -- see the header on why the active-layer fallback is the only
+// safe target for a panel control.
+namespace {
+
+Command activeLayerCommand(const char* id, const char* key, JsonValue value) {
+  Command c;
+  c.id = id;
+  c.params = JsonValue::object();
+  c.params.set(key, std::move(value));
+  return c;
+}
+
+}  // namespace
+
+Command setLayerBlendCommand(BlendMode mode) {
+  // By NAME, through `blendModeName()`. `Layer::blend` is itself a string for
+  // `np:blend`'s reason (core/LayerOps.hpp), so this is not a conversion an
+  // encoder invented -- it is the same canonical spelling the document stores.
+  return activeLayerCommand("set_layer_blend", "mode", JsonValue::string(blendModeName(mode)));
+}
+
+Command setLayerOpacityCommand(float opacity) {
+  // Not clamped, matching `doSetLayerOpacity()`'s own note: core/LayerOps
+  // refuses a value outside [0,1] by name, and clamping on the way in would
+  // turn a control that asked for 1.4 into one that quietly meant 1.0.
+  return activeLayerCommand("set_layer_opacity", "opacity", JsonValue::number(opacity));
+}
+
+Command setLayerVisibleCommand(bool visible) {
+  return activeLayerCommand("set_layer_visible", "visible", JsonValue::boolean(visible));
+}
+
+Command setLayerLockedCommand(bool locked) {
+  return activeLayerCommand("set_layer_locked", "locked", JsonValue::boolean(locked));
+}
+
+Command setLayerClippedCommand(bool clipped) {
+  return activeLayerCommand("set_layer_clipped", "clipped", JsonValue::boolean(clipped));
+}
+
+Command setLayerNameCommand(std::string name) {
+  // An empty name is passed through, not refused: core/LayerOps accepts one
+  // and it means "unnamed" (core/Layer.hpp), and `doSetLayerName()` says so
+  // explicitly.
+  return activeLayerCommand("set_layer_name", "name", JsonValue::string(std::move(name)));
+}
+
+Command setLayerColorLabelCommand(std::string label) {
+  // Any string, `kNoLayerColorLabel` included. `doSetLayerColorLabel()` refuses
+  // to validate it against this build's swatch list, for PRD I10's reason, and
+  // an encoder that normalised here would defeat that from the other side.
+  return activeLayerCommand("set_layer_color_label", "label",
+                            JsonValue::string(std::move(label)));
+}
+
 void registerLayerCommandRows(std::vector<CommandSpec>* out) {
   // `select_layer` first, because it is the step docs/automation-plan.md §5
   // says the recorder emits whenever the active layer changes -- the one that
