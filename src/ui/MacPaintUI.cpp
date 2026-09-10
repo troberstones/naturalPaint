@@ -1351,6 +1351,13 @@ float distancePointToSegment(ImVec2 p, ImVec2 a, ImVec2 b) {
 // `g_layers` and every other file-local of this translation unit, which is
 // what lets `runLayerCommand()` below stay the panel-shaped wrapper it was.
 //
+// **These three are the whole boundary.** A widget that reaches an `applyX()`
+// directly runs correctly and records nothing -- the recorder's tap is inside
+// `applyCommand()` -- and no assertion in this repository can see it happen.
+// docs/automation.md §2.3 and §7 say so at length; a fourth door belongs here,
+// at file scope, beside these, with its own case in
+// app/selftest/CommandCallsites.cpp section A.
+//
 // Nothing here decides anything. Each one is: build nothing, call
 // `applyCommand()`, translate `CommandResult` into the shape its callers
 // already spoke. The translation is the only code, and it is here rather than

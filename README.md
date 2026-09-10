@@ -603,6 +603,7 @@ third_party/ mixbox (submodule), wgpu (vendored binary), stb
 | [docs/adr/](docs/adr/) | Settled decisions, with the reasoning that settled them |
 | [docs/document-format.md](docs/document-format.md) | The `.npaint` format |
 | [docs/operations.md](docs/operations.md) | Every op, its evaluation class and its cost |
+| [docs/automation.md](docs/automation.md) | **What a new feature owes the recorder.** Read before adding one that edits a document |
 | [docs/ui.md](docs/ui.md) · [docs/shortcuts.md](docs/shortcuts.md) | Interface and keymap |
 | [docs/solver-log.md](docs/solver-log.md) | How the simulation was debugged, and what was measured |
 

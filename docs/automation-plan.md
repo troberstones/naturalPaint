@@ -20,6 +20,12 @@ Requirements: [PRD.md §P](../PRD.md) P1–P6, plus the two P2 image ops
 
 ---
 
+> **Adding a feature, rather than reading how this phase was built?** This file
+> is the build plan and is written backwards from the finished thing.
+> [automation.md](automation.md) is the forward-facing half: the four edits a
+> new recordable feature needs, the parameter rules and what enforces them, and
+> the two holes nothing enforces.
+
 ## 1. The two shape decisions, stated first
 
 ### A chain, not a node graph

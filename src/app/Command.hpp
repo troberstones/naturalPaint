@@ -16,6 +16,12 @@
 // vocabulary it indexes already existed, spread across four places that had
 // no reason to know about each other.
 //
+// **Adding a command, rather than reading how the table came to exist?**
+// docs/automation.md is written for that: the four edits a new recordable
+// feature needs (a row here, an encoder beside its reader, a UI boundary, a
+// `coverageFor()` classification), the parameter rules and which assertion
+// enforces each, and the two places where nothing does.
+//
 // ==========================================================================
 // (1) The rule that decides what is in this table, and it is not a taste call
 // ==========================================================================
