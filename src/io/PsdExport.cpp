@@ -1,5 +1,7 @@
 #include "io/PsdExport.hpp"
 
+#include "io/PsdLayerSection.hpp"
+
 #include <cmath>
 #include <cstdio>
 #include <span>
@@ -174,7 +176,15 @@ bool writeMergedImageData(PsdWriter& w, const DecodedImage& flat, PsdClipReport&
   return true;
 }
 
-PsdExportResult writeFlattenedPsd(const Document& doc) {
+namespace {
+
+// The two public entry points differ in exactly one section, so they are one
+// function with one flag rather than two bodies that have to be kept in step.
+// Everything else -- the size refusal, the flatten, the header, the merged
+// image data, the clip warnings, the structural check -- is identical, and a
+// second copy of it would be a second place for the Image Data Section to be
+// forgotten.
+PsdExportResult writePsd(const Document& doc, bool layered) {
   PsdExportResult result;
 
   auto refuse = [&result](std::string message) {
@@ -205,7 +215,19 @@ PsdExportResult writeFlattenedPsd(const Document& doc) {
   writePsdFileHeader(w, doc.width, doc.height, kCompositeChannelCount);
   w.u32(0);  // Colour Mode Data -- only Indexed and Duotone carry any
   w.u32(0);  // Image Resources -- legal as zero, see the header
-  w.u32(0);  // Layer and Mask Information -- tier 1 has no layers
+  if (layered) {
+    // Tier 2. The section writer owns its own `u32` length, the layer info
+    // sub-section, every record, every record's channel data, and the
+    // zero-length global layer mask info -- so this call IS the section.
+    const PsdLayerSectionResult section = writePsdLayerAndMaskInfo(w, doc);
+    if (!section.ok) return refuse("cannot write a layered PSD: " + section.error);
+    // Warnings from the layer section are the caller's to see: every one of
+    // them names a layer and what it lost.
+    result.warnings.insert(result.warnings.end(), section.warnings.begin(),
+                           section.warnings.end());
+  } else {
+    w.u32(0);  // Layer and Mask Information -- tier 1 has no layers
+  }
 
   PsdClipReport clip;
   if (!writeMergedImageData(w, flat, clip)) {
@@ -241,5 +263,20 @@ PsdExportResult writeFlattenedPsd(const Document& doc) {
   result.bytes = w.take();
   return result;
 }
+
+}  // namespace
+
+PsdExportResult writeFlattenedPsd(const Document& doc) { return writePsd(doc, false); }
+
+// **The composite is written here too, and it is not redundant.** A PSD whose
+// Image Data Section is absent or blank opens BLANK in every application that
+// does not parse the layer section -- which is most of them, and is the whole
+// reason Photoshop's own "Maximize Compatibility" option exists. This was not
+// a theoretical concern during development: the layer section's own test
+// wrapper omitted this section, and psd-tools refused the resulting file
+// outright ("Failed to read data section"). Layered output goes through the
+// same `flattenDocumentToLinear()` call the flattened path uses, so the two
+// tiers cannot disagree about what the picture is.
+PsdExportResult writeLayeredPsd(const Document& doc) { return writePsd(doc, true); }
 
 }  // namespace np

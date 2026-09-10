@@ -336,4 +336,17 @@ bool writeMergedImageData(PsdWriter& w, const DecodedImage& flat, PsdClipReport&
 // a refused request can never leave a half-written file behind.
 PsdExportResult writeFlattenedPsd(const Document& doc);
 
+// The same container with a real Layer and Mask Information section: one PSD
+// layer record per naturalPaint layer, plus the two synthetic records that
+// bracket each group. io/PsdLayerSection writes that section; this function
+// writes everything around it, INCLUDING the merged composite in the Image
+// Data Section, which a layered file needs just as much as a flat one (see
+// this function's own comment in the .cpp for the psd-tools refusal that
+// proved it).
+//
+// Refuses for every reason `writeFlattenedPsd()` does, plus the group shapes
+// PSD cannot express at all -- non-contiguous members, a group whose members
+// sit above it, a `parent` cycle. A refusal is total: no bytes.
+PsdExportResult writeLayeredPsd(const Document& doc);
+
 }  // namespace np

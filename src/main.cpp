@@ -1659,6 +1659,7 @@ int main(int argc, char** argv) {
   // in -- see app/PsdExportCli.hpp for why a round trip through our own
   // importer cannot answer that question.
   const char* psdExportPath = nullptr;
+  bool psdExportLayered = false;
   // --profile-toggle <file.psd> <layer-index> <iterations> : headless
   // benchmarking scaffold, see app/ProfileToggle.hpp. Temporary.
   const char* profileTogglePath = nullptr;
@@ -1720,6 +1721,16 @@ int main(int argc, char** argv) {
       if (i + 1 < argc) psdReportPath = argv[++i];
     } else if (a == "--psd-export") {
       if (i + 1 < argc) psdExportPath = argv[++i];
+    } else if (a == "--psd-export-layered") {
+      // Tier 2: the same fixture with a real Layer and Mask Information
+      // section. This is the file the psd-tools oracle is run against --
+      // an external reader is the only thing that can see a flags-polarity
+      // or record-order mistake, because our own reader would make the same
+      // mistake in the same direction and round-trip perfectly.
+      if (i + 1 < argc) {
+        psdExportPath = argv[++i];
+        psdExportLayered = true;
+      }
     } else if (a == "--profile-toggle") {
       if (i + 1 < argc) profileTogglePath = argv[++i];
       if (i + 1 < argc) profileToggleLayer = std::atoi(argv[++i]);
@@ -2386,7 +2397,7 @@ int main(int argc, char** argv) {
   // the GPU path does.
   if (abrReportPath != nullptr) return np::runAbrReport(abrReportPath);
   if (psdReportPath != nullptr) return np::runPsdReport(psdReportPath);
-  if (psdExportPath != nullptr) return np::runPsdExportDemo(psdExportPath);
+  if (psdExportPath != nullptr) return np::runPsdExportDemo(psdExportPath, psdExportLayered);
   if (profileTogglePath != nullptr)
     return np::runProfileToggle(profileTogglePath, profileToggleLayer, profileToggleIterations);
   if (abrKeysPath != nullptr) return np::runAbrKeyCensus(abrKeysPath);

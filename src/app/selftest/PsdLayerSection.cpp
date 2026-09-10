@@ -17,6 +17,7 @@
 #include "core/TileStore.hpp"
 #include "io/PsdImport.hpp"
 #include "core/Composite.hpp"
+#include "io/PsdExport.hpp"
 #include "io/PsdLayerSection.hpp"
 #include "io/PsdLayerExtras.hpp"
 #include "io/PsdWrite.hpp"
@@ -677,8 +678,18 @@ bool runPsdLayerSectionTest() {
     doc.layers.push_back(std::move(hidden));
     doc.layers.push_back(std::move(top));
 
-    PsdLayerSectionResult section;
-    const std::vector<uint8_t> bytes = wrapAsPsd(doc, section);
+    // **Through io/PsdExport, not through this file's own `wrapAsPsd()`.**
+    // That helper writes a header and this section and stops, which is all a
+    // round trip through io/PsdImport needs -- and is a file psd-tools
+    // refuses outright ("Failed to read data section"), because it has no
+    // Image Data Section. An oracle dump has to be a file the oracle can
+    // open, so this one is the real container.
+    const PsdExportResult psd = writeLayeredPsd(doc);
+    if (!psd.ok) {
+      std::printf("  psd-tools dump REFUSED: %s\n", psd.error.c_str());
+      return ok;
+    }
+    const std::vector<uint8_t>& bytes = psd.bytes;
     std::ofstream out(dumpPath, std::ios::binary);
     out.write(reinterpret_cast<const char*>(bytes.data()),
               static_cast<std::streamsize>(bytes.size()));

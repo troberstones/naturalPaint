@@ -45,6 +45,9 @@ namespace np {
 // Writes `outPath` (a PSD) and `outPath + ".png"` (the independent reference)
 // from one synthesised document, prints what was written and any warnings, and
 // returns 0 on success or 1 on any refusal.
-int runPsdExportDemo(const char* outPath);
+// `layered` selects `writeLayeredPsd()` over `writeFlattenedPsd()` -- the same
+// fixture through both tiers, so a difference between the two files is a
+// difference in the writers rather than in what was written.
+int runPsdExportDemo(const char* outPath, bool layered);
 
 }  // namespace np

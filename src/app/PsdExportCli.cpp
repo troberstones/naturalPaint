@@ -76,14 +76,17 @@ void printWarnings(const char* what, const std::vector<std::string>& warnings) {
 
 }  // namespace
 
-int runPsdExportDemo(const char* outPath) {
+int runPsdExportDemo(const char* outPath, bool layered) {
   const std::string psdPath = outPath;
   const std::string pngPath = psdPath + ".png";
 
   const Document doc = buildFixture();
-  std::printf("--psd-export: %dx%d, %zu layers\n", doc.width, doc.height, doc.layers.size());
+  std::printf("--psd-export%s: %dx%d, %zu layers\n", layered ? " (layered)" : "", doc.width,
+              doc.height, doc.layers.size());
 
-  const PsdExportResult psd = writeFlattenedPsd(doc);
+  // Both tiers from one fixture, so a difference between the two files is a
+  // difference in the writers and not in what was written.
+  const PsdExportResult psd = layered ? writeLayeredPsd(doc) : writeFlattenedPsd(doc);
   if (!psd.ok) {
     std::fprintf(stderr, "--psd-export: refused: %s\n", psd.error.c_str());
     return 1;
