@@ -152,6 +152,7 @@ add_executable(naturalPaint
   app/selftest/ImageDecode.cpp
   app/selftest/ImageIO.cpp
   app/selftest/IncrementalComposite.cpp
+  app/selftest/Inpaint.cpp
   app/selftest/Keymap.cpp
   app/selftest/LayerComp.cpp
   app/selftest/LayerEditor.cpp
@@ -364,6 +365,7 @@ add_executable(naturalPaint
   ops/Filters.cpp
   ops/FloodFill.cpp
   ops/Gradient.cpp
+  ops/Inpaint.cpp
   ops/MonoOps.cpp
   ops/PointOpTiles.cpp
   ops/PointOps.cpp

@@ -982,6 +982,27 @@ bool runFiltersTest();
 // on both axes at once. Also headless and GPU-free.
 bool runFiltersExtTest();
 
+// ops/Inpaint and Filter > Inpaint (PLAN.md "Phase 8 -- Repair it"; PRD D7's
+// first half, the diffusion one). Headless and GPU-free.
+//
+// **The section exists for one inversion.** Every other pixel op here treats
+// the selection as a BOUND on where a result is blended; inpaint treats it as
+// the HOLE, reads only what is outside it, and refuses an empty one by name
+// rather than running over everything. Getting that backwards produces no
+// crash and no obviously wrong pixel -- it produces a filter that erases the
+// layer, or one that does nothing -- so the inversion is asserted from both
+// ends: a null `Selection*` is refused instead of being read as "no
+// restriction", and two documents differing ONLY inside the hole fill
+// bit-identically.
+//
+// The arithmetic is not re-derived against a second implementation of itself.
+// What is asserted are the properties it was chosen for: every filled texel
+// inside the convex hull of what it read (so the premultiplied invariant
+// survives and no clamp is hiding an overshoot), a constant field filling with
+// exactly that constant to the f16 store's own floor, and a horizontal ramp
+// filling as a monotone ramp rather than as a puddle of its rim's mean.
+bool runInpaintTest();
+
 // core/SelectionMask (PLAN.md "Phase 7 -- Select and paste"; PRD E1, E2, M1).
 // The antialiased coverage store, its constructors, and PRD M1's
 // coverage-weighted clear. Headless and GPU-free -- pure CPU tile arithmetic.

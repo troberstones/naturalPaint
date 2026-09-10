@@ -135,6 +135,50 @@ FilterOpResult applyMotionBlur(OpenDocument& doc, const MotionBlurParams& params
   return applyPixelFilter(doc, motionBlurTiles, params, "motion blur");
 }
 
+namespace {
+
+// **The one expression in this build that fills in `InpaintParams::hole`.**
+// app/FilterOps.hpp's inpaint section says why it is one and not two: the
+// engine's hole and `compositeFilterResult()`'s selection have to be the same
+// object, and the only way to guarantee that is for nothing outside this file
+// to be able to name either.
+//
+// `doc.selection` is `std::optional<Selection>`, and `nullptr` here is the
+// no-selection case -- which `inpaintParamsValid()` refuses, rather than
+// reading it as core/SelectionMask.hpp's usual "no restriction". That
+// inversion is ops/Inpaint.hpp's entire first section and the reason this
+// conversion is written out rather than inlined at two call sites.
+InpaintParams inpaintParamsFor(const OpenDocument& doc, int32_t radius) {
+  InpaintParams params;
+  params.hole = doc.selection.has_value() ? &*doc.selection : nullptr;
+  params.radius = radius;
+  return params;
+}
+
+}  // namespace
+
+PixelOpRefusal inpaintRefusal(const OpenDocument& doc) {
+  // Layer first: a locked layer with no selection refuses for the lock. See
+  // app/FilterOps.hpp on why that ordering, and not the other one.
+  const PixelOpRefusal layer = pixelOpRefusalFor(activeLayerOf(doc));
+  if (layer != PixelOpRefusal::None) return layer;
+  // Only the *hole* half of `inpaintParamsValid()` is a `NoSelection`: a
+  // radius outside `[1, kInpaintMaxRadius]` is a caller bug, not something a
+  // user can fix by selecting differently, and it is already refused by the
+  // engine (which returns false, which the bridge reports as a zero-texel
+  // no-op) exactly as an invalid sigma is.
+  const Selection* hole = doc.selection.has_value() ? &*doc.selection : nullptr;
+  if (hole == nullptr || selectionSelectsNothing(*hole)) return PixelOpRefusal::NoSelection;
+  return PixelOpRefusal::None;
+}
+
+FilterOpResult applyInpaint(OpenDocument& doc, int32_t radius) {
+  FilterOpResult result;
+  result.refusal = inpaintRefusal(doc);
+  if (result.refusal != PixelOpRefusal::None) return result;
+  return applyPixelFilter(doc, inpaintTiles, inpaintParamsFor(doc, radius), "inpaint");
+}
+
 // See this header's own comment on `previewX()`: each one below is
 // `applyX()`'s params-building preamble, feeding `computePixelFilter()`
 // instead of `applyPixelFilter()` -- same engine, same params construction,
@@ -175,6 +219,17 @@ FilterOpResult previewMedian(const OpenDocument& doc, const MedianParams& params
 FilterOpResult previewMotionBlur(const OpenDocument& doc, const MotionBlurParams& params,
                                  TileStore* previewOut) {
   return computePixelFilter(doc, motionBlurTiles, params, previewOut);
+}
+
+FilterOpResult previewInpaint(const OpenDocument& doc, int32_t radius, TileStore* previewOut) {
+  // The same refusal preamble `applyInpaint()` runs, then the same engine
+  // with the same params built by the same function -- which is what makes
+  // "the preview and the commit computed different answers" a thing that
+  // would have to be introduced on purpose.
+  FilterOpResult result;
+  result.refusal = inpaintRefusal(doc);
+  if (result.refusal != PixelOpRefusal::None) return result;
+  return computePixelFilter(doc, inpaintTiles, inpaintParamsFor(doc, radius), previewOut);
 }
 
 DocumentOpOutcome applyImageSize(OpenDocument& doc, uint32_t width, uint32_t height,

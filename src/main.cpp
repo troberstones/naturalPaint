@@ -2558,6 +2558,12 @@ int main(int argc, char** argv) {
     // runFiltersExtTest() for the shape of the argument. Also headless and
     // GPU-free.
     const bool filtersExtOk = np::runFiltersExtTest();
+    // PLAN.md "Phase 8 -- Repair it" (PRD D7, first half): ops/Inpaint's
+    // diffusion fill and the Filter > Inpaint command. The one op here whose
+    // selection is the HOLE rather than a bound on the result -- see
+    // app/SelfTest.hpp's comment on runInpaintTest() for why that inversion is
+    // asserted from both ends. Also headless and GPU-free.
+    const bool inpaintOk = np::runInpaintTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD E1, E2, M1): core/SelectionMask's
     // uint8 coverage store, its antialiased rectangle constructor, and the
     // coverage-weighted clear. Also headless and GPU-free -- pure CPU tile
@@ -3568,7 +3574,7 @@ int main(int argc, char** argv) {
                     gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
                     textShaperOk && vectorLayerOk && textContentOk &&
                     transformPreviewTextureOk &&
-                    transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && curveEditOk &&
+                    transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && inpaintOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
                     multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk &&
                     userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
