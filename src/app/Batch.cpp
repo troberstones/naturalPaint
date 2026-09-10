@@ -72,6 +72,25 @@ constexpr PixelUnitParam kPixelUnitParams[] = {
     {"filter_median", "radius"},       {"filter_motion_blur", "radius"},
     {"filter_emboss", "dx"},           {"filter_emboss", "dy"},
     {"fill_with_pattern", "origin_x"}, {"fill_with_pattern", "origin_y"},
+    // PRD E4/E8/E9's refines. **These three were added at gather, by the
+    // second direction of the table's own registry check going red**: they
+    // were registered on a different branch after this table was written, and
+    // `select_grow` advertising a `radius` this table did not list was
+    // reported by name. That is the direction working -- a new command reusing
+    // one of these parameter names is treated as resolution-independent until
+    // somebody decides otherwise, and the decision is forced rather than
+    // defaulted.
+    //
+    // They are pixel units for the obvious reason: growing a selection by four
+    // pixels on a 2k plate is a different selection on an 8k one.
+    //
+    // `select_colour_range` and `select_luminance_range` are deliberately NOT
+    // here. Their `tolerance`, `low`, `high` and `edge_band` are in colour and
+    // luminance value space -- `edgeBand` is clamped to `tolerance` at the
+    // applier, which is the tell -- and a value-space threshold means the same
+    // thing at every resolution.
+    {"select_grow", "radius"},         {"select_shrink", "radius"},
+    {"select_feather", "radius"},
 };
 
 // "filter_gaussian_blur's sigma" for every pixel-unit parameter `action`
