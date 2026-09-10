@@ -232,6 +232,90 @@ FilterOpResult previewInpaint(const OpenDocument& doc, int32_t radius, TileStore
   return computePixelFilter(doc, inpaintTiles, inpaintParamsFor(doc, radius), previewOut);
 }
 
+// --------------------------------------------------------------------------
+// PRD D8: the two make-tileable ops
+// --------------------------------------------------------------------------
+
+namespace {
+
+// The canvas, which is what both of D8's ops need and neither engine can
+// infer -- `ops/Filters.hpp` section 4's wrap modulus and section 10's
+// statistics population. One function so the two ops cannot come to disagree
+// about what "the document" means.
+PixelRect canvasRectOf(const OpenDocument& doc) noexcept {
+  return PixelRect{0, 0, doc.document.width, doc.document.height};
+}
+
+// Built once and used by both the preview and the commit of each op, for the
+// reason app/FilterOps.hpp's `previewX()` section gives: a second copy of the
+// params construction is how the two end up filtering with different numbers.
+LightingGradientParams lightingGradientParamsFor(const OpenDocument& doc, float sigma) {
+  LightingGradientParams params;
+  params.sigma = sigma;
+  params.statsRect = canvasRectOf(doc);
+  return params;
+}
+
+OffsetParams offsetParamsFor(const OpenDocument& doc, const OffsetRequest& request) {
+  OffsetParams params;
+  params.dx = request.dx;
+  params.dy = request.dy;
+  params.edge = request.edge;
+  params.wrapRect = canvasRectOf(doc);
+  return params;
+}
+
+}  // namespace
+
+FilterOpResult applyRemoveLightingGradient(OpenDocument& doc, float sigma) {
+  return applyPixelFilter(doc, removeLightingGradientTiles,
+                          lightingGradientParamsFor(doc, sigma), "remove lighting gradient");
+}
+
+FilterOpResult previewRemoveLightingGradient(const OpenDocument& doc, float sigma,
+                                             TileStore* previewOut) {
+  return computePixelFilter(doc, removeLightingGradientTiles,
+                            lightingGradientParamsFor(doc, sigma), previewOut);
+}
+
+PixelCoord offsetByHalf(const OpenDocument& doc) noexcept {
+  // `/ 2` on a non-negative extent, which is floor -- and the extent is
+  // unsigned in the document, so there is no negative case for C's
+  // round-toward-zero to differ on. Whole texels, because the op is an
+  // addressing change: see this function's header comment.
+  return PixelCoord{static_cast<int32_t>(doc.document.width / 2),
+                    static_cast<int32_t>(doc.document.height / 2)};
+}
+
+PixelOpRefusal offsetRefusalFor(const OpenDocument& doc) noexcept {
+  // The layer-shaped question first, the same one `computePixelFilter()` will
+  // ask again on the way in -- asked here so the selection answer below can
+  // never pre-empt "there is no layer at all", which has no fix a deselect
+  // would help with.
+  const PixelOpRefusal layer = pixelOpRefusalFor(activeLayerOf(doc));
+  if (layer != PixelOpRefusal::None) return layer;
+  if (doc.selection.has_value()) return PixelOpRefusal::SelectionActive;
+  return PixelOpRefusal::None;
+}
+
+FilterOpResult applyOffset(OpenDocument& doc, const OffsetRequest& request) {
+  FilterOpResult result;
+  result.refusal = offsetRefusalFor(doc);
+  if (result.refusal != PixelOpRefusal::None) return result;
+  return applyPixelFilter(doc, offsetTiles, offsetParamsFor(doc, request), "offset");
+}
+
+FilterOpResult previewOffset(const OpenDocument& doc, const OffsetRequest& request,
+                             TileStore* previewOut) {
+  // The preview refuses on exactly the same question the commit does, rather
+  // than quietly showing a torn document the button would then decline to
+  // produce.
+  FilterOpResult result;
+  result.refusal = offsetRefusalFor(doc);
+  if (result.refusal != PixelOpRefusal::None) return result;
+  return computePixelFilter(doc, offsetTiles, offsetParamsFor(doc, request), previewOut);
+}
+
 DocumentOpOutcome applyImageSize(OpenDocument& doc, uint32_t width, uint32_t height,
                                  ResampleKernel kernel) {
   DocumentTransformParams params;

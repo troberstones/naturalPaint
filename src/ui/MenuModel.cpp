@@ -215,6 +215,11 @@ const MenuItemSpec* specTable() {
     // No key equivalent: `docs/shortcuts.md` assigns none, and claiming a
     // chord from a native menu consumes it before SDL sees it.
     set(MenuAction::Inpaint, "Inpaint...", "");
+    // PRD D8's two. No key equivalents: `docs/shortcuts.md` assigns neither,
+    // and a native menu item does not merely display a chord, it consumes it
+    // before SDL sees it -- not a thing to claim speculatively.
+    set(MenuAction::RemoveLightingGradient, "Remove Lighting Gradient...", "");
+    set(MenuAction::Offset, "Offset...", "");
 
     // --- Image ----------------------------------------------------------
     set(MenuAction::ImageSize, "Image Size...", "");
@@ -468,6 +473,8 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::Median: return "Median";
     case MenuAction::MotionBlur: return "MotionBlur";
     case MenuAction::Inpaint: return "Inpaint";
+    case MenuAction::RemoveLightingGradient: return "RemoveLightingGradient";
+    case MenuAction::Offset: return "Offset";
     case MenuAction::ImageSize: return "ImageSize";
     case MenuAction::CanvasSize: return "CanvasSize";
     case MenuAction::CropToSelection: return "CropToSelection";
@@ -546,6 +553,9 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     case MenuAction::Median:
     case MenuAction::MotionBlur:
     case MenuAction::Inpaint:
+    // PRD D8's two, for the identical reason -- each opens a modal.
+    case MenuAction::RemoveLightingGradient:
+    case MenuAction::Offset:
     case MenuAction::ImageSize:
     case MenuAction::CanvasSize:
     // Image > Adjustments' four dialogs, for the identical reason: opening one
@@ -967,6 +977,14 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
       }
       flt.push_back(std::move(n));
     }
+    // PRD D8's pair, set apart from the eight above because they are a
+    // workflow rather than a taste: docs/operations.md:275 lists offset,
+    // patch and heal as one sequence, and lighting-gradient removal is the
+    // step PRD.md:208 says has to come before any of it. Removal first, in
+    // the order the work is done.
+    flt.push_back(separator());
+    flt.push_back(filterItem(MenuAction::RemoveLightingGradient));
+    flt.push_back(filterItem(MenuAction::Offset));
     bar.push_back(std::move(filter));
   }
 

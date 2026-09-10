@@ -327,6 +327,98 @@ FilterOpResult previewMotionBlur(const OpenDocument& doc, const MotionBlurParams
 // through `computePixelFilter()`, so the preview and the commit cannot pick
 // different holes.
 FilterOpResult previewInpaint(const OpenDocument& doc, int32_t radius, TileStore* previewOut);
+// ==========================================================================
+// PRD D8 / PLAN.md phase 9 -- the two make-tileable pixel ops
+// ==========================================================================
+//
+// PRD D8 asks for four pieces: "lighting-gradient removal, offset, seam heal,
+// and a 3x3 repeat preview". These are the two that are pixel ops on the
+// active layer, and they are wired through the identical
+// `applyPixelFilter()`/`computePixelFilter()` pair as everything above --
+// same refusal vocabulary, same whole-canvas-then-composite shape, same
+// preview-and-commit-share-one-implementation argument. Seam heal and the
+// repeat preview are not here and are not stubbed: `ui/MenuModel.hpp`'s own
+// rule is that an operation with no engine behind it stays out of the menu.
+//
+// **Both need a rectangle the engine cannot infer**, and it is the same
+// rectangle for a different reason each time: `ops/Filters.hpp` section 4's
+// wrap needs a modulus and section 10's re-centring needs a population. Both
+// are the canvas, and this file is where "the canvas" is known -- which is
+// exactly the knowledge `ops/` is kept free of.
+
+// PRD D8's first piece: divide by a heavily blurred copy and re-centre the
+// mean (PLAN.md:511), through `ops/Filters.hpp`'s `removeLightingGradient
+// Tiles()`. `sigma` is the dialog's own field, in document texels, and the
+// statistics rectangle is the canvas.
+//
+// **A sigma of 0 is refused by the engine, not treated as the identity** --
+// section 10 says why at length (at sigma 0 the divide flattens the layer to
+// a single colour), and this is the one op in the Filter menu where the
+// dialog's slider must not reach its own left end. `FilterOpResult` reports
+// that as a zero-texel no-op, the same as any other request the engine could
+// not honour.
+//
+// The selection bounds this op exactly as it bounds every filter above, and
+// that is meaningful here rather than merely inherited: removing the lighting
+// gradient from one marked region of a photograph is an ordinary retouching
+// request. Compare `applyOffset()` below, which refuses under a selection for
+// the opposite reason.
+FilterOpResult applyRemoveLightingGradient(OpenDocument& doc, float sigma);
+FilterOpResult previewRemoveLightingGradient(const OpenDocument& doc, float sigma,
+                                             TileStore* previewOut);
+
+// PRD D5/D8's offset, `docs/operations.md:117`'s class B, P1, "free -- an
+// addressing change, no filtering". What the dialog collects; the wrap
+// rectangle is not in here because the canvas is not the dialog's to know.
+struct OffsetRequest {
+  int32_t dx = 0;
+  int32_t dy = 0;
+  OffsetEdge edge = OffsetEdge::Wrap;
+};
+
+// The canonical make-tileable gesture: offset by half the canvas, which puts
+// the four corners in the middle where the seam can be seen and healed.
+//
+// **Exactly `floor(w/2)`, `floor(h/2)`, in whole texels**, which is the whole
+// point of the op being an addressing change: an offset that resampled -- by
+// half a texel on an odd-sized canvas, say, or through a transform's filter
+// -- would soften every texel in the document on the way to fixing a seam,
+// and would do it twice for a user who offsets back. Integer division of a
+// non-negative extent is floor, and the extent is `uint32_t` in the document,
+// so this cannot pick up C's round-toward-zero anywhere.
+PixelCoord offsetByHalf(const OpenDocument& doc) noexcept;
+
+// Why an offset cannot run, or `None`.
+//
+// **The layer-shaped refusals first**, from `pixelOpRefusalFor()`, exactly as
+// every other op here asks them -- then the one this op has that no filter
+// above does: `PixelOpRefusal::SelectionActive`.
+//
+// **The decision, stated rather than left to the composite.** Every filter
+// above is bounded by the selection because "sharpen this region" is a
+// request with an obvious meaning. "Offset this region" is not one. Run
+// through the same machinery, an offset under a selection composites the
+// wrapped picture back only inside the marquee and leaves the rest where it
+// was -- a torn document, with the seam the op exists to remove now drawn
+// around the selection instead of down the middle. The alternatives are to
+// silently ignore the selection (an op that quietly does not honour a
+// marquee the user drew, in a menu where six of its neighbours do) or to
+// wrap within the selection's own bounds (Photoshop's answer, and a fourth
+// meaning of "wrap" in one build). So it refuses, and the message says so.
+//
+// A selection that is *present* is enough; its coverage is not inspected.
+// Select All is indistinguishable from no selection in its effect and would
+// be safe to allow, but "is this selection equivalent to none" is a question
+// with a soft-edged answer, and one sentence with one fix in it ("deselect
+// first") is worth more than a rule the user has to model.
+PixelOpRefusal offsetRefusalFor(const OpenDocument& doc) noexcept;
+
+// PRD D8's second piece, through `ops/Filters.hpp`'s `offsetTiles()`, with
+// `OffsetParams::wrapRect` set to the canvas. Refuses per
+// `offsetRefusalFor()` above before the engine is asked for anything.
+FilterOpResult applyOffset(OpenDocument& doc, const OffsetRequest& request);
+FilterOpResult previewOffset(const OpenDocument& doc, const OffsetRequest& request,
+                             TileStore* previewOut);
 
 // What one Image-menu document op did. `error` is `ops/DocumentTransform`'s
 // own message (naming the extent or the layer count that refused it) and is

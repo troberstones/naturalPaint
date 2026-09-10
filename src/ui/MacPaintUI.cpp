@@ -8416,6 +8416,11 @@ enum class FilterPreviewOwner {
   Median,
   MotionBlur,
   Inpaint,
+  // PRD D8's two make-tileable ops, sharing the machinery for the same
+  // reason the adjustments below do: one preview at a time, owned by
+  // whichever modal is open.
+  RemoveLightingGradient,
+  Offset,
   // Image > Adjustments' four dialogs (app/AdjustmentOps). They share this
   // enum with the Filter menu's seven rather than getting a parallel one,
   // because they share the machinery it identifies: one preview at a time,
@@ -8656,6 +8661,8 @@ bool g_embossRequested = false;
 bool g_medianRequested = false;
 bool g_motionBlurRequested = false;
 bool g_inpaintRequested = false;
+bool g_removeLightingGradientRequested = false;
+bool g_offsetRequested = false;
 
 void drawGaussianBlurDialog(AppState& st) {
   static float sigma = 8.0f;  // texels; ops/Blur.hpp's own worked examples use this
@@ -9206,6 +9213,160 @@ void drawInpaintDialog(AppState& st) {
       status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "inpaint");
     } else if (r.texelsChanged == 0) {
       status = "Nothing changed -- the fill matched what was already there.";
+      ImGui::CloseCurrentPopup();
+    } else {
+      status.clear();
+      ImGui::CloseCurrentPopup();
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  if (!status.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    ImGui::TextWrapped("%s", status.c_str());
+    ImGui::PopStyleColor();
+  }
+  ImGui::EndPopup();
+}
+
+// ===========================================================================
+// PRD D8 (PLAN.md phase 9 "Tile it"): the two make-tileable dialogs
+// ===========================================================================
+//
+// Same request-flag / popup / preview-on-release shape as the seven filter
+// dialogs above -- their `IsItemDeactivatedAfterEdit()` discipline and their
+// Cancel-clears-the-preview behaviour are `drawGaussianBlurDialog()`'s
+// comments and are not re-argued here. What is different in each is stated
+// where it happens: this op's slider must not reach zero, and this one's
+// confirm button can refuse for a reason no filter above has.
+
+void drawRemoveLightingGradientDialog(AppState& st) {
+  // 64 texels: "heavily blurred" is the method's own word (PLAN.md:511) and
+  // ops/Blur.hpp's cost table puts sigma 32-200 in the mip-pyramid regime,
+  // which is exactly where a blur that holds light but no texture lives.
+  static float sigma = 64.0f;
+  static std::string status;
+  static bool wasOpen = false;
+
+  if (g_removeLightingGradientRequested) {
+    g_removeLightingGradientRequested = false;
+    status.clear();
+    ImGui::OpenPopup("Remove Lighting Gradient");
+  }
+  if (!ImGui::BeginPopupModal("Remove Lighting Gradient", nullptr,
+                              ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::RemoveLightingGradient);
+    return;
+  }
+
+  OpenDocument* od = st.documents.active();
+
+  // **Lower bound 1, not 0**, and this is the one slider in the Filter menu
+  // where that matters: ops/Filters.hpp section 10 states that at sigma 0 the
+  // divide is not the identity but the erase -- every ratio is exactly 1 and
+  // the layer flattens to a single colour. The engine refuses 0 by name; the
+  // control simply cannot ask for it.
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SliderFloat("Blur radius", &sigma, 1.0f, 256.0f, "%.0f texels",
+                     ImGuiSliderFlags_Logarithmic);
+  const bool sigmaSettled = ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::TextDisabled(
+      "Divides the layer by a heavily blurred copy and puts the mean back. Wide enough to "
+      "hold light but no texture: too narrow and it eats the texture itself.");
+
+  if (sigmaSettled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::RemoveLightingGradient,
+                        previewRemoveLightingGradient, sigma);
+  wasOpen = true;
+
+  if (ImGui::Button("Remove") && od != nullptr) {
+    const FilterOpResult r = applyRemoveLightingGradient(*od, sigma);
+    if (r.refusal != PixelOpRefusal::None) {
+      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "lighting-gradient removal");
+    } else if (r.texelsChanged == 0) {
+      status = "Nothing changed (no selected texels, or an empty layer).";
+      ImGui::CloseCurrentPopup();
+    } else {
+      status.clear();
+      ImGui::CloseCurrentPopup();
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  if (!status.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    ImGui::TextWrapped("%s", status.c_str());
+    ImGui::PopStyleColor();
+  }
+  ImGui::EndPopup();
+}
+
+void drawOffsetDialog(AppState& st) {
+  static int dx = 0;
+  static int dy = 0;
+  static bool wrap = true;
+  static std::string status;
+  static bool wasOpen = false;
+
+  if (g_offsetRequested) {
+    g_offsetRequested = false;
+    status.clear();
+    ImGui::OpenPopup("Offset");
+  }
+  if (!ImGui::BeginPopupModal("Offset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::Offset);
+    return;
+  }
+
+  OpenDocument* od = st.documents.active();
+
+  ImGui::SetNextItemWidth(120.0f);
+  bool paramsChanged = ImGui::InputInt("Horizontal", &dx);
+  ImGui::SetNextItemWidth(120.0f);
+  paramsChanged |= ImGui::InputInt("Vertical", &dy);
+
+  // The canonical make-tileable gesture, one click: `offsetByHalf()` is the
+  // same function --selftest asserts lands on floor(w/2), floor(h/2), rather
+  // than a second `/2` typed into a dialog.
+  if (ImGui::Button("By Half") && od != nullptr) {
+    const PixelCoord half = offsetByHalf(*od);
+    dx = static_cast<int>(half.x);
+    dy = static_cast<int>(half.y);
+    paramsChanged = true;
+  }
+  ImGui::SameLine();
+  paramsChanged |= ImGui::Checkbox("Wrap around", &wrap);
+  ImGui::TextDisabled(
+      "Whole texels only -- an offset is an addressing change, so nothing here resamples. "
+      "By Half puts the four corners in the middle, where the seam can be seen.");
+
+  const OffsetRequest request{dx, dy, wrap ? OffsetEdge::Wrap : OffsetEdge::Transparent};
+
+  // The refusal is shown BEFORE the button is pressed, unlike every filter
+  // dialog above. Those refuse on a property of the layer, which the LAYERS
+  // panel is already showing; this one refuses on a selection the user drew
+  // deliberately and would otherwise watch produce an empty preview with no
+  // explanation until they clicked Offset.
+  const PixelOpRefusal standing =
+      od != nullptr ? offsetRefusalFor(*od) : PixelOpRefusal::NoLayer;
+  if (standing == PixelOpRefusal::SelectionActive) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    ImGui::TextWrapped("%s", pixelOpRefusalMessage(standing, activeLayerOf(*od), "offset").c_str());
+    ImGui::PopStyleColor();
+  }
+
+  if (paramsChanged || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::Offset, previewOffset, request);
+  wasOpen = true;
+
+  if (ImGui::Button("Offset") && od != nullptr) {
+    const FilterOpResult r = applyOffset(*od, request);
+    if (r.refusal != PixelOpRefusal::None) {
+      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "offset");
+    } else if (r.texelsChanged == 0) {
+      status = "Nothing changed (an offset of zero, or an empty layer).";
       ImGui::CloseCurrentPopup();
     } else {
       status.clear();
@@ -11350,6 +11511,9 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     case MenuAction::Median:       g_medianRequested = true;       break;
     case MenuAction::MotionBlur:   g_motionBlurRequested = true;   break;
     case MenuAction::Inpaint:      g_inpaintRequested = true;      break;
+    // PRD D8's two.
+    case MenuAction::RemoveLightingGradient: g_removeLightingGradientRequested = true; break;
+    case MenuAction::Offset:                 g_offsetRequested = true;                 break;
 
     // --- Image ----------------------------------------------------------
     case MenuAction::ImageSize:  g_imageSizeRequested = true;  break;
@@ -13758,6 +13922,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   drawMedianDialog(st);
   drawMotionBlurDialog(st);
   drawInpaintDialog(st);
+  // PRD D8 (PLAN.md phase 9): lighting-gradient removal and offset, the two
+  // make-tileable pixel ops, same placement rule again.
+  drawRemoveLightingGradientDialog(st);
+  drawOffsetDialog(st);
   drawAdjustmentDialogs(st);
   drawImageSizeDialog(st);
   drawCanvasSizeDialog(st);

@@ -898,6 +898,16 @@ std::string pixelOpRefusalMessage(PixelOpRefusal reason, const Layer* target,
       return "no selection: the " + op +
              " fills the SELECTED texels from what surrounds them, so it needs a marquee "
              "over the damage. Select the scratch on the canvas.";
+    case PixelOpRefusal::SelectionActive:
+      // Names neither the layer nor its kind, because neither is the problem:
+      // this refusal is about the document's selection and the fix is one
+      // command away. `Cmd+D` is spelled out because the menu item's own
+      // label ("Deselect") is what the user has to find, and a sentence that
+      // said only "a selection is active" would leave them looking for a
+      // setting on the op instead.
+      return "the " + op +
+             " moves the whole layer, so a selection cannot bound it. Deselect first "
+             "(Select > Deselect, Cmd+D).";
   }
   return {};
 }

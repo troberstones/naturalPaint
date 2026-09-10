@@ -3449,6 +3449,14 @@ int main(int argc, char** argv) {
     // See SelfTest.hpp for why this section deliberately re-tests neither the
     // maths nor the selection blend. Headless and GPU-free.
     const bool adjustmentMenuOk = np::runAdjustmentMenuTest();
+    // PRD D8 / PLAN.md phase 9: lighting-gradient removal and offset with
+    // wrap, the two make-tileable pixel ops, through the same
+    // app/PixelOpBridge.hpp templates the Filter menu already runs on. Proves
+    // what is new -- that the light comes out, that the mean is put back,
+    // that the mean's rectangle is not the request's, that an offset copies
+    // rather than filters, and that an offset refuses a selection out loud.
+    // Headless and GPU-free.
+    const bool tileableOk = np::runTileableTest();
     // Reachability audit A5/B2/B3: the BRUSH panel's shared-field ranges, the
     // WET slider's route-dependent disabled state, and the loaded pigment's
     // ownership of Density/Staining/Granulation. Headless -- no ImGui frame,
@@ -3615,7 +3623,8 @@ int main(int argc, char** argv) {
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk && pigmentPanelOk &&
-                    openAnyFileOk && psdImportOk && filterMenuOk && adjustmentMenuOk && selectMenuOk &&
+                    openAnyFileOk && psdImportOk && filterMenuOk && adjustmentMenuOk && tileableOk &&
+                    selectMenuOk &&
                     chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk && canvasDimensionsOk &&
                     angleConventionOk && wheelInputOk && touchGestureOk && touchGestureSessionOk && pressureFeelOk
                     && transferDynamicsOk && toolOptionsBlendOk &&

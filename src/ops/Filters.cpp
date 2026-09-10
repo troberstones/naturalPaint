@@ -924,4 +924,155 @@ bool motionBlurTiles(const TileStore& src, const PixelRect& outRect, const Motio
   return true;
 }
 
+// ==========================================================================
+// 10. Lighting-gradient removal
+// ==========================================================================
+
+namespace {
+
+// The divided field at one texel, before re-centring: source over the
+// STRAIGHT blurred colour, per channel, premultiplied in and premultiplied
+// out (scaling a premultiplied triple is scaling its straight colour).
+//
+// **One function, called by both passes**, for `offsetSourceTexel()`'s
+// reason one section up: the re-centring constant is `sum(src)/sum(ratio)`,
+// so the sum and the write have to be summing and writing the SAME quantity
+// or the mean it restores is the mean of something else. A second copy of
+// these six lines would make the exactness of the preserved mean depend on
+// two functions agreeing, including in their guard cases.
+std::array<float, 3> lightingRatio(const std::array<float, 4>& s,
+                                   const std::array<float, 4>& b) noexcept {
+  // The pass-through answer, which is also the answer for every guard below:
+  // where the blurred copy carries no illumination estimate there is nothing
+  // to divide out, and the source texel is already the best available result.
+  std::array<float, 3> r{s[0], s[1], s[2]};
+  if (!(b[3] > kLightingGradientFloor)) return r;
+  const float invA = 1.0f / b[3];
+  for (size_t c = 0; c < 3; ++c) {
+    const float straight = b[c] * invA;
+    if (!(straight > kLightingGradientFloor)) continue;
+    r[c] = s[c] / straight;
+  }
+  return r;
+}
+
+// `k_c = sum(src_c) / sum(ratio_c)` over `statsRect`, from a plane that has
+// already been gathered and blurred.
+//
+// Accumulated in `double` for the reason this file's box blur keeps its
+// running sum in one: the error of an f32 accumulation grows with the number
+// of terms, and the number of terms here is the canvas -- a figure that grows
+// without bound as documents get larger while the store's own error floor
+// does not move. One pair of scalars per channel removes the question.
+//
+// Walked tile by tile in a fixed order rather than texel by texel through
+// `src.find()`, which would be one hash lookup per texel; the order is
+// deterministic, which matters because a float sum is not associative and
+// this constant must not depend on how the work was scheduled.
+std::array<float, 3> recentreFromPlane(const TileStore& src, const std::vector<float>& plane,
+                                       const PixelRect& need, const PixelRect& statsRect) {
+  double sumSrc[3] = {0.0, 0.0, 0.0};
+  double sumRatio[3] = {0.0, 0.0, 0.0};
+  const TileRange tiles = roiTileRange(statsRect);
+  for (int32_t ty = tiles.y0; ty < tiles.y1; ++ty) {
+    for (int32_t tx = tiles.x0; tx < tiles.x1; ++tx) {
+      const TileCoord coord{tx, ty};
+      const PixelRect span = roiIntersect(roiTileRect(coord), statsRect);
+      if (roiIsEmpty(span)) continue;
+      // An absent tile is transparent black, whose ratio is transparent black
+      // too -- it contributes nothing to either sum, so it needs no case of
+      // its own beyond not reading it.
+      const Tile* tile = src.find(coord);
+      if (tile == nullptr) continue;
+      const PixelCoord origin = tileOrigin(coord);
+      for (int32_t y = span.y0; y < span.y1; ++y) {
+        for (int32_t x = span.x0; x < span.x1; ++x) {
+          const std::array<float, 4> s = tile->readPixel(PixelCoord{x - origin.x, y - origin.y});
+          const std::array<float, 3> r = lightingRatio(s, planeTexel(plane, need, x, y));
+          for (size_t c = 0; c < 3; ++c) {
+            sumSrc[c] += static_cast<double>(s[c]);
+            sumRatio[c] += static_cast<double>(r[c]);
+          }
+        }
+      }
+    }
+  }
+
+  std::array<float, 3> k{1.0f, 1.0f, 1.0f};
+  for (size_t c = 0; c < 3; ++c) {
+    // A channel whose divided field summed to nothing (an empty rectangle, a
+    // fully transparent one, a channel that is zero everywhere) has no mean
+    // to restore. 1.0 leaves the divide's own answer standing rather than
+    // producing an inf that a clamp would then turn into the brightest value
+    // the format has.
+    if (sumRatio[c] > 0.0) k[c] = static_cast<float>(sumSrc[c] / sumRatio[c]);
+  }
+  return k;
+}
+
+}  // namespace
+
+bool lightingGradientParamsValid(const LightingGradientParams& p) noexcept {
+  // Strictly positive, unlike every other strength in this file -- sigma 0 is
+  // the erase, not the identity. ops/Filters.hpp section 10 argues it out.
+  if (!std::isfinite(p.sigma) || !(p.sigma > 0.0f)) return false;
+  if (roiIsEmpty(p.statsRect)) return false;
+  return true;
+}
+
+BlurParams lightingGradientBlur(const LightingGradientParams& p) noexcept {
+  BlurParams b;
+  b.kind = BlurKind::Gaussian;
+  b.sigma = p.sigma;
+  return b;
+}
+
+RoiOp lightingGradientRoiOp(const LightingGradientParams& p) noexcept {
+  return blurRoiOp(lightingGradientBlur(p));
+}
+
+std::array<float, 3> lightingGradientRecentre(const TileStore& src,
+                                              const LightingGradientParams& p) {
+  if (!lightingGradientParamsValid(p)) return {1.0f, 1.0f, 1.0f};
+  PixelRect need{};
+  std::vector<float> plane;
+  if (!gatherBlurredPlane(src, p.statsRect, lightingGradientBlur(p), &need, &plane))
+    return {1.0f, 1.0f, 1.0f};
+  return recentreFromPlane(src, plane, need, p.statsRect);
+}
+
+bool removeLightingGradientTiles(const TileStore& src, const PixelRect& outRect,
+                                 const LightingGradientParams& p, TileStore* dst) {
+  // Refused by name, matching `blurTiles()` and every op above one for one.
+  if (dst == nullptr || dst == &src) return false;
+  if (!lightingGradientParamsValid(p)) return false;
+  if (roiIsEmpty(outRect)) return false;
+
+  // **The union, not `outRect`.** The write needs the blurred copy over
+  // `outRect`; the re-centring constant needs it over `statsRect`. Gathering
+  // and blurring their union once is what makes `k` a function of `statsRect`
+  // alone -- the property ops/Filters.hpp section 10 says the whole parameter
+  // exists for. In the ordinary call, where `statsRect` IS the canvas and
+  // `outRect` is the same rectangle or a piece of it, the union is the canvas
+  // and this costs nothing extra.
+  PixelRect need{};
+  std::vector<float> plane;
+  if (!gatherBlurredPlane(src, roiUnion(outRect, p.statsRect), lightingGradientBlur(p), &need,
+                          &plane))
+    return false;
+
+  const std::array<float, 3> k = recentreFromPlane(src, plane, need, p.statsRect);
+
+  scatterAligned(src, outRect, dst, [&](int32_t x, int32_t y, const std::array<float, 4>& s) {
+    const std::array<float, 3> r = lightingRatio(s, planeTexel(plane, need, x, y));
+    // Alpha passes through untouched: this op changes colour, not coverage.
+    // The clamp is sections 5 and 6's, for their reason -- an unbounded
+    // multiplicative gain is exactly the shape of arithmetic that overflows
+    // the half, and an inf poisons every later blur's whole apron.
+    return std::array<float, 4>{clampStorable(k[0] * r[0]), clampStorable(k[1] * r[1]),
+                                clampStorable(k[2] * r[2]), s[3]};
+  });
+  return true;
+}
+
 }  // namespace np

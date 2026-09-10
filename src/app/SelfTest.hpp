@@ -1014,6 +1014,57 @@ bool runFiltersExtTest();
 // exactly that constant to the f16 store's own floor, and a horizontal ramp
 // filling as a monotone ramp rather than as a puddle of its rim's mean.
 bool runInpaintTest();
+// ---------------------------------------------------------------------------
+// PRD D8 / PLAN.md phase 9 ("Tile it"): the two make-tileable pixel ops
+// ---------------------------------------------------------------------------
+//
+// Lighting-gradient removal (ops/Filters.hpp section 10) and offset with wrap
+// (section 4), wired to the Filter menu through app/FilterOps.hpp's
+// `applyRemoveLightingGradient()`/`applyOffset()` and their `preview*` twins.
+//
+// **Deliberately narrow, in `runAdjustmentMenuTest()`'s sense**: the blur is
+// `runBlurTest()`'s, the offset engine's own wrap arithmetic is
+// `runFiltersTest()`'s, and the selection blend, copy-on-write discipline and
+// one-entry history rule are `runFilterMenuTest()`'s, exercised through the
+// very same app/PixelOpBridge.hpp templates. What this section owns is what is
+// new:
+//
+//  A. **The light actually comes out.** A flat texture times a strong linear
+//     lighting ramp, measured in two bands four sigma clear of the canvas
+//     edge: they differ by more than 1.5x before the op and agree within 2%
+//     after it. The ramp is asserted present first, so the second assertion
+//     cannot pass by measuring a flat input.
+//  B. **The re-centred mean**, which is the step PLAN.md:511 names and a naive
+//     implementation forgets. The canvas mean after the op is within 0.2% of
+//     the mean before it; the un-re-centred field's own mean is 1.0 regardless
+//     of the input's exposure, and far from it. Both halves, so the assertion
+//     is proved sensitive rather than merely satisfied.
+//  C. **The statistics rectangle is not the request rectangle.** A request
+//     split in two is bit-identical to the same request made whole -- the seam
+//     invariant a global mean would otherwise break -- and the same half
+//     computed against its OWN mean demonstrably differs, which is the naive
+//     implementation this parameter exists to prevent.
+//  D. **Sigma 0 is the erase, not the identity**, and is refused rather than
+//     clamped: the one filter in the menu whose neutral setting is infinity.
+//     Measured, not argued -- at a near-delta sigma every texel comes out the
+//     same colour.
+//  E. **Offset is an addressing change.** Every output texel is bit-identical
+//     to the one source texel `offsetSourceTexel()` names, and offsetting by
+//     half twice returns the layer bit-identical to the original. `offsetBy
+//     Half()` floors on an odd canvas, so the canonical gesture never asks for
+//     a half-texel shift nothing could honour without resampling.
+//  F. **Offset refuses under a selection**, with `PixelOpRefusal::Selection
+//     Active` -- both the commit and the preview, leaving no history entry and
+//     no changed texel -- and succeeds on the identical request once the
+//     marquee is dropped. A locked layer under a marquee still refuses for the
+//     lock, so the layer-shaped question keeps its place at the front.
+//  G. One history entry named for the op with an exact undo, a refused sigma
+//     recording nothing, and both menu rows present, enabled by
+//     `filterLayerUsable`, `Deferred`, and labelled with the ellipsis their
+//     dialogs promise.
+//
+// Headless and GPU-free, like every ops/ section it sits beside.
+bool runTileableTest();
 
 // core/SelectionMask (PLAN.md "Phase 7 -- Select and paste"; PRD E1, E2, M1).
 // The antialiased coverage store, its constructors, and PRD M1's
