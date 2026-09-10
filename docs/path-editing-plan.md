@@ -401,8 +401,25 @@ deliberately, not swept:
   rather than only in the overlay. That is the screenshot that proves 0.1.
 
 New views: `paths_panel` (the panel over a Vector layer, verbs lit and greyed),
-`paths_panel_component` (Component mode: the ANCHOR group lit), and
-`pen_options_stroke` if the paint row needs its own crop.
+`paths_panel_component` (Component mode), and `pen_options_stroke` if the paint
+row needs its own crop.
+
+> **Both landed 2026-09-10, and the second view's premise above was wrong.**
+> `paths_panel_component` was to show "the ANCHOR group lit", on the assumption
+> that SMOOTH/CORNER/BREAK/DELETE are Component-only. They are not:
+> `app/PathOps.cpp`'s own comment makes them valid in **both** modes, Shape
+> mode meaning "every anchor of the selected shapes". Photographed,
+> `--vector-demo components` renders a PATHS panel differing from the default
+> mode's by **exactly one pixel out of 540 960** — a view that would assert
+> nothing and pass forever.
+>
+> What Component mode actually buys this panel is JOIN and INSERT, both of
+> which need exactly two anchors named individually. So the view shoots a new
+> `--vector-demo anchorpair`: two ADJACENT anchors, where INSERT lights and
+> nowhere else does. It differs from `paths_panel` by 3 254 px.
+>
+> `pen_options_stroke` was not added — the STROKE/FILL row is already inside
+> `pen_options`' crop.
 
 Per [[naturalpaint-golden-update-touches-drift]], `update <view>` also rewrites
 other within-threshold PNGs — revert the unasked ones. Per

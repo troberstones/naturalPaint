@@ -438,7 +438,8 @@ void runMaskDemo(np::OpenDocument& od, bool maskTarget) {
                   : 0);
 }
 
-// --vector-demo [components|marquee] (PLAN.md Phase 13; docs/vector-editing.md):
+// --vector-demo [components|anchorpair|marquee|pendraw] (PLAN.md Phase 13;
+// docs/vector-editing.md):
 // puts a `LayerKind::Vector` layer on the session's document, selects
 // `Tool::Pen`, and drives `app/PenTool`'s real pen-down/pen-up transitions so
 // the on-canvas path overlay can be photographed.
@@ -464,6 +465,12 @@ void runMaskDemo(np::OpenDocument& od, bool maskTarget) {
 //   components    Component mode: the same click, which in that mode selects
 //                 every anchor of the shape -- so the picture carries the
 //                 tangent handles, which are drawn for selected anchors ONLY.
+//   anchorpair    Component mode with exactly TWO ADJACENT anchors selected --
+//                 the blob's north and east. The only selection Shape mode
+//                 cannot express, and the only one that makes the PATHS panel
+//                 look different in Component mode at all (INSERT lights).
+//                 See `runVectorDemo()`'s own mode-4 comment for the measured
+//                 reason the obvious four-anchor state was not used.
 //   marquee       A marquee held open mid-drag: pen-down on empty canvas and a
 //                 move, with no pen-up. The rubber band exists only while the
 //                 pointer is down, so it is unphotographable any other way --
@@ -582,6 +589,43 @@ void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
     std::printf("[vector-demo] pendraw: %zu anchors placed, open=%d\n",
                 shapes.back().path.subpaths[0].anchors.size(),
                 static_cast<int>(np::pathEditHasOpenPath(st.pathEdit)));
+    return;
+  }
+
+  if (mode == 4) {
+    // **Two ADJACENT anchors, which is the one selection Shape mode cannot
+    // express** -- and therefore the only thing that makes a PATHS-panel
+    // photograph of Component mode differ from one of Shape mode at all.
+    //
+    // That is not what this view was originally planned to show. The plan
+    // (docs/path-editing-plan.md section 5) asked for "Component mode: the
+    // ANCHOR group lit", on the assumption that SMOOTH/CORNER/BREAK/DELETE are
+    // Component-only. They are not: `app/PathOps.cpp`'s own comment makes them
+    // valid in BOTH modes, Shape mode meaning "every anchor of the selected
+    // shapes". So `--vector-demo components` -- four anchors -- renders a PATHS
+    // panel pixel-identical to the default mode's but for ONE pixel, measured.
+    // A golden view of that would have asserted nothing and passed forever.
+    //
+    // JOIN and INSERT are what Component mode really buys: both need exactly
+    // two anchors named individually (`twoAnchorPrecondition()`). The blob's
+    // anchors sit at the compass points, so north and east are neighbours on
+    // one subpath -- INSERT's precondition exactly -- and it lights here and
+    // nowhere else. JOIN stays greyed on `NotAnEndpoint`, the subpath being
+    // closed, which is correct and is itself worth photographing.
+    np::pathEditSetSelectMode(&st.pathEdit, np::PathSelectMode::Component, shapes);
+    np::pathEditBegin(&st.pathEdit, shapes, np::PathPoint{400.0f, 190.0f}, pickTexels, false,
+                      np::SelectionCombine::Replace, od.id);
+    np::pathEditEnd(&st.pathEdit, shapes);
+    np::pathEditBegin(&st.pathEdit, shapes, np::PathPoint{590.0f, 380.0f}, pickTexels, false,
+                      np::SelectionCombine::Add, od.id);
+    np::pathEditEnd(&st.pathEdit, shapes);
+    std::printf("[vector-demo] anchorpair: %zu components selected\n",
+                st.pathEdit.selection.components.size());
+    if (st.pathEdit.selection.components.size() != 2)
+      std::fprintf(stderr,
+                   "[vector-demo] anchorpair wanted exactly two anchors and got %zu -- the "
+                   "presses missed, and INSERT will be greyed in the photograph\n",
+                   st.pathEdit.selection.components.size());
     return;
   }
 
@@ -1480,9 +1524,10 @@ int main(int argc, char** argv) {
   bool smudgeDemo = false;
   bool maskDemo = false;
   bool maskDemoTarget = true;
-  // --vector-demo [components|marquee|pendraw]: see runVectorDemo().
+  // --vector-demo [components|anchorpair|marquee|pendraw]: see runVectorDemo().
   bool vectorDemo = false;
-  int vectorDemoMode = 0;  // 0 = shape, 1 = components, 2 = marquee, 3 = pendraw
+  int vectorDemoMode = 0;  // 0 = shape, 1 = components, 2 = marquee, 3 = pendraw,
+                           // 4 = anchorpair
 
   // --text-demo [paragraph|frame]: see runTextDemo().
   bool textDemo = false;
@@ -1891,6 +1936,9 @@ int main(int argc, char** argv) {
           ++i;
         } else if (arg == "pendraw") {
           vectorDemoMode = 3;
+          ++i;
+        } else if (arg == "anchorpair") {
+          vectorDemoMode = 4;
           ++i;
         }
       }
