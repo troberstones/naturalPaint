@@ -613,7 +613,8 @@ void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
                  static_cast<double>(onSegment.x), static_cast<double>(onSegment.y));
 }
 
-// --text-demo [paragraph|newline|pointbreak|rotated|frame] (PLAN.md Phase 14;
+// --text-demo [paragraph|newline|pointbreak|emptyframe|rotated|frame] (PLAN.md
+// Phase 14;
 // PRD K1-K3): puts a
 // `LayerKind::Text` layer on the session's document, selects `Tool::Text`, and
 // drives `app/TextTool`'s real session transitions so the on-canvas text
@@ -667,6 +668,15 @@ void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
 //                 `newline` view above cannot stand in for it -- that one has
 //                 a frame, and a frame is exactly what this is proving is not
 //                 required.
+//   emptyframe    A committed paragraph frame with NOTHING TYPED IN IT, session
+//                 live -- the state a frame drag leaves behind, before the
+//                 first character. Combined with `--transform-demo` it is the
+//                 picture that Cmd+T on an empty frame produces a gizmo at
+//                 all: that was refused ("has no content -- nothing to
+//                 transform") about a box the user was looking at, because
+//                 the transform's bounds came from the INK rather than from
+//                 the frame. No other flag reaches an empty committed block --
+//                 every other mode here types something.
 //   frame         A paragraph-frame drag held open mid-gesture: pen-down on
 //                 empty canvas and a move, with no pen-up. Unphotographable
 //                 any other way, and pinned by `st.textEditDemo` for a reason
@@ -701,6 +711,7 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
       mode == 1   ? "Paragraph text wraps inside the frame it was dragged out."
       : mode == 4 ? "Return was just pressed\n"
       : mode == 5 ? "Point text\nbreaks here"
+      : mode == 6 ? ""
                   : "Handgloves",
       np::PathPoint{200.0f, 300.0f});
   text.style.sizePx = 48.0f;
@@ -715,6 +726,14 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
     // does NOT wrap, so the second line in the picture is unambiguously the
     // newline's doing and not the wrap's.
     text.frame.width = 640.0f;
+  }
+  if (mode == 6) {
+    // Both numbers set, because that is what `textEditFrameDragEnd()` writes:
+    // a frame drag records the width AND the height it was dragged to. An
+    // auto height here would photograph a different state from the one the
+    // gesture actually produces.
+    text.frame.width = 520.0f;
+    text.frame.height = 171.0f;
   }
   // mode 5 sets no frame width at all: `frame.width == 0` IS point text
   // (core/TextContent.hpp section 2), and leaving it alone is the whole
@@ -731,6 +750,7 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
   np::Layer layer = np::makeTextLayer(mode == 1   ? "Paragraph demo"
                                       : mode == 4 ? "Newline demo"
                                       : mode == 5 ? "Point break demo"
+                                      : mode == 6 ? "Empty frame demo"
                                                   : "Point text demo");
   layer.text = text;
 
@@ -755,7 +775,12 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
   // the end of the string sits just past the last glyph, which is also where a
   // caret computed from entirely the wrong glyph would land if the string were
   // measured instead of shaped.
-  if (mode == 4 || mode == 5) {
+  if (mode == 6) {
+    // Offset 0 is the only caret an empty block has. Set through the same
+    // API as every other mode rather than left at whatever `textEditBegin()`
+    // happened to leave -- main.cpp's own single-writer rule for `textEdit`.
+    np::textCaretSetOffset(&st.textEdit, placed, 0);
+  } else if (mode == 4 || mode == 5) {
     // The caret at the END, which is where Return leaves it -- the whole
     // point of these two fixtures. `textCaretEnd()` rather than a click,
     // because a click cannot express "past the last character on a line that
@@ -802,7 +827,10 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
               placed.frame.width > 0.0f ? "paragraph" : "point text",
               np::textContentToShapes(placed).size(), st.textEdit.caret, placed.utf8.size(),
               bounds.valid ? "valid" : "INVALID");
-  if (!np::textContentDraws(placed) || !bounds.valid)
+  // Mode 6 is deliberately an EMPTY block, so "draws nothing" is the fixture
+  // working, not the warning's failure case. Every other mode types something
+  // and still gets the check.
+  if (mode != 6 && (!np::textContentDraws(placed) || !bounds.valid))
     std::fprintf(stderr,
                  "[text-demo] this block draws NOTHING -- either the shaper is unavailable in "
                  "this build or the fill is off, so the photograph shows chrome over an empty "
@@ -1564,7 +1592,8 @@ int main(int argc, char** argv) {
   bool vectorDemo = false;
   int vectorDemoMode = 0;  // 0 = shape, 1 = components, 2 = marquee, 3 = pendraw
 
-  // --text-demo [paragraph|newline|pointbreak|rotated|frame]: see runTextDemo().
+  // --text-demo [paragraph|newline|pointbreak|emptyframe|rotated|frame]:
+  // see runTextDemo().
   bool textDemo = false;
   int textDemoMode = 0;  // 0 = point text, 1 = paragraph, 2 = held-open frame drag
   bool overRangeDemo = false;
@@ -1996,6 +2025,9 @@ int main(int argc, char** argv) {
           ++i;
         } else if (arg == "pointbreak") {
           textDemoMode = 5;
+          ++i;
+        } else if (arg == "emptyframe") {
+          textDemoMode = 6;
           ++i;
         }
       }

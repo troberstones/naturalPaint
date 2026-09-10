@@ -449,6 +449,46 @@ PathPoint mapped(const TextContent& text, PathPoint p) noexcept {
   return PathPoint{q.x, q.y};
 }
 
+
+// The frame in TEXT space -- before the transform -- which is what a resize
+// has to work in. `textFrameQuad()` gives the mapped corners for drawing;
+// this gives the numbers `frame`/`origin` are actually made of.
+//
+// Returns false for point text, which has no frame (header section 4b).
+bool textFrameRectLocal(const TextContent& text, float* x0, float* y0, float* x1, float* y1) {
+  if (text.frame.width <= 0.0f) return false;
+  *x0 = text.origin.x;
+  *y0 = text.origin.y;
+  *x1 = text.origin.x + text.frame.width;
+  if (text.frame.height > 0.0f) {
+    *y1 = text.origin.y + text.frame.height;
+    return true;
+  }
+  // `height == 0` is "as tall as the lines need" (section 2), so the bottom
+  // edge -- and the handles on it -- have to ASK how tall that came out.
+  // Measured on a copy with no transform, because this is text space.
+  TextContent flat = text;
+  flat.transform = mat3Identity();
+  const PathBounds ink = textContentBounds(flat);
+  if (ink.valid) {
+    *y1 = std::max(ink.maxY, *y0 + 1.0f);
+    return true;
+  }
+  // Nothing typed yet. The box is still one line tall -- that is what an
+  // empty frame is: room for the line you are about to type -- and the
+  // height of that line is ASKED FOR rather than guessed, exactly as the
+  // empty block's caret asks for its own first baseline. `caretHeightFor()`
+  // stood here and is `sizePx * 1.2`, which is the same arithmetic the
+  // shaper's own measurements have already contradicted once (57.6 against a
+  // real 59.0 at 48px). It matters more now than it did when only a handle
+  // sat on it: this edge is also the bottom of the box a transform gizmo is
+  // built from.
+  const ShapedText probe = shapeText("x", text.style, text.frame, text.align);
+  *y1 = *y0 + (probe.ok && probe.heightPx > 0.0f ? probe.heightPx
+                                                 : caretHeightFor(text.style));
+  return true;
+}
+
 }  // namespace
 
 TextCaretSegment textCaretSegment(const TextContent& text, size_t caretByte) {
@@ -527,18 +567,17 @@ bool textFrameQuad(const TextContent& text, TextQuad* out) {
   float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
   if (text.frame.width > 0.0f) {
     // Paragraph text: the frame the user set, in text space, so it does not
-    // breathe as lines wrap. `frame.height == 0` means "as tall as the lines
-    // need" (header section 2), which has to be ASKED rather than drawn as a
-    // zero-height line -- and asked in TEXT space, which is why this reads
-    // the untransformed ink rather than `textContentBounds()`.
-    TextContent flat = text;
-    flat.transform = mat3Identity();
-    const PathBounds ink = textContentBounds(flat);
-    x0 = text.origin.x;
-    y0 = text.origin.y;
-    x1 = text.origin.x + text.frame.width;
-    y1 = text.frame.height > 0.0f ? text.origin.y + text.frame.height
-                                  : (ink.valid ? ink.maxY : text.origin.y);
+    // breathe as lines wrap.
+    //
+    // **`textFrameRectLocal()`, not a second copy of its arithmetic.** This
+    // block used to compute the same rectangle itself, and the two had already
+    // drifted: for an EMPTY frame with an automatic height this one produced
+    // `y1 == y0`, a zero-height outline, while the handle positions -- which
+    // do go through that helper -- sat a full line lower. Measured on a
+    // 520-wide empty block at 48px: the outline's bottom edge at y = 300.00
+    // and the bottom row of handles at y = 357.60, on the same box. One
+    // function answers "where is this frame" now.
+    if (!textFrameRectLocal(text, &x0, &y0, &x1, &y1)) return false;
   } else {
     TextContent flat = text;
     flat.transform = mat3Identity();
@@ -557,33 +596,6 @@ bool textFrameQuad(const TextContent& text, TextQuad* out) {
   return true;
 }
 
-namespace {
-
-// The frame in TEXT space -- before the transform -- which is what a resize
-// has to work in. `textFrameQuad()` gives the mapped corners for drawing;
-// this gives the numbers `frame`/`origin` are actually made of.
-//
-// Returns false for point text, which has no frame (header section 4b).
-bool textFrameRectLocal(const TextContent& text, float* x0, float* y0, float* x1, float* y1) {
-  if (text.frame.width <= 0.0f) return false;
-  *x0 = text.origin.x;
-  *y0 = text.origin.y;
-  *x1 = text.origin.x + text.frame.width;
-  if (text.frame.height > 0.0f) {
-    *y1 = text.origin.y + text.frame.height;
-    return true;
-  }
-  // `height == 0` is "as tall as the lines need" (section 2), so the bottom
-  // edge -- and the handles on it -- have to ASK how tall that came out.
-  // Measured on a copy with no transform, because this is text space.
-  TextContent flat = text;
-  flat.transform = mat3Identity();
-  const PathBounds ink = textContentBounds(flat);
-  *y1 = ink.valid ? std::max(ink.maxY, *y0 + 1.0f) : *y0 + caretHeightFor(text.style);
-  return true;
-}
-
-}  // namespace
 
 bool textFrameHandles(const TextContent& text, TextFrameHandles* out) {
   if (out == nullptr) return false;

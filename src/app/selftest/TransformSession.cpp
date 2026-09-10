@@ -4,6 +4,8 @@
 #include <cstring>
 
 #include "app/TransformSession.hpp"
+#include "core/TextContent.hpp"
+#include "text/Shaper.hpp"
 
 namespace np {
 
@@ -726,6 +728,99 @@ bool runTransformSessionTest() {
     ts.cancel();
     check(ts.documentId() == 0,
           "cross-document: cancel() clears the bound document, not just the active flag");
+  }
+
+  // --- an EMPTY text frame is still an object -------------------------------
+  //
+  // A paragraph frame is dragged out before a word of it is typed, and from
+  // that moment it is a real thing on screen: an outline and eight resize
+  // handles, at a size and place the user chose. Cmd+T on it answered "has no
+  // content -- nothing to transform" about a box they were looking at,
+  // because the bounds came from the INK and an empty block has none.
+  {
+    auto emptyBlock = [](float w, float h) {
+      OpenDocument od = makeBlankOpenDocument(256, 256, WorkingSpace{});
+      Layer t = makeTextLayer("empty");
+      t.text = TextContent{};
+      t.text.utf8.clear();
+      t.text.origin = PathPoint{40.0f, 60.0f};
+      t.text.style.sizePx = 48.0f;
+      t.text.frame.width = w;
+      t.text.frame.height = h;
+      od.document.layers.push_back(std::move(t));
+      return od;
+    };
+
+    // The shape a real frame drag leaves: `textEditFrameDragEnd()` writes
+    // both numbers, so this is the state the reported gesture produces.
+    {
+      OpenDocument od = emptyBlock(200.0f, 90.0f);
+      TransformSession ts;
+      const TransformBeginResult began = ts.beginLayer(od, 1);
+      check(began.ok,
+            "empty frame: REQUIRED -- Cmd+T on a dragged-but-unTYPED paragraph frame begins a "
+            "session. It used to refuse 'nothing to transform' about a box with handles on it");
+      const DocumentRegion box = ts.sourceBounds();
+      std::printf("  [measured] empty frame gizmo box %dx%d at (%d,%d)\n", (int)box.width,
+                  (int)box.height, box.x, box.y);
+      // Stated as the inclusive extent rather than as a width, because
+      // `regionFromBounds()` is `max - min + 1` for every layer kind (a
+      // 200-wide frame is a 201-column region). Asserting 200 here would be
+      // asserting against that shared convention rather than against this.
+      check(box.x == 40 && box.y == 60 &&
+                box.x + static_cast<int32_t>(box.width) - 1 == 240 &&
+                box.y + static_cast<int32_t>(box.height) - 1 == 150,
+            "empty frame: and the gizmo is the FRAME -- it runs corner to corner of the "
+            "rectangle the user dragged, (40,60) to (240,150), not some default box near it");
+    }
+
+    // An automatic height (`height == 0`, "as tall as the lines need") with no
+    // lines yet is one line tall -- room for the line about to be typed.
+    {
+      OpenDocument od = emptyBlock(200.0f, 0.0f);
+      TransformSession ts;
+      check(ts.beginLayer(od, 1).ok, "empty frame: an AUTO-height empty frame begins too");
+      const DocumentRegion box = ts.sourceBounds();
+      const ShapedText oneLine =
+          shapeText("x", od.document.layers[1].text.style, od.document.layers[1].text.frame,
+                    od.document.layers[1].text.align);
+      std::printf("  [measured] auto-height empty box h=%u, one shaped line h=%.2f, "
+                  "sizePx*1.2=%.2f\n",
+                  box.height, oneLine.heightPx, 48.0f * 1.2f);
+      check(oneLine.ok &&
+                static_cast<int32_t>(box.height) - 1 ==
+                    static_cast<int32_t>(std::ceil(oneLine.heightPx)),
+            "empty frame: REQUIRED -- one line tall, and the line height is the SHAPER's own "
+            "answer. `sizePx * 1.2` stood here and is the arithmetic this project has already "
+            "measured wrong once (57.6 against a real 59.0 at 48px)");
+    }
+
+    // A block that has ALREADY been turned: the extent has to come from all
+    // four mapped corners, since a rotated rectangle has no axis-aligned pair.
+    {
+      OpenDocument od = emptyBlock(200.0f, 90.0f);
+      od.document.layers[1].text.transform = transformRotateDegrees(45.0f);
+      TransformSession ts;
+      check(ts.beginLayer(od, 1).ok, "empty frame: a ROTATED empty frame begins");
+      const DocumentRegion box = ts.sourceBounds();
+      std::printf("  [measured] rotated empty frame box %ux%u\n", box.width, box.height);
+      check(box.width > 200u && box.height > 90u,
+            "empty frame: REQUIRED -- and its box is the turned rectangle's own extent, wider "
+            "AND taller than the unrotated frame. Taking two corners instead of four would "
+            "give back the original 200x90 and hang the gizmo off the block");
+    }
+
+    // Point text has no frame to fall back to, and no ink to stand in for
+    // one -- there is no box on screen either, only a caret. Refused, by the
+    // same name as before.
+    {
+      OpenDocument od = emptyBlock(0.0f, 0.0f);
+      TransformSession ts;
+      const TransformBeginResult began = ts.beginLayer(od, 1);
+      check(!began.ok && began.error.find("nothing to transform") != std::string::npos,
+            "empty frame: an empty POINT block is still refused BY NAME -- it has no frame, so "
+            "handles round it would be a gizmo aimed at nothing");
+    }
   }
 
   return ok;

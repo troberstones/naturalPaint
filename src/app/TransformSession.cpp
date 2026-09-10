@@ -14,8 +14,38 @@ namespace {
 // hot: it runs once, at pen-down.
 LayerBounds boundsFromTextContent(const TextContent& text) {
   LayerBounds b;
-  const PathBounds pb = textContentBounds(text);
-  if (!pb.valid) return b;  // an empty block: no content, and beginLayer() says so
+  PathBounds pb = textContentBounds(text);
+  if (!pb.valid) {
+    // No ink -- but that is not the same as nothing to transform. A paragraph
+    // frame is dragged out BEFORE a word of it is typed, and from that moment
+    // it is a real object on screen: an outline and eight resize handles, at a
+    // size and place the user chose. Refusing Cmd+T on it said "nothing to
+    // transform" about a box they were looking at.
+    //
+    // So the fallback is the block's own drawn box -- `textFrameQuad()`, the
+    // same function the overlay outlines and the handles are built from, so
+    // the gizmo cannot appear anywhere but around the frame the user sees.
+    // Its corners come back already mapped through `TextContent::transform`,
+    // which is why the extent is taken over all four rather than from two:
+    // an empty frame that has ALREADY been rotated has no axis-aligned pair.
+    //
+    // Still refused, and rightly, for an empty POINT block: `textFrameQuad()`
+    // returns false there because point text has no frame at all and no ink
+    // to stand in for one, so there is no box on screen either -- only a
+    // caret. Handles around a zero-width nothing would be a gizmo the user
+    // could not aim, and the region maths behind it is degenerate.
+    TextQuad q;
+    if (!textFrameQuad(text, &q)) return b;
+    pb.valid = true;
+    pb.minX = pb.maxX = q.corner[0].x;
+    pb.minY = pb.maxY = q.corner[0].y;
+    for (const PathPoint& c : q.corner) {
+      pb.minX = std::min(pb.minX, c.x);
+      pb.minY = std::min(pb.minY, c.y);
+      pb.maxX = std::max(pb.maxX, c.x);
+      pb.maxY = std::max(pb.maxY, c.y);
+    }
+  }
   b.empty = false;
   b.minX = static_cast<int32_t>(std::floor(pb.minX));
   b.minY = static_cast<int32_t>(std::floor(pb.minY));

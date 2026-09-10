@@ -547,7 +547,6 @@ bool runTextContentTest() {
             "shaper reports a different block top for a multi-line block, and this is what "
             "fails if that difference is not cancelled back out");
     }
-  }
 
   // --- the frame's resize handles -------------------------------------------
   //
@@ -658,6 +657,34 @@ bool runTextContentTest() {
       check(std::fabs(t.frame.width - 500.0f) < 0.01f,
             "handles: REQUIRED -- and it widens along the BLOCK's axis, not the document's. "
             "Without the inverse map the frame shears away from the cursor");
+    }
+  }
+
+    // The outline and the handles are the SAME box. They were computed by two
+    // separate pieces of arithmetic, and the two had drifted for the one
+    // state nothing draws often: an EMPTY frame with an automatic height.
+    // Measured on a 520-wide empty block at 48px -- the outline's bottom edge
+    // came back at y = 300.00, a zero-height line on the frame's own top,
+    // while the bottom row of handles sat at y = 357.60. Both now go through
+    // `textFrameRectLocal()`.
+    {
+      TextContent empty = makeTextContent("", org);
+      empty.style.sizePx = 48.0f;
+      empty.frame.width = 520.0f;
+      empty.frame.height = 0.0f;   // "as tall as the lines need", and there are none yet
+      TextQuad q;
+      TextFrameHandles h;
+      check(textFrameQuad(empty, &q) && textFrameHandles(empty, &h),
+            "empty frame: an empty paragraph frame still has an outline and handles -- it is a "
+            "box the user dragged, not nothing");
+      std::printf("  [measured] empty auto frame  outline bottom %.2f  handle row %.2f\n",
+                  q.corner[2].y, h.at[6].y);
+      check(std::fabs(q.corner[2].y - h.at[6].y) < 0.01f,
+            "empty frame: REQUIRED -- the outline's bottom edge and the bottom row of handles "
+            "are the same y. Two rules for one box is how they drifted a whole line apart");
+      check(q.corner[2].y > q.corner[0].y + 1.0f,
+            "empty frame: and the box has real height -- one line's worth, room for the line "
+            "about to be typed, not a zero-height line drawn on the frame's own top edge");
     }
   }
 
