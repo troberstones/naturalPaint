@@ -1190,6 +1190,12 @@ bool runEllipseMarqueePreviewTest();
 // pinned by an assertion that fails the moment the number or the binding
 // appears, because an omission with only a comment behind it is one a later
 // revision reverses by reaching for a plausible-looking value.
+// The LAYERS panel's list box is sized by the dock, not by the number of
+// layers in it -- the negative property no screenshot can prove, since a
+// screenshot only ever photographs one row count. See the section's own
+// comment for what used to move around the panel.
+bool runLayerListHeightTest();
+
 bool runLayerPanel2aTest();
 
 // ops/Transform (PLAN.md "Phase 6 -- Filter and transform it"; PRD D14, D15,

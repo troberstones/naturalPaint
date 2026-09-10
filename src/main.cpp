@@ -3349,6 +3349,9 @@ int main(int argc, char** argv) {
     // of 2a that are deliberately NOT drawn, each pinned so a later revision
     // cannot quietly invent the number behind it.
     const bool layerPanel2aOk = np::runLayerPanel2aTest();
+    // The same panel's list box: fixed to the dock's height, so the command
+    // row below it does not walk up and down as layers are added and deleted.
+    const bool layerListHeightOk = np::runLayerListHeightTest();
     // Phase 12 / PRD G7, G9: io/Descriptor, the Action Descriptor reader, against
     // synthetic fixtures parsed out of guard-paged mappings.
     const bool descriptorOk = np::runDescriptorTest();
@@ -3589,7 +3592,8 @@ int main(int argc, char** argv) {
                     smudgeOptionsOk &&
                     pigmentSelectionOk && bucketRefusalOk &&
                     pigmentSelectionOk && cloneStampOk && bucketRefusalOk &&
-                    layerMultiSelectOk && layerPanel2aOk && toolCursorOk &&
+                    layerMultiSelectOk && layerPanel2aOk && layerListHeightOk &&
+                    toolCursorOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&

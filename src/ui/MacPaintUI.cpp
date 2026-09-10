@@ -2763,48 +2763,51 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
   // uses for `##historyrows` -- see that function's comment for the two
   // findings this reuses rather than rediscovers.
   //
-  // **The floor is not defensive padding, it is the empty case.** A document
-  // with zero layers is representable (app/LayerEditor.cpp: "removing the
-  // last layer is allowed", core/LayerOps.hpp), and `BeginChild()` reads a
-  // height of `0.0f` as *fill the rest of the column*
-  // (`imgui.cpp`: `if (size.y <= 0.0f) size.y = ImMax(content_avail.y + size.y, 4.0f);`).
-  // Without `std::max` here, the one state with nothing to show would be the
-  // one that swallows every section below LAYERS.
+  // **The box is sized to the room the panel has, never to the number of
+  // rows in it.** It used to be `min(rows, rowsThatFit) * rowH`, so the list
+  // grew a row taller with every layer added and a row shorter with every one
+  // deleted, and everything below it -- the command row, the Multi-selection
+  // header -- walked up and down the panel with it. A button that moves out
+  // from under the pointer between two clicks is the defect; a fixed-height
+  // list that scrolls is the fix, and it is what every reference application's
+  // layer stack does. The list only changes height now when the dock itself
+  // is resized, because `GetContentRegionAvail()` is the only input.
   //
-  // **A third finding, not in drawHistorySection() (T8) to reuse, found while
-  // screenshotting this one for T11's own verification list.** `BeginChild()`
-  // sizes an OUTER box; a bordered child's rows still sit inside the current
-  // style's `WindowPadding`, so a box sized to exactly N row-heights is a few
-  // pixels short of them once that padding is subtracted back out, and shows
-  // a scrollbar for content that fits. `##historyrows` has the identical gap
-  // -- confirmed by screenshot on this build, `min(2, 8)` rows -- so this
-  // is not new to LAYERS, only newly caught here. Added back in rather than
-  // carried over silently, so the two rows' worth of padding is counted once
-  // instead of clipped off the bottom.
-  // **Sized to the panel's own remaining room, not a fixed row count.**
-  // `kLayersVisibleRows` used to be a hard ceiling of 8 regardless of how much
-  // vertical space this dock actually had -- on a tall dock the list stopped
-  // growing well short of the space available and scrolled early; on a short
-  // one 8 rows could already be more than fit. The reserve below is for
-  // everything this function still draws AFTER the child: the rule + Dummy
-  // before the command row, the command row itself, and the collapsed
-  // "Multi-selection" header -- three UI-control-height lines, roughly. An
-  // error/warning message band (rare, and only ever present for one frame's
-  // worth of a refusal or a merge warning) is not accounted for, on purpose:
-  // reserving for its variable, text-wrap-dependent height every frame would
-  // permanently shrink the list for a case that is usually absent, and the
-  // child recomputes every frame regardless, so the one frame a message is
-  // showing simply borrows a little of the list's row budget rather than
-  // clipping anything.
-  const float reserveBelowChild =
-      ImGui::GetFrameHeightWithSpacing() * 2.0f + ImGui::GetStyle().ItemSpacing.y + 3.0f;
-  const float availableForChild =
-      std::max(rowH, ImGui::GetContentRegionAvail().y - reserveBelowChild);
-  const size_t rowsThatFit =
-      std::max<size_t>(1, static_cast<size_t>(availableForChild / rowH));
-  const size_t rowsToShow = std::min(visibleRows.size(), rowsThatFit);
+  // The reserve is what this function still draws AFTER the child, counted
+  // term by term rather than rounded to "about three lines" (the old estimate
+  // was ~13 px short, which nothing noticed while the child was usually
+  // shorter than its budget and everything notices now that it is not):
+  // the 3 px rule + `Dummy` and its spacing, the two `SmallButton` command
+  // rows, and the collapsed "Multi-selection" `CollapsingHeader`.
+  //
+  // An error/warning band is counted only on the frames one is actually
+  // present -- `messageBand()` draws between the child and the command row,
+  // so leaving it out would let a one-frame refusal shove the command row
+  // down the panel, which is the very motion this change exists to stop.
+  // Reserving unconditionally was the wrong other half of that trade: it
+  // would shrink the list permanently for a state that is usually absent.
+  const float messageReserve = [&]() -> float {
+    if (g_layers.lastError.empty() && g_layers.lastWarnings.empty()) return 0.0f;
+    const float wrapW = panelW - 14.0f;
+    const float dismissLineH = ImGui::GetTextLineHeightWithSpacing();
+    float h = 0.0f;
+    if (!g_layers.lastError.empty()) {
+      h += ImGui::CalcTextSize(g_layers.lastError.c_str(), nullptr, false, wrapW).y + 10.0f;
+      h += dismissLineH;
+    }
+    if (!g_layers.lastWarnings.empty()) {
+      for (const std::string& w : g_layers.lastWarnings)
+        h += ImGui::CalcTextSize(w.c_str(), nullptr, false, wrapW).y + 10.0f;
+      h += dismissLineH;
+    }
+    return h;
+  }();
+  const float reserveBelowChild = 3.0f + ImGui::GetStyle().ItemSpacing.y +
+                                  ImGui::GetTextLineHeightWithSpacing() * 2.0f +
+                                  ImGui::GetFrameHeightWithSpacing() + messageReserve;
   const float childH =
-      std::max(rowH, static_cast<float>(rowsToShow) * rowH) + 2.0f * ImGui::GetStyle().WindowPadding.y;
+      layerRowsChildHeight(ImGui::GetContentRegionAvail().y, reserveBelowChild, rowH,
+                           ImGui::GetStyle().WindowPadding.y, visibleRows.size());
 
   // Auto-scroll follows the SELECTED layer -- triggered by a change in
   // `selected`, not every frame, so it never fights the user's own scroll.
@@ -19166,6 +19169,38 @@ std::optional<SDL_SystemCursor> canvasCursorRequest() { return g_canvasCursor; }
 // own comment for why this is `nullopt` on frames `canvasCursorRequest()` answers
 // with a guide-drag or pan/rotate shape.
 std::optional<Tool> canvasCursorToolRequest() { return g_canvasBitmapTool; }
+
+// Defined here rather than beside drawLayersSection(), which is inside this
+// file's anonymous namespace: this one has external linkage on purpose, so
+// the selftest can call it.
+// The height of the LAYERS panel's `##layerrows` scroll box.
+//
+// **Its whole contract is the parameter it ignores.** `rowCount` is passed and
+// deliberately unused: the box fills the room the dock has left and scrolls
+// what does not fit, so the number of layers in the document is not an input
+// to its height. It used to be -- the box was `min(rowCount, rowsThatFit) *
+// rowH` -- and the consequence was that adding or deleting a layer moved the
+// command row and the Multi-selection header up and down the panel underneath
+// the pointer. Taking the count and refusing to use it is what makes that
+// property assertable headlessly (app/selftest/LayerListHeight.cpp sweeps
+// `rowCount` and requires one constant answer); a later edit that wants the
+// count back has to fail a test rather than quietly reintroduce the motion.
+//
+// The floor is one row plus the child's own padding, because the two values
+// below it are not "small", they are different meanings: `BeginChild()` reads
+// a height of 0 as *fill the rest of the column*
+// (`imgui.cpp`: `if (size.y <= 0.0f) size.y = ImMax(content_avail.y + size.y, 4.0f);`)
+// and a negative one as a reserve measured off the bottom. A dock dragged
+// shorter than its own controls reaches both.
+//
+// `windowPaddingY` is counted because `BeginChild()` sizes an OUTER box: a
+// bordered child's rows sit inside the current style's `WindowPadding`, so a
+// box sized to exactly one row-height is a few pixels short of showing one.
+float layerRowsChildHeight(float availY, float reserveBelowY, float rowH, float windowPaddingY,
+                           std::size_t rowCount) noexcept {
+  (void)rowCount;
+  return std::max(rowH + 2.0f * windowPaddingY, availY - reserveBelowY);
+}
 
 void setLayersPanelSelection(OpenDocument& doc, size_t layerIndex) {
   setActiveLayer(doc, layerIndex);
