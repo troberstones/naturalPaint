@@ -225,6 +225,7 @@ add_executable(naturalPaint
   app/selftest/FlatsSource.cpp
   app/selftest/ToolSwitch.cpp
   app/selftest/SpringEyedropper.cpp
+  app/selftest/TilePreview.cpp
   app/selftest/TonalBrush.cpp
   app/selftest/ToolOptionsBlend.cpp
   app/selftest/TouchGesture.cpp
@@ -270,6 +271,7 @@ add_executable(naturalPaint
   app/StrokePreview.cpp
   app/StrokeSession.cpp
   app/DocumentPresets.cpp
+  app/TilePreview.cpp
   app/TouchGesture.cpp
   app/TouchGestureSession.cpp
   app/UserBrushLibrary.cpp

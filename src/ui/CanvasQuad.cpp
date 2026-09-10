@@ -13,13 +13,22 @@
 namespace np {
 namespace {
 
-// Four draws is the whole of today's demand -- the sim canvas, the document
-// over it, the navigator thumbnail and the companion pane -- and the split
-// caps visible documents at two (ADR-0001), so nothing here can grow with the
-// tab count. Eight leaves room for one more overlay without a resize; past
-// that `canvasQuadsDropped()` counts rather than the frame silently losing a
-// quad, which is the failure this counter exists to make visible.
-constexpr size_t kMaxQuads = 8;
+// Four draws was the whole of the original demand -- the sim canvas, the
+// document over it, the navigator thumbnail and the companion pane -- and the
+// split caps visible documents at two (ADR-0001), so nothing here grows with
+// the tab count.
+//
+// **PRD D8's 3x3 repeat preview multiplies the canvas pair by nine.** With it
+// on, one frame queues nine sim-canvas quads and nine document quads, and can
+// still be asked for the navigator, the companion pane and Free Transform's
+// two extra halves on top -- 22 in the worst case that is actually reachable.
+// 32 is that with headroom, and it costs 32 * 6 * 16 = 3 KiB of vertex buffer,
+// which is not a figure worth economising on. Past the cap
+// `canvasQuadsDropped()` counts rather than the frame silently losing a quad,
+// which is the failure that counter exists to make visible -- and under the
+// repeat preview a dropped quad would read as a document that does not tile,
+// i.e. as exactly the defect the preview is being used to look for.
+constexpr size_t kMaxQuads = 32;
 constexpr size_t kVertsPerQuad = 6;
 
 struct Vertex {

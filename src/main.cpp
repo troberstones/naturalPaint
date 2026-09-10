@@ -42,6 +42,7 @@
 #include "app/StrokeBake.hpp"
 #include "app/StrokeSession.hpp"
 #include "app/CropTool.hpp"
+#include "app/TilePreview.hpp"
 #include "app/ToolSwitch.hpp"
 #include "app/ZoomAndSize.hpp"
 #include "brush/Deposit.hpp"
@@ -1489,6 +1490,7 @@ int main(int argc, char** argv) {
   bool textDemo = false;
   int textDemoMode = 0;  // 0 = point text, 1 = paragraph, 2 = held-open frame drag
   bool overRangeDemo = false;
+  bool tileDemo = false;
   bool munsellDemo = false;
   int munsellDemoSteps = 9;
   float munsellDemoHue = 252.0f;
@@ -1944,6 +1946,20 @@ int main(int argc, char** argv) {
       // panel is what every other view of the app already shows, so a second
       // spelling would only photograph the status quo.
       overRangeDemo = true;
+    } else if (a == "--tile-demo") {
+      // PRD D8 / PLAN.md Phase 9. Same argument as `--munsell-demo` just
+      // below, and it is the argument that matters for this whole harness:
+      // the 3x3 repeat preview is a *state*, not a document and not a tool.
+      // No demo document and no stroke puts the canvas into it, so without
+      // this flag the entire branch is unreachable from the command line and
+      // therefore invisible to `--screenshot` and to tools/golden -- which is
+      // the golden harness's one structural blind spot (states no launch flag
+      // can reach) and costs three lines to not have here.
+      //
+      // No sub-word: the preview has exactly one state worth a picture. Its
+      // interesting variations (mirrored, rotated) are `--demo-document`
+      // plus the existing view toggles, not a second spelling of this one.
+      tileDemo = true;
     } else if (a == "--munsell-demo") {
       // docs/munsell-picker.md. The COLOR panel's third mode is a *state*, not
       // a document or a tool: nothing about a demo document or a stroke puts
@@ -3449,6 +3465,11 @@ int main(int argc, char** argv) {
     // anchor math and the brush-size gesture/bracket-key range, both as pure
     // functions -- app/ZoomAndSize.hpp. Headless and GPU-free.
     const bool zoomAndSizeOk = np::runZoomAndSizeTest();
+    // PRD D8 / PLAN.md Phase 9: the 3x3 repeat preview -- where the nine
+    // copies go, that they abut through the real ViewTransform, and that
+    // entering and leaving give the user's view back (app/TilePreview.hpp).
+    // Headless and GPU-free.
+    const bool tilePreviewOk = np::runTilePreviewTest();
     // naturalPaint canvasdim bug fix: `canvasDimensionsFor()` (app/
     // ZoomAndSize.hpp section 4) -- the active document's own size is now
     // `ui/MacPaintUI.cpp`'s canvas block's one source of truth for its
@@ -3595,7 +3616,8 @@ int main(int argc, char** argv) {
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk && pigmentPanelOk &&
                     openAnyFileOk && psdImportOk && filterMenuOk && adjustmentMenuOk && selectMenuOk &&
-                    chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk && canvasDimensionsOk &&
+                    chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk && tilePreviewOk &&
+                    canvasDimensionsOk &&
                     angleConventionOk && wheelInputOk && touchGestureOk && touchGestureSessionOk && pressureFeelOk
                     && transferDynamicsOk && toolOptionsBlendOk &&
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
@@ -4060,6 +4082,16 @@ int main(int argc, char** argv) {
                 "the readout and the OVER RANGE badge and the swatch is clamped\n",
                 static_cast<double>(st.brush.rgb[0]), static_cast<double>(st.brush.rgb[1]),
                 static_cast<double>(st.brush.rgb[2]));
+  }
+  if (tileDemo) {
+    // Through `setTilePreview()`, not by writing `active` directly: that
+    // function is what raises the fit request, and a demo that skipped it
+    // would photograph the preview at the single-tile zoom -- a picture of a
+    // state no menu pick can actually produce, which is worse than no picture.
+    np::setTilePreview(st.tilePreview, st.view, st.requestFitWindow, true);
+    std::printf("[tile-demo] View > 3x3 Repeat Preview on -- the document drawn nine "
+                "times through ui/CanvasQuad, fitted so all nine are visible; the "
+                "centre tile keeps the canvas border and is the document\n");
   }
   if (munsellDemo) {
     st.brush.colorMode = np::ColorMode::Munsell;

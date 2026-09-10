@@ -229,6 +229,12 @@ enum class MenuAction : uint16_t {
   ResetRotation,
   ResetView,
   GrayscalePreview,
+  // PRD D8 / PLAN.md Phase 9: draw the document nine times so its own edges
+  // sit next to each other and a seam becomes visible. A Check, like
+  // `GrayscalePreview` beside it and for the identical reason -- it is a
+  // display state the user leaves on while working, so the menu has to be
+  // able to say whether it is on. `app/TilePreview.hpp` owns what it means.
+  TilePreview,
   Rulers,
   Navigator,
   Guides,
@@ -657,6 +663,7 @@ struct MenuContext {
   bool mirrorX = false;
   bool mirrorY = false;
   bool grayscale = false;
+  bool tilePreview = false;         // AppState::tilePreview.active (PRD D8)
   bool showRulers = false;
   bool showNavigator = false;
   bool showGuides = false;

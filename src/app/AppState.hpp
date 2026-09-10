@@ -16,6 +16,7 @@
 #include "app/PanelLayout.hpp"
 #include "app/PenTool.hpp"
 #include "app/TextTool.hpp"
+#include "app/TilePreview.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/DocumentPresets.hpp"
 #include "app/GradientTool.hpp"
@@ -830,6 +831,12 @@ struct AppState {
   // questions about a tool history it has none of.
   ToolSwitchState tools;
   CanvasView view;
+  // PRD D8 / PLAN.md Phase 9: the 3x3 repeat preview. Beside `view` rather
+  // than inside it, because every field of `CanvasView` is an input to
+  // `app/ViewTransform`'s matrix and none of these are -- this changes how
+  // many times that one transform is applied, never what it is
+  // (app/TilePreview.hpp).
+  TilePreviewState tilePreview;
   SimParams sim;
 
   // PRD **Q10** (P0): "Eyedropper picks into the foreground colour, with

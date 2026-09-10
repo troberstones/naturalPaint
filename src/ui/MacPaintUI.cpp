@@ -57,6 +57,7 @@
 #include "app/QuitSequence.hpp"
 #include "app/SelectionDrag.hpp"
 #include "app/Snapping.hpp"
+#include "app/TilePreview.hpp"  // PRD D8: the 3x3 repeat preview's offsets and its enter/leave
 #include "app/ToolSurface.hpp"  // T5's second axis: can this tool act on THIS surface
 #include "app/ToolSwitch.hpp"
 #include "app/UserBrushLibrary.hpp"
@@ -10745,6 +10746,7 @@ MenuContext menuContextFromState(AppState& st) {
   ctx.mirrorX = st.view.mirrorX;
   ctx.mirrorY = st.view.mirrorY;
   ctx.grayscale = st.view.grayscale;
+  ctx.tilePreview = st.tilePreview.active;
   ctx.showRulers = st.showRulers;
   ctx.showNavigator = st.showNavigator;
   ctx.showBrushSettings = st.showBrushSettings;
@@ -11216,6 +11218,14 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     case MenuAction::ResetRotation:    st.view.rotation = 0.0f;                  break;
     case MenuAction::ResetView:        st.view = resetCanvasView(st.view);       break;
     case MenuAction::GrayscalePreview: st.view.grayscale = !st.view.grayscale;   break;
+    // Not a bare `!active` like the toggles around it: entering the preview
+    // has to remember the view it is about to replace and ask for a re-fit,
+    // and leaving has to give that view back. `setTilePreview()` is the one
+    // place that happens (app/TilePreview.hpp section 4) -- inlining the flip
+    // here would leave the save and the restore in two different files.
+    case MenuAction::TilePreview:
+      setTilePreview(st.tilePreview, st.view, st.requestFitWindow, !st.tilePreview.active);
+      break;
     case MenuAction::Rulers:           st.showRulers = !st.showRulers;           break;
     case MenuAction::Navigator:        st.showNavigator = !st.showNavigator;     break;
     // Inline, not Deferred: this flips a bool that next frame's
@@ -14012,8 +14022,16 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // "fit" and "100%" both mean "show me the whole thing squarely," and
     // rotation/mirror are untouched: those are independent view toggles,
     // not reset by a zoom command.
+    // PRD D8: with the 3x3 repeat preview on, "fit" means fit the FIELD, not
+    // the centre tile -- a fit that showed the document at its old size would
+    // leave eight of the nine copies off the edge of the window, which is
+    // strictly less than the user could see before they opened the preview.
+    // One divisor on the one fit computation, rather than a second fit path
+    // (app/TilePreview.hpp section 4).
+    const float fitSpan = static_cast<float>(tilePreviewSpan(st.tilePreview));
     if (st.requestFitWindow) {
-      st.view.zoom = clampViewZoom(std::min(avail.x / texW, avail.y / texH));
+      st.view.zoom =
+          clampViewZoom(std::min(avail.x / (texW * fitSpan), avail.y / (texH * fitSpan)));
       st.view.panX = 0.0f;
       st.view.panY = 0.0f;
       st.requestFitWindow = false;
@@ -14055,6 +14073,32 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const ImVec2 q00(xc00.x, xc00.y), q10(xc10.x, xc10.y), q11(xc11.x, xc11.y),
         q01(xc01.x, xc01.y);
 
+    // --- PRD D8 / PLAN.md Phase 9: the 3x3 repeat preview -----------------
+    //
+    // Where the copies go. **One** offset -- `{0, 0}` -- with the preview off,
+    // so each loop below is the single-quad code the preview replaced rather
+    // than a second arrangement that could drift from it; nine with it on, the
+    // document last. app/TilePreview.hpp carries the design, including why the
+    // eight repeats are drawn identically to the centre rather than dimmed.
+    TileOffset tiles[kTilePreviewMaxTiles];
+    const size_t tileCount = tilePreviewTiles(st.tilePreview, tiles);
+    // One copy's four screen corners, through the SAME `xform` the centre tile
+    // was built from -- so the repeats zoom, pan, mirror and rotate *with* the
+    // document instead of beside it, and pen input still maps back through the
+    // one analytic inverse. At `{0, 0}` this returns exactly q00..q01 above.
+    const auto tileQuad = [&](const TileOffset& t, ImVec2 c[4]) {
+      const float ox = static_cast<float>(t.col) * texW;
+      const float oy = static_cast<float>(t.row) * texH;
+      const Vec2 s00 = xform.toScreen(Vec2{ox, oy});
+      const Vec2 s10 = xform.toScreen(Vec2{ox + texW, oy});
+      const Vec2 s11 = xform.toScreen(Vec2{ox + texW, oy + texH});
+      const Vec2 s01 = xform.toScreen(Vec2{ox, oy + texH});
+      c[0] = ImVec2(s00.x, s00.y);
+      c[1] = ImVec2(s10.x, s10.y);
+      c[2] = ImVec2(s11.x, s11.y);
+      c[3] = ImVec2(s01.x, s01.y);
+    };
+
     ImDrawList* dl = ImGui::GetWindowDrawList();
     // docs/testing-issues.md T5, reversed 2026-09-08: with no document open
     // there is no canvas at all -- not the paper, not a shadow under it, not
@@ -14069,8 +14113,20 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // screen-space offset applied to the already-transformed quad, not
       // mapped through the transform itself -- a shadow shouldn't mirror or
       // rotate along with the paper; real light doesn't.
-      dl->AddQuadFilled(ImVec2(q00.x + 6, q00.y + 6), ImVec2(q10.x + 6, q10.y + 6),
-                        ImVec2(q11.x + 6, q11.y + 6), ImVec2(q01.x + 6, q01.y + 6),
+      //
+      // Behind the whole tiled FIELD, not behind the centre tile: under the
+      // repeat preview a shadow at the document's own edge would draw a dark
+      // band straight through the middle of the picture, across the very
+      // boundary the user is inspecting. At span 1 `tilePreviewField()`
+      // returns the document's own rectangle and this is the identical quad
+      // it always was.
+      const TileFieldRect field = tilePreviewField(st.tilePreview, texW, texH);
+      const Vec2 f00 = xform.toScreen(Vec2{field.x0, field.y0});
+      const Vec2 f10 = xform.toScreen(Vec2{field.x1, field.y0});
+      const Vec2 f11 = xform.toScreen(Vec2{field.x1, field.y1});
+      const Vec2 f01 = xform.toScreen(Vec2{field.x0, field.y1});
+      dl->AddQuadFilled(ImVec2(f00.x + 6, f00.y + 6), ImVec2(f10.x + 6, f10.y + 6),
+                        ImVec2(f11.x + 6, f11.y + 6), ImVec2(f01.x + 6, f01.y + 6),
                         IM_COL32(0, 0, 0, 110));
       // AddImageQuad, not AddImage: AddImage can only place an axis-aligned
       // rect, which has no way to express a flipped or rotated quad. This is
@@ -14091,14 +14147,37 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // Not AddImageQuad: sim/PaintSim's canvas is linear light in an
         // RGBA8Unorm texture, and ImGui's pipeline would present it with the
         // wrong transfer function. ui/CanvasQuad owns that conversion.
-        addCanvasQuad(dl, tv, q00, q10, q11, q01);
+        //
+        // Once per copy under the repeat preview, through this same call --
+        // never a second, cheaper-looking drawing path for the eight repeats.
+        // The error `ui/CanvasQuad.hpp` exists to prevent is zero at both
+        // endpoints, so a repeat drawn through ImGui's pipeline would differ
+        // from the centre tile only in the midtones: a smooth, plausible
+        // luminance step across the document's own edge, which is precisely
+        // the artefact this preview is opened to find.
+        for (size_t t = 0; t < tileCount; ++t) {
+          ImVec2 c[4];
+          tileQuad(tiles[t], c);
+          addCanvasQuad(dl, tv, c[0], c[1], c[2], c[3]);
+        }
       } else {
         // 1.4 / ADR-0001: no PaintSim exists yet (nothing painted this
         // session), so there is no composite to show. A flat blank-paper
         // quad reads as "ready to paint" rather than a rendering glitch --
         // the first stroke below constructs the sim and this becomes the
         // real canvasView() from the very next frame.
-        dl->AddQuadFilled(q00, q10, q11, q01, IM_COL32(250, 250, 247, 255));
+        //
+        // ONE quad over the whole field, not one per copy. This is a flat
+        // colour, so nine of them would be identical in the middle and
+        // different only at their edges: `AddQuadFilled()` is antialiased, and
+        // nine antialiased quads sharing eight interior edges leave a hairline
+        // along every one of them. A hairline at a tile boundary is precisely
+        // what a seam looks like, which would make this preview report the
+        // defect it exists to detect. The nine textured quads above have no
+        // such problem -- they share exact edge coordinates through an
+        // un-antialiased pipeline, so their shared edges are watertight.
+        dl->AddQuadFilled(ImVec2(f00.x, f00.y), ImVec2(f10.x, f10.y), ImVec2(f11.x, f11.y),
+                          ImVec2(f01.x, f01.y), IM_COL32(250, 250, 247, 255));
       }
     }
 
@@ -14406,9 +14485,23 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
       if (documentView == nullptr)
         documentView = g_documentTextures.viewFor(gpu, *activeDocument, nullptr, &docViewport);
-      addCanvasQuad(dl, documentView, q00, q10, q11, q01);
+      // Once per copy (PRD D8). The nine share one texture and one revision
+      // cache, so the repeats cost nine quads and no second composite -- this
+      // is a view of the pixels, not nine of them.
+      for (size_t t = 0; t < tileCount; ++t) {
+        ImVec2 c[4];
+        tileQuad(tiles[t], c);
+        addCanvasQuad(dl, documentView, c[0], c[1], c[2], c[3]);
+      }
     }
     // T5, reversed: no border around a canvas that was never drawn.
+    //
+    // Deliberately still `q00..q01` -- the CENTRE tile -- under the repeat
+    // preview, where it becomes the seam indicator: it runs along the exact
+    // boundary being judged, says which of the nine copies is the document,
+    // and changes no pixel on either side of itself. That last property is
+    // why the eight repeats are not dimmed instead; app/TilePreview.hpp
+    // section 2 has the argument.
     if (documentOpen) dl->AddQuad(q00, q10, q11, q01, ImGui::GetColorU32(ImGuiCol_Border));
 
     // --- navigator (docs/ui.md section 2) --------------------------------
@@ -17487,7 +17580,26 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (transformSplitDraws && views.valid) {
         const WGPUTextureView aboveView =
             transformAboveTexture.viewFor(gpu, views.above, nullptr, &docViewport, aboveVariant);
-        if (aboveView != nullptr) addCanvasQuad(dl, aboveView, q00, q10, q11, q01);
+        // Tiled with the rest of the composite under the repeat preview (PRD
+        // D8): this half is document pixels at the document's own rectangle,
+        // exactly like the `documentView` quad it pairs with, so it repeats
+        // for the same reason that one does.
+        //
+        // **The moving pixels above are NOT tiled, and that is the choice.**
+        // A drag's preview quad belongs under its gizmo -- handles, wireframe
+        // and all -- and a gizmo is chrome, not document content; nine copies
+        // of a drag box is a picture of the interface, not of the tiling. So
+        // while a Free Transform session is live the eight repeats show the
+        // composite *without* the layer being dragged, and the centre tile is
+        // the only place the drag is legible. Transient, only during a drag,
+        // and stated here rather than discovered.
+        if (aboveView != nullptr) {
+          for (size_t t = 0; t < tileCount; ++t) {
+            ImVec2 c[4];
+            tileQuad(tiles[t], c);
+            addCanvasQuad(dl, aboveView, c[0], c[1], c[2], c[3]);
+          }
+        }
       }
 
       // Four segments rather than `AddRect`: once the pending matrix carries a

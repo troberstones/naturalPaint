@@ -198,12 +198,18 @@ bool runMenuModelTest() {
   // 92 -> 93: `Pigment` (Window > Pigment), the check item that turns
   // `ControlsSection::Pigment`'s Hidden-by-default placement on -- counted
   // the same way, off `MenuAction`'s enumerators (94 including `Count`).
-  check(kMenuActionCount == 93,
-        "ids: exactly 93 actions -- the original 41-item extraction plus D1/D2's "
+  // 93 -> 94: `TilePreview` (View > 3x3 Repeat Preview), PRD D8 / PLAN.md
+  // Phase 9 -- counted the same way this comment's own rule demands, off
+  // `MenuAction`'s enumerators in the merged header (95 including `Count`)
+  // rather than by adding one to 93. This is the tripwire the paragraph above
+  // says is deliberately brittle to the next track that adds an action, and
+  // this track is that next track.
+  check(kMenuActionCount == 94,
+        "ids: exactly 94 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
-        "dialog, Brush Settings, the crop pair and Pigment, so an item lost in a "
-        "later edit fails here");
+        "dialog, Brush Settings, the crop pair, Pigment and the 3x3 repeat preview, "
+        "so an item lost in a later edit fails here");
 
   {
     std::set<MenuAction> seen;
