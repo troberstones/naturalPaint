@@ -531,19 +531,35 @@ Baseline on that base: **8619 pass, 0 FAIL**, `--selftest` exit 0.
 
 ### Step 6 — `app/Batch` and `--batch`
 
-- [ ] `BatchRequest`: action, source set, output directory, `ExportRequest`, name template
-- [ ] the pre-flight: **every output path canonicalised against every input path**
-- [ ] the loop: `openAnyFileAsDocument()` → `replayAction()` → existing encode and write
-- [ ] import warnings carried into the per-file report
-- [ ] stop at first `Failed`; the rest report `NotAttempted`
-- [ ] `--batch` beside the report modes, before `SDL_Init`
-- [ ] **gate:** 30-file run in `--selftest`; every input's bytes unchanged (hashed both sides)
+- [x] `BatchRequest`: action, source set, output directory, `ExportRequest`, name template
+- [x] the pre-flight: **every output path canonicalised against every input path** — and
+      the predicate is pinned on its own, including the two cases a canonicaliser gets
+      wrong: paths that do not exist yet must still normalise together, and case-folding
+      must follow what the **volume** does rather than what the platform usually does
+- [x] the loop: `openAnyFileAsDocument()` → `replayAction()` → existing encode and write
+- [x] import warnings carried into the per-file report, prefixed `import:`
+- [x] stop at first `Failed`; the rest report `NotAttempted` — **not `Skipped`**, which is
+      what a file that would not open gets, and the two mean different things
+- [x] `--batch` beside the report modes, before `SDL_Init`, plus `--batch-format` and
+      `--batch-template`
+- [x] the mixed-resolution rule: a recorded action does not carry the size it was authored
+      at, so the comparison that *can* be made is between the sources. A step carrying a
+      pixel-unit parameter over sources of differing size refuses, naming the parameter and
+      both sizes. The table of which parameters those are is held to the command registry
+      **in both directions** — which is what caught three refines at gather
+- [x] `writeEncodedExportToFile()` hoisted out of io/ExportAs at the third consumer, the
+      rule io/ExportStates.cpp's own inline copy wrote down
+- [x] **gate:** 30-file run in `--selftest`; every input's bytes unchanged (hashed both sides)
+- [x] sabotage: collision predicate → 8 red; halt-at-first-failure → 5 red
 
 ### Step 7 — UI
 
-- [ ] ACTIONS panel: record / stop / play, step list, reorder, delete
+- [x] ACTIONS panel: record / stop / play, step list, reorder, delete — with the model in a
+      function that takes state and returns what to draw, so it can be asserted without a
+      frame. Sabotage: the holed-take rule → 3 red, including the exhaustive 16-state one
 - [ ] BATCH dialog: action, sources, output dir, preset, template, dry run, report
-- [ ] golden views: panel idle, panel recording, dialog plan, dialog report
+- [ ] golden views: panel idle, panel recording, dialog plan, dialog report — **none added.**
+      `run_golden.sh` still has 58 views in each of its nine parallel arrays
 
 ### Step 8 — the parked P2 image ops (severable)
 
@@ -579,6 +595,43 @@ the recorder and the replayer, the BATCH dialog needs `app/Batch`.
 | branch | worktree | owns | step |
 |---|---|---|---|
 | `wave2/callsites` | `np-image` | the 49 UI call sites | 2 |
+| `wave2/gaps` | `np-layers` | the 5 refine rows, `selectionBounded`, two follow-ups | 1 |
+| `wave2/batch` | `np-opstack` | `app/Batch`, `--batch` | 6 |
+| `wave2/actionspanel` | `np-actionfile` | the ACTIONS panel | 7 |
+| — | `naturalPaint-automation` | `app/Replay` | 5 |
+
+**Gathered: 9345 pass, 0 FAIL, exit 0** (9095 after `main` merged in; the wave added 250).
+
+Three of the four tracks were killed mid-work by a session limit, which is worth recording
+because of what it left behind:
+
+- **One left a live sabotage in production source** (`app/ActionsPanel.cpp`'s holed-take
+  rule stubbed to `false`). It is why `grep -rn SABOTAGE-TEMP src/` is a gather step and
+  not a courtesy. Reverted, and the sabotage it was in the middle of was finished properly:
+  3 red.
+- **One left `app/Batch` complete and entirely uncommitted** — 1 500 lines across three
+  files, plus the `main.cpp` wiring, none of it in a commit. Committed at gather, and its
+  two required sabotages run there too, since it never reached them.
+- **One left a strengthened fixture uncommitted.** Committed.
+
+**Gather-time checks:**
+
+- [x] every declared `run*Test()` called **and** aggregated — 192 declared, clean. Three of
+      the four branches appended to one boolean expression; only one of those merges
+      conflicted, which is the case that would otherwise go unnoticed
+- [x] `run_golden.sh`'s nine parallel view arrays all agree — 58 each. No track added a view
+- [x] `grep -rn SABOTAGE-TEMP src/` empty
+- [x] the load-bearing sabotages re-run against the **merged** line: replay's commit (2 red),
+      batch's collision predicate (6 red), the panel's holed-take rule (3 red), and the
+      pixel-command door (2 red — the migration really is in the door after the merge)
+- [x] **a cross-track tripwire fired**, and neither branch was wrong. See §10
+
+**One assertion was reporting itself wrong.** The batch section's
+differently-spelled-directory check printed its own `"... FAIL   (path)"` line inside a
+loop and closed with `check(true, ...)`, which prints **pass** whatever the loop found. The
+house counting convention anchors `' FAIL$'` at end of line, and the path follows the word,
+so the first sabotage tallied 5 failures when it was really 8. Now reported through
+`check()` like everything else.
 | `wave2/gaps` | `np-layers` | the 5 refine rows, `selectionBounded`, two follow-ups | 1 |
 | — | `naturalPaint-automation` | `app/Replay` | 5 |
 
