@@ -2448,6 +2448,9 @@ int main(int argc, char** argv) {
     // Headless and GPU-free.
     const bool flatsExpandOk = np::runFlatsExpandTest();
     const bool flatsSourceOk = np::runFlatsSourceTest();
+    // PLAN.md phase 8's substrate -- see `runStrokesLayerTest()`'s own comment
+    // in app/SelfTest.hpp for the list. Headless and GPU-free.
+    const bool strokesLayerOk = np::runStrokesLayerTest();
     const bool toolSwitchOk = np::runToolSwitchTest();
     // app/ToolSwitch: the spring-loaded Eyedropper (Alt/Option), the Hand's
     // borrow-and-give-back shape applied to a second tool -- eligibility
@@ -3553,7 +3556,8 @@ int main(int argc, char** argv) {
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     eyedropperOk && sceneReferredColourOk && measureOk && toolSwitchOk &&
-                    springEyedropperOk && flatsExpandOk && flatsSourceOk && toolSurfaceOk &&
+                    springEyedropperOk && flatsExpandOk && flatsSourceOk && strokesLayerOk &&
+                    toolSurfaceOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     halfOk && histogramOk && pointOpsOk && toneOpsOk && colorOpsOk && monoOpsOk &&
                     autoLevelsOk &&

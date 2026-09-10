@@ -162,11 +162,23 @@
 //    name, because a refusal here would turn a preserved attribute into the
 //    thing that makes a file unopenable.
 //
-//  * **A `strokes` part and its `np:dabs` blob.** `LayerKind::Strokes`
-//    exists as an enum value and core/Layer.hpp calls it an "inert
-//    placeholder"; there is no Dab type, no dab list and no stroke record
-//    anywhere in `core/`. brush/StrokePath emits dabs into the *solver*, not
-//    into a document. Unblocked by a Strokes layer that actually holds dabs.
+//  * ~~**A `strokes` part and its `np:dabs` blob**~~ -- **delivered at
+//    PLAN.md phase 8.** The blocker named here was the *type*, and it is
+//    paid off: core/StrokesContent is the Dab type this list said did not
+//    exist, `Layer::strokes` is the list, and io/StrokesSerial is the
+//    carrier. A Strokes part takes `buildAdjustmentLayerPart()`'s one-channel
+//    shape for the fifth time and its whole content is the `np:dabs`
+//    attribute, written **unconditionally** for `np:text`'s reason: a layer
+//    with no dabs yet is a real state and `nextDabId` is real content.
+//    A **string**, not the `<blob>` the format table names, for the reason
+//    `np:ops` and `np:comps` both record -- this OpenImageIO drops
+//    array-typed header attributes on write.
+//
+//    The rasterised marks are deliberately NOT written. They are derived from
+//    the records AND from the composite beneath the layer
+//    (core/StrokesContent §2), so baking them would freeze the layers
+//    underneath into the layer above them and lose PRD D6 on the next open --
+//    io/FlatsSerial's argument about the label field with one extra term.
 //
 //  * ~~**`np:ops` (per layer)**~~ -- **delivered at PLAN.md Phase 5 step 5.**
 //    The blocker was the *carrier*, not the ownership: `np:ops` is a blob in

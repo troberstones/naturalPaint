@@ -1977,6 +1977,7 @@ const char* layerCommandGlyphFallback(LayerCommand command) noexcept {
     case LayerCommand::NewVectorLayer: return "[V]";
     case LayerCommand::NewTextLayer: return "[T]";
     case LayerCommand::NewFlatsLayer: return "[F]";
+    case LayerCommand::NewStrokesLayer: return "[S]";
     case LayerCommand::DuplicateLayer: return "[Dup]";
     case LayerCommand::DeleteLayer: return "[Del]";
     case LayerCommand::AddMask: return "[+Mask]";

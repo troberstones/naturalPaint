@@ -205,6 +205,13 @@ Layer makeTextLayer(std::string name);
 // is the kind's whole meaning.
 Layer makeFlatsLayer(std::string name);
 
+// A `LayerKind::Strokes` layer with no dab records (PLAN.md phase 8; PRD C1).
+// Same shape of emptiness as the makers above: no tiles, no mask, no ops.
+// Like an empty Text layer and unlike a Flats layer it draws nothing until
+// something is recorded into it -- a dab record is content, and there is no
+// dab record that means "flat whatever is beneath me".
+Layer makeStrokesLayer(std::string name);
+
 // A default name for a new group: "Group N", `defaultNewLayerName()`'s own
 // rule restricted to Group-kind layers -- see core/LayerOps.cpp.
 std::string defaultNewGroupName(const Document& doc);

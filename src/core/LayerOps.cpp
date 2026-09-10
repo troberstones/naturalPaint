@@ -126,6 +126,18 @@ Layer makeFlatsLayer(std::string name) {
   return layer;
 }
 
+Layer makeStrokesLayer(std::string name) {
+  Layer layer;
+  layer.kind = LayerKind::Strokes;
+  // `strokes` keeps its own defaults -- no dab records and `nextDabId == 1`.
+  // Nothing else to set: the kind's content is that member, and an empty dab
+  // list is complete as constructed. A fresh Strokes layer therefore draws
+  // nothing, exactly as a fresh Vector or Text layer does and for the same
+  // reason -- the emptiness is the kind's definition, not an omission.
+  layer.name = std::move(name);
+  return layer;
+}
+
 std::string defaultNewGroupName(const Document& doc) {
   // `defaultNewLayerName()`'s own scan, restricted to Group-kind layers so a
   // document with "Layer 3" and "Group 3" both on screen is not a collision --

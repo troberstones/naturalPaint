@@ -84,15 +84,22 @@ const std::vector<NewLayerKindEntry>& newLayerKindMenu() {
   // Design 2a's popup order, which is not the enum's: Pigment first because
   // it is the default kind (PRD principle 3) and the design draws it in the
   // highlighted slot, then RGB, then the five parametric kinds, then Vector
-  // (which the design predates). The two with no maker function -- Media and
-  // Strokes -- are listed with `buildable == false`; see the header for why
-  // they are listed at all.
+  // (which the design predates). The one with no maker function -- Media -- is
+  // listed with `buildable == false`; see the header for why it is listed at
+  // all.
   static const std::vector<NewLayerKindEntry> kMenu = {
       {LayerKind::Pigment, true, LayerCommand::NewPigmentLayer},
       {LayerKind::RGB, true, LayerCommand::NewRgbLayer},
       {LayerKind::Media, false, {}},
       {LayerKind::Adjustment, true, LayerCommand::NewAdjustmentLayer},
-      {LayerKind::Strokes, false, {}},
+      // Buildable as of PLAN.md phase 8: the kind has a content member at last
+      // (`Layer::strokes`, a list of dab RECORDS), so an empty Strokes layer
+      // is a real, saveable, erasable thing. Flipped IN PLACE rather than
+      // appended, for Text's and Flats' stated reason -- Strokes is one of
+      // design 2a's own seven kinds and has held this slot since the list
+      // existed, so moving it is what would break the ordering a --selftest
+      // pins.
+      {LayerKind::Strokes, true, LayerCommand::NewStrokesLayer},
       // Buildable as of PLAN.md phase 14. Flipped IN PLACE rather than
       // appended the way Vector was: Text is one of design 2a's own seven
       // kinds and has been in this list since it existed, so its slot is
@@ -123,13 +130,14 @@ const char* layerKindUnbuildableReason(LayerKind kind) noexcept {
     case LayerKind::Vector:
     case LayerKind::Text:
     case LayerKind::Flats:
+    // PLAN.md phase 8 paid off this kind's reason -- `Layer::strokes` is the
+    // parameter member the sentence below used to say was missing -- so the
+    // arm moves up here rather than keeping a greyed excuse for a live row.
+    case LayerKind::Strokes:
       return nullptr;
     case LayerKind::Media:
       return "Not built yet. A Media layer needs the fluid solver's own per-medium state on "
              "top of the pigment tiles, and nothing on Layer holds it.";
-    case LayerKind::Strokes:
-      return "Not built yet. A Strokes layer here has no dabs: the kind has no parameter "
-             "member to hold them.";
     case LayerKind::Group:
       // Not "unbuildable" in the sense the other four are -- a Group is real
       // and fully built. It simply is not one of `newLayerKindMenu()`'s seven

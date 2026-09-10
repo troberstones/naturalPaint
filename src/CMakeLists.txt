@@ -223,6 +223,7 @@ add_executable(naturalPaint
   app/selftest/ExportDialog.cpp
   app/selftest/FlatsExpand.cpp
   app/selftest/FlatsSource.cpp
+  app/selftest/StrokesLayer.cpp
   app/selftest/ToolSwitch.cpp
   app/selftest/SpringEyedropper.cpp
   app/selftest/TonalBrush.cpp
@@ -292,6 +293,7 @@ add_executable(naturalPaint
   brush/RgbErase.cpp
   brush/Smudge.cpp
   brush/StrokePath.cpp
+  brush/StrokesLayer.cpp
   brush/TonalBrush.cpp
   brush/ToolOptionsBlend.cpp
   brush/Variance.cpp
@@ -321,6 +323,7 @@ add_executable(naturalPaint
   core/VectorRaster.cpp
   core/VectorShape.cpp
   core/TextContent.cpp
+  core/StrokesContent.cpp
   core/Pigment.cpp
   core/PigmentBake.cpp
   core/Probe.cpp
@@ -356,6 +359,7 @@ add_executable(naturalPaint
   io/SvgStyle.cpp
   io/TileResidency.cpp
   io/TextSerial.cpp
+  io/StrokesSerial.cpp
   ops/AutoLevels.cpp
   ops/Blur.cpp
   ops/ColorOps.cpp

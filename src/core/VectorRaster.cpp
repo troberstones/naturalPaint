@@ -1,5 +1,6 @@
 #include "core/VectorRaster.hpp"
 
+#include "brush/StrokesLayer.hpp"
 #include "flats/FlatsLayer.hpp"
 
 #include <algorithm>
@@ -167,7 +168,8 @@ size_t VectorRasterCache::residentBytes() const noexcept {
 }
 
 bool layerRastersToTiles(LayerKind kind) noexcept {
-  return kind == LayerKind::Vector || kind == LayerKind::Text || kind == LayerKind::Flats;
+  return kind == LayerKind::Vector || kind == LayerKind::Text || kind == LayerKind::Flats ||
+         kind == LayerKind::Strokes;
 }
 
 bool documentHasVectorLayers(const Document& doc) noexcept {
@@ -199,6 +201,23 @@ MaterializedDocument::MaterializedDocument(const Document& doc, VectorRasterCach
       layer.kind = LayerKind::RGB;
       layer.rgbTiles = flatTiles ? *flatTiles : TileStore{};
       layer.flats = FlatsContent{};
+      continue;
+    }
+
+    // **A Strokes layer takes the Flats path for the Flats path's reason**
+    // (brush/StrokesLayer, PLAN.md phase 8): its dabs may sample the
+    // composite BENEATH it, so it must be evaluated against the ORIGINAL
+    // document -- `doc`, not `copy`, whose lower layers may already have been
+    // rewritten into RGB -- and its cache is its own, keyed on the dab
+    // records and on a signature of what lies beneath. Its replay is
+    // checkpointed rather than redone, which is the same "cannot be redone on
+    // every composite" argument a segmentation makes, one order of magnitude
+    // down.
+    if (layer.kind == LayerKind::Strokes) {
+      std::shared_ptr<const TileStore> dabTiles = strokesLayerTiles(doc, index);
+      layer.kind = LayerKind::RGB;
+      layer.rgbTiles = dabTiles ? *dabTiles : TileStore{};
+      layer.strokes = StrokesContent{};
       continue;
     }
 

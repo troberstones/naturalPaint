@@ -116,12 +116,18 @@ uint32_t layerKindRailRgb(LayerKind kind) noexcept;
 // --- The NEW popup (design 2a's headline second change) --------------------
 //
 // 2a collapses three `New` buttons into one `NEW` with a popup "carrying all
-// seven kinds and their rails". **Two** of those seven cannot be created by
-// this build -- Media and Strokes, which hold no content at all here
-// (core/Layer.hpp:48: "Media and Strokes are still inert placeholders";
-// core/Merge.cpp:985 on the dabs a Strokes layer has no member for). The count
-// was three until the autoFlats port gave `makeFlatsLayer()` something to
-// make; `kMenu` in the .cpp is the list to read, not this sentence.
+// seven kinds and their rails". **One** of those seven cannot be created by
+// this build -- Media, which holds no content at all here: core/Layer.hpp says
+// it "needs the fluid solver's own per-medium state" and nothing on `Layer`
+// holds it.
+//
+// **This sentence has been wrong three times, and the count is the reason.**
+// It read "three" until the autoFlats port gave `makeFlatsLayer()` something
+// to make, "two" until PLAN phase 8 gave `Layer` a `strokes` member, and each
+// correction was a separate person noticing separately. `kMenu` in the .cpp is
+// the list to read; a number written out in prose here is a copy that rots on
+// its own schedule, and this one rotted inside an hour when the phase 8 merge
+// landed under an edit that had just fixed the previous count.
 //
 // **They are listed anyway, and drawn disabled.** That is not a dead control
 // dressed as a live one -- it is the identical decision ui/AtelierChrome's

@@ -89,6 +89,14 @@ enum class LayerCommand {
   // content. Unlike the four above it a fresh one is NOT invisible -- it
   // flats whatever line art lies beneath it as soon as it exists.
   NewFlatsLayer,
+  // PLAN.md phase 8 (PRD C1, C11, D6, F11). Same again: its `strokes` block
+  // -- a list of dab RECORDS, not pixels -- is its content, and a fresh one
+  // is empty, so it draws nothing until something is recorded into it. Added
+  // at the END of the New group rather than beside the other parametric
+  // kinds, for the same reason `NewVectorLayer` was: `allLayerCommands()`'s
+  // order is pinned by a menu-model assertion, and inserting into the middle
+  // moves every row after it.
+  NewStrokesLayer,
   DuplicateLayer,
   DeleteLayer,
   MoveLayerUp,
