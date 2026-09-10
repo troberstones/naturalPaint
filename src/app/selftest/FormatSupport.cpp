@@ -184,21 +184,53 @@ bool runFormatSupportTest() {
           "HDR reports no alpha channel (Radiance RGBE is 3-channel by definition)");
   }
 
-  // --- PSD: read-only where it exists at all ------------------------------
+  // --- PSD: readable AND writable, by this build's own code ---------------
+  //
+  // **This section used to assert PSD was read-only**, and was correct until
+  // PLAN.md phase 15 landed (io/PsdExport, docs/psd-export.md). Rewritten
+  // rather than deleted, because the interesting half of it survives: PSD's
+  // capability, in BOTH directions, comes from this project's own code and
+  // not from OpenImageIO. OIIO has a `psd` reader and no `psd` writer at
+  // all -- so a build that asked OIIO would report PSD unwritable, and the
+  // answer would be wrong.
   {
     const FormatCapability& psd = formatCapability(ImageFormat::Psd);
-    check(psd.canRead,
-          "PSD is readable (flattened read is PLAN.md step 2's actual wording)");
-    check(!psd.canWrite,
-          "PSD is NOT writable -- PSD export is phase 15, and this OpenImageIO has no PSD "
-          "writer at all");
+    check(psd.canRead, "PSD is readable, through io/PsdImport rather than OpenImageIO");
+    check(psd.canWrite, "PSD is writable, through io/PsdExport rather than OpenImageIO");
+    check(psd.backend == FormatBackend::Native,
+          "PSD names a NATIVE backend in both directions -- the answer does not come from "
+          "asking OpenImageIO, which has a psd reader and no psd writer");
+    // Asked at run time, not asserted from a table: OpenImageIO's own
+    // `output_format_list` is what decides this, and the answer is the
+    // reason PSD's capability had to come from somewhere else.
+    check(!oiioProbeFormat(ImageFormat::Psd).canWrite,
+          "and the OpenImageIO linked here genuinely cannot write PSD -- asked, not assumed");
+
+    // 8-bit only, and it is a refusal rather than a gap: a 16-bit layered
+    // PSD carries its records in an `Lr16` block io/PsdImport has no case
+    // for, so a 16-bit file this build wrote would be one Photoshop reads
+    // as corrupt or one our own reader opens flat.
+    check(psd.canWriteDepth(ExportBitDepth::UInt8), "PSD can be written at 8 bits");
+    check(!psd.canWriteDepth(ExportBitDepth::UInt16) &&
+              !psd.canWriteDepth(ExportBitDepth::Half) &&
+              !psd.canWriteDepth(ExportBitDepth::Float32),
+          "PSD is 8-bit only -- 16-bit needs an `Lr16` block the READER has no case for");
+
     const ExportResult psdExport = exportDocument(ramp, ImageFormat::Psd,
                                                   ExportTargetSpace::Rec709Srgb,
                                                   ExportBitDepth::UInt8);
-    check(!psdExport.ok && psdExport.bytes.empty(),
-          "PSD export is refused and writes no bytes");
-    check(contains(psdExport.error, "PSD") && contains(psdExport.error, "phase 15"),
-          "PSD export's refusal names the format and why");
+    check(psdExport.ok && !psdExport.bytes.empty(), "an 8-bit PSD export writes bytes");
+    check(psdExport.bytes.size() > 4 && psdExport.bytes[0] == '8' &&
+              psdExport.bytes[1] == 'B' && psdExport.bytes[2] == 'P' &&
+              psdExport.bytes[3] == 'S',
+          "and those bytes start with the '8BPS' signature io/PsdImport looks for");
+
+    const ExportResult psd16 = exportDocument(ramp, ImageFormat::Psd,
+                                              ExportTargetSpace::Rec709Srgb,
+                                              ExportBitDepth::UInt16);
+    check(!psd16.ok && psd16.bytes.empty(),
+          "a 16-bit PSD export is refused and writes no bytes");
+    check(contains(psd16.error, "PSD"), "the 16-bit refusal names the format");
   }
 
   // --- Camera raw: whatever the LINKED OpenImageIO itself says. The I3 -----

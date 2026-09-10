@@ -113,20 +113,25 @@ bool runExportDialogTest() {
           "format menu: every greyed row's tooltip is exportRefusalReason()'s string "
           "verbatim, not a reworded one");
 
-    // PSD and camera raw are read-only in EVERY configuration -- the one part
-    // of this list that does not depend on the build -- so they are the rows
-    // that pin "unwritable formats are still shown" without depending on
-    // whether this binary has OpenImageIO.
-    bool psdShownAndRefused = false;
+    // **Camera raw carries this on its own now.** PSD used to be the second
+    // read-only row here, and stopped being read-only when PLAN.md phase 15
+    // landed io/PsdExport -- so it is now the OPPOSITE case, and asserting
+    // both sides in one place is what makes "unwritable formats are still
+    // shown, greyed, with a reason" mean something rather than being a
+    // property of a list that happens to be all-greyed.
+    bool psdShownAndWritable = false;
     bool rawShownAndRefused = false;
     for (const ExportFormatChoice& c : choices) {
-      if (c.format == ImageFormat::Psd) psdShownAndRefused = !c.writable && !c.refusal.empty();
+      if (c.format == ImageFormat::Psd) psdShownAndWritable = c.writable && c.refusal.empty();
       if (c.format == ImageFormat::CameraRaw)
         rawShownAndRefused = !c.writable && !c.refusal.empty();
     }
-    check(psdShownAndRefused && rawShownAndRefused,
-          "format menu: PSD and camera raw appear, greyed, with a reason -- read-only in "
-          "every build, so this holds in both configurations");
+    check(rawShownAndRefused,
+          "format menu: camera raw appears, greyed, with a reason -- read-only in every "
+          "build, so this holds in both configurations");
+    check(psdShownAndWritable,
+          "format menu: PSD appears WRITABLE and un-greyed -- this build has its own writer, "
+          "and a greyed row would now be a lie");
   }
 
   // --------------------------------------------------------- depth legalising

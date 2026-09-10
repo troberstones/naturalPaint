@@ -82,8 +82,15 @@ bool runExportAsTest() {
     check(offered(ImageFormat::Exr) && offered(ImageFormat::Tiff) &&
               offered(ImageFormat::Hdr) && offered(ImageFormat::Dpx),
           "EXR/TIFF/HDR/DPX are offerable now that the OIIO backend is compiled in");
-    check(!offered(ImageFormat::Psd) && !offered(ImageFormat::CameraRaw),
-          "the read-only formats are never offered as export targets, in either build");
+    // **PSD moved sides here.** It was on the read-only list until PLAN.md
+    // phase 15 landed io/PsdExport; camera raw is still on it, and is the
+    // reason this assertion is worth keeping rather than deleting -- a
+    // format this build can read and cannot write must never reach the
+    // format combo.
+    check(offered(ImageFormat::Psd),
+          "PSD is offerable now that this build has its own writer");
+    check(!offered(ImageFormat::CameraRaw),
+          "camera raw, still read-only, is never offered as an export target");
 
     const std::vector<ExportBitDepth> png = offerableExportDepths(ImageFormat::Png);
     check(png.size() == 2 && png[0] == ExportBitDepth::UInt8 && png[1] == ExportBitDepth::UInt16,
@@ -96,7 +103,11 @@ bool runExportAsTest() {
               exr[1] == ExportBitDepth::Float32,
           "EXR offers half and 32-bit float and NOT 8-bit -- the depth probe's answer, not a "
           "guess about what EXR 'should' do");
-    check(offerableExportDepths(ImageFormat::Psd).empty(),
+    const std::vector<ExportBitDepth> psd = offerableExportDepths(ImageFormat::Psd);
+    check(psd.size() == 1u && psd[0] == ExportBitDepth::UInt8,
+          "PSD offers 8-bit ALONE -- 16-bit needs an `Lr16` block our own reader cannot "
+          "read back, so the dialog cannot reach it");
+    check(offerableExportDepths(ImageFormat::CameraRaw).empty(),
           "a format this build cannot write offers no depths at all");
   }
 
@@ -440,10 +451,20 @@ bool runExportAsTest() {
   // --- Every validation refusal, checked by its message -------------------
   {
     ExportRequest req;
-    req.format = ImageFormat::Psd;
+    req.format = ImageFormat::CameraRaw;
     std::string why = exportRequestAvailability(req);
-    check(!why.empty() && contains(why, "PSD"),
-          "a read-only format (PSD) is refused by name in both builds");
+    check(!why.empty(), "a read-only format (camera raw) is refused by name in both builds");
+    // PSD is writable now, but only at one depth, and the dialog's own
+    // availability query is where that has to be true or the combo could
+    // offer a request io/Export would then refuse.
+    ExportRequest psdReq;
+    psdReq.format = ImageFormat::Psd;
+    psdReq.bitDepth = ExportBitDepth::UInt8;
+    check(exportRequestAvailability(psdReq).empty(), "an 8-bit PSD request is available");
+    psdReq.bitDepth = ExportBitDepth::UInt16;
+    const std::string psd16Why = exportRequestAvailability(psdReq);
+    check(!psd16Why.empty() && contains(psd16Why, "PSD"),
+          "a 16-bit PSD request is refused by name, before the dialog can offer it");
     req.format = ImageFormat::CameraRaw;
     why = exportRequestAvailability(req);
     check(!why.empty() && contains(why, "camera raw"),
