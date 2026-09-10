@@ -477,10 +477,19 @@ bool runStrokesLayerTest() {
         // the carry as unknown and the writer then emits BOTH its own and the
         // carried one, leaving last-write-wins to choose. On an UNEDITED
         // document the two are identical and every assertion above passes.
+        //
+        // **The carry has to be HANDED BACK to the save, and that is the whole
+        // reason this assertion is worth its lines.** Written without the
+        // fourth argument it was green under a sabotage that deleted the
+        // `isLayerAttributeRecognised()` entry outright -- `saveNpaint()`
+        // defaults `carry` to `nullptr`, so a save that is never given the
+        // carry can never emit a carried attribute and the trap this block is
+        // named for cannot fire. An assertion that cannot see the defect it
+        // names is worse than no assertion, because it is read as coverage.
         Document edited = loaded.document;
         edited.layers[1].strokes.dabs.clear();
         const char* path2 = "selftest_strokes_roundtrip2.npaint";
-        if (saveNpaint(edited, path2, NpaintSaveOptions{}).ok) {
+        if (saveNpaint(edited, path2, NpaintSaveOptions{}, &loaded.carry).ok) {
           const NpaintLoadResult again = loadNpaint(path2);
           check(again.ok && again.document.layers.size() == 2 &&
                     again.document.layers[1].strokes.dabs.empty(),
@@ -582,11 +591,20 @@ bool runStrokesLayerTest() {
     // The rule the deletion follows, asserted directly rather than through a
     // session: centre-containment, and no partial deletion.
     StrokesContent c;
+    // The second dab has to be a CANDIDATE for this to be a test of the centre
+    // rule at all: `eraseDabsUnderDisc()` narrows by bounds first, so a dab
+    // whose bounds miss the eraser's rectangle is discarded before the centre
+    // is ever considered, and the assertion below passes whatever the rule is.
+    // At radius 20 its bounds are its centre +/-21, and the eraser's rectangle
+    // is [40, 61) x [40, 61) -- so 65 overlaps (45 < 61) while its centre sits
+    // 15 texels out, beyond the disc's 10. A dab at 90 overlaps NOTHING, which
+    // is what this fixture used to say and why deleting the centre test left
+    // it green.
     c.dabs.push_back(inkDab(50.0f, 50.0f, 20.0f, {1, 1, 1, 1}));  // centre inside
-    c.dabs.push_back(inkDab(90.0f, 50.0f, 20.0f, {1, 1, 1, 1}));  // overlaps, centre outside
+    c.dabs.push_back(inkDab(65.0f, 50.0f, 20.0f, {1, 1, 1, 1}));  // overlaps, centre outside
     std::vector<DabRecord> removed;
     const size_t n = eraseDabsUnderDisc(c, 50.0f, 50.0f, 10.0f, &removed);
-    check(n == 1 && removed.size() == 1 && c.dabs.size() == 1 && c.dabs[0].x == 90.0f,
+    check(n == 1 && removed.size() == 1 && c.dabs.size() == 1 && c.dabs[0].x == 65.0f,
           "F11: 'covers' means the disc contains the dab's CENTRE -- deleting everything a "
           "grazing contact touches would remove a whole stroke from one edge tap");
     check(eraseDabsUnderDisc(c, 50.0f, 50.0f, 10.0f, nullptr) == 0,
@@ -598,6 +616,27 @@ bool runStrokesLayerTest() {
     check(layerRastersToTiles(LayerKind::Strokes),
           "screen: the materialised view rewrites a Strokes layer, without which the "
           "compositor never sees its marks at all");
+
+    // **And the marks actually arrive**, which the predicate above cannot say.
+    // It is a direct call on the predicate, so it goes red when the predicate
+    // is wrong and stays green for every other way the rewrite could fail --
+    // a `continue` in the wrong place, `documentHasVectorLayers()`'s early-out
+    // taking a Strokes-only document down the no-copy path, the branch reading
+    // `copy` instead of `doc`. Sabotaging `layerRastersToTiles()` reddened
+    // that one assertion and nothing else in this file, which is precisely the
+    // shape of a suite that pins a predicate and not a behaviour. This walks
+    // the whole compositor instead and looks at the texel the user would see.
+    Document onScreen = baseDocument({0.0f, 0.0f, 0.0f, 0.0f});
+    onScreen.layers[1].strokes.dabs.push_back(
+        inkDab(64.0f, 64.0f, 8.0f, {1.0f, 0.0f, 0.0f, 1.0f}));
+    strokesForgetAll();
+    const std::vector<float> screen = compositeDocumentPremultiplied(onScreen);
+    const size_t centreAt = (static_cast<size_t>(64) * kW + 64) * 4;
+    check(screen.size() == static_cast<size_t>(kW) * kH * 4 && nearly(screen[centreAt], 1.0f) &&
+              nearly(screen[centreAt + 3], 1.0f),
+          "screen: and the dab reaches the DOCUMENT COMPOSITE -- a Strokes layer the "
+          "materialiser skips composites as an empty parametric layer and leaves the canvas "
+          "exactly as it was, with no error raised anywhere");
 
     Document before = baseDocument({0, 0, 0, 0});
     Document after = before;
