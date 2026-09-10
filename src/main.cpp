@@ -1526,6 +1526,11 @@ int main(int argc, char** argv) {
   // means the flag was not given. See the flag's own comment in the parse
   // loop for why this is one flag rather than thirty.
   np::MenuAction openModalAction = np::MenuAction::None;
+  // --press-key <Escape|Return> [frame]: one synthetic key press through
+  // ImGui's own event queue, so a `--screenshot` can photograph what a dialog
+  // does with it. See the injection in the frame loop.
+  ImGuiKey pressKey = ImGuiKey_None;
+  int pressKeyFrame = 10;
   bool advancedDynamics = false;
   // D4 (docs/reachability-audit.md): `naturalPaint foo.npaint` used to open
   // nothing, because this loop matched only `--flag` strings and fell
@@ -2172,6 +2177,28 @@ int main(int argc, char** argv) {
         }
       } else {
         std::fprintf(stderr, "[open-modal] needs a MenuAction name\n");
+        return 2;
+      }
+    } else if (a == "--press-key") {
+      // The other half of --open-modal: with a dialog open, press one key and
+      // photograph the result. This is what makes ui/Dialog's keyboard
+      // contract -- Return commits, Escape cancels -- a thing the harness can
+      // show rather than a thing the code claims: `--open-modal AdjustLevels
+      // --press-key Escape` must photograph no dialog at all. Through
+      // `io.AddKeyEvent()`, the same queue the SDL backend feeds, so the
+      // frame being tested is the real one.
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        const std::string name = argv[++i];
+        if (name == "Escape") pressKey = ImGuiKey_Escape;
+        else if (name == "Return" || name == "Enter") pressKey = ImGuiKey_Enter;
+        else {
+          std::fprintf(stderr, "[press-key] '%s' is not a key this flag knows (Escape, Return)\n",
+                       name.c_str());
+          return 2;
+        }
+        if (i + 1 < argc && argv[i + 1][0] != '-') pressKeyFrame = std::atoi(argv[++i]);
+      } else {
+        std::fprintf(stderr, "[press-key] needs a key name\n");
         return 2;
       }
     } else if (a == "--open-layer-properties") {
@@ -4796,6 +4823,13 @@ int main(int argc, char** argv) {
     // Injected after `ImGui_ImplSDL3_NewFrame()` and before `NewFrame()`,
     // which is the window in which ImGui accepts queued input events for the
     // frame about to be built.
+    // --press-key: down on one frame, up on the next, through the same queue.
+    if (pressKey != ImGuiKey_None) {
+      if (static_cast<int>(frameIndex) == pressKeyFrame)
+        ImGui::GetIO().AddKeyEvent(pressKey, true);
+      else if (static_cast<int>(frameIndex) == pressKeyFrame + 1)
+        ImGui::GetIO().AddKeyEvent(pressKey, false);
+    }
     if (penDemo) {
       const int step = static_cast<int>(frameIndex) - kPenDemoFirstFrame;
       if (step >= 0 && step <= kPenDemoSteps) {

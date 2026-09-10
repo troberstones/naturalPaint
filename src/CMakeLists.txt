@@ -374,6 +374,7 @@ add_executable(naturalPaint
   paint/Palette.cpp
   sim/PaintSim.cpp
   ui/DocumentTexture.cpp
+  ui/Dialog.cpp
   ui/LabelledControl.cpp
   ui/DynamicsMatrixPanel.cpp
   ui/MacPaintUI.cpp

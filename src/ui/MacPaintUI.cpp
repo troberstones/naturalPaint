@@ -9,6 +9,7 @@
 #include "ui/DabPicker.hpp"
 #include "ui/DynamicsMatrixPanel.hpp"
 #include "ui/FileDialog.hpp"
+#include "ui/Dialog.hpp"
 #include "ui/LabelledControl.hpp"
 #include "ui/AtelierLayout.hpp"
 #include "ui/DockLayout.hpp"
@@ -3652,26 +3653,29 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
   // `RenderDimmedBackgroundBehindWindow()` rather than re-read live. So an
   // override has to bracket `BeginPopupModal()` and nothing else -- pushing
   // around the popup's body changes nothing.
-  if (ImGui::BeginPopupModal("Layer Properties", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (beginDialog("Layer Properties")) {
     if (selected >= doc.layers.size()) {
-      ImGui::TextDisabled("This layer no longer exists.");
+      dialogHint("This layer no longer exists.");
     } else {
       const size_t i = selected;
       Layer& layer = doc.layers[i];
 
+      dialogLabelRow("Kind");
+      ImGui::AlignTextToFramePadding();
       ImGui::TextDisabled("%s  %s", layerKindGlyphForFont(layer.kind).c_str(),
                           layerKindName(layer.kind));
 
       std::snprintf(renameBuf, sizeof(renameBuf), "%s", layer.name.c_str());
-      if (ctlInputText("Name", renameBuf, sizeof(renameBuf), ImGuiInputTextFlags_EnterReturnsTrue))
+      if (dialogInputText("Name", renameBuf, sizeof(renameBuf), ImGuiInputTextFlags_EnterReturnsTrue)
+              .changed)
         run(setLayerName(doc, i, renameBuf));
 
       float opacity = layer.opacity;
-      // SliderFloat reports a change every frame of a drag; each one goes
+      // A slider reports a change every frame of a drag; each one goes
       // through setLayerOpacity() so a locked layer refuses every one of them
       // rather than the first only. History (Phase 5 step 7) is what owns
       // coalescing an interaction into one undo entry.
-      if (ctlSlider("Opacity", &opacity, 0.0f, 1.0f, "%.2f"))
+      if (dialogSlider("Opacity", &opacity, 0.0f, 1.0f, "%.2f").changed)
         run(setLayerOpacity(doc, i, opacity));
 
       // The blend dropdown, identical in every particular to the one above the
@@ -3683,7 +3687,7 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
       const std::string preview =
           sel < menu.size() ? blendMenuEntryText(menu[sel]) : layer.blend + "  (this build "
                                                                            "cannot set this)";
-      if (ctlBeginCombo("Blending mode", preview.c_str())) {
+      if (dialogBeginCombo("Blend mode", preview.c_str())) {
         for (size_t m = 0; m < menu.size(); ++m) {
           const bool isSelected = (m == sel);
           if (ImGui::Selectable(blendMenuEntryText(menu[m]).c_str(), isSelected))
@@ -3698,8 +3702,7 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
                           "Mix is offered only on a Pigment layer sitting on\n"
                           "another Pigment layer (PRD L5).");
 
-      ImGui::TextUnformatted("Colour label");
-      ImGui::SameLine();
+      dialogLabelRow("Colour label");
       // "None" first, then the seven `kLayerColorLabelNames` swatches, each a
       // small filled square rather than a text button -- `layerColorLabelSwatch()`
       // is the same lookup the row chip uses, so a colour picked here is the
@@ -3722,15 +3725,15 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
       }
 
       bool visible = layer.visible;
-      if (ImGui::Checkbox("Visible", &visible)) run(setLayerVisible(doc, i, visible));
+      if (dialogCheckbox("Visible", &visible)) run(setLayerVisible(doc, i, visible));
       bool locked = layer.locked;
-      if (ImGui::Checkbox("Locked", &locked)) run(setLayerLocked(doc, i, locked));
+      if (dialogCheckbox("Locked", &locked)) run(setLayerLocked(doc, i, locked));
       // PLAN.md Phase 5 step 9 / PRD C9. Disabled at the bottom of the stack,
       // the same "nothing below this layer" rule the row's own checkbox used to
       // enforce.
       ImGui::BeginDisabled(i == 0 && !layer.clipped);
       bool clipped = layer.clipped;
-      if (ImGui::Checkbox("Clip to Layer Below", &clipped)) run(setLayerClipped(doc, i, clipped));
+      if (dialogCheckbox("Clip to layer below", &clipped)) run(setLayerClipped(doc, i, clipped));
       ImGui::EndDisabled();
       ImGui::SetItemTooltip("Clip to the layer below (PRD C9): this layer shows only\n"
                           "where the layer beneath it has alpha. The bottom layer\n"
@@ -3740,34 +3743,36 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
       // Adjustment layer this stack is the layer's entire content: the kind
       // holds no pixels, so a fresh one is an exact no-op until an op here is
       // added *and* enabled.
-      if (ImGui::TreeNodeEx("layerOps", ImGuiTreeNodeFlags_DefaultOpen, "Ops (%zu)",
-                            layer.ops.size())) {
-        ImGui::SetItemTooltip("This layer's own non-destructive op stack. It\n"
-                            "composites through core/Composite: over the layer's\n"
-                            "own pixels for a layer that has them, and over\n"
-                            "everything beneath for an Adjustment layer.\n"
-                            "Every change here is recorded, so undo takes it\n"
-                            "back and the canvas updates. The right-click menu on\n"
-                            "the row itself also has \"Add Op\", for adding one\n"
-                            "without opening this dialog first.");
-        OpStackBinding bound;
-        bound.stack = &layer.ops;
-        bound.add = [&](Op op) { run(addLayerOp(doc, i, std::move(op))); };
-        bound.remove = [&](size_t opIndex) { run(removeLayerOp(doc, i, opIndex)); };
-        bound.move = [&](size_t from, size_t to) { run(moveLayerOp(doc, i, from, to)); };
-        bound.setEnabled = [&](size_t opIndex, bool on) {
-          run(setLayerOpEnabled(doc, i, opIndex, on));
-        };
-        bound.setOp = [&](size_t opIndex, Op op) {
-          run(setLayerOp(doc, i, opIndex, std::move(op)));
-        };
-        drawOpStackEditor(bound);
-        ImGui::TreePop();
-      }
+      dialogSection("Ops");
+      ImGui::SetItemTooltip("This layer's own non-destructive op stack. It\n"
+                          "composites through core/Composite: over the layer's\n"
+                          "own pixels for a layer that has them, and over\n"
+                          "everything beneath for an Adjustment layer.\n"
+                          "Every change here is recorded, so undo takes it\n"
+                          "back and the canvas updates. The right-click menu on\n"
+                          "the row itself also has \"Add Op\", for adding one\n"
+                          "without opening this dialog first.");
+      OpStackBinding bound;
+      bound.stack = &layer.ops;
+      bound.add = [&](Op op) { run(addLayerOp(doc, i, std::move(op))); };
+      bound.remove = [&](size_t opIndex) { run(removeLayerOp(doc, i, opIndex)); };
+      bound.move = [&](size_t from, size_t to) { run(moveLayerOp(doc, i, from, to)); };
+      bound.setEnabled = [&](size_t opIndex, bool on) {
+        run(setLayerOpEnabled(doc, i, opIndex, on));
+      };
+      bound.setOp = [&](size_t opIndex, Op op) { run(setLayerOp(doc, i, opIndex, std::move(op))); };
+      drawOpStackEditor(bound);
     }
-    ImGui::Separator();
-    if (ImGui::Button("Close") || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
-    ImGui::EndPopup();
+    // Every edit above has already been applied through `run()`, so there is
+    // nothing to cancel and one button to leave by -- and the footer says so,
+    // because every other dialog in this application holds its edits until
+    // Apply and a user has no other way to tell which kind this is.
+    DialogFooter footer;
+    footer.commit = "Done";
+    footer.cancel = nullptr;
+    footer.note = "Changes apply as you make them.";
+    if (dialogFooter(footer) != DialogAction::None) ImGui::CloseCurrentPopup();
+    endDialog();
   }
 
   // --- The diagnostics, below the panel rather than above it ---------------
@@ -4251,7 +4256,7 @@ void drawColorSection(AppState& st) {
     // selected thing", and the foreground being over range is not a selection.
     if (exceedsDisplayRange(st.brush.rgb)) {
       pushAtelierMono();
-      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.92f, 0.78f, 0.35f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_Text, dialogStatusColor(DialogStatus::Warning));
       ImGui::TextUnformatted("OVER RANGE  swatch is clamped");
       ImGui::PopStyleColor();
       popAtelierMono();
@@ -4910,7 +4915,7 @@ void drawBrushLibrarySection(AppState& st, GpuContext& gpu, const MixboxLut& lut
     if (r.libraryId != 0 && r.libraryId == pendingLib && r.rowIndex == pendingRow)
       label = "\xc2\xb7 " + label;
 
-    if (broken) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    if (broken) ImGui::PushStyleColor(ImGuiCol_Text, dialogStatusColor(DialogStatus::Error));
     else if (!loaded) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(
                                                 atelierToken(kTextSecondary)));
     if (ImGui::Selectable(label.c_str(), isActive)) clickedRow = index;
@@ -4955,7 +4960,7 @@ void drawBrushLibrarySection(AppState& st, GpuContext& gpu, const MixboxLut& lut
       // its rows retries too; this exists so the action is visible without
       // having to guess that a click would do anything.
       if (ImGui::SmallButton("Retry")) retryRequest = entry.id;
-      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_Text, dialogStatusColor(DialogStatus::Error));
       ImGui::TextWrapped("%s", entry.failure.c_str());
       ImGui::PopStyleColor();
     } else if (entry.status == BrushLibraryStatus::Stale) {
@@ -6930,6 +6935,10 @@ void drawCompsSection(AppState& st) {
 //     tooltip ("nothing on it is saved, undone or exported") landed in
 //     `8140912` and is the canonical statement now.
 bool g_exportAsRequested = false;
+// The chrome's one-line status beside the menus. Declared up here, ahead of
+// the export dialogs, because a successful Export As now closes its dialog and
+// reports here rather than into a line the popup had already closed over.
+std::string g_docStatus;
 bool g_exportStatesRequested = false;
 
 namespace {
@@ -6940,17 +6949,11 @@ namespace {
 // three ways -- the format list, the FitWithin hint and the depth
 // legalisation -- and every one of those drifts was invisible to the suite.
 void drawExportSettingsControls(ExportRequest& request) {
-  // Wide enough for the longest name any of these four combos can show, which
-  // is `exportTargetSpaceName()`'s "Rec709Srgb (Rec.709 primaries, sRGB
-  // transfer)". Measured against the rendered frame, not guessed: at the
-  // default combo width that string clipped at "...primaries, sR", which turns
-  // the one control whose parenthetical carries the actual distinction between
-  // the three targets into a control that shows only the enum identifier --
-  // the exact opposite of what that parenthetical is for. "Fit within
-  // (preserves aspect, never enlarges)" is the runner-up and fits in the same
-  // width.
-  ImGui::PushItemWidth(400.0f);
-  if (ImGui::BeginCombo("Format", imageFormatName(request.format))) {
+  // The control column of a Wide dialog fits the longest name any of these
+  // combos can show -- `exportTargetSpaceName()`'s "Rec709Srgb (Rec.709
+  // primaries, sRGB transfer)" -- which is the parenthetical that carries the
+  // actual distinction between the three targets.
+  if (dialogBeginCombo("Format", imageFormatName(request.format))) {
     // Every format, including the ones this build cannot write. See
     // app/ExportDialog.hpp §1 for the argument and for why the batch dialog
     // used to disagree.
@@ -6977,7 +6980,7 @@ void drawExportSettingsControls(ExportRequest& request) {
   // Target colour space (PRD I5). Three, and the names are io/Export's own --
   // see this section's "not simplified" note on why they are as long as they
   // are.
-  if (ImGui::BeginCombo("Colour space", exportTargetSpaceName(request.targetSpace))) {
+  if (dialogBeginCombo("Colour space", exportTargetSpaceName(request.targetSpace))) {
     for (int i = 0; i < 3; ++i) {
       const auto s = static_cast<ExportTargetSpace>(i);
       if (ImGui::Selectable(exportTargetSpaceName(s), s == request.targetSpace))
@@ -6988,7 +6991,7 @@ void drawExportSettingsControls(ExportRequest& request) {
 
   // Bit depth (PRD B6, I5): only the depths this build can write this format
   // at, which is why EXR offers half and float but not 8-bit.
-  if (ImGui::BeginCombo("Bit depth", exportBitDepthName(request.bitDepth))) {
+  if (dialogBeginCombo("Bit depth", exportBitDepthName(request.bitDepth))) {
     for (ExportBitDepth d : offerableExportDepths(request.format)) {
       if (ImGui::Selectable(exportBitDepthName(d), d == request.bitDepth)) request.bitDepth = d;
     }
@@ -6996,7 +6999,7 @@ void drawExportSettingsControls(ExportRequest& request) {
   }
 
   // Resize (PRD I15's "and resize").
-  if (ImGui::BeginCombo("Resize", exportResizeModeName(request.resize.mode))) {
+  if (dialogBeginCombo("Resize", exportResizeModeName(request.resize.mode))) {
     for (std::size_t i = 0; i < kExportResizeModeCount; ++i) {
       const auto m = static_cast<ExportResizeMode>(i);
       if (ImGui::Selectable(exportResizeModeName(m), m == request.resize.mode))
@@ -7010,24 +7013,28 @@ void drawExportSettingsControls(ExportRequest& request) {
     case ExportResizeField::None:
       break;
     case ExportResizeField::Percent:
-      ImGui::SetNextItemWidth(160.0f);
-      ImGui::SliderFloat("Percent", &request.resize.percent, 1.0f, 100.0f, "%.1f%%");
-      ImGui::TextDisabled("Above 100%% is refused: this build downscales only.");
+      dialogSlider("Scale", &request.resize.percent, 1.0f, 100.0f, "%.1f", "%");
+      dialogHint("Above 100%% is refused: this build downscales only.");
       break;
     case ExportResizeField::FitBox: {
       int box[2] = {static_cast<int>(request.resize.maxWidth),
                     static_cast<int>(request.resize.maxHeight)};
-      ImGui::SetNextItemWidth(200.0f);
-      if (ImGui::InputInt2("Fit within (px)", box)) {
+      float avail = 0.0f;
+      dialogLabelRow("Fit within", &avail);
+      ImGui::SetNextItemWidth(std::max(40.0f, avail - ImGui::CalcTextSize("px").x -
+                                                  ImGui::GetStyle().ItemInnerSpacing.x));
+      if (ImGui::InputInt2("##fitWithin", box)) {
         request.resize.maxWidth = static_cast<uint32_t>(box[0] > 0 ? box[0] : 0);
         request.resize.maxHeight = static_cast<uint32_t>(box[1] > 0 ? box[1] : 0);
       }
+      ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextDisabled("px");
       // Both dialogs offered this mode; only one of them said what it does.
-      ImGui::TextDisabled("Aspect preserved; a smaller document is never enlarged.");
+      dialogHint("Aspect preserved; a smaller document is never enlarged.");
       break;
     }
   }
-  ImGui::PopItemWidth();
 }
 
 // `validateExportRequest()`'s answer, drawn identically for both dialogs: the
@@ -7035,19 +7042,14 @@ void drawExportSettingsControls(ExportRequest& request) {
 // io/Export's own words.
 //
 // The batch dialog had none of this and ran the same settings over N files.
-void drawExportValidation(const ExportValidation& validation, const ImVec4& warnColour,
-                          const ImVec4& errorColour) {
+void drawExportValidation(const ExportValidation& validation) {
   if (validation.ok) {
-    ImGui::Text("Output: %ux%u", validation.outWidth, validation.outHeight);
-    for (const std::string& w : validation.warnings) {
-      ImGui::PushStyleColor(ImGuiCol_Text, warnColour);
-      ImGui::TextWrapped("! %s", w.c_str());
-      ImGui::PopStyleColor();
-    }
+    dialogLabelRow("Output size");
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("%u \xc3\x97 %u px", validation.outWidth, validation.outHeight);
+    for (const std::string& w : validation.warnings) dialogStatusLine(DialogStatus::Warning, w);
   } else {
-    ImGui::PushStyleColor(ImGuiCol_Text, errorColour);
-    ImGui::TextWrapped("%s", validation.error.c_str());
-    ImGui::PopStyleColor();
+    dialogStatusLine(DialogStatus::Error, validation.error);
   }
 }
 
@@ -7062,13 +7064,12 @@ void drawExportValidation(const ExportValidation& validation, const ImVec4& warn
 // dialog's own derived state (its picked-list) is deliberately NOT cleared by
 // a preset, because a preset carries the four PRD I15 settings and says
 // nothing about which comps or layers were chosen.
-void drawExportPresetCombo(const char* label, ExportPresetStore& presets, ExportRequest& request,
+// Returns true on the frame a preset was loaded into `request`.
+bool drawExportPresetCombo(const char* label, ExportPresetStore& presets, ExportRequest& request,
                            std::string& loadedName, std::string& status) {
+  bool loadedOne = false;
   const ExportPreset* loaded = loadedName.empty() ? nullptr : presets.find(loadedName);
-  // The same width as the settings block below it, so the top of the dialog is
-  // one column rather than two.
-  ImGui::SetNextItemWidth(400.0f);
-  if (ImGui::BeginCombo(label, exportPresetMenuLabel(loaded, request).c_str())) {
+  if (dialogBeginCombo(label, exportPresetMenuLabel(loaded, request).c_str())) {
     if (presets.presets().empty()) ImGui::TextDisabled("(none saved yet)");
     for (const ExportPreset& p : presets.presets()) {
       const std::string why = exportRequestAvailability(p.request);
@@ -7077,6 +7078,7 @@ void drawExportPresetCombo(const char* label, ExportPresetStore& presets, Export
         request = p.request;
         loadedName = p.name;
         status = "Loaded preset '" + p.name + "'.";
+        loadedOne = true;
       }
       if (!why.empty()) {
         ImGui::EndDisabled();
@@ -7085,6 +7087,7 @@ void drawExportPresetCombo(const char* label, ExportPresetStore& presets, Export
     }
     ImGui::EndCombo();
   }
+  return loadedOne;
 }
 
 // The height a scrolling list of `rows` should get: exactly what it holds, up
@@ -7105,13 +7108,6 @@ float exportListHeight(std::size_t rows, std::size_t maxRows, bool framed) {
 // Why an Export button is off, drawn where a user looks when a button will not
 // press: immediately beside it. Empty means the button is live and nothing is
 // drawn at all.
-void drawExportBlockedReason(const std::string& reason, const ImVec4& warnColour) {
-  if (reason.empty()) return;
-  ImGui::SameLine();
-  ImGui::PushStyleColor(ImGuiCol_Text, warnColour);
-  ImGui::TextWrapped("%s", reason.c_str());
-  ImGui::PopStyleColor();
-}
 
 }  // namespace
 
@@ -7193,151 +7189,166 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
   }
   if (!wantOpen) exportAsOpenLatched = false;
   g_exportAsRequested = false;
-  if (!ImGui::BeginPopupModal("Export As", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+  // Whether `status` is a refusal (red) or a note (secondary): "Loaded preset
+  // 'x'" and "could not write x" used to share one white line.
+  static bool statusIsError = false;
+  if (!beginDialog("Export As", DialogWidth::Wide)) return;
 
   // Loaded on first open, never at startup: a preset file nobody asked for
   // costs nothing (PRD A2, ADR-0001), and --selftest's idle-RSS measurement
   // would notice if that stopped being true.
   if (!presetsLoaded) {
     presetsLoaded = true;
-    if (!presets.loadFromFile(defaultExportPresetsPath()))
+    if (!presets.loadFromFile(defaultExportPresetsPath())) {
       status = presets.error();
-    else if (!presets.problems().empty())
+      statusIsError = true;
+    } else if (!presets.problems().empty()) {
       status = presets.problems().front();
+      statusIsError = true;
+    }
   }
-
   const std::string presetsPath = defaultExportPresetsPath();
-  const ImVec4 kError(0.95f, 0.45f, 0.40f, 1.0f);
-  const ImVec4 kWarn(0.92f, 0.78f, 0.35f, 1.0f);
-
-  // What this dialog produces, said before anything else. The two File menu
-  // items are distinguishable only by reading both of them carefully; this
-  // line is where a user who guessed wrong finds out in one glance.
-  ImGui::TextDisabled("One image file, from the active document.");
 
   // What is being exported, named rather than assumed. These are two
   // genuinely different things in this build and conflating them on screen
-  // would be the dishonest option. The noun leads and the numbers follow --
-  // the size is not the subject of this sentence.
+  // would be the dishonest option.
   const OpenDocument* activeDoc = st.documents.active();
   const uint32_t srcW = activeDoc ? static_cast<uint32_t>(activeDoc->document.width) : canvasW;
   const uint32_t srcH = activeDoc ? static_cast<uint32_t>(activeDoc->document.height) : canvasH;
   if (activeDoc)
-    ImGui::TextDisabled("Source: document '%s' (%ux%u) -- not the painting canvas.",
-                        documentDisplayName(*activeDoc).c_str(), srcW, srcH);
+    dialogHint("One image file from \xe2\x80\x9c%s\xe2\x80\x9d (%u \xc3\x97 %u), never the painting canvas.",
+               documentDisplayName(*activeDoc).c_str(), srcW, srcH);
   else
-    // The whole canvas-versus-document explanation is the title band's, as of
-    // `8140912`; this says only which of the two this dialog is looking at.
-    ImGui::TextDisabled("Source: none. The %ux%u painting canvas is a solver texture, not a "
-                        "document, and cannot be exported.",
-                        srcW, srcH);
-  ImGui::Separator();
+    dialogStatusLine(DialogStatus::Warning,
+                     "No document is open. The painting canvas is a solver texture, not a "
+                     "document, and cannot be exported.");
 
   // --- Presets (PRD I15's "with saveable presets") ------------------------
   //
   // One control, at the top, with the management behind it -- Photoshop's
-  // shape. This block used to be five controls plus a raw path line, sitting
-  // between the validation and the Export button, which put the preset
-  // machinery physically between the result and the act it described.
-  drawExportPresetCombo("Preset", presets, request, loadedPresetName, status);
-  ImGui::SameLine();
-  if (ImGui::SmallButton(managePresets ? "Manage -" : "Manage +")) managePresets = !managePresets;
+  // shape.
+  dialogSection("Preset");
+  if (drawExportPresetCombo("Preset", presets, request, loadedPresetName, status))
+    statusIsError = false;
+  dialogLabelRow(nullptr);
+  if (ImGui::SmallButton(managePresets ? "Hide Preset Manager" : "Manage Presets\xe2\x80\xa6"))
+    managePresets = !managePresets;
   if (managePresets) {
-    ImGui::Indent();
-    ImGui::SetNextItemWidth(220.0f);
-    ImGui::InputText("Preset name", presetNameBuf, sizeof(presetNameBuf));
-    ImGui::SameLine();
-    if (ImGui::Button("Save")) {
+    dialogInputText("Name", presetNameBuf, sizeof(presetNameBuf));
+    dialogLabelRow(nullptr);
+    if (ImGui::SmallButton("Save Preset")) {
       ExportPreset p;
       p.name = presetNameBuf;
       p.request = request;
       std::string err;
       if (!presets.savePreset(p, &err)) {
         status = err;
+        statusIsError = true;
       } else if (!presets.saveToFile(presetsPath, &err)) {
         status = err;
+        statusIsError = true;
       } else {
         loadedPresetName = p.name;
         status = "Saved preset '" + p.name + "' to " + presetsPath;
+        statusIsError = false;
       }
     }
     ImGui::SameLine();
-    if (ImGui::Button("Delete")) {
+    if (ImGui::SmallButton("Delete Preset")) {
       std::string err;
       if (!presets.removePreset(presetNameBuf)) {
         status = std::string("No preset named '") + presetNameBuf + "' to delete.";
+        statusIsError = true;
       } else if (!presets.saveToFile(presetsPath, &err)) {
         status = err;
+        statusIsError = true;
       } else {
         if (loadedPresetName == presetNameBuf) loadedPresetName.clear();
         status = std::string("Deleted preset '") + presetNameBuf + "'.";
+        statusIsError = false;
       }
     }
-    ImGui::TextDisabled("Presets file: %s", presetsPath.c_str());
-    ImGui::Unindent();
+    dialogHint("Presets file: %s", presetsPath.c_str());
   }
 
   // --- The four settings, shared with the batch dialog --------------------
-  ImGui::Separator();
+  dialogSection("Format");
   drawExportSettingsControls(request);
 
   // --- Validation, in io/Export's own words -------------------------------
   const ExportValidation validation = validateExportRequest(
       request, srcW, srcH, activeDoc ? &activeDoc->document.workingSpace : nullptr, nullptr);
-  ImGui::Separator();
-  drawExportValidation(validation, kWarn, kError);
+  drawExportValidation(validation);
 
   // --- Where it goes ------------------------------------------------------
-  ImGui::Separator();
-  ImGui::SetNextItemWidth(360.0f);
-  ImGui::InputText("Output file", exportPathBuf, sizeof(exportPathBuf));
-  ImGui::SameLine();
-  if (ImGui::Button("Choose...")) {
-    // **One filter row, naming the format this panel is currently set to** --
-    // not the whole writable list. macOS appends the *first* allowed type to
-    // a bare filename, so offering every writable extension here would let it
-    // append `.exr` to a file `exportDocumentWithRequestToFile()` is about to
-    // write as a PNG, and the mismatch would only show up when something
-    // tried to read it back.
-    //
-    // The field stays: this fills it in rather than replacing it, because an
-    // export path is often typed as a variation on the last one.
-    //
-    // The ellipsis is right here and wrong on Export below: ui/MenuModel.cpp's
-    // own rule is that "..." marks something that opens a dialog rather than
-    // acting on the spot, and this raises an NSSavePanel.
-    const FileDialogFilterRow row{imageFormatName(request.format),
-                                  imageFormatExtension(request.format)};
-    if (requestFileDialogWithFilter(FileDialogPurpose::ExportImage,
-                                    fileDialogDirectoryOf(exportPathBuf), row))
-      exportPathPanelInFlight = true;
-    else
-      status = "A file panel is already open; finish or cancel it first.";
+  dialogSection("Output");
+  {
+    float avail = 0.0f;
+    dialogLabelRow("File", &avail);
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const char* kChoose = "Choose\xe2\x80\xa6";
+    const float chooseW = ImGui::CalcTextSize(kChoose).x + style.FramePadding.x * 2.0f;
+    ImGui::SetNextItemWidth(std::max(40.0f, avail - chooseW - style.ItemInnerSpacing.x));
+    ImGui::InputText("##exportPath", exportPathBuf, sizeof(exportPathBuf));
+    ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+    if (ImGui::Button(kChoose)) {
+      // **One filter row, naming the format this panel is currently set to**
+      // -- not the whole writable list. macOS appends the *first* allowed
+      // type to a bare filename, so offering every writable extension here
+      // would let it append `.exr` to a file
+      // `exportDocumentWithRequestToFile()` is about to write as a PNG, and
+      // the mismatch would only show up when something tried to read it
+      // back.
+      //
+      // The field stays: this fills it in rather than replacing it, because
+      // an export path is often typed as a variation on the last one.
+      const FileDialogFilterRow row{imageFormatName(request.format),
+                                    imageFormatExtension(request.format)};
+      if (requestFileDialogWithFilter(FileDialogPurpose::ExportImage,
+                                      fileDialogDirectoryOf(exportPathBuf), row))
+        exportPathPanelInFlight = true;
+      else {
+        status = "A file panel is already open; finish or cancel it first.";
+        statusIsError = true;
+      }
+    }
   }
 
   // --- Export -------------------------------------------------------------
-  ImGui::Separator();
   const std::string blocked =
       exportAsBlockedReason(activeDoc != nullptr, validation, exportPathBuf);
-  if (!blocked.empty()) ImGui::BeginDisabled();
-  if (ImGui::Button("Export")) {
-    std::string err;
-    if (exportDocumentWithRequestToFile(activeDoc->document, exportPathBuf, request, &err))
-      status = std::string("Exported ") + exportPathBuf;
-    else
-      status = err;
-  }
-  if (!blocked.empty()) ImGui::EndDisabled();
-  // The reason lives beside the button it explains. It used to live nowhere
-  // at all for the empty-path case -- see this section's item 5.
-  drawExportBlockedReason(blocked, kWarn);
+  // A precondition -- no document, no path yet -- is said quietly; a
+  // validation refusal is already in red above and is not said twice.
+  if (!blocked.empty() && validation.ok) dialogHint("%s", blocked.c_str());
+  dialogStatusLine(statusIsError ? DialogStatus::Error : DialogStatus::Info, status);
 
-  if (!status.empty()) ImGui::TextWrapped("%s", status.c_str());
-  if (ImGui::Button("Close")) {
-    st.openExportAsDialog = false;
-    ImGui::CloseCurrentPopup();
+  DialogFooter footer;
+  footer.commit = "Export";
+  footer.commitEnabled = blocked.empty();
+  switch (dialogFooter(footer)) {
+    case DialogAction::Commit: {
+      std::string err;
+      if (exportDocumentWithRequestToFile(activeDoc->document, exportPathBuf, request, &err)) {
+        // Done: the dialog closes and the chrome's status line carries the
+        // result, the way a save does.
+        g_docStatus = std::string("Exported ") + exportPathBuf;
+        status.clear();
+        st.openExportAsDialog = false;
+        ImGui::CloseCurrentPopup();
+      } else {
+        status = err;
+        statusIsError = true;
+      }
+      break;
+    }
+    case DialogAction::Cancel:
+      st.openExportAsDialog = false;
+      ImGui::CloseCurrentPopup();
+      break;
+    default:
+      break;
   }
-  ImGui::EndPopup();
+  endDialog();
 }
 
 // ------------------------------------------- Export Comps / Layers To Files
@@ -7388,35 +7399,30 @@ void drawExportStatesDialog(AppState& st) {
   }
   if (!wantOpen) statesOpenLatched = false;
   g_exportStatesRequested = false;
-  if (!ImGui::BeginPopupModal("Export Comps / Layers To Files", nullptr,
-                              ImGuiWindowFlags_AlwaysAutoResize))
-    return;
+  static bool statusIsError = false;
+  if (!beginDialog("Export Comps / Layers To Files", DialogWidth::Wide)) return;
 
   if (!presetsLoaded) {
     presetsLoaded = true;
     presets.loadFromFile(defaultExportPresetsPath());
   }
 
-  const ImVec4 kError(0.95f, 0.45f, 0.40f, 1.0f);
-  const ImVec4 kWarn(0.92f, 0.78f, 0.35f, 1.0f);
-  const ImVec4 kGood(0.55f, 0.85f, 0.55f, 1.0f);
-
-  ImGui::TextDisabled("One image file per comp or per layer, into a folder.");
-
   const OpenDocument* activeDoc = st.documents.active();
   if (activeDoc == nullptr) {
     // The same sentence the Export button would carry, from the same
     // function, so the two cannot come to disagree.
-    ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
-    ImGui::TextWrapped("%s", exportStatesBlockedReason(false, 0, ExportStatesReport{}).c_str());
-    ImGui::PopStyleColor();
-    ImGui::TextDisabled("The painting canvas is a solver texture, not a document: it has no "
-                        "comps and no layers.");
-    if (ImGui::Button("Close")) {
+    dialogStatusLine(DialogStatus::Warning,
+                     exportStatesBlockedReason(false, 0, ExportStatesReport{}));
+    dialogHint("The painting canvas is a solver texture, not a document: it has no comps "
+               "and no layers.");
+    DialogFooter footer;
+    footer.commit = "OK";
+    footer.cancel = nullptr;
+    if (dialogFooter(footer) != DialogAction::None) {
       st.openExportStatesDialog = false;
       ImGui::CloseCurrentPopup();
     }
-    ImGui::EndPopup();
+    endDialog();
     return;
   }
   const Document& doc = activeDoc->document;
@@ -7434,27 +7440,19 @@ void drawExportStatesDialog(AppState& st) {
     justOpened = false;
     if (doc.comps.empty()) request.source = ExportStateSource::Layers;
     picked.clear();
+    hasRun = false;
+    status.clear();
   }
 
-  ImGui::TextDisabled("Source: document '%s' -- %zu comp%s, %zu layer%s.",
-                      request.documentName.c_str(), doc.comps.size(),
-                      doc.comps.size() == 1 ? "" : "s", doc.layers.size(),
-                      doc.layers.size() == 1 ? "" : "s");
-  ImGui::Separator();
+  dialogHint("One image file per comp or per layer from \xe2\x80\x9c%s\xe2\x80\x9d "
+             "(%zu comp%s, %zu layer%s), into a folder.",
+             request.documentName.c_str(), doc.comps.size(), doc.comps.size() == 1 ? "" : "s",
+             doc.layers.size(), doc.layers.size() == 1 ? "" : "s");
 
-  // --- What is enumerated -------------------------------------------------
-  //
-  // PRD I17 (comps) and PRD I16 (layers). Those two citations used to be
-  // *inside the radio button labels* -- "Comps (PRD I17)" -- which is a spec
-  // identifier presented as the name of a control. They live here now, which
-  // is where the rest of this file keeps its citations.
+  // --- What is enumerated: PRD I17 (comps) and PRD I16 (layers) -----------
   int sourceIdx = request.source == ExportStateSource::Comps ? 0 : 1;
-  ImGui::TextUnformatted("Export one file per:");
-  ImGui::SameLine();
-  const bool sourceChanged = ImGui::RadioButton("Comp", &sourceIdx, 0);
-  ImGui::SameLine();
-  const bool sourceChanged2 = ImGui::RadioButton("Layer", &sourceIdx, 1);
-  if (sourceChanged || sourceChanged2) picked.clear();
+  static const char* kSources[] = {"Comp", "Layer"};
+  if (dialogRadioRow("One file per", &sourceIdx, kSources, 2)) picked.clear();
   request.source = sourceIdx == 0 ? ExportStateSource::Comps : ExportStateSource::Layers;
 
   // --- Presets, then the four settings, both shared with Export As --------
@@ -7463,58 +7461,43 @@ void drawExportStatesDialog(AppState& st) {
   // (File > Export As...), and offering a second Save from a dialog whose
   // extra controls -- folder, template, overwrite, selection -- are NOT part
   // of an `ExportPreset` would imply they were being saved too.
-  ImGui::Separator();
-  drawExportPresetCombo("Preset", presets, request.format, loadedPresetName, status);
-  ImGui::SameLine();
-  ImGui::TextDisabled("(saved in File > Export As...)");
+  dialogSection("Format");
+  if (drawExportPresetCombo("Preset", presets, request.format, loadedPresetName, status))
+    statusIsError = false;
+  dialogHint("Presets are saved from File > Export As\xe2\x80\xa6");
   drawExportSettingsControls(request.format);
 
   // --- Validation, over this document's dimensions ------------------------
-  //
-  // New here. The batch dialog offered every one of Export As's settings and
-  // showed none of Export As's answers about them -- no output size, and none
-  // of PRD I11's cost warnings -- while applying them to N files instead of
-  // one. Same call, same strings.
   const ExportValidation validation =
       validateExportRequest(request.format, static_cast<uint32_t>(doc.width),
                             static_cast<uint32_t>(doc.height), &doc.workingSpace, nullptr);
-  ImGui::Separator();
-  drawExportValidation(validation, kWarn, kError);
+  drawExportValidation(validation);
 
   // --- Where, and under what names (PRD I17's "with a name template") -----
-  ImGui::Separator();
-  ImGui::SetNextItemWidth(420.0f);
-  ImGui::InputText("Output folder", dirBuf, sizeof(dirBuf));
-  ImGui::SetNextItemWidth(420.0f);
-  ImGui::InputText("Name template", templateBuf, sizeof(templateBuf));
-  // The token list on one line, with the paragraph explaining each of them --
-  // and explaining the deliberate absence of a date token -- one hover away.
-  //
-  // Three wrapped lines of reference prose sat here permanently, in the middle
-  // of a form that is already taller than the window, and they pushed the
-  // Export button below the fold. **Both strings come from io/ExportStates'
-  // own single list** (`exportNameTemplateTokens()` and
-  // `exportNameTemplateHelp()`, which that header keeps in step by
-  // construction: "There is one list, so the two cannot disagree"), so this is
-  // a shorter view of one vocabulary rather than a second one.
+  dialogSection("Output");
+  dialogInputText("Folder", dirBuf, sizeof(dirBuf));
+  dialogInputText("Name template", templateBuf, sizeof(templateBuf));
+  // The token list on one line, with the paragraph explaining each of them
+  // one hover away. **Both strings come from io/ExportStates' own single
+  // list** (`exportNameTemplateTokens()` and `exportNameTemplateHelp()`),
+  // so this is a shorter view of one vocabulary rather than a second one.
   {
     std::string tokenLine = "Tokens:";
     for (const std::string& t : exportNameTemplateTokens()) tokenLine += " " + t;
-    tokenLine += "   (hover for what each does)";
-    ImGui::TextDisabled("%s", tokenLine.c_str());
+    tokenLine += ". Hover for what each does.";
+    dialogHint("%s", tokenLine.c_str());
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::BeginTooltip();
-      ImGui::PushTextWrapPos(560.0f);
+      ImGui::PushTextWrapPos(420.0f);
       ImGui::TextUnformatted(exportNameTemplateHelp().c_str());
       ImGui::PopTextWrapPos();
       ImGui::EndTooltip();
     }
   }
-  ImGui::Checkbox("Overwrite files that already exist", &request.overwriteExisting);
-  // PRD P4's all-or-nothing rule. The citation used to be in this sentence,
-  // on screen; it is a comment now for the reason the radio buttons' were.
+  dialogCheckbox("Overwrite files that already exist", &request.overwriteExisting);
+  // PRD P4's all-or-nothing rule.
   if (!request.overwriteExisting)
-    ImGui::TextDisabled("Off: an existing output path refuses the whole batch.");
+    dialogHint("Off: a file that already exists refuses the whole batch.");
   request.outputDirectory = dirBuf;
   request.nameTemplate = templateBuf;
 
@@ -7522,18 +7505,16 @@ void drawExportStatesDialog(AppState& st) {
   const size_t total =
       request.source == ExportStateSource::Comps ? doc.comps.size() : doc.layers.size();
   if (picked.size() != total) picked.assign(total, true);
-  ImGui::Separator();
-  ImGui::Text("Which %s", exportStateSourcePlural(request.source));
-  ImGui::SameLine();
+  dialogSection(exportStateSourcePlural(request.source));
+  float listW = 0.0f;
+  dialogLabelRow(nullptr, &listW);
   if (ImGui::SmallButton("All")) picked.assign(total, true);
   ImGui::SameLine();
   if (ImGui::SmallButton("None")) picked.assign(total, false);
-  // Sized to its contents, capped, rather than a fixed 96px. Both this list
-  // and the plan below it used to reserve a fixed height whatever they held,
-  // which on a three-layer document is a screenful of empty box in a dialog
-  // that is already taller than the window -- and it was pushing the Export
-  // button and the Close button off the bottom of the screen.
-  if (ImGui::BeginChild("##pick", ImVec2(420.0f, exportListHeight(total, 6, true)), true)) {
+  // Sized to its contents, capped: a fixed height on a three-layer document
+  // was a screenful of empty box in a dialog already taller than the window.
+  dialogLabelRow(nullptr, &listW);
+  if (ImGui::BeginChild("##pick", ImVec2(listW, exportListHeight(total, 6, true)), true)) {
     for (size_t i = 0; i < total; ++i) {
       const std::string label =
           (request.source == ExportStateSource::Comps
@@ -7554,7 +7535,7 @@ void drawExportStatesDialog(AppState& st) {
   const bool noneChosen = request.selection.empty();
 
   // --- The plan: exactly what a click would write, computed for free ------
-  ImGui::Separator();
+  //
   // Recomputed every frame rather than cached, which is the right trade here
   // and is flagged rather than assumed: the plan is a pure function of controls
   // the user is editing, so caching it would mean an invalidation rule with one
@@ -7566,20 +7547,20 @@ void drawExportStatesDialog(AppState& st) {
   ExportStatesReport plan;
   if (!noneChosen) plan = planStateExport(doc, request);
   const std::string blocked = exportStatesBlockedReason(true, request.selection.size(), plan);
+  dialogSection("Plan");
   if (!blocked.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, noneChosen ? kWarn : kError);
-    ImGui::TextWrapped("%s", blocked.c_str());
-    ImGui::PopStyleColor();
+    // Nothing chosen is a precondition, said quietly; a plan that refuses is
+    // a refusal.
+    if (noneChosen) dialogHint("%s", blocked.c_str());
+    else dialogStatusLine(DialogStatus::Error, blocked);
   } else {
-    ImGui::Text("Will write %zu file%s (%zu skipped):", plan.items.size() - plan.skipped(),
-                plan.items.size() - plan.skipped() == 1 ? "" : "s", plan.skipped());
-    if (ImGui::BeginChild("##plan", ImVec2(560.0f, exportListHeight(plan.items.size(), 6, false)),
-                          true)) {
+    dialogText("Will write %zu file%s (%zu skipped):", plan.items.size() - plan.skipped(),
+               plan.items.size() - plan.skipped() == 1 ? "" : "s", plan.skipped());
+    if (ImGui::BeginChild("##plan",
+                          ImVec2(0.0f, exportListHeight(plan.items.size(), 6, false)), true)) {
       for (const ExportStateItem& item : plan.items) {
         if (item.filename.empty()) {
-          ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
-          ImGui::TextWrapped("skipped -- %s", item.reason.c_str());
-          ImGui::PopStyleColor();
+          dialogStatusLine(DialogStatus::Warning, "skipped: " + item.reason);
         } else {
           ImGui::TextUnformatted(item.filename.c_str());
         }
@@ -7588,52 +7569,55 @@ void drawExportStatesDialog(AppState& st) {
     ImGui::EndChild();
   }
 
-  // --- Export, and the per-file report (PRD P4) ---------------------------
-  ImGui::Separator();
-  if (!blocked.empty()) ImGui::BeginDisabled();
-  // No ellipsis: this writes the files. See this section's item 6.
-  if (ImGui::Button("Export")) {
-    lastRun = exportDocumentStates(doc, request);
-    hasRun = true;
-    status = exportStatesSummary(lastRun);
-  }
-  if (!blocked.empty()) ImGui::EndDisabled();
-  ImGui::SameLine();
-  ImGui::TextDisabled("Exports the open document's %s, never the painting canvas.",
-                      exportStateSourcePlural(request.source));
-
-  if (!status.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, lastRun.ok ? kGood : kError);
-    ImGui::TextWrapped("%s", status.c_str());
-    ImGui::PopStyleColor();
-  }
-  if (hasRun && !lastRun.items.empty()) {
-    // Per file, always -- never one line claiming a count. PRD P4.
-    if (ImGui::BeginChild("##report", ImVec2(560.0f, exportListHeight(lastRun.items.size(), 6, false)),
-                          true)) {
-      for (const ExportStateItem& item : lastRun.items) {
-        const bool bad = item.outcome == ExportItemOutcome::Failed ||
-                         item.outcome == ExportItemOutcome::NotAttempted;
-        if (bad) ImGui::PushStyleColor(ImGuiCol_Text, kError);
-        ImGui::TextWrapped("%-13s %s%s%s", exportItemOutcomeName(item.outcome),
-                           item.filename.empty() ? item.stateName.c_str() : item.filename.c_str(),
-                           item.reason.empty() ? "" : " -- ", item.reason.c_str());
-        if (bad) ImGui::PopStyleColor();
-        for (const std::string& w : item.warnings) {
-          ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
-          ImGui::TextWrapped("    ! %s", w.c_str());
-          ImGui::PopStyleColor();
+  // --- The per-file report of the last run (PRD P4) -----------------------
+  if (hasRun) {
+    dialogSection("Result");
+    dialogStatusLine(statusIsError ? DialogStatus::Error : DialogStatus::Info, status);
+    if (!lastRun.items.empty()) {
+      // Per file, always -- never one line claiming a count. PRD P4.
+      if (ImGui::BeginChild("##report",
+                            ImVec2(0.0f, exportListHeight(lastRun.items.size(), 6, false)),
+                            true)) {
+        for (const ExportStateItem& item : lastRun.items) {
+          const bool bad = item.outcome == ExportItemOutcome::Failed ||
+                           item.outcome == ExportItemOutcome::NotAttempted;
+          if (bad) ImGui::PushStyleColor(ImGuiCol_Text, dialogStatusColor(DialogStatus::Error));
+          ImGui::TextWrapped("%-13s %s%s%s", exportItemOutcomeName(item.outcome),
+                             item.filename.empty() ? item.stateName.c_str() : item.filename.c_str(),
+                             item.reason.empty() ? "" : " -- ", item.reason.c_str());
+          if (bad) ImGui::PopStyleColor();
+          for (const std::string& w : item.warnings)
+            dialogStatusLine(DialogStatus::Warning, "    ! " + w);
         }
       }
+      ImGui::EndChild();
     }
-    ImGui::EndChild();
+  } else {
+    dialogStatusLine(statusIsError ? DialogStatus::Error : DialogStatus::Info, status);
   }
 
-  if (ImGui::Button("Close")) {
-    st.openExportStatesDialog = false;
-    ImGui::CloseCurrentPopup();
+  // No ellipsis on Export: it writes the files. The dialog stays open
+  // afterwards because the per-file report above is the point of it, so the
+  // other button reads Close once there is a result to close.
+  DialogFooter footer;
+  footer.commit = "Export";
+  footer.commitEnabled = blocked.empty();
+  footer.cancel = hasRun ? "Close" : "Cancel";
+  switch (dialogFooter(footer)) {
+    case DialogAction::Commit:
+      lastRun = exportDocumentStates(doc, request);
+      hasRun = true;
+      status = exportStatesSummary(lastRun);
+      statusIsError = !lastRun.ok;
+      break;
+    case DialogAction::Cancel:
+      st.openExportStatesDialog = false;
+      ImGui::CloseCurrentPopup();
+      break;
+    default:
+      break;
   }
-  ImGui::EndPopup();
+  endDialog();
 }
 
 // ------------------------------------------------------- Document lifecycle
@@ -7677,7 +7661,6 @@ enum class DocPathAction { None, Open, SaveAs, SaveCopy, ImportImage, ImportBrus
 bool g_docPathRequested = false;
 DocPathAction g_docPathAction = DocPathAction::None;
 bool g_revertConfirmRequested = false;
-std::string g_docStatus;
 // Whether the last `applyDocumentPathAction()` succeeded, which is how the path
 // modal decides to close itself.
 //
@@ -7937,7 +7920,7 @@ void drawDocumentDialogs(AppState& st) {
     closeDialogError.clear();
     ImGui::OpenPopup(kCloseDecisionPopup);
   }
-  if (ImGui::BeginPopupModal(kCloseDecisionPopup, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (beginDialog(kCloseDecisionPopup)) {
     OpenDocument* closing = st.documents.find(st.pendingClose.document);
     if (closing == nullptr) {
       // Closed by something else while the question was up, so there is
@@ -7958,40 +7941,29 @@ void drawDocumentDialogs(AppState& st) {
       // The question names the document and the work, in app/CloseDecision's
       // words -- which are PRD I11's own `unsavedWorkSummary()`. Read from the
       // live record, so a rename behind the dialog renames the dialog.
-      ImGui::TextWrapped("%s", closeQuestion(*closing).c_str());
-      ImGui::Spacing();
+      dialogText("%s", closeQuestion(*closing).c_str());
+      dialogStatusLine(DialogStatus::Error, closeDialogError);
 
-      // **Don't Save is set apart, on the left, in the warning colour.** It is
+      // **Don't Save is set apart, at the left, in the error colour.** It is
       // the only button here that destroys anything, so it does not sit in the
       // row where a user's hand goes -- macOS's own arrangement for a
-      // destructive third choice, and the reason for the 40 px gap rather than
-      // the usual item spacing: a mis-aimed click on Cancel must not land on
-      // it.
-      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-      const bool pressedDontSave = ImGui::Button("Don't Save");
-      ImGui::PopStyleColor();
-      ImGui::SameLine(0.0f, 40.0f);
-      const bool pressedCancel = ImGui::Button("Cancel");
-      ImGui::SameLine();
-      const bool pressedSave = ImGui::Button("Save");
-
-      // The two keys, through app/CloseDecision's mapping rather than through
-      // a pair of literals here -- the mapping is asserted in `--selftest` and
-      // this is the call site that has to be the one being asserted.
-      //
-      // Handled explicitly because this build does not set
-      // `ImGuiConfigFlags_NavEnableKeyboard`, so ImGui neither activates a
-      // focused button on Enter nor closes a modal on Escape; both keys are
-      // ours to read. **No key can reach Don't Save** -- there is no third
-      // branch here and `closeAnswerForKey()` has no third answer to give.
+      // destructive third choice, and ui/Dialog's `alternate` slot exists for
+      // exactly this button. **No key reaches it**: the footer's Return is the
+      // default (Save) and its Escape is Cancel, the same pair
+      // app/CloseDecision's `closeAnswerForKey()` asserts in --selftest, and
+      // the left-hand button is offered no key at all.
+      DialogFooter footer;
+      footer.commit = "Save";
+      footer.cancel = "Cancel";
+      footer.alternate = "Don't Save";
+      footer.alternateDestructive = true;
       std::optional<CloseAnswer> answer;
-      if (pressedDontSave) answer = CloseAnswer::DontSave;
-      else if (pressedCancel) answer = CloseAnswer::Cancel;
-      else if (pressedSave) answer = CloseAnswer::Save;
-      else if (ImGui::IsKeyPressed(ImGuiKey_Escape))
-        answer = closeAnswerForKey(CloseKey::Escape);
-      else if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))
-        answer = closeAnswerForKey(CloseKey::Enter);
+      switch (dialogFooter(footer)) {
+        case DialogAction::Commit: answer = CloseAnswer::Save; break;
+        case DialogAction::Cancel: answer = CloseAnswer::Cancel; break;
+        case DialogAction::Alternate: answer = CloseAnswer::DontSave; break;
+        case DialogAction::None: break;
+      }
 
       if (answer) {
         const CloseOutcome outcome = answerPendingClose(st, *answer);
@@ -8037,13 +8009,8 @@ void drawDocumentDialogs(AppState& st) {
         closeDialogError = answerFailed ? outcome.status : std::string();
         if (!st.pendingClose.asking()) ImGui::CloseCurrentPopup();
       }
-      if (!closeDialogError.empty()) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-        ImGui::TextWrapped("%s", closeDialogError.c_str());
-        ImGui::PopStyleColor();
-      }
     }
-    ImGui::EndPopup();
+    endDialog();
   } else if (st.pendingClose.asking() && closePopupWasOpen) {
     // The popup was open at the top of this frame and is not open now, and no
     // button above ran -- so something outside this block dismissed it. The
@@ -8116,25 +8083,29 @@ void drawDocumentDialogs(AppState& st) {
       }
     }
   }
-  if (ImGui::BeginPopupModal(kDocPathProblemPopup, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::Text("Could not %s that file.", docPathActionVerb(g_docPathProblemAction));
-    ImGui::Spacing();
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-    ImGui::TextWrapped("%s", g_docStatus.c_str());
-    ImGui::PopStyleColor();
-    ImGui::Spacing();
-    if (ImGui::Button("Choose Another File...")) {
-      // Read before the popup closes; `g_docPathProblemAction` is not cleared
-      // by closing, but the request below overwrites `g_docPathAction` and
-      // the two are easy to confuse from a distance.
-      const DocPathAction retry = g_docPathProblemAction;
-      ImGui::CloseCurrentPopup();
-      g_docPathAction = retry;
-      g_docPathRequested = true;
+  if (beginDialog(kDocPathProblemPopup)) {
+    dialogText("Could not %s that file.", docPathActionVerb(g_docPathProblemAction));
+    dialogStatusLine(DialogStatus::Error, g_docStatus);
+    DialogFooter footer;
+    footer.commit = "Choose Another File\xe2\x80\xa6";
+    switch (dialogFooter(footer)) {
+      case DialogAction::Commit: {
+        // Read before the popup closes; `g_docPathProblemAction` is not
+        // cleared by closing, but the request below overwrites
+        // `g_docPathAction` and the two are easy to confuse from a distance.
+        const DocPathAction retry = g_docPathProblemAction;
+        ImGui::CloseCurrentPopup();
+        g_docPathAction = retry;
+        g_docPathRequested = true;
+        break;
+      }
+      case DialogAction::Cancel:
+        ImGui::CloseCurrentPopup();
+        break;
+      default:
+        break;
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-    ImGui::EndPopup();
+    endDialog();
   }
 
   // A close that was waiting for a file name, now that the dialog above has
@@ -8193,10 +8164,35 @@ void drawDocumentDialogs(AppState& st) {
     g_docStatus.clear();
     ImGui::OpenPopup("Revert");
   }
-  if (ImGui::BeginPopupModal("Revert", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (beginDialog("Revert")) {
     OpenDocument* doc = st.documents.active();
     if (!doc) {
       ImGui::CloseCurrentPopup();
+    } else if (!doc->hasPath()) {
+      // Never saved: there is no version to go back to, so this is not a
+      // confirmation at all and offers no destructive button (docs/
+      // modal-screenshots/README.md §4.7 photographed the old one offering
+      // "Discard and revert" here, an irreversible action that could not
+      // succeed). The useful thing to offer is the save that would make
+      // Revert mean something.
+      dialogText("\xe2\x80\x9c%s\xe2\x80\x9d has never been saved, so there is no saved version "
+                 "to revert to.",
+                 documentDisplayName(*doc).c_str());
+      dialogHint("Save it first; Revert then returns to that saved version.");
+      DialogFooter footer;
+      footer.commit = "Save As\xe2\x80\xa6";
+      switch (dialogFooter(footer)) {
+        case DialogAction::Commit:
+          g_docPathAction = DocPathAction::SaveAs;
+          g_docPathRequested = true;
+          ImGui::CloseCurrentPopup();
+          break;
+        case DialogAction::Cancel:
+          ImGui::CloseCurrentPopup();
+          break;
+        default:
+          break;
+      }
     } else {
       // Attempted, not probed: a clean document has nothing to confirm, so
       // the unconfirmed call simply succeeds and the popup closes. A dirty
@@ -8207,19 +8203,29 @@ void drawDocumentDialogs(AppState& st) {
         g_docStatus = "Reverted " + attempt.path;
         ImGui::CloseCurrentPopup();
       } else {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.92f, 0.78f, 0.35f, 1.0f));
-        ImGui::TextWrapped("%s", attempt.error.c_str());
-        ImGui::PopStyleColor();
-        if (ImGui::Button("Discard and revert")) {
-          const DocumentOpResult done = revertDocument(*doc, {true});
-          g_docStatus = done.ok ? "Reverted " + done.path : done.error;
-          ImGui::CloseCurrentPopup();
+        dialogText("Revert \xe2\x80\x9c%s\xe2\x80\x9d to the version saved on disk?",
+                   documentDisplayName(*doc).c_str());
+        dialogHint("This discards %s and reloads %s. There is no undo for it.",
+                   doc->unsavedWorkSummary().c_str(), doc->path.c_str());
+        DialogFooter footer;
+        footer.commit = "Revert";
+        footer.commitDestructive = true;
+        switch (dialogFooter(footer)) {
+          case DialogAction::Commit: {
+            const DocumentOpResult done = revertDocument(*doc, {true});
+            g_docStatus = done.ok ? "Reverted " + done.path : done.error;
+            ImGui::CloseCurrentPopup();
+            break;
+          }
+          case DialogAction::Cancel:
+            ImGui::CloseCurrentPopup();
+            break;
+          default:
+            break;
         }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
       }
     }
-    ImGui::EndPopup();
+    endDialog();
   }
 }
 
@@ -8260,49 +8266,39 @@ void drawRecoveryDialog(AppState& st) {
     g_recoveryStatus.clear();
     ImGui::OpenPopup("Recover Documents");
   }
-  if (!ImGui::BeginPopupModal("Recover Documents", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-    return;
+  if (!beginDialog("Recover Documents", DialogWidth::Wide)) return;
 
-  const ImVec4 kWarn(0.92f, 0.78f, 0.35f, 1.0f);
   if (st.recovery.empty()) {
-    ImGui::TextDisabled("No unfinished sessions were found.");
+    dialogText("No unfinished sessions were found.");
+    dialogHint("A session that ends without shutting down is offered here on the next launch.");
   } else {
-    ImGui::TextWrapped("These sessions ended without shutting down. Nothing has been opened "
-                       "or deleted.");
+    dialogText("These sessions ended without shutting down. Nothing has been opened or deleted.");
   }
-  if (!journalAvailable()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
-    ImGui::TextWrapped("%s", journalUnavailableReason().c_str());
-    ImGui::PopStyleColor();
-  }
-  ImGui::Separator();
+  if (!journalAvailable()) dialogStatusLine(DialogStatus::Warning, journalUnavailableReason());
 
   for (size_t s = 0; s < st.recovery.size(); ++s) {
     RecoverySession& session = st.recovery[s];
     ImGui::PushID(static_cast<int>(s));
     // PRD O8's "named and dated": the date the session *started*, and the
     // documents' own names.
-    ImGui::Text("Session of %s  --  %zu document(s)", session.startedAtLocal.c_str(),
-                session.documents.size());
-    ImGui::TextDisabled("%s", session.directory.c_str());
-    for (const std::string& p : session.problems) {
-      ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
-      ImGui::TextWrapped("%s", p.c_str());
-      ImGui::PopStyleColor();
-    }
+    char heading[96];
+    std::snprintf(heading, sizeof(heading), "Session of %s", session.startedAtLocal.c_str());
+    dialogSection(heading);
+    dialogHint("%s", session.directory.c_str());
+    for (const std::string& p : session.problems) dialogStatusLine(DialogStatus::Warning, p);
     for (size_t d = 0; d < session.documents.size(); ++d) {
       const RecoveryDocument& entry = session.documents[d];
       ImGui::PushID(static_cast<int>(d));
-      ImGui::Bullet();
-      ImGui::SameLine();
-      ImGui::Text("%s", entry.displayName.c_str());
+      dialogLabelRow(nullptr);
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted(entry.displayName.c_str());
       if (!entry.unsavedSummary.empty()) {
         ImGui::SameLine();
         ImGui::TextDisabled("(%s)", entry.unsavedSummary.c_str());
       }
       if (entry.intact) {
         ImGui::SameLine();
-        if (ImGui::Button("Recover")) {
+        if (ImGui::SmallButton("Recover")) {
           OpenDocument recovered;
           const DocumentOpResult r = recoverDocument(entry, &recovered);
           if (r.ok) {
@@ -8314,13 +8310,12 @@ void drawRecoveryDialog(AppState& st) {
           }
         }
       } else {
-        ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
-        ImGui::TextWrapped("%s", entry.problem.c_str());
-        ImGui::PopStyleColor();
+        dialogStatusLine(DialogStatus::Warning, entry.problem);
       }
       ImGui::PopID();
     }
-    if (ImGui::Button("Discard this session")) {
+    dialogLabelRow(nullptr);
+    if (ImGui::SmallButton("Discard This Session")) {
       std::string discardError;
       if (discardRecoverySession(session, &discardError)) {
         g_recoveryStatus = "Discarded " + session.directory;
@@ -8331,16 +8326,27 @@ void drawRecoveryDialog(AppState& st) {
       g_recoveryStatus = discardError;
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("(deletes the files above; there is no undo)");
-    ImGui::Separator();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("Deletes the files above; there is no undo.");
     ImGui::PopID();
   }
 
-  if (!g_recoveryStatus.empty()) ImGui::TextWrapped("%s", g_recoveryStatus.c_str());
-  if (ImGui::Button("Later")) ImGui::CloseCurrentPopup();
-  ImGui::SameLine();
-  ImGui::TextDisabled("Nothing is deleted; this is offered again next launch.");
-  ImGui::EndPopup();
+  dialogStatusLine(DialogStatus::Info, g_recoveryStatus);
+
+  // Empty: there is no offer to decline, so the one button is OK. Otherwise
+  // "Later" declines without deleting, and the note says so where the old
+  // dialog said it beside the button.
+  DialogFooter footer;
+  if (st.recovery.empty()) {
+    footer.commit = "OK";
+    footer.cancel = nullptr;
+  } else {
+    footer.commit = nullptr;
+    footer.cancel = "Later";
+    footer.note = "Nothing is deleted; this is offered again next launch.";
+  }
+  if (dialogFooter(footer) != DialogAction::None) ImGui::CloseCurrentPopup();
+  endDialog();
 }
 
 // ---------------------------------------------------------------------------
@@ -8649,6 +8655,47 @@ bool g_embossRequested = false;
 bool g_medianRequested = false;
 bool g_motionBlurRequested = false;
 
+// Shared tail of every Filter and Adjustments dialog: the refusal line, then ui/Dialog's
+// footer. `Apply` everywhere -- docs/modal-screenshots/README.md §4.2 counted
+// four of these dialogs naming their commit button after themselves and one
+// calling it `Mix`; a user cannot learn where the default is if it is never
+// called the same thing twice.
+//
+// Written once rather than twenty times because the three-way outcome --
+// refused / changed nothing / done -- is the part most likely to drift if
+// copied, and because "nothing changed" MUST close the popup rather than sit
+// there looking broken (a neutral params struct is a legitimate thing to click
+// Apply on). That case now says so in the chrome's status line, where a closed
+// dialog can still be read from, rather than in a `status` string the popup
+// had already closed over.
+template <typename ApplyFn>
+void pixelOpFooter(OpenDocument* od, const char* label, std::string& status, ApplyFn applyFn) {
+  dialogStatusLine(DialogStatus::Error, status);
+  DialogFooter footer;
+  footer.commit = "Apply";
+  footer.commitEnabled = od != nullptr;
+  switch (dialogFooter(footer)) {
+    case DialogAction::Commit: {
+      const FilterOpResult r = applyFn(*od);
+      if (r.refusal != PixelOpRefusal::None) {
+        status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), label);
+      } else {
+        if (r.texelsChanged == 0)
+          g_docStatus = "Nothing changed: the settings were neutral, or nothing was selected.";
+        status.clear();
+        ImGui::CloseCurrentPopup();
+      }
+      break;
+    }
+    case DialogAction::Cancel:
+      status.clear();
+      ImGui::CloseCurrentPopup();
+      break;
+    default:
+      break;
+  }
+}
+
 void drawGaussianBlurDialog(AppState& st) {
   static float sigma = 8.0f;  // texels; ops/Blur.hpp's own worked examples use this
   static std::string status;
@@ -8665,11 +8712,11 @@ void drawGaussianBlurDialog(AppState& st) {
     status.clear();
     ImGui::OpenPopup("Gaussian Blur");
   }
-  if (!ImGui::BeginPopupModal("Gaussian Blur", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    // Reached on every kind of close -- Cancel, a successful Blur, or Escape
-    // -- which is exactly what makes this the one place Cancel's new job
-    // (T15: discard the preview) gets done, regardless of which of the three
-    // just happened. See `clearFilterPreview()`'s own comment.
+  if (!beginDialog("Gaussian Blur")) {
+    // Reached on every kind of close -- Cancel, a successful apply, or Escape
+    // -- which is exactly what makes this the one place Cancel's job (T15:
+    // discard the preview) gets done, regardless of which of the three just
+    // happened. See `clearFilterPreview()`'s own comment.
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::GaussianBlur);
     return;
@@ -8677,59 +8724,26 @@ void drawGaussianBlurDialog(AppState& st) {
 
   OpenDocument* od = st.documents.active();
 
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::SliderFloat("Radius (sigma, texels)", &sigma, 0.0f, 250.0f, "%.1f");
-  // **On release, not on every tick of the drag.** `SliderFloat()`'s own
-  // return value is true on EVERY frame the value moves, and recomputing the
-  // preview that often would call `previewGaussianBlur()` (and, behind it,
-  // `filterPreviewViewFor()`'s full document recomposite) once per pixel of
-  // mouse travel. This task's own report measures what that costs at this
-  // app's own default document size, `main.cpp`'s 1024x1024 `kCanvasW`/
-  // `kCanvasH` (app/selftest/FilterMenu.cpp section G): ~275 ms of engine
-  // time alone at sigma 8, ~14x PRD F3's whole 20 ms pen-to-photon budget --
-  // and that is the SMALL end of what a user opens. Recomputing on every
-  // tick would not be a slow live preview; it would be the whole
-  // application not responding to input for the length of the drag.
-  //
-  // `IsItemDeactivatedAfterEdit()` is Dear ImGui's own "the user just
-  // finished editing this" signal -- true once, on mouse-up (or on Enter for
-  // a typed value), never on the intermediate frames of a drag. Trading
-  // continuous liveness for that is an honest, scoped mitigation of the
-  // FREQUENCY of a too-slow recompute, not a fix for its per-call cost: the
-  // one recompute this still does, on release, is exactly as slow as it was
-  // before. Fitting inside F3 for real needs what this task's report names
-  // and does not build -- a preview at view resolution, or on a downsampled
-  // proxy, so the recompute itself gets cheap rather than merely rarer.
-  const bool sigmaSettled = ImGui::IsItemDeactivatedAfterEdit();
-  ImGui::TextDisabled("0 is the identity. ops/Blur.hpp's apron is ceil(4 * sigma) texels.");
+  // **Previewed on release (`settled`), not on every tick of the drag.** A
+  // recompute calls `previewGaussianBlur()` and, behind it, a full document
+  // recomposite: ~275 ms of engine time at sigma 8 on this app's own default
+  // 1024x1024 document (app/selftest/FilterMenu.cpp section G), ~14x PRD F3's
+  // whole 20 ms pen-to-photon budget -- and that is the SMALL end of what a
+  // user opens. Recomputing on every tick would not be a slow live preview;
+  // it would be the whole application not responding to input for the length
+  // of the drag. `DialogEdit::settled` is Dear ImGui's own "the user just
+  // finished editing this" signal, once per release. Fitting inside F3 for
+  // real needs a preview at view resolution, which this does not build.
+  const DialogEdit edited = dialogSlider("Radius", &sigma, 0.0f, 250.0f, "%.1f", "px");
+  dialogHint("0 leaves the image unchanged. The preview updates when you release the slider.");
 
-  // Also recomputed on the dialog's first visible frame (`!wasOpen`), so the
-  // canvas shows a preview from the moment it opens rather than only after
-  // the first completed drag.
-  if (sigmaSettled || !wasOpen)
+  if (edited.settled || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::GaussianBlur, previewGaussianBlur, sigma);
   wasOpen = true;
 
-  if (ImGui::Button("Blur") && od != nullptr) {
-    const FilterOpResult r = applyGaussianBlur(*od, sigma);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "gaussian blur");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (radius 0, or no selected texels).";
-      ImGui::CloseCurrentPopup();
-    } else {
-      status.clear();
-      ImGui::CloseCurrentPopup();
-    }
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-  if (!status.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-    ImGui::TextWrapped("%s", status.c_str());
-    ImGui::PopStyleColor();
-  }
-  ImGui::EndPopup();
+  pixelOpFooter(od, "gaussian blur", status,
+                [](OpenDocument& d) { return applyGaussianBlur(d, sigma); });
+  endDialog();
 }
 
 void drawSharpenDialog(AppState& st) {
@@ -8742,7 +8756,7 @@ void drawSharpenDialog(AppState& st) {
     status.clear();
     ImGui::OpenPopup("Sharpen");
   }
-  if (!ImGui::BeginPopupModal("Sharpen", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Sharpen")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::Sharpen);
     return;
@@ -8750,47 +8764,23 @@ void drawSharpenDialog(AppState& st) {
 
   OpenDocument* od = st.documents.active();
 
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::SliderFloat("Strength", &strength, 0.0f, 3.0f, "%.2f");
-  // On release, not on every tick -- see drawGaussianBlurDialog()'s own
-  // comment on `IsItemDeactivatedAfterEdit()` for why. Sharpen's engine call
-  // is `unsharpMaskTiles()` at the fixed `kSharpenSigma` (a small radius, so
-  // cheaper than a large Gaussian Blur sigma) but still a full-canvas pass at
-  // every recompute, and the SAME full document recomposite behind it.
-  const bool strengthSettled = ImGui::IsItemDeactivatedAfterEdit();
+  // On release, not on every tick -- see drawGaussianBlurDialog(). Sharpen's
+  // engine call is `unsharpMaskTiles()` at the fixed `kSharpenSigma` (a small
+  // radius, so cheaper than a large Gaussian Blur sigma) but still a
+  // full-canvas pass with the same document recomposite behind it.
+  const DialogEdit edited = dialogSlider("Strength", &strength, 0.0f, 3.0f, "%.2f");
   // kSharpenSigma is named rather than offered as a control: ops/Filters.hpp
   // section 3 argues at length for why 1.0 is the one radius this one-click
-  // filter should have, and a slider here would be the second radius control
-  // the header's own "one-click filter, not an operator" distinction warns
-  // against re-opening. Unsharp Mask, two rows down in this same menu, is
+  // filter should have. Unsharp Mask, two rows down in this same menu, is
   // where the radius becomes a dial.
-  ImGui::TextDisabled("Fixed radius (sigma %.1f) -- see Unsharp Mask for a radius control.",
-                      kSharpenSigma);
+  dialogHint("Sharpens at a fixed small radius. For a radius control, use Unsharp Mask.");
 
-  if (strengthSettled || !wasOpen)
+  if (edited.settled || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::Sharpen, previewSharpen, strength);
   wasOpen = true;
 
-  if (ImGui::Button("Sharpen") && od != nullptr) {
-    const FilterOpResult r = applySharpen(*od, strength);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "sharpen");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (strength 0, or no selected texels).";
-      ImGui::CloseCurrentPopup();
-    } else {
-      status.clear();
-      ImGui::CloseCurrentPopup();
-    }
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-  if (!status.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-    ImGui::TextWrapped("%s", status.c_str());
-    ImGui::PopStyleColor();
-  }
-  ImGui::EndPopup();
+  pixelOpFooter(od, "sharpen", status, [](OpenDocument& d) { return applySharpen(d, strength); });
+  endDialog();
 }
 
 void drawUnsharpMaskDialog(AppState& st) {
@@ -8804,7 +8794,7 @@ void drawUnsharpMaskDialog(AppState& st) {
     status.clear();
     ImGui::OpenPopup("Unsharp Mask");
   }
-  if (!ImGui::BeginPopupModal("Unsharp Mask", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Unsharp Mask")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::UnsharpMask);
     return;
@@ -8812,52 +8802,29 @@ void drawUnsharpMaskDialog(AppState& st) {
 
   OpenDocument* od = st.documents.active();
 
-  // On release, not on every tick, for all three sliders -- see
-  // drawGaussianBlurDialog()'s own comment on `IsItemDeactivatedAfterEdit()`.
-  // This dialog's radius is the SAME Gaussian sigma Gaussian Blur's own
-  // slider drives (`params.blur.sigma` below), so the cost measured there
-  // (app/selftest/FilterMenu.cpp section G) applies here unchanged at the
-  // same radius.
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::SliderFloat("Amount", &params.amount, 0.0f, 5.0f, "%.2f");
-  bool paramsSettled = ImGui::IsItemDeactivatedAfterEdit();
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::SliderFloat("Radius (sigma, texels)", &radius, 0.1f, 250.0f, "%.1f");
-  paramsSettled |= ImGui::IsItemDeactivatedAfterEdit();
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::SliderFloat("Threshold", &params.threshold, 0.0f, 0.20f, "%.3f");
-  paramsSettled |= ImGui::IsItemDeactivatedAfterEdit();
-  ImGui::TextDisabled(
-      "Threshold is shaper-domain (ops/Filters.hpp section 2): 0.02 ignores differences "
-      "smaller than 27%% of the local level, at every brightness.");
+  // On release for all three -- see drawGaussianBlurDialog(). This dialog's
+  // radius is the SAME Gaussian sigma Gaussian Blur's own slider drives
+  // (`params.blur.sigma` below), so the cost measured there applies here
+  // unchanged at the same radius.
+  DialogEdit edited;
+  edited |= dialogSlider("Amount", &params.amount, 0.0f, 5.0f, "%.2f");
+  edited |= dialogSlider("Radius", &radius, 0.1f, 250.0f, "%.1f", "px");
+  edited |= dialogSlider("Threshold", &params.threshold, 0.0f, 0.20f, "%.3f");
+  // ops/Filters.hpp section 2: threshold is shaper-domain, so 0.02 ignores
+  // differences smaller than ~27% of the local level at every brightness.
+  dialogHint("Threshold leaves differences smaller than itself alone, so smooth areas stay "
+             "smooth while edges sharpen.");
 
   params.blur.kind = BlurKind::Gaussian;
   params.blur.sigma = radius;
 
-  if (paramsSettled || !wasOpen)
+  if (edited.settled || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::UnsharpMask, previewUnsharpMask, params);
   wasOpen = true;
 
-  if (ImGui::Button("Sharpen") && od != nullptr) {
-    const FilterOpResult r = applyUnsharpMask(*od, params);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "unsharp mask");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (amount or radius 0, or no selected texels).";
-      ImGui::CloseCurrentPopup();
-    } else {
-      status.clear();
-      ImGui::CloseCurrentPopup();
-    }
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-  if (!status.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-    ImGui::TextWrapped("%s", status.c_str());
-    ImGui::PopStyleColor();
-  }
-  ImGui::EndPopup();
+  pixelOpFooter(od, "unsharp mask", status,
+                [](OpenDocument& d) { return applyUnsharpMask(d, params); });
+  endDialog();
 }
 
 void drawAddNoiseDialog(AppState& st) {
@@ -8869,16 +8836,13 @@ void drawAddNoiseDialog(AppState& st) {
   if (g_addNoiseRequested) {
     g_addNoiseRequested = false;
     status.clear();
-    // A fresh seed every time the dialog opens: PRD-shaped noise is
-    // reproducible GIVEN a seed (ops/Filters.hpp's "whole reproducibility
-    // contract"), which is a claim about re-running the SAME request, not
-    // about every Add Noise ever looking identical. `--selftest` pins the
-    // reproducibility half directly, by seed, rather than through this UI
-    // convenience.
+    // A fresh seed per open, so two invocations do not lay down the identical
+    // grain -- the reproducibility half is pinned by `--selftest` directly, by
+    // seed, rather than through this UI convenience.
     params.seed = static_cast<uint64_t>(ImGui::GetTime() * 1e6) ^ 0x9e3779b97f4a7c15ull;
     ImGui::OpenPopup("Add Noise");
   }
-  if (!ImGui::BeginPopupModal("Add Noise", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Add Noise")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::AddNoise);
     return;
@@ -8886,57 +8850,33 @@ void drawAddNoiseDialog(AppState& st) {
 
   OpenDocument* od = st.documents.active();
 
-  // Amount is the one continuous drag here -- on release, not on every tick,
-  // for the reason drawGaussianBlurDialog()'s own comment on
-  // `IsItemDeactivatedAfterEdit()` gives. Uniform/Gaussian and Monochrome are
-  // single-click, so `IsItemDeactivatedAfterEdit()` reports the same frame
-  // their old plain "changed" read did -- used here anyway, for one shared
-  // idiom across all four controls rather than a drag-only exception.
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::SliderFloat("Amount", &params.amount, 0.0f, 0.5f, "%.3f");
-  bool paramsSettled = ImGui::IsItemDeactivatedAfterEdit();
-  ImGui::RadioButton("Uniform", &distributionIdx, 0);
-  paramsSettled |= ImGui::IsItemDeactivatedAfterEdit();
-  ImGui::SameLine();
-  ImGui::RadioButton("Gaussian", &distributionIdx, 1);
-  paramsSettled |= ImGui::IsItemDeactivatedAfterEdit();
+  // Amount is the one continuous drag here -- on release, for the reason
+  // drawGaussianBlurDialog() gives. The radio, the checkbox and the seed are
+  // single clicks, so a change IS a settle.
+  DialogEdit edited = dialogSlider("Amount", &params.amount, 0.0f, 0.5f, "%.3f");
+  static const char* kDistributions[] = {"Uniform", "Gaussian"};
+  if (dialogRadioRow("Distribution", &distributionIdx, kDistributions, 2)) edited.settled = true;
   params.distribution =
       distributionIdx == 0 ? NoiseDistribution::Uniform : NoiseDistribution::Gaussian;
-  ImGui::Checkbox("Monochrome", &params.monochrome);
-  paramsSettled |= ImGui::IsItemDeactivatedAfterEdit();
-  ImGui::TextDisabled("Amount is shaper-domain (ops/Filters.hpp section 5): 0.05 is a +/-83%% "
-                      "swing in linear light at every brightness above the shadow toe.");
-  ImGui::Text("Seed: %llu", static_cast<unsigned long long>(params.seed));
+  if (dialogCheckbox("Monochrome", &params.monochrome)) edited.settled = true;
+  dialogLabelRow("Seed");
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextDisabled("%llu", static_cast<unsigned long long>(params.seed));
   ImGui::SameLine();
-  if (ImGui::Button("New seed")) {
+  if (ImGui::SmallButton("New Seed")) {
     params.seed = static_cast<uint64_t>(ImGui::GetTime() * 1e6) ^ 0x9e3779b97f4a7c15ull;
-    paramsSettled = true;
+    edited.settled = true;
   }
+  // ops/Filters.hpp section 5: amount is shaper-domain, so 0.05 is a +/-83%
+  // swing in linear light at every brightness above the shadow toe.
+  dialogHint("0.05 is already a strong grain, and the same grain at every brightness.");
 
-  if (paramsSettled || !wasOpen)
+  if (edited.settled || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AddNoise, previewAddNoise, params);
   wasOpen = true;
 
-  if (ImGui::Button("Add Noise") && od != nullptr) {
-    const FilterOpResult r = applyAddNoise(*od, params);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "add noise");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (amount 0, or no selected texels).";
-      ImGui::CloseCurrentPopup();
-    } else {
-      status.clear();
-      ImGui::CloseCurrentPopup();
-    }
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-  if (!status.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-    ImGui::TextWrapped("%s", status.c_str());
-    ImGui::PopStyleColor();
-  }
-  ImGui::EndPopup();
+  pixelOpFooter(od, "add noise", status, [](OpenDocument& d) { return applyAddNoise(d, params); });
+  endDialog();
 }
 
 // ---------------------------------------------------------------------------
@@ -8968,7 +8908,7 @@ void drawEmbossDialog(AppState& st) {
     status.clear();
     ImGui::OpenPopup("Emboss");
   }
-  if (!ImGui::BeginPopupModal("Emboss", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Emboss")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::Emboss);
     return;
@@ -8976,22 +8916,15 @@ void drawEmbossDialog(AppState& st) {
 
   OpenDocument* od = st.documents.active();
 
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::SliderFloat("Angle", &angleDeg, 0.0f, 360.0f, "%.0f deg");
-  bool paramsSettled = ImGui::IsItemDeactivatedAfterEdit();
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::SliderInt("Distance", &distance, 0, 8, "%d texels");
-  paramsSettled |= ImGui::IsItemDeactivatedAfterEdit();
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::SliderFloat("Depth", &depth, -10.0f, 10.0f, "%.2f");
-  paramsSettled |= ImGui::IsItemDeactivatedAfterEdit();
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::SliderFloat("Amount", &amount, 0.0f, 1.0f, "%.2f");
-  paramsSettled |= ImGui::IsItemDeactivatedAfterEdit();
-  ImGui::TextDisabled(
-      "0 amount is the identity. Distance 0 (or Depth 0) is a flat grey card, not a no-op -- "
-      "ops/Filters.hpp section 7 says why a stylize filter's neutral point is not its "
-      "identity.");
+  DialogEdit edited;
+  edited |= dialogSlider("Angle", &angleDeg, 0.0f, 360.0f, "%.0f", "\xc2\xb0");
+  edited |= dialogSliderInt("Distance", &distance, 0, 8, "px");
+  edited |= dialogSlider("Depth", &depth, -10.0f, 10.0f, "%.2f");
+  edited |= dialogSlider("Amount", &amount, 0.0f, 1.0f, "%.2f");
+  // ops/Filters.hpp section 7 on why a stylize filter's neutral point is not
+  // its identity: distance 0 or depth 0 is a flat grey card, not a no-op.
+  dialogHint("Amount 0 leaves the image unchanged. Distance or depth 0 gives a flat grey "
+             "relief, not the original.");
 
   constexpr float kPi = 3.14159265f;  // IM_PI lives in imgui_internal.h; see drawPadlockGlyph()
   const float angleRad = angleDeg * (kPi / 180.0f);
@@ -9003,30 +8936,12 @@ void drawEmbossDialog(AppState& st) {
   params.depth = depth;
   params.amount = amount;
 
-  if (paramsSettled || !wasOpen)
+  if (edited.settled || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::Emboss, previewEmboss, params);
   wasOpen = true;
 
-  if (ImGui::Button("Emboss") && od != nullptr) {
-    const FilterOpResult r = applyEmboss(*od, params);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "emboss");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (amount 0, or no selected texels).";
-      ImGui::CloseCurrentPopup();
-    } else {
-      status.clear();
-      ImGui::CloseCurrentPopup();
-    }
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-  if (!status.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-    ImGui::TextWrapped("%s", status.c_str());
-    ImGui::PopStyleColor();
-  }
-  ImGui::EndPopup();
+  pixelOpFooter(od, "emboss", status, [params](OpenDocument& d) { return applyEmboss(d, params); });
+  endDialog();
 }
 
 void drawMedianDialog(AppState& st) {
@@ -9039,7 +8954,7 @@ void drawMedianDialog(AppState& st) {
     status.clear();
     ImGui::OpenPopup("Median");
   }
-  if (!ImGui::BeginPopupModal("Median", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Median")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::Median);
     return;
@@ -9047,39 +8962,20 @@ void drawMedianDialog(AppState& st) {
 
   OpenDocument* od = st.documents.active();
 
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::SliderInt("Radius", &radius, 0, 8, "%d texels");
-  const bool radiusSettled = ImGui::IsItemDeactivatedAfterEdit();
-  ImGui::TextDisabled(
-      "0 is the identity. Window is (2*radius+1)^2 texels -- radius 8 is a 17x17 window, "
-      "the expensive end of this dial (see this task's own [measured] median timing line).");
+  const DialogEdit edited = dialogSliderInt("Radius", &radius, 0, 8, "px");
+  // The window is (2*radius+1)^2 texels; radius 8 is 17x17 and the expensive
+  // end of this dial.
+  dialogHint("Replaces each pixel with the middle value of its neighbours, removing specks "
+             "smaller than the radius. 0 leaves the image unchanged; large radii are slow.");
 
   const MedianParams params{radius};
 
-  if (radiusSettled || !wasOpen)
+  if (edited.settled || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::Median, previewMedian, params);
   wasOpen = true;
 
-  if (ImGui::Button("Despeckle") && od != nullptr) {
-    const FilterOpResult r = applyMedian(*od, params);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "median");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (radius 0, or no selected texels).";
-      ImGui::CloseCurrentPopup();
-    } else {
-      status.clear();
-      ImGui::CloseCurrentPopup();
-    }
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-  if (!status.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-    ImGui::TextWrapped("%s", status.c_str());
-    ImGui::PopStyleColor();
-  }
-  ImGui::EndPopup();
+  pixelOpFooter(od, "median", status, [params](OpenDocument& d) { return applyMedian(d, params); });
+  endDialog();
 }
 
 void drawMotionBlurDialog(AppState& st) {
@@ -9093,7 +8989,7 @@ void drawMotionBlurDialog(AppState& st) {
     status.clear();
     ImGui::OpenPopup("Motion Blur");
   }
-  if (!ImGui::BeginPopupModal("Motion Blur", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Motion Blur")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::MotionBlur);
     return;
@@ -9101,45 +8997,26 @@ void drawMotionBlurDialog(AppState& st) {
 
   OpenDocument* od = st.documents.active();
 
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::SliderFloat("Angle", &angleDeg, 0.0f, 180.0f, "%.0f deg");
-  bool paramsSettled = ImGui::IsItemDeactivatedAfterEdit();
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::SliderInt("Distance", &distance, 0, 60, "%d texels");
-  paramsSettled |= ImGui::IsItemDeactivatedAfterEdit();
-  ImGui::TextDisabled(
-      "0 distance is the identity. The kernel is symmetric about the texel, so an angle and "
-      "angle+180 are the same request -- ops/Filters.hpp section 9 says so.");
+  DialogEdit edited;
+  edited |= dialogSlider("Angle", &angleDeg, 0.0f, 180.0f, "%.0f", "\xc2\xb0");
+  edited |= dialogSliderInt("Distance", &distance, 0, 60, "px");
+  // ops/Filters.hpp section 9: the kernel is symmetric about the texel, so an
+  // angle and angle+180 are the same request -- which is why the dial stops
+  // at 180.
+  dialogHint("Smears each pixel along the angle. Distance 0 leaves the image unchanged.");
 
   constexpr float kPi = 3.14159265f;  // IM_PI lives in imgui_internal.h; see drawPadlockGlyph()
   MotionBlurParams params;
   params.angleRadians = angleDeg * (kPi / 180.0f);
   params.radius = distance;
 
-  if (paramsSettled || !wasOpen)
+  if (edited.settled || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::MotionBlur, previewMotionBlur, params);
   wasOpen = true;
 
-  if (ImGui::Button("Motion Blur") && od != nullptr) {
-    const FilterOpResult r = applyMotionBlur(*od, params);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "motion blur");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (distance 0, or no selected texels).";
-      ImGui::CloseCurrentPopup();
-    } else {
-      status.clear();
-      ImGui::CloseCurrentPopup();
-    }
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-  if (!status.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-    ImGui::TextWrapped("%s", status.c_str());
-    ImGui::PopStyleColor();
-  }
-  ImGui::EndPopup();
+  pixelOpFooter(od, "motion blur", status,
+                [params](OpenDocument& d) { return applyMotionBlur(d, params); });
+  endDialog();
 }
 
 // ===========================================================================
@@ -9192,9 +9069,7 @@ void drawMotionBlurDialog(AppState& st) {
 constexpr const char* kAdjustChannelLabels[] = {"RGB", "Red", "Green", "Blue"};
 
 bool drawAdjustChannelCombo(int* channelIdx) {
-  ImGui::SetNextItemWidth(120.0f);
-  return ImGui::Combo("Channel", channelIdx, kAdjustChannelLabels,
-                      IM_ARRAYSIZE(kAdjustChannelLabels));
+  return dialogCombo("Channel", channelIdx, kAdjustChannelLabels, IM_ARRAYSIZE(kAdjustChannelLabels));
 }
 
 // The Levels dialog's histogram: the bins `drawHistogramSection()` already
@@ -9219,7 +9094,8 @@ bool drawAdjustChannelCombo(int* channelIdx) {
 // above that is real and the numeric "White in" slider still reaches it (up
 // to 4.0, unrestricted), but a histogram plotted over [0,1] display has no
 // picture to drag a handle past its own right edge onto.
-bool drawLevelsHistogramWidget(const HistogramResult& hist, int channelIdx, LevelsParams& shown) {
+bool drawLevelsHistogramWidget(const HistogramResult& hist, int channelIdx, LevelsParams& shown,
+                               float plotW) {
   if (hist.sampleCount == 0 || hist.r.empty()) {
     ImGui::TextDisabled("Nothing painted yet.");
     return false;
@@ -9239,7 +9115,6 @@ bool drawLevelsHistogramWidget(const HistogramResult& hist, int channelIdx, Leve
 
   constexpr float kPlotH = 100.0f;
   constexpr float kHandleH = 14.0f;  // The triangle strip below the plot.
-  const float plotW = 220.0f;        // Matches every slider's `SetNextItemWidth` in this dialog.
   const ImVec2 origin = ImGui::GetCursorScreenPos();
   ImDrawList* dl = ImGui::GetWindowDrawList();
   dl->AddRectFilled(origin, ImVec2(origin.x + plotW, origin.y + kPlotH), IM_COL32(20, 20, 22, 255));
@@ -9351,29 +9226,6 @@ bool drawLevelsHistogramWidget(const HistogramResult& hist, int channelIdx, Leve
 // / changed nothing / done -- is the part most likely to drift if copied, and
 // because "nothing changed" MUST close the popup rather than sit there looking
 // broken (a neutral params struct is a legitimate thing to click OK on).
-template <typename ApplyFn>
-void drawAdjustmentButtons(OpenDocument* od, const char* verb, const char* label,
-                           std::string& status, ApplyFn applyFn) {
-  if (ImGui::Button(verb) && od != nullptr) {
-    const FilterOpResult r = applyFn(*od);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), label);
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (neutral settings, or no selected texels).";
-      ImGui::CloseCurrentPopup();
-    } else {
-      status.clear();
-      ImGui::CloseCurrentPopup();
-    }
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-  if (!status.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-    ImGui::TextWrapped("%s", status.c_str());
-    ImGui::PopStyleColor();
-  }
-}
 
 void drawLevelsDialog(AppState& st) {
   static std::array<LevelsParams, 3> channels{};
@@ -9387,7 +9239,7 @@ void drawLevelsDialog(AppState& st) {
   // cannot have changed since the last one.
   static HistogramResult histogram;
 
-  if (!ImGui::BeginPopupModal("Levels", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Levels")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::AdjustLevels);
     return;
@@ -9395,28 +9247,31 @@ void drawLevelsDialog(AppState& st) {
   OpenDocument* od = st.documents.active();
   if (!wasOpen) histogram = (od != nullptr) ? adjustmentHistogramFor(*od) : HistogramResult{};
 
-  bool edited = drawAdjustChannelCombo(&channelIdx);
+  DialogEdit edited;
+  edited.changed |= drawAdjustChannelCombo(&channelIdx);
   // The values shown are channel 0's whenever RGB is selected -- see
   // `kAdjustChannelLabels`' comment. A composite edit has just written the
   // same numbers to all three, so channel 0 is a faithful reading of what the
   // composite holds, not an arbitrary pick among three.
   LevelsParams shown = channels[channelIdx == 0 ? 0 : channelIdx - 1];
 
-  edited |= drawLevelsHistogramWidget(histogram, channelIdx, shown);
+  float plotW = 0.0f;
+  dialogLabelRow("Histogram", &plotW);
+  edited.changed |= drawLevelsHistogramWidget(histogram, channelIdx, shown, plotW);
 
-  ImGui::SeparatorText("Input");
-  ImGui::SetNextItemWidth(220.0f);
-  edited |= ImGui::SliderFloat("Black in", &shown.blackIn, 0.0f, 1.0f, "%.3f");
-  ImGui::SetNextItemWidth(220.0f);
-  edited |= ImGui::SliderFloat("White in", &shown.whiteIn, 0.0f, 4.0f, "%.3f");
-  ImGui::SetNextItemWidth(220.0f);
-  edited |= ImGui::SliderFloat("Gamma", &shown.gamma, 0.1f, 4.0f, "%.3f");
-
-  ImGui::SeparatorText("Output");
-  ImGui::SetNextItemWidth(220.0f);
-  edited |= ImGui::SliderFloat("Black out", &shown.blackOut, 0.0f, 1.0f, "%.3f");
-  ImGui::SetNextItemWidth(220.0f);
-  edited |= ImGui::SliderFloat("White out", &shown.whiteOut, 0.0f, 1.0f, "%.3f");
+  // Two sections carry the same two labels; the ids are scoped so they stay
+  // two controls.
+  dialogSection("Input");
+  ImGui::PushID("in");
+  edited |= dialogSlider("Black", &shown.blackIn, 0.0f, 1.0f, "%.3f");
+  edited |= dialogSlider("White", &shown.whiteIn, 0.0f, 4.0f, "%.3f");
+  edited |= dialogSlider("Gamma", &shown.gamma, 0.1f, 4.0f, "%.3f");
+  ImGui::PopID();
+  dialogSection("Output");
+  ImGui::PushID("out");
+  edited |= dialogSlider("Black", &shown.blackOut, 0.0f, 1.0f, "%.3f");
+  edited |= dialogSlider("White", &shown.whiteOut, 0.0f, 1.0f, "%.3f");
+  ImGui::PopID();
 
   // `whiteIn` runs past 1.0 deliberately: this is a scene-linear working space
   // and a highlight above 1.0 is ordinary, so a Levels white point capped at
@@ -9424,9 +9279,9 @@ void drawLevelsDialog(AppState& st) {
   // explains what happens above `whiteIn` -- it saturates, which is correct
   // black/white-point behaviour and not the module's no-clamp policy being
   // broken.
-  ImGui::TextDisabled("White in above 1.0 reaches scene-linear highlights.");
+  dialogHint("Input white may go above 1.0 to reach highlights brighter than white.");
 
-  if (edited) {
+  if (edited.changed) {
     if (channelIdx == 0) {
       channels[0] = shown;
       channels[1] = shown;
@@ -9435,21 +9290,16 @@ void drawLevelsDialog(AppState& st) {
       channels[static_cast<size_t>(channelIdx - 1)] = shown;
     }
   }
-  // Live: `edited` is a slider's own return value, which SliderFloat already
-  // reports true on every frame the drag actually moves the value, not only
-  // once on release -- so recomputing on `edited` directly is the live preview
-  // "for non-expensive image adjustments... hsv curves levels etc" asked for.
-  // Levels is a point op (ops/PointOpTiles): no apron, no tile the source did
-  // not already have, cheap enough to afford this. The combo is not a slider
-  // and never reports edited either way, but IS covered by `edited` above (it
-  // is OR'd into the same variable via `drawAdjustChannelCombo`'s return).
-  if (edited || !wasOpen)
+  // Live: a point op (ops/PointOpTiles) -- no apron, no tile the source did
+  // not already have, cheap enough to recompute on every frame the value
+  // moves rather than only on release.
+  if (edited.changed || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustLevels, previewLevelsAdjustment, channels);
   wasOpen = true;
 
-  drawAdjustmentButtons(od, "Levels", "levels", status,
-                        [](OpenDocument& d) { return applyLevelsAdjustment(d, channels); });
-  ImGui::EndPopup();
+  pixelOpFooter(od, "levels", status,
+                   [](OpenDocument& d) { return applyLevelsAdjustment(d, channels); });
+  endDialog();
 }
 
 void drawCurvesDialog(AppState& st) {
@@ -9458,7 +9308,7 @@ void drawCurvesDialog(AppState& st) {
   static std::string status;
   static bool wasOpen = false;  // see drawGaussianBlurDialog()'s own comment
 
-  if (!ImGui::BeginPopupModal("Curves", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Curves")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::AdjustCurves);
     return;
@@ -9467,26 +9317,24 @@ void drawCurvesDialog(AppState& st) {
 
   const bool switched = drawAdjustChannelCombo(&channelIdx);
 
-  // **The same `drawCurveWidget()` the GRADE panel's op-stack editor draws,
-  // at the same default size.** Not a second curve editor: that function is
-  // already shared with the BRUSH SETTINGS panel's LINK editor precisely so a
-  // third caller costs nothing, and its plotted spline is sampled through the
-  // very `evalCurve()` the engine will run -- so what this dialog draws cannot
-  // diverge from what the adjustment computes.
+  // **The same `drawCurveWidget()` the GRADE panel's op-stack editor draws.**
+  // Not a second curve editor: that function is already shared with the BRUSH
+  // SETTINGS panel's LINK editor precisely so a third caller costs nothing,
+  // and its plotted spline is sampled through the very `evalCurve()` the
+  // engine will run -- so what this dialog draws cannot diverge from what the
+  // adjustment computes.
   //
   // Axes are shaper-domain (ADR-0004), which is what the control points ARE by
   // contract; nothing here converts, and `applyCurves()` does the
   // encode/decode round trip per channel.
   Curve& editing = channels[channelIdx == 0 ? 0 : static_cast<size_t>(channelIdx - 1)];
+  float plotW = 0.0f;
+  dialogLabelRow("Curve", &plotW);
   ImGui::PushID(channelIdx);
-  bool edited = drawCurveWidget(editing);
+  bool edited = drawCurveWidget(editing, std::min(plotW, 280.0f));
   ImGui::PopID();
-  if (edited && channelIdx == 0) {
-    channels[1] = channels[0];
-    channels[2] = channels[0];
-  }
-  ImGui::TextDisabled("Click to add a point, drag to move. Axes are the shaper domain.");
-  if (ImGui::Button("Reset channel")) {
+  dialogLabelRow(nullptr);
+  if (ImGui::SmallButton("Reset Channel")) {
     editing.clear();
     if (channelIdx == 0) {
       channels[1].clear();
@@ -9494,20 +9342,21 @@ void drawCurvesDialog(AppState& st) {
     }
     edited = true;
   }
+  if (edited && channelIdx == 0) {
+    channels[1] = channels[0];
+    channels[2] = channels[0];
+  }
+  dialogHint("Click the curve to add a point; drag a point to move it.");
 
-  // Live, same as Levels: `applyCurvesAdjustment`/`previewCurvesAdjustment` run
-  // through the identical `pointOpTiles` bridge Levels does (app/AdjustmentOps),
-  // so this is exactly as cheap, and `drawCurveWidget()` already reports
-  // "changed" on every frame of a drag -- which used to be the reason this
-  // recomputed only on release (throttled via `IsMouseDown()`), and is now
-  // exactly the live-update signal the recompute wants.
+  // Live, same as Levels: the identical `pointOpTiles` bridge, so exactly as
+  // cheap, and `drawCurveWidget()` reports "changed" on every frame of a drag.
   if (edited || switched || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustCurves, previewCurvesAdjustment, channels);
   wasOpen = true;
 
-  drawAdjustmentButtons(od, "Curves", "curves", status,
-                        [](OpenDocument& d) { return applyCurvesAdjustment(d, channels); });
-  ImGui::EndPopup();
+  pixelOpFooter(od, "curves", status,
+                   [](OpenDocument& d) { return applyCurvesAdjustment(d, channels); });
+  endDialog();
 }
 
 void drawExposureDialog(AppState& st) {
@@ -9515,31 +9364,27 @@ void drawExposureDialog(AppState& st) {
   static std::string status;
   static bool wasOpen = false;  // see drawGaussianBlurDialog()'s own comment
 
-  if (!ImGui::BeginPopupModal("Exposure", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Exposure")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::AdjustExposure);
     return;
   }
   OpenDocument* od = st.documents.active();
 
-  ImGui::SetNextItemWidth(220.0f);
-  // Live: a point op (app/AdjustmentOps), cheap enough to recompute on every
-  // frame `SliderFloat` reports the value actually changed, not only on
-  // release -- see drawLevelsDialog()'s comment for the full argument.
-  const bool edited = ImGui::SliderFloat("Stops", &params.stops, -6.0f, 6.0f, "%+.2f");
   // Stops, not a percentage, and a pure multiply in linear light -- which is
   // why this is the one adjustment here that is physically meaningful rather
   // than perceptual, and why it is NOT authored in the shaper domain the way
   // Curves is. ops/PointOps.hpp section 3 is the authority.
-  ImGui::TextDisabled("output = input * 2^stops, in linear light. 0 is the identity.");
+  const DialogEdit edited = dialogSlider("Exposure", &params.stops, -6.0f, 6.0f, "%+.2f", "stops");
+  dialogHint("Each stop doubles or halves the light. 0 leaves the image unchanged.");
 
-  if (edited || !wasOpen)
+  if (edited.changed || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustExposure, previewExposureAdjustment, params);
   wasOpen = true;
 
-  drawAdjustmentButtons(od, "Exposure", "exposure", status,
-                        [](OpenDocument& d) { return applyExposureAdjustment(d, params); });
-  ImGui::EndPopup();
+  pixelOpFooter(od, "exposure", status,
+                   [](OpenDocument& d) { return applyExposureAdjustment(d, params); });
+  endDialog();
 }
 
 void drawChannelMixerDialog(AppState& st) {
@@ -9548,7 +9393,7 @@ void drawChannelMixerDialog(AppState& st) {
   static std::string status;
   static bool wasOpen = false;  // see drawGaussianBlurDialog()'s own comment
 
-  if (!ImGui::BeginPopupModal("Channel Mixer", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Channel Mixer")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::AdjustChannelMixer);
     return;
@@ -9562,37 +9407,30 @@ void drawChannelMixerDialog(AppState& st) {
   // times, which is a greyscale conversion, not a composite mix -- and this
   // application already has `Desaturate` for that.
   static const char* kOutputs[] = {"Red", "Green", "Blue"};
-  ImGui::SetNextItemWidth(120.0f);
-  // Live: see drawLevelsDialog()'s comment -- a point op, so recomputing on
-  // every frame a control's value actually changes (not only on release) is
-  // cheap enough to afford.
-  bool edited = false;
-  const bool switched = ImGui::Combo("Output channel", &outputIdx, kOutputs, IM_ARRAYSIZE(kOutputs));
+  const bool switched = dialogCombo("Output", &outputIdx, kOutputs, IM_ARRAYSIZE(kOutputs));
   auto& row = params.matrix[static_cast<size_t>(outputIdx)];
 
-  ImGui::SetNextItemWidth(220.0f);
-  edited |= ImGui::SliderFloat("Red source", &row[0], -2.0f, 2.0f, "%.3f");
-  ImGui::SetNextItemWidth(220.0f);
-  edited |= ImGui::SliderFloat("Green source", &row[1], -2.0f, 2.0f, "%.3f");
-  ImGui::SetNextItemWidth(220.0f);
-  edited |= ImGui::SliderFloat("Blue source", &row[2], -2.0f, 2.0f, "%.3f");
-  ImGui::SetNextItemWidth(220.0f);
-  edited |= ImGui::SliderFloat("Constant", &row[3], -1.0f, 1.0f, "%.3f");
+  DialogEdit edited;
+  dialogSection("Source");
+  edited |= dialogSlider("Red", &row[0], -2.0f, 2.0f, "%.3f");
+  edited |= dialogSlider("Green", &row[1], -2.0f, 2.0f, "%.3f");
+  edited |= dialogSlider("Blue", &row[2], -2.0f, 2.0f, "%.3f");
+  edited |= dialogSlider("Constant", &row[3], -1.0f, 1.0f, "%.3f");
 
   // Photoshop shows a "Total" here because a row summing past 100% brightens
   // that channel; the same is true in linear light, so the number is worth
   // showing even though this build does not constrain it.
-  ImGui::TextDisabled("Source total: %+.3f (1.000 preserves this channel's level).",
-                      static_cast<double>(row[0] + row[1] + row[2]));
+  dialogHint("Source total %+.3f. A total of 1.000 keeps this channel's brightness.",
+             static_cast<double>(row[0] + row[1] + row[2]));
 
-  if (edited || switched || !wasOpen)
+  if (edited.changed || switched || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustChannelMixer,
                         previewChannelMixerAdjustment, params);
   wasOpen = true;
 
-  drawAdjustmentButtons(od, "Mix", "channel mixer", status,
-                        [](OpenDocument& d) { return applyChannelMixerAdjustment(d, params); });
-  ImGui::EndPopup();
+  pixelOpFooter(od, "channel mixer", status,
+                   [](OpenDocument& d) { return applyChannelMixerAdjustment(d, params); });
+  endDialog();
 }
 
 // ---------------------------------------------------------------------------
@@ -9610,8 +9448,7 @@ void drawBrightnessContrastDialog(AppState& st) {
   static std::string status;
   static bool wasOpen = false;
 
-  if (!ImGui::BeginPopupModal("Brightness/Contrast", nullptr,
-                              ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Brightness/Contrast")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::AdjustBrightnessContrast);
     return;
@@ -9622,25 +9459,23 @@ void drawBrightnessContrastDialog(AppState& st) {
   // "contrast", because those two names do not name an operation --
   // docs/operations.md §1.2 calls this trio "the honest form of
   // brightness/contrast" and ops/ToneOps.hpp derives the operand order from
-  // ASC-CDL. Gain reads as contrast, offset as brightness, and the labels say
-  // both so a painter looking for the familiar control finds it.
-  // Live: see drawLevelsDialog()'s comment -- a point op.
-  bool edited = false;
-  ImGui::SetNextItemWidth(220.0f);
-  edited |= ImGui::SliderFloat("Gain (contrast)", &params.gain, 0.0f, 4.0f, "%.3f");
-  ImGui::SetNextItemWidth(220.0f);
-  edited |= ImGui::SliderFloat("Offset (brightness)", &params.offset, -1.0f, 1.0f, "%+.3f");
-  ImGui::SetNextItemWidth(220.0f);
-  edited |= ImGui::SliderFloat("Gamma", &params.gamma, 0.1f, 4.0f, "%.3f");
-  ImGui::TextDisabled("output = pow(input * gain + offset, 1/gamma), in linear light.");
+  // ASC-CDL. The familiar names lead on the labels and the hint says which
+  // arithmetic each one is, so a painter finds the control and a colourist
+  // finds the operator.
+  DialogEdit edited;
+  edited |= dialogSlider("Contrast", &params.gain, 0.0f, 4.0f, "%.3f");
+  edited |= dialogSlider("Brightness", &params.offset, -1.0f, 1.0f, "%+.3f");
+  edited |= dialogSlider("Gamma", &params.gamma, 0.1f, 4.0f, "%.3f");
+  dialogHint("Contrast scales, brightness offsets and gamma bends the midtones, all in "
+             "linear light. 1, 0 and 1 leave the image unchanged.");
 
-  if (edited || !wasOpen)
+  if (edited.changed || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustBrightnessContrast,
                         previewBrightnessContrast, params);
   wasOpen = true;
-  drawAdjustmentButtons(od, "Apply", "brightness/contrast", status,
-                        [](OpenDocument& d) { return applyBrightnessContrast(d, params); });
-  ImGui::EndPopup();
+  pixelOpFooter(od, "brightness/contrast", status,
+                   [](OpenDocument& d) { return applyBrightnessContrast(d, params); });
+  endDialog();
 }
 
 void drawHueSaturationDialog(AppState& st) {
@@ -9648,46 +9483,42 @@ void drawHueSaturationDialog(AppState& st) {
   static std::string status;
   static bool wasOpen = false;
 
-  if (!ImGui::BeginPopupModal("Hue/Saturation", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Hue/Saturation")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::AdjustHueSaturation);
     return;
   }
   OpenDocument* od = st.documents.active();
 
-  // Live: see drawLevelsDialog()'s comment -- a point op.
-  bool edited = false;
-  edited |= ImGui::Checkbox("Colorize", &params.colorize);
+  DialogEdit edited;
   if (params.colorize) {
     // Colorize replaces every pixel's hue with one target, keeping each
-    // pixel's own luma -- so the ordinary hue/saturation controls below would
-    // have nothing to act on, and showing them live but inert is worse than
-    // not showing them.
-    ImGui::SetNextItemWidth(220.0f);
-    edited |= ImGui::SliderFloat("Target hue", &params.colorizeHueDegrees, -180.0f, 180.0f, "%.1f deg");
-    ImGui::SetNextItemWidth(220.0f);
-    edited |= ImGui::SliderFloat("Target saturation", &params.colorizeSaturation, 0.0f, 2.0f, "%.3f");
+    // pixel's own luma -- so the ordinary hue/saturation controls would have
+    // nothing to act on, and showing them live but inert is worse than not
+    // showing them.
+    edited |= dialogSlider("Hue", &params.colorizeHueDegrees, -180.0f, 180.0f, "%.1f", "\xc2\xb0");
+    edited |= dialogSlider("Saturation", &params.colorizeSaturation, 0.0f, 2.0f, "%.3f");
   } else {
-    ImGui::SetNextItemWidth(220.0f);
-    edited |= ImGui::SliderFloat("Hue", &params.hueDegrees, -180.0f, 180.0f, "%.1f deg");
-    ImGui::SetNextItemWidth(220.0f);
-    edited |= ImGui::SliderFloat("Saturation", &params.saturation, 0.0f, 3.0f, "%.3f");
+    edited |= dialogSlider("Hue", &params.hueDegrees, -180.0f, 180.0f, "%.1f", "\xc2\xb0");
+    edited |= dialogSlider("Saturation", &params.saturation, 0.0f, 3.0f, "%.3f");
   }
-  ImGui::SetNextItemWidth(220.0f);
-  edited |= ImGui::SliderFloat("Lightness", &params.lightness, -1.0f, 1.0f, "%+.3f");
+  edited |= dialogSlider("Lightness", &params.lightness, -1.0f, 1.0f, "%+.3f");
+  edited.changed |= dialogCheckbox("Colorize", &params.colorize);
   // Worth saying out loud, because it is the property that makes this op
   // usable at all: the hue rotation is about the normalised Rec.709 luma
   // axis, so it moves colour without moving brightness. Lightness is the
   // separate, deliberate control for that.
-  ImGui::TextDisabled("Hue rotates about the luma axis, so brightness is preserved exactly.");
+  dialogHint(params.colorize
+                 ? "Colorize gives every pixel this one hue and keeps its own brightness."
+                 : "Hue turns around the brightness axis, so brightness is preserved exactly.");
 
-  if (edited || !wasOpen)
+  if (edited.changed || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustHueSaturation,
                         previewHueSaturationAdjustment, params);
   wasOpen = true;
-  drawAdjustmentButtons(od, "Apply", "hue/saturation", status,
-                        [](OpenDocument& d) { return applyHueSaturationAdjustment(d, params); });
-  ImGui::EndPopup();
+  pixelOpFooter(od, "hue/saturation", status,
+                   [](OpenDocument& d) { return applyHueSaturationAdjustment(d, params); });
+  endDialog();
 }
 
 void drawVibranceDialog(AppState& st) {
@@ -9695,24 +9526,22 @@ void drawVibranceDialog(AppState& st) {
   static std::string status;
   static bool wasOpen = false;
 
-  if (!ImGui::BeginPopupModal("Vibrance", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Vibrance")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::AdjustVibrance);
     return;
   }
   OpenDocument* od = st.documents.active();
 
-  ImGui::SetNextItemWidth(220.0f);
-  // Live: see drawLevelsDialog()'s comment -- a point op.
-  const bool edited = ImGui::SliderFloat("Amount", &params.amount, -1.0f, 2.0f, "%+.3f");
-  ImGui::TextDisabled("Weighted by existing saturation: muted colours move most.");
+  const DialogEdit edited = dialogSlider("Vibrance", &params.amount, -1.0f, 2.0f, "%+.3f");
+  dialogHint("Muted colours move most; colours that are already saturated barely change.");
 
-  if (edited || !wasOpen)
+  if (edited.changed || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustVibrance, previewVibranceAdjustment, params);
   wasOpen = true;
-  drawAdjustmentButtons(od, "Apply", "vibrance", status,
-                        [](OpenDocument& d) { return applyVibranceAdjustment(d, params); });
-  ImGui::EndPopup();
+  pixelOpFooter(od, "vibrance", status,
+                   [](OpenDocument& d) { return applyVibranceAdjustment(d, params); });
+  endDialog();
 }
 
 void drawColorBalanceDialog(AppState& st) {
@@ -9720,7 +9549,7 @@ void drawColorBalanceDialog(AppState& st) {
   static std::string status;
   static bool wasOpen = false;
 
-  if (!ImGui::BeginPopupModal("Colour Balance", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Colour Balance")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::AdjustColorBalance);
     return;
@@ -9731,30 +9560,29 @@ void drawColorBalanceDialog(AppState& st) {
   // Photoshop draws these as three named sliders per range rather than "R G B"
   // because the axis a painter thinks in is the opposed pair, and the two
   // labellings are the same number: pushing "red" IS pulling "cyan".
-  // Live: see drawLevelsDialog()'s comment -- a point op.
-  bool edited = false;
+  DialogEdit edited;
   auto rangeSliders = [&edited](const char* title, std::array<float, 3>& v, float lo, float hi) {
-    ImGui::SeparatorText(title);
+    dialogSection(title);
     ImGui::PushID(title);
-    const char* kLabels[] = {"Cyan / Red", "Magenta / Green", "Yellow / Blue"};
-    for (int c = 0; c < 3; ++c) {
-      ImGui::SetNextItemWidth(220.0f);
-      edited |= ImGui::SliderFloat(kLabels[c], &v[static_cast<size_t>(c)], lo, hi, "%+.3f");
-    }
+    const char* kLabels[] = {"Cyan \xe2\x80\x93 Red", "Magenta \xe2\x80\x93 Green",
+                             "Yellow \xe2\x80\x93 Blue"};
+    for (int c = 0; c < 3; ++c)
+      edited |= dialogSlider(kLabels[c], &v[static_cast<size_t>(c)], lo, hi, "%+.3f");
     ImGui::PopID();
   };
-  rangeSliders("Shadows (lift)", params.shadowsLift, -0.5f, 0.5f);
-  rangeSliders("Midtones (gamma)", params.midtonesGamma, -1.0f, 1.0f);
-  rangeSliders("Highlights (gain)", params.highlightsGain, -0.5f, 0.5f);
-  edited |= ImGui::Checkbox("Preserve luminosity", &params.preserveLuminosity);
+  rangeSliders("Shadows", params.shadowsLift, -0.5f, 0.5f);
+  rangeSliders("Midtones", params.midtonesGamma, -1.0f, 1.0f);
+  rangeSliders("Highlights", params.highlightsGain, -0.5f, 0.5f);
+  ImGui::Spacing();
+  edited.changed |= dialogCheckbox("Preserve luminosity", &params.preserveLuminosity);
 
-  if (edited || !wasOpen)
+  if (edited.changed || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustColorBalance,
                         previewColorBalanceAdjustment, params);
   wasOpen = true;
-  drawAdjustmentButtons(od, "Apply", "colour balance", status,
-                        [](OpenDocument& d) { return applyColorBalanceAdjustment(d, params); });
-  ImGui::EndPopup();
+  pixelOpFooter(od, "colour balance", status,
+                   [](OpenDocument& d) { return applyColorBalanceAdjustment(d, params); });
+  endDialog();
 }
 
 void drawBlackAndWhiteDialog(AppState& st) {
@@ -9762,43 +9590,37 @@ void drawBlackAndWhiteDialog(AppState& st) {
   static std::string status;
   static bool wasOpen = false;
 
-  if (!ImGui::BeginPopupModal("Black & White", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Black & White")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::AdjustBlackAndWhite);
     return;
   }
   OpenDocument* od = st.documents.active();
 
-  // Live: see drawLevelsDialog()'s comment -- a point op.
-  bool edited = false;
+  DialogEdit edited;
   float* const weights[] = {&params.reds,  &params.yellows, &params.greens,
                             &params.cyans, &params.blues,   &params.magentas};
   const char* labels[] = {"Reds", "Yellows", "Greens", "Cyans", "Blues", "Magentas"};
-  for (int i = 0; i < 6; ++i) {
-    ImGui::SetNextItemWidth(220.0f);
-    edited |= ImGui::SliderFloat(labels[i], weights[i], -1.0f, 2.0f, "%.3f");
-  }
-  if (ImGui::Button("Reset to Rec.709")) {
+  for (int i = 0; i < 6; ++i) edited |= dialogSlider(labels[i], weights[i], -1.0f, 2.0f, "%.3f");
+  dialogLabelRow(nullptr);
+  if (ImGui::SmallButton("Reset to Rec.709")) {
     params = BlackAndWhiteParams{};
-    edited = true;
+    edited.changed = true;
   }
-  ImGui::SameLine();
-  // Not a slogan -- a measured property, and measured is the operative word.
-  // `--selftest` runs both commands over a real layer and reports the worst
-  // channel difference: one f16 storage step, which is the tile format's
-  // rounding and not the arithmetic (ops/MonoOps.hpp derives why the two
-  // agree algebraically). "Matches" rather than "equals" because the earlier
-  // wording promised bit-equality, which is not true and which a user could
-  // in principle catch us on.
-  ImGui::TextDisabled("the defaults match Desaturate");
+  // Not a slogan -- a measured property. `--selftest` runs both commands over
+  // a real layer and reports the worst channel difference: one f16 storage
+  // step, which is the tile format's rounding and not the arithmetic
+  // (ops/MonoOps.hpp derives why the two agree algebraically). "Matches"
+  // rather than "equals" because the earlier wording promised bit-equality.
+  dialogHint("Each slider weighs how bright that colour becomes. The defaults match Desaturate.");
 
-  if (edited || !wasOpen)
+  if (edited.changed || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustBlackAndWhite,
                         previewBlackAndWhiteAdjustment, params);
   wasOpen = true;
-  drawAdjustmentButtons(od, "Apply", "black & white", status,
-                        [](OpenDocument& d) { return applyBlackAndWhiteAdjustment(d, params); });
-  ImGui::EndPopup();
+  pixelOpFooter(od, "black & white", status,
+                   [](OpenDocument& d) { return applyBlackAndWhiteAdjustment(d, params); });
+  endDialog();
 }
 
 void drawPhotoFilterDialog(AppState& st) {
@@ -9806,40 +9628,38 @@ void drawPhotoFilterDialog(AppState& st) {
   static std::string status;
   static bool wasOpen = false;
 
-  if (!ImGui::BeginPopupModal("Photo Filter", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Photo Filter")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::AdjustPhotoFilter);
     return;
   }
   OpenDocument* od = st.documents.active();
 
-  // Live: see drawLevelsDialog()'s comment -- a point op.
-  bool edited = false;
-  ImGui::SetNextItemWidth(220.0f);
-  edited |= ImGui::ColorEdit3("Filter colour", params.color.data(), ImGuiColorEditFlags_Float);
+  DialogEdit edited;
+  edited |= dialogColor("Colour", params.color.data(), ImGuiColorEditFlags_Float);
   // The two presets every photo-filter control ships with. Values are the
   // conventional warming/cooling gel colours, in linear light.
-  if (ImGui::Button("Warming (85)")) {
+  dialogLabelRow("Preset");
+  if (ImGui::SmallButton("Warming (85)")) {
     params.color = {1.0f, 0.72f, 0.42f};
-    edited = true;
+    edited.changed = true;
   }
   ImGui::SameLine();
-  if (ImGui::Button("Cooling (80)")) {
+  if (ImGui::SmallButton("Cooling (80)")) {
     params.color = {0.40f, 0.68f, 1.0f};
-    edited = true;
+    edited.changed = true;
   }
-  ImGui::SetNextItemWidth(220.0f);
-  edited |= ImGui::SliderFloat("Density", &params.density, 0.0f, 1.0f, "%.3f");
-  edited |= ImGui::Checkbox("Preserve luminosity", &params.preserveLuminosity);
-  ImGui::TextDisabled("Density blends toward the filtered colour; 0 is the identity.");
+  edited |= dialogSlider("Density", &params.density, 0.0f, 1.0f, "%.3f");
+  edited.changed |= dialogCheckbox("Preserve luminosity", &params.preserveLuminosity);
+  dialogHint("Density blends toward the filter colour. 0 leaves the image unchanged.");
 
-  if (edited || !wasOpen)
+  if (edited.changed || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustPhotoFilter,
                         previewPhotoFilterAdjustment, params);
   wasOpen = true;
-  drawAdjustmentButtons(od, "Apply", "photo filter", status,
-                        [](OpenDocument& d) { return applyPhotoFilterAdjustment(d, params); });
-  ImGui::EndPopup();
+  pixelOpFooter(od, "photo filter", status,
+                   [](OpenDocument& d) { return applyPhotoFilterAdjustment(d, params); });
+  endDialog();
 }
 
 void drawPosterizeDialog(AppState& st) {
@@ -9852,25 +9672,23 @@ void drawPosterizeDialog(AppState& st) {
   static std::string status;
   static bool wasOpen = false;
 
-  if (!ImGui::BeginPopupModal("Posterize", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Posterize")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::AdjustPosterize);
     return;
   }
   OpenDocument* od = st.documents.active();
 
-  ImGui::SetNextItemWidth(220.0f);
-  // Live: see drawLevelsDialog()'s comment -- a point op.
-  const bool edited = ImGui::SliderInt("Levels", &params.levels, 2, 32);
-  ImGui::TextDisabled("Quantised in the shaper domain, so the bands are perceptually even.");
+  const DialogEdit edited = dialogSliderInt("Levels", &params.levels, 2, 32);
+  dialogHint("Brightness is reduced to this many steps, spaced evenly to the eye.");
 
-  if (edited || !wasOpen)
+  if (edited.changed || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustPosterize, previewPosterizeAdjustment,
                         params);
   wasOpen = true;
-  drawAdjustmentButtons(od, "Apply", "posterize", status,
-                        [](OpenDocument& d) { return applyPosterizeAdjustment(d, params); });
-  ImGui::EndPopup();
+  pixelOpFooter(od, "posterize", status,
+                   [](OpenDocument& d) { return applyPosterizeAdjustment(d, params); });
+  endDialog();
 }
 
 void drawThresholdDialog(AppState& st) {
@@ -9878,25 +9696,23 @@ void drawThresholdDialog(AppState& st) {
   static std::string status;
   static bool wasOpen = false;
 
-  if (!ImGui::BeginPopupModal("Threshold", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Threshold")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::AdjustThreshold);
     return;
   }
   OpenDocument* od = st.documents.active();
 
-  ImGui::SetNextItemWidth(220.0f);
-  // Live: see drawLevelsDialog()'s comment -- a point op.
-  const bool edited = ImGui::SliderFloat("Level", &params.threshold, 0.0f, 1.0f, "%.3f");
-  ImGui::TextDisabled("Rec.709 luma, compared in the shaper domain. At or above is white.");
+  const DialogEdit edited = dialogSlider("Level", &params.threshold, 0.0f, 1.0f, "%.3f");
+  dialogHint("Pixels at or above this brightness become white; the rest become black.");
 
-  if (edited || !wasOpen)
+  if (edited.changed || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustThreshold, previewThresholdAdjustment,
                         params);
   wasOpen = true;
-  drawAdjustmentButtons(od, "Apply", "threshold", status,
-                        [](OpenDocument& d) { return applyThresholdAdjustment(d, params); });
-  ImGui::EndPopup();
+  pixelOpFooter(od, "threshold", status,
+                   [](OpenDocument& d) { return applyThresholdAdjustment(d, params); });
+  endDialog();
 }
 
 void drawGradientMapDialog(AppState& st) {
@@ -9914,56 +9730,68 @@ void drawGradientMapDialog(AppState& st) {
   static std::string status;
   static bool wasOpen = false;
 
-  if (!ImGui::BeginPopupModal("Gradient Map", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!beginDialog("Gradient Map")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::AdjustGradientMap);
     return;
   }
   OpenDocument* od = st.documents.active();
 
-  // Live: see drawLevelsDialog()'s comment -- a point op.
-  bool edited = false;
+  DialogEdit edited;
+  const ImGuiStyle& style = ImGui::GetStyle();
   for (size_t i = 0; i < params.stops.colorStops.size(); ++i) {
     ImGui::PushID(static_cast<int>(i));
-    ImGui::SetNextItemWidth(90.0f);
-    edited |= ImGui::SliderFloat("##pos", &params.stops.colorStops[i].position, 0.0f, 1.0f, "%.2f");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(200.0f);
-    edited |= ImGui::ColorEdit3("##col", params.stops.colorStops[i].color.data(),
-                                ImGuiColorEditFlags_Float);
-    if (params.stops.colorStops.size() > 2) {
-      ImGui::SameLine();
-      if (ImGui::SmallButton("x")) {
+    char label[24];
+    std::snprintf(label, sizeof(label), "Stop %zu", i + 1);
+    float avail = 0.0f;
+    dialogLabelRow(label, &avail);
+    // Position, colour, and -- when there are more than the two the ramp needs
+    // -- a remove button, on one row at the control column.
+    const float removeW = params.stops.colorStops.size() > 2
+                              ? ImGui::CalcTextSize("Remove").x + style.FramePadding.x * 2.0f +
+                                    style.ItemInnerSpacing.x
+                              : 0.0f;
+    const float posW = 64.0f;
+    ImGui::SetNextItemWidth(posW);
+    edited.changed |= ImGui::SliderFloat("##pos", &params.stops.colorStops[i].position, 0.0f,
+                                         1.0f, "%.2f");
+    ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+    ImGui::SetNextItemWidth(std::max(40.0f, avail - posW - removeW - style.ItemInnerSpacing.x));
+    edited.changed |= ImGui::ColorEdit3("##col", params.stops.colorStops[i].color.data(),
+                                        ImGuiColorEditFlags_Float);
+    if (removeW > 0.0f) {
+      ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+      if (ImGui::SmallButton("Remove")) {
         params.stops.colorStops.erase(params.stops.colorStops.begin() +
                                       static_cast<ptrdiff_t>(i));
-        edited = true;
+        edited.changed = true;
         ImGui::PopID();
         break;
       }
     }
     ImGui::PopID();
   }
-  if (ImGui::Button("Add stop")) {
+  dialogLabelRow(nullptr);
+  if (ImGui::SmallButton("Add Stop")) {
     params.stops.colorStops.push_back(ColorStop{0.5f, {0.5f, 0.5f, 0.5f}});
-    edited = true;
+    edited.changed = true;
   }
   // `gradientColorAt()` requires stops sorted ascending by position -- its own
   // contract, the same one ops/Gradient's other callers honour. The sliders
   // let a stop be dragged past its neighbour, so the sort happens here on
-  // every edit -- now every LIVE edit, not just on release, or a stop dragged
-  // past a neighbour would preview against an unsorted list for the rest of
-  // that drag, which is exactly the ordering `gradientColorAt()` assumes it
-  // never has to handle.
-  if (edited) sortGradientStops(params.stops);
-  ImGui::TextDisabled("Rec.709 luma indexes the ramp. Outside the stops, the ends extend flat.");
+  // every live edit, or a stop dragged past a neighbour would preview against
+  // an unsorted list for the rest of that drag.
+  if (edited.changed) sortGradientStops(params.stops);
+  dialogHint("Each pixel's brightness picks a colour along the ramp. Beyond the end stops, "
+             "the end colours continue.");
 
-  if (edited || !wasOpen)
+  if (edited.changed || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustGradientMap,
                         previewGradientMapAdjustment, params);
   wasOpen = true;
-  drawAdjustmentButtons(od, "Apply", "gradient map", status,
-                        [](OpenDocument& d) { return applyGradientMapAdjustment(d, params); });
-  ImGui::EndPopup();
+  pixelOpFooter(od, "gradient map", status,
+                   [](OpenDocument& d) { return applyGradientMapAdjustment(d, params); });
+  endDialog();
 }
 
 // The five commands with no dialog: Invert and the four solvers. Each runs
@@ -10082,6 +9910,13 @@ void drawImageSizeDialog(AppState& st) {
   static int width = 0;
   static int height = 0;
   static int kernelIdx = 2;  // CatmullRom -- ops/Transform.hpp's own default
+  // Constrain proportions, on by default -- every image-size dialog a painter
+  // has met offers it, and a document resized without it is almost always a
+  // mistake. The ratio is captured on open, from the document, so a typed
+  // width computes a height from what the document IS rather than from the
+  // last number the other field happened to hold.
+  static bool constrain = true;
+  static double aspect = 1.0;
   static std::string status;
   static const ResampleKernel kKernels[] = {ResampleKernel::Nearest, ResampleKernel::Bilinear,
                                             ResampleKernel::CatmullRom, ResampleKernel::Mitchell,
@@ -10094,45 +9929,51 @@ void drawImageSizeDialog(AppState& st) {
     if (od != nullptr) {
       width = od->document.width;
       height = od->document.height;
+      aspect = height > 0 ? static_cast<double>(width) / static_cast<double>(height) : 1.0;
     }
     ImGui::OpenPopup("Image Size");
   }
-  if (!ImGui::BeginPopupModal("Image Size", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+  if (!beginDialog("Image Size")) return;
 
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::InputInt("Width", &width);
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::InputInt("Height", &height);
+  if (dialogInputInt("Width", &width, "px") && constrain && aspect > 0.0)
+    height = std::max(1, static_cast<int>(std::lround(static_cast<double>(width) / aspect)));
+  if (dialogInputInt("Height", &height, "px") && constrain)
+    width = std::max(1, static_cast<int>(std::lround(static_cast<double>(height) * aspect)));
+  dialogCheckbox("Constrain proportions", &constrain);
+
   constexpr int kKernelCount = sizeof(kKernels) / sizeof(kKernels[0]);
-  if (ImGui::BeginCombo("Resample", resampleKernelName(kKernels[kernelIdx]))) {
+  if (dialogBeginCombo("Resample", resampleKernelName(kKernels[kernelIdx]))) {
     for (int i = 0; i < kKernelCount; ++i) {
       if (ImGui::Selectable(resampleKernelName(kKernels[i]), i == kernelIdx)) kernelIdx = i;
     }
     ImGui::EndCombo();
   }
-  ImGui::TextDisabled(
-      "Every layer resamples once, RGB, masks and any Pigment latents alike "
-      "(ops/DocumentTransform.hpp); a Pigment layer's own kernel stays lobe-free "
-      "regardless of this choice.");
+  // ops/DocumentTransform.hpp: every layer resamples once, RGB, masks and any
+  // Pigment latents alike; a Pigment layer's own kernel stays lobe-free
+  // regardless of this choice.
+  dialogHint("Every layer is resampled, masks included.");
 
   const bool valid = width > 0 && height > 0;
-  if (!valid) ImGui::BeginDisabled();
-  if (ImGui::Button("Resize") && od != nullptr) {
-    const DocumentOpOutcome r =
-        applyImageSize(*od, static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-                       kKernels[kernelIdx]);
-    status = r.ok ? std::string() : r.error;
-    if (r.ok) ImGui::CloseCurrentPopup();
+  dialogStatusLine(DialogStatus::Error, status);
+  DialogFooter footer;
+  footer.commit = "Resize";
+  footer.commitEnabled = valid && od != nullptr;
+  switch (dialogFooter(footer)) {
+    case DialogAction::Commit: {
+      const DocumentOpOutcome r =
+          applyImageSize(*od, static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                         kKernels[kernelIdx]);
+      status = r.ok ? std::string() : r.error;
+      if (r.ok) ImGui::CloseCurrentPopup();
+      break;
+    }
+    case DialogAction::Cancel:
+      ImGui::CloseCurrentPopup();
+      break;
+    default:
+      break;
   }
-  if (!valid) ImGui::EndDisabled();
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-  if (!status.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-    ImGui::TextWrapped("%s", status.c_str());
-    ImGui::PopStyleColor();
-  }
-  ImGui::EndPopup();
+  endDialog();
 }
 
 void drawCanvasSizeDialog(AppState& st) {
@@ -10140,7 +9981,9 @@ void drawCanvasSizeDialog(AppState& st) {
   static int height = 0;
   static int anchorIdx = 4;  // Center -- CanvasAnchor's own middle entry
   static std::string status;
-  static const char* kAnchorGlyph[9] = {"NW", "N", "NE", "W", "*", "E", "SW", "S", "SE"};
+  static const char* kAnchorNames[9] = {"Top left",    "Top",    "Top right",
+                                        "Left",        "Centre", "Right",
+                                        "Bottom left", "Bottom", "Bottom right"};
 
   OpenDocument* od = st.documents.active();
   if (g_canvasSizeRequested) {
@@ -10152,44 +9995,57 @@ void drawCanvasSizeDialog(AppState& st) {
     }
     ImGui::OpenPopup("Canvas Size");
   }
-  if (!ImGui::BeginPopupModal("Canvas Size", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+  if (!beginDialog("Canvas Size")) return;
 
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::InputInt("Width", &width);
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::InputInt("Height", &height);
-  ImGui::TextUnformatted("Anchor");
+  dialogInputInt("Width", &width, "px");
+  dialogInputInt("Height", &height, "px");
+
   // The nine-cell grid every canvas-size dialog offers, in the exact row-major
   // order `ops/Transform.hpp`'s `CanvasAnchor` enumerators are declared in --
   // so `anchorIdx` IS the enum's integer value and needs no lookup table
-  // between the two.
+  // between the two. The cells carry no glyph: the position in the grid is
+  // the meaning, the chosen one is filled in the accent, and the name is one
+  // hover away.
+  const ImVec2 cell(30.0f, 22.0f);
   for (int i = 0; i < 9; ++i) {
-    if (i % 3 != 0) ImGui::SameLine();
+    if (i % 3 == 0) dialogLabelRow(i == 0 ? "Anchor" : nullptr);
+    else ImGui::SameLine(0.0f, 3.0f);
     ImGui::PushID(i);
-    if (ImGui::RadioButton(kAnchorGlyph[i], anchorIdx == i)) anchorIdx = i;
+    const bool selected = anchorIdx == i;
+    if (selected) {
+      ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    }
+    if (ImGui::Button("##anchor", cell)) anchorIdx = i;
+    if (selected) ImGui::PopStyleColor(2);
+    ImGui::SetItemTooltip("%s", kAnchorNames[i]);
     ImGui::PopID();
   }
-  ImGui::TextDisabled("Existing pixels keep their values exactly; only the extent changes "
-                      "(ops/Transform.hpp's cropImage(), zero resamples).");
+  // ops/Transform.hpp's cropImage(): zero resamples.
+  dialogHint("Existing pixels keep their exact values; only the extent changes, growing or "
+             "cropping away from the anchor.");
 
   const bool valid = width > 0 && height > 0;
-  if (!valid) ImGui::BeginDisabled();
-  if (ImGui::Button("Resize") && od != nullptr) {
-    const DocumentOpOutcome r =
-        applyCanvasSize(*od, static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-                        static_cast<CanvasAnchor>(anchorIdx));
-    status = r.ok ? std::string() : r.error;
-    if (r.ok) ImGui::CloseCurrentPopup();
+  dialogStatusLine(DialogStatus::Error, status);
+  DialogFooter footer;
+  footer.commit = "Resize";
+  footer.commitEnabled = valid && od != nullptr;
+  switch (dialogFooter(footer)) {
+    case DialogAction::Commit: {
+      const DocumentOpOutcome r =
+          applyCanvasSize(*od, static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                          static_cast<CanvasAnchor>(anchorIdx));
+      status = r.ok ? std::string() : r.error;
+      if (r.ok) ImGui::CloseCurrentPopup();
+      break;
+    }
+    case DialogAction::Cancel:
+      ImGui::CloseCurrentPopup();
+      break;
+    default:
+      break;
   }
-  if (!valid) ImGui::EndDisabled();
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-  if (!status.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-    ImGui::TextWrapped("%s", status.c_str());
-    ImGui::PopStyleColor();
-  }
-  ImGui::EndPopup();
+  endDialog();
 }
 
 // The centre that both the seeded angle below and every live edit rotate and
@@ -10276,65 +10132,63 @@ void drawNumericTransformDialog(AppState& st, GpuContext& gpu) {
       ImGui::OpenPopup("Numeric Transform");
     }
   }
-  if (!ImGui::BeginPopupModal("Numeric Transform", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-    return;
+  if (!beginDialog("Numeric Transform")) return;
 
   if (!st.transform.active()) {
-    // Reached only on a refusal path above (no document, no layer, or
-    // beginLayer/beginSelectionPixels itself refused) -- nothing to show but
-    // why, and an OK to dismiss.
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-    ImGui::TextWrapped("%s", status.c_str());
-    ImGui::PopStyleColor();
-    if (ImGui::Button("OK")) ImGui::CloseCurrentPopup();
-    ImGui::EndPopup();
+    // Reached only on a refusal path above (no document, no layer, a session
+    // already in progress, or beginLayer/beginSelectionPixels itself refused)
+    // -- nothing to show but why, and one button to dismiss it.
+    dialogStatusLine(DialogStatus::Error, status);
+    DialogFooter footer;
+    footer.commit = "OK";
+    footer.cancel = nullptr;
+    if (dialogFooter(footer) != DialogAction::None) ImGui::CloseCurrentPopup();
+    endDialog();
     return;
   }
 
   const Point2 pivot = numericTransformPivot(st.transform);
 
-  bool edited = false;
-  ImGui::SetNextItemWidth(200.0f);
-  edited |= ImGui::DragFloat("Rotate (deg)", &rotateDeg, 0.5f, -360.0f, 360.0f, "%.1f");
-  ImGui::SetNextItemWidth(200.0f);
-  edited |= ImGui::DragFloat("Scale X (%)", &scaleXPercent, 0.5f, 1.0f, 1000.0f, "%.1f");
-  ImGui::SetNextItemWidth(200.0f);
-  edited |= ImGui::DragFloat("Scale Y (%)", &scaleYPercent, 0.5f, 1.0f, 1000.0f, "%.1f");
-  ImGui::SetNextItemWidth(200.0f);
-  edited |= ImGui::DragFloat("Move X (px)", &translateX, 0.5f, -100000.0f, 100000.0f, "%.1f");
-  ImGui::SetNextItemWidth(200.0f);
-  edited |= ImGui::DragFloat("Move Y (px)", &translateY, 0.5f, -100000.0f, 100000.0f, "%.1f");
+  DialogEdit edited;
+  edited |= dialogDrag("Rotate", &rotateDeg, 0.5f, -360.0f, 360.0f, "%.1f", "\xc2\xb0");
+  edited |= dialogDrag("Scale X", &scaleXPercent, 0.5f, 1.0f, 1000.0f, "%.1f", "%");
+  edited |= dialogDrag("Scale Y", &scaleYPercent, 0.5f, 1.0f, 1000.0f, "%.1f", "%");
+  edited |= dialogDrag("Move X", &translateX, 0.5f, -100000.0f, 100000.0f, "%.1f", "px");
+  edited |= dialogDrag("Move Y", &translateY, 0.5f, -100000.0f, 100000.0f, "%.1f", "px");
 
-  if (edited) {
+  if (edited.changed) {
     const Mat3 m = composeNumericTransform(rotateDeg, scaleXPercent / 100.0f,
                                            scaleYPercent / 100.0f, translateX, translateY, pivot);
     st.transform.setPending(m);
   }
 
-  ImGui::TextDisabled(
-      "Rotate and scale are about the centre of the %s; Move is an additional offset.",
-      od != nullptr && od->selection ? "selection" : "layer");
+  dialogHint("Rotate and scale are about the centre of the %s; Move is an offset on top. "
+             "Drag a field or type into it.",
+             od != nullptr && od->selection ? "selection" : "layer");
 
-  if (ImGui::Button("Apply") && od != nullptr) {
-    const TransformCommitResult done = st.transform.commit(*od);
-    status = done.ok ? std::string() : done.error;
-    if (done.ok) {
-      ImGui::CloseCurrentPopup();
-      g_transformPreview.reset();
+  dialogStatusLine(DialogStatus::Error, status);
+  DialogFooter footer;
+  footer.commit = "Apply";
+  footer.commitEnabled = od != nullptr;
+  switch (dialogFooter(footer)) {
+    case DialogAction::Commit: {
+      const TransformCommitResult done = st.transform.commit(*od);
+      status = done.ok ? std::string() : done.error;
+      if (done.ok) {
+        ImGui::CloseCurrentPopup();
+        g_transformPreview.reset();
+      }
+      break;
     }
+    case DialogAction::Cancel:
+      st.transform.cancel();
+      g_transformPreview.reset();
+      ImGui::CloseCurrentPopup();
+      break;
+    default:
+      break;
   }
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) {
-    st.transform.cancel();
-    g_transformPreview.reset();
-    ImGui::CloseCurrentPopup();
-  }
-  if (!status.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-    ImGui::TextWrapped("%s", status.c_str());
-    ImGui::PopStyleColor();
-  }
-  ImGui::EndPopup();
+  endDialog();
 }
 
 // ---------------------------------------------------------------------------
@@ -10413,34 +10267,39 @@ void drawRefineRadiusDialog(AppState& st, RefineRadiusDialog& dlg, bool* request
     *requested = false;
     ImGui::OpenPopup(dlg.popupId);
   }
-  if (!ImGui::BeginPopupModal(dlg.popupId, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+  if (!beginDialog(dlg.popupId)) return;
 
-  ImGui::TextWrapped("%s", dlg.explanation);
-  ImGui::SetNextItemWidth(160.0f);
+  dialogText("%s", dlg.explanation);
+  ImGui::Spacing();
   // 500.0f: comfortably past anything a document this build ships needs --
   // core/SelectionRefine.hpp's own cost section prices a Select All on a 4K
   // canvas grown by 20 at ~18 ms and ~816 MiB peak, transient; 500 is the
   // point a further ceiling would be protecting against a typo, not a
   // workflow, and DragFloat's own clamp already refuses anything past it.
-  ImGui::DragFloat("Radius (px)", &dlg.radius, 0.25f, 0.0f, 500.0f, "%.2f");
-  ImGui::Separator();
+  dialogDrag("Radius", &dlg.radius, 0.25f, 0.0f, 500.0f, "%.2f", "px");
 
   OpenDocument* od = st.documents.active();
   const bool usable = od != nullptr && selectRefineEnabled(*od);
-  if (od == nullptr) {
-    ImGui::TextDisabled("No document is open.");
-  } else if (!usable) {
-    ImGui::TextDisabled("Nothing is selected -- there is no edge to move.");
+  // A precondition, quietly, not a refusal in red: the button below is simply
+  // not available until there is a selection to act on.
+  if (od == nullptr) dialogHint("No document is open.");
+  else if (!usable) dialogHint("Nothing is selected, so there is no edge to move.");
+
+  DialogFooter footer;
+  footer.commit = dlg.verb;
+  footer.commitEnabled = usable;
+  switch (dialogFooter(footer)) {
+    case DialogAction::Commit:
+      installRefinedSelection(*od, applySelectRefineAction(dlg.action, *od->selection, dlg.radius));
+      ImGui::CloseCurrentPopup();
+      break;
+    case DialogAction::Cancel:
+      ImGui::CloseCurrentPopup();
+      break;
+    default:
+      break;
   }
-  ImGui::BeginDisabled(!usable);
-  if (ImGui::Button(dlg.verb)) {
-    installRefinedSelection(*od, applySelectRefineAction(dlg.action, *od->selection, dlg.radius));
-    ImGui::CloseCurrentPopup();
-  }
-  ImGui::EndDisabled();
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-  ImGui::EndPopup();
+  endDialog();
 }
 
 // Colour Range (PRD E9). The colour comes from an on-the-spot swatch rather
@@ -10464,40 +10323,43 @@ void drawSelectColourRangeDialog(AppState& st) {
     g_selectColourRangeRequested = false;
     ImGui::OpenPopup("Colour Range");
   }
-  if (!ImGui::BeginPopupModal("Colour Range", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+  if (!beginDialog("Colour Range")) return;
 
-  ImGui::TextWrapped(
-      "Selects every pixel on the active layer within tolerance of this colour -- connected "
-      "or not, unlike the magic wand.");
-  ImGui::ColorEdit3("Colour", swatchSrgb);
-  ImGui::SetNextItemWidth(160.0f);
-  ImGui::SliderFloat("Tolerance", &tolerance, 0.0f, 1.0f, "%.3f");
-  ImGui::SetNextItemWidth(160.0f);
+  dialogText("Selects every pixel on the active layer close to this colour, whether or not it "
+             "touches the others. The magic wand selects only what is connected.");
+  ImGui::Spacing();
+  dialogColor("Colour", swatchSrgb);
+  dialogSlider("Tolerance", &tolerance, 0.0f, 1.0f, "%.3f");
   // Capped at `tolerance` on the slider itself as well as internally
   // (applySelectColourRangeAction() clamps again) -- an edge band wider than
   // the tolerance it is softening the OUTSIDE of is not a state the dialog
   // should let a user reach and then silently correct underneath them.
-  ImGui::SliderFloat("Edge softness", &edgeBand, 0.0f, std::max(tolerance, 0.001f), "%.3f");
-  ImGui::Separator();
+  dialogSlider("Softness", &edgeBand, 0.0f, std::max(tolerance, 0.001f), "%.3f");
 
   OpenDocument* od = st.documents.active();
   const bool usable = od != nullptr && selectRangeEnabled(*od);
   const Layer* target = usable ? activeLayerOf(*od) : nullptr;
-  if (!usable) {
-    ImGui::TextDisabled("The active layer has no RGB pixels to sample.");
+  if (!usable) dialogHint("The active layer has no colour pixels to sample.");
+
+  DialogFooter footer;
+  footer.commit = "Select";
+  footer.commitEnabled = usable;
+  switch (dialogFooter(footer)) {
+    case DialogAction::Commit: {
+      const std::array<float, 3> swatch = {swatchSrgb[0], swatchSrgb[1], swatchSrgb[2]};
+      installRefinedSelection(
+          *od, applySelectColourRangeAction(swatch, tolerance, edgeBand, *target->rgbTiles,
+                                            od->document.width, od->document.height));
+      ImGui::CloseCurrentPopup();
+      break;
+    }
+    case DialogAction::Cancel:
+      ImGui::CloseCurrentPopup();
+      break;
+    default:
+      break;
   }
-  ImGui::BeginDisabled(!usable);
-  if (ImGui::Button("Select")) {
-    const std::array<float, 3> swatch = {swatchSrgb[0], swatchSrgb[1], swatchSrgb[2]};
-    installRefinedSelection(
-        *od, applySelectColourRangeAction(swatch, tolerance, edgeBand, *target->rgbTiles,
-                                          od->document.width, od->document.height));
-    ImGui::CloseCurrentPopup();
-  }
-  ImGui::EndDisabled();
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-  ImGui::EndPopup();
+  endDialog();
 }
 
 // Luminance Range (PRD E9): a band rather than a tolerance around a sample.
@@ -10510,48 +10372,44 @@ void drawSelectLuminanceRangeDialog(AppState& st) {
     g_selectLuminanceRangeRequested = false;
     ImGui::OpenPopup("Luminance Range");
   }
-  if (!ImGui::BeginPopupModal("Luminance Range", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-    return;
+  if (!beginDialog("Luminance Range")) return;
 
-  ImGui::TextWrapped(
-      "Selects every pixel on the active layer whose brightness falls in this band "
-      "(display-encoded, so 0.75..1.0 means the visibly brightest quarter).");
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::SliderFloat("Low", &low, 0.0f, 1.0f, "%.3f");
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::SliderFloat("High", &high, 0.0f, 1.0f, "%.3f");
-  if (low > high) {
-    // core/SelectionRefine.hpp: "low > high selects nothing (an empty band is
-    // empty, not inverted)". Said out loud here rather than left for the
-    // user to discover from an empty result with no explanation -- the same
-    // "honest refusal" standard the audit asks of the menu items themselves.
-    const ImVec4 kWarn(0.92f, 0.78f, 0.35f, 1.0f);
-    ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
-    ImGui::TextWrapped("Low is above High -- this selects nothing, rather than everything "
-                       "outside the band.");
-    ImGui::PopStyleColor();
-  }
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::SliderFloat("Edge softness", &edgeBand, 0.0f, 0.25f, "%.3f");
-  ImGui::Separator();
+  dialogText("Selects every pixel on the active layer whose brightness falls in this band. "
+             "0.75 to 1.0 is the brightest quarter, as it looks on screen.");
+  ImGui::Spacing();
+  dialogSlider("Low", &low, 0.0f, 1.0f, "%.3f");
+  dialogSlider("High", &high, 0.0f, 1.0f, "%.3f");
+  dialogSlider("Softness", &edgeBand, 0.0f, 0.25f, "%.3f");
+  // core/SelectionRefine.hpp: "low > high selects nothing (an empty band is
+  // empty, not inverted)". Said out loud here rather than left for the user
+  // to discover from an empty result with no explanation.
+  if (low > high)
+    dialogStatusLine(DialogStatus::Warning,
+                     "Low is above High, so this selects nothing rather than everything outside "
+                     "the band.");
 
   OpenDocument* od = st.documents.active();
   const bool usable = od != nullptr && selectRangeEnabled(*od);
   const Layer* target = usable ? activeLayerOf(*od) : nullptr;
-  if (!usable) {
-    ImGui::TextDisabled("The active layer has no RGB pixels to sample.");
+  if (!usable) dialogHint("The active layer has no colour pixels to sample.");
+
+  DialogFooter footer;
+  footer.commit = "Select";
+  footer.commitEnabled = usable;
+  switch (dialogFooter(footer)) {
+    case DialogAction::Commit:
+      installRefinedSelection(
+          *od, applySelectLuminanceRangeAction(low, high, edgeBand, *target->rgbTiles,
+                                               od->document.width, od->document.height));
+      ImGui::CloseCurrentPopup();
+      break;
+    case DialogAction::Cancel:
+      ImGui::CloseCurrentPopup();
+      break;
+    default:
+      break;
   }
-  ImGui::BeginDisabled(!usable);
-  if (ImGui::Button("Select")) {
-    installRefinedSelection(
-        *od, applySelectLuminanceRangeAction(low, high, edgeBand, *target->rgbTiles,
-                                             od->document.width, od->document.height));
-    ImGui::CloseCurrentPopup();
-  }
-  ImGui::EndDisabled();
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-  ImGui::EndPopup();
+  endDialog();
 }
 
 // The five dialogs together, called once a frame from the same place
@@ -13589,45 +13447,48 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // taken this route for the neighbouring ID-stack reason; this is the third.
   if (g_addGuideRequested) {
     g_addGuideRequested = false;
-    ImGui::OpenPopup("AddGuidePopup");
+    ImGui::OpenPopup("Add Guide");
   }
-  if (ImGui::BeginPopup("AddGuidePopup")) {
+  // A modal, like every one of its siblings. It was the one `BeginPopup()`
+  // in the application: no title bar, dismissed by any click outside, and --
+  // because ImGui closes a non-modal popup the moment anything else takes
+  // focus -- the one dialog docs/modal-screenshots could not photograph.
+  if (beginDialog("Add Guide")) {
     static int orientationIdx = 0;  // 0 = Horizontal, 1 = Vertical
     static char posBuf[32] = "50%";
-    ImGui::TextUnformatted("Add Guide");
-    ImGui::Separator();
-    ImGui::RadioButton("Horizontal", &orientationIdx, 0);
-    ImGui::SameLine();
-    ImGui::RadioButton("Vertical", &orientationIdx, 1);
-    ImGui::SetNextItemWidth(120.0f);
-    ImGui::InputText("Position", posBuf, sizeof(posBuf));
-    ImGui::TextDisabled("e.g. 512 or 50%%");
+    static const char* kOrientations[] = {"Horizontal", "Vertical"};
+    dialogRadioRow("Orientation", &orientationIdx, kOrientations, 2);
+    dialogInputText("Position", posBuf, sizeof(posBuf));
+    dialogHint("A pixel position or a percentage of the document, such as 512 or 50%%.");
     const bool horizontal = orientationIdx == 0;
     // A Horizontal guide's position is along the document's height (it sits
     // at a fixed Y); a Vertical guide's is along its width (a fixed X) --
     // same axis pairing app/Snapping.hpp's parseGuidePosition() doc comment
-    // spells out. `canvasDimensionsFor()` (naturalPaint canvasdim fix), not
-    // `canvasW`/`canvasH` directly: this popup is a second, independent call
-    // site outside the canvas block below, and reading the fixed solver-
-    // canvas constants here instead of the open document was this exact bug
-    // in a second place -- a "50%" guide on an 800x1200 document used to
-    // land at Y=512 (half of 1024), not Y=600 (half of the document it was
-    // actually being drawn on).
+    // spells out. `canvasDimensionsFor()`, not `canvasW`/`canvasH` directly:
+    // reading the fixed solver-canvas constants here instead of the open
+    // document was a bug once -- a "50%" guide on an 800x1200 document landed
+    // at Y=512 (half of 1024), not Y=600.
     const CanvasDimensions guideDims = canvasDimensionsFor(st.documents.active(), canvasW, canvasH);
     const float axisExtent = horizontal ? guideDims.h : guideDims.w;
     const auto parsed = parseGuidePosition(posBuf, axisExtent);
-    if (ImGui::Button("Add") && parsed) {
-      st.guides.push_back(
-          Guide{horizontal ? GuideOrientation::Horizontal : GuideOrientation::Vertical, *parsed});
-      ImGui::CloseCurrentPopup();
+    if (!parsed && posBuf[0] != '\0')
+      dialogStatusLine(DialogStatus::Warning, "Enter a number or a percentage.");
+    DialogFooter footer;
+    footer.commit = "Add";
+    footer.commitEnabled = parsed.has_value();
+    switch (dialogFooter(footer)) {
+      case DialogAction::Commit:
+        st.guides.push_back(
+            Guide{horizontal ? GuideOrientation::Horizontal : GuideOrientation::Vertical, *parsed});
+        ImGui::CloseCurrentPopup();
+        break;
+      case DialogAction::Cancel:
+        ImGui::CloseCurrentPopup();
+        break;
+      default:
+        break;
     }
-    if (!parsed) {
-      ImGui::SameLine();
-      ImGui::TextDisabled("(enter a number or a percentage)");
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-    ImGui::EndPopup();
+    endDialog();
   }
 
   // Claim the chrome scrim's slot in `g.Windows`, before the first dialog is
@@ -14552,13 +14413,20 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // the application -- the layer-rename box one panel over included.
       // Here the claim is scoped to a live transform session, which is
       // exactly the scope that makes it safe.
-      if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+      //
+      // **And not while a dialog has the keys.** The Numeric Transform dialog
+      // runs this same session and reads these same two keys through
+      // ui/Dialog's footer, earlier in the frame; without this gate a Return
+      // there committed the session twice -- once in the dialog, then once
+      // more here, where `commit()` found no session and reported it.
+      const bool dialogOwnsKeys = modalDimActive() || dialogHandledKeyThisFrame();
+      if (!dialogOwnsKeys && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
         // Nothing was written, so there is nothing to unwind -- see
         // app/TransformSession.hpp's "cancel needs no restore step".
         st.transform.cancel();
         g_transformPreview.reset();  // T14: this session's uploaded crop is dead with it.
-      } else if (ImGui::IsKeyPressed(ImGuiKey_Enter) ||
-                 ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
+      } else if (!dialogOwnsKeys && (ImGui::IsKeyPressed(ImGuiKey_Enter) ||
+                                     ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))) {
         if (OpenDocument* od = st.documents.active()) {
           const TransformCommitResult done = st.transform.commit(*od);
           g_docStatus = done.ok ? (done.exact != ExactRemap::None

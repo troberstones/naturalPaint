@@ -521,7 +521,7 @@ ExportValidation validateExportRequest(const ExportRequest& request, uint32_t sr
   if (request.bitDepth == ExportBitDepth::UInt8) {
     std::snprintf(buf, sizeof(buf),
                   "Bit depth 8-bit integer stores 256 levels per channel. The working space is "
-                  "16-bit half float (core/Half.hpp), so this export quantises; %s.",
+                  "16-bit half float, so this export quantises; %s.",
                   formatCapability(request.format).canWriteDepth(ExportBitDepth::UInt16)
                       ? "16-bit integer in this same format keeps 65536"
                       : "a format that can carry 16 bits would keep 65536");

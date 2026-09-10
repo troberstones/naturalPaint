@@ -34,6 +34,8 @@ Dark chrome, light paper. The canvas is the only bright surface.
 | row selected | `#7c1405` |
 | canvas paper | `#f8f4f4` |
 | on-accent foreground | `#201e1d` |
+| error — a refusal: locked layer, unwritable path, unallocatable size | `#f27366` |
+| warning — a caution the user may proceed past: an export that quantises | `#ebc759` |
 
 Rules: **2px `#201e1d`** between major regions, **1px `#444141`** internally. Type is
 Archivo (400 / 600 / 800) with `ui-monospace` for all numerics and caps labels;
@@ -989,28 +991,36 @@ multi-year part of a text engine, and none of them serve annotation.
 
 ## 5a. Modal dialogs
 
-**This document does not describe them, and until now nothing did.** §1's tokens,
-§2's layout and §4a's palette rules all stop at the chrome; the thirty-four modal
-dialogs behind the File, Edit, Image, Filter and Select menus were built one at a
-time against no shared spec, and it shows — nine different commit-button labels,
-labels on the wrong side of their controls in 33 of 34, no Escape key anywhere,
-and one dialog 1766 px wide because a single unwrapped sentence citing a header
-file path set its width.
+**`src/ui/Dialog.hpp` is the spec**, and every modal dialog in the application
+is written against it. §1's tokens, §2's layout and §4a's palette rules stop at
+the chrome; the thirty-five dialogs behind the File, Edit, Image, Filter, Select
+and View menus were built one at a time against no shared rule, and
+[modal-screenshots/README.md](modal-screenshots/README.md) photographed what
+that produced -- nine commit-button labels, labels trailing their controls in
+33 of 34, no Escape key anywhere, one dialog 1766 px wide because an unwrapped
+sentence citing a header path set its width. That document's §0 says what the
+module fixed, finding by finding, with the before images kept beside the after.
 
-[modal-screenshots/README.md](modal-screenshots/README.md) photographs all
-thirty-four, says what each one is for, evaluates them against desktop convention
-in ten numbered findings, and proposes a nine-item dialog standard (S1–S9) to
-build against. Regenerate the images with `tools/modal-shots/capture_modals.sh`.
+The rule, in one paragraph: a dialog is 460 pt wide (640 for one carrying a
+list or a path field), centred, its body capped at 85% of the viewport and
+scrolling under a pinned footer; labels sit right-aligned in a 116 pt column to
+the left of their controls; a slider is a track plus a typeable field with the
+unit after it; the footer is right-aligned Cancel then the commit button, drawn
+as the default in the accent, `Apply` when the dialog previews and a verb when
+it does not, never the dialog's name; Escape cancels and Return commits, read
+once by the footer because this build leaves ImGui's keyboard navigation off; a
+destructive third choice sits alone at the left where no key reaches it; error
+and warning text use the two tokens below. Regenerate the images with
+`tools/modal-shots/capture_modals.sh`; photograph a key press with `--press-key`.
 
-Two of that document's conclusions belong here rather than there, because they
-are constraints on any restyling this file's design language would drive:
+Two constraints on any restyling this file's design language would drive:
 
 - **The modal scrim dims the chrome and deliberately not the canvas**
   (`ui/AtelierTheme.hpp`), so a live adjustment preview stays legible under its
   dialog. Any new dialog treatment has to keep that.
-- **The token table in §1 has no error or warning role**, so nineteen call sites
-  invent their own red and amber. Adding `kWarning` and `kError` to that table is
-  S6 of the proposed standard.
+- **The error and warning rows in §1's table are the only red and amber a
+  dialog may use** -- `dialogStatusLine()` / `dialogStatusColor()` are how a
+  call site reaches them, and there are no literals left to copy from.
 
 ## 6. Naming
 

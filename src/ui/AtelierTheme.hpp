@@ -47,6 +47,21 @@ constexpr uint32_t kRowSelected   = 0x7c1405;
 constexpr uint32_t kCanvasPaper   = 0xf8f4f4;
 constexpr uint32_t kOnAccent      = 0x201e1d;
 
+// Two roles the table above did not have, and the reason they are here rather
+// than in a dialog's own file: docs/modal-screenshots/README.md §4.8 counted
+// nineteen call sites each spelling out their own red and amber as an `ImVec4`
+// literal, and none of them was the accent or any other token. A refusal line
+// and a caution line are a state the design language has to name once, the
+// way it names "row selected", or every dialog keeps inventing its own.
+//
+// `error` is what a refusal reads in -- a locked layer, a path that would not
+// write, a size the GPU cannot allocate. `warning` is a caution the user may
+// proceed past -- an export that quantises, a band that selects nothing. The
+// red is deliberately not the accent: the accent marks *state* (the active
+// tool, a dirty document), and a refusal is not a state the user chose.
+constexpr uint32_t kError         = 0xf27366;
+constexpr uint32_t kWarning       = 0xebc759;
+
 // Four of the twelve rows above are the same value under two names, and that
 // is deliberate rather than a table that wants tidying: `divider` is a role
 // (1px internal separators) that currently resolves to `chrome mid`,

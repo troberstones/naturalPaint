@@ -6,17 +6,64 @@ cropped to the dialog's own rect with 28 px of surrounding window, so the crop
 follows the dialog when its content changes rather than slicing a fixed box out
 of the middle of the screen.
 
-Captured from `3002d73` plus this branch's two capture flags, in a 2560 × 1580
-framebuffer (1280 × 790 points at 2×). **All sizes below are framebuffer
-pixels**, straight off ImGui's own `OpenPopupStack`, not measured off the images.
+**This document was written twice.** §2–§5 are the evaluation as first made,
+against `3002d73`: thirty-four dialogs, ten findings, a nine-item standard. §0
+is what happened next -- the standard was built as `ui/Dialog` and every dialog
+was moved onto it -- and says, finding by finding, what closed and how. The
+images beside this file are the dialogs **as they are now**; the originals the
+findings were made against are in [`before/`](before/), and every inventory row
+links both. The inventory's `Size` and `Commit` columns are the current values;
+§4's tables keep the old ones, because those are the measurements the findings
+rest on.
+
+Captured in a 2560 × 1580 framebuffer (1280 × 790 points at 2×). **All sizes
+below are framebuffer pixels**, straight off ImGui's own `OpenPopupStack`, not
+measured off the images.
 
 Contents:
 
+- [§0 Status: the standard, built](#0-status-the-standard-built)
 - [§1 How the captures are made](#1-how-the-captures-are-made)
-- [§2 The inventory](#2-the-inventory) — 34 dialogs, what each is for
+- [§2 The inventory](#2-the-inventory) — 35 dialogs, what each is for
 - [§3 What could not be captured](#3-what-could-not-be-captured)
 - [§4 Evaluation against desktop convention](#4-evaluation-against-desktop-convention)
 - [§5 A proposed dialog standard](#5-a-proposed-dialog-standard)
+
+---
+
+## 0. Status: the standard, built
+
+`src/ui/Dialog.hpp` is S1–S9 as one module: `beginDialog()` / `endDialog()`
+around `BeginPopupModal`, a family of column-laid-out controls
+(`dialogSlider()`, `dialogCombo()`, `dialogInputText()`, …), `dialogSection()`
+/ `dialogText()` / `dialogHint()` / `dialogStatusLine()` for prose, and one
+`dialogFooter()`. Every dialog in §2 -- all thirty-five, Add Guide included --
+is written against it; nothing in `ui/` calls `BeginPopupModal` directly any
+more except that module. The thirteen adjustments and seven filters share one
+`pixelOpFooter()` on top of it, so their commit model is spelled once.
+
+| Item | State | Where it lives |
+|---|---|---|
+| **S1** one dismissal contract | **Done.** Escape cancels, Return commits, the commit button is drawn as the default in the accent, both keys read once per press by the footer. Proven end to end, not by inspection: `--open-modal AdjustLevels --press-key Escape --screenshot` photographs no dialog, and so does `--press-key Return`; a plain `--open-modal AdjustLevels` photographs the dialog, and `--press-key Tab` is refused before a window opens. | `dialogFooter()`, `dialogHandledKeyThisFrame()`; `--press-key` in `src/main.cpp` |
+| **S2** one footer | **Done.** Right-aligned, Cancel then commit, 84 pt minimum button width. A destructive third choice (Don't Save) sits alone at the left and no key reaches it; a note at the left says when the commit model is not the default one. | `DialogFooter` |
+| **S3** two commit labels | **Done.** `Apply` for the twenty-one dialogs that preview (thirteen adjustments, seven filters, Numeric Transform); a verb everywhere else -- `Create`, `Export`, `Resize`, `Grow`, `Shrink`, `Feather`, `Select`, `Add`, `Revert`, `Recover` -- `Done` for the one live dialog, `OK` for a dialog that only offers to be dismissed. No button is named after its dialog. | §2's Commit column |
+| **S4** wrap the prose, drop the header paths | **Done.** Two widths, 460 and 640 pt (920 / 1280 px here); every explanation wraps at the dialog's width. Image Size went from 1766 px to 920. The `ops/…hpp` citations are gone from the dialogs' own strings and from the two engine strings that reached a dialog (`io/ExportAs.cpp`'s bit-depth warning cited `core/Half.hpp`; `io/Export.cpp`'s primaries refusal cited `color/Space.hpp`). | `DialogWidth`, `dialogText()` / `dialogHint()` |
+| **S5** labels left | **Done.** A 116 pt right-aligned label column in all thirty-five. Its own constant rather than `ui/LabelledControl`'s, because that module's column is measured across the docked panels each frame and a dialog wants a constant. | `kDialogLabelColumn` |
+| **S6** two theme tokens | **Done.** `kError` `#f27366` and `kWarning` `#ebc759` in `ui/AtelierTheme.hpp`, two rows in `docs/ui.md`'s table, and zero of the nineteen literals left in `src/ui`. | `dialogStatusColor()` |
+| **S7** placement and a height cap | **Done, with one thing learned.** All thirty-five are exactly centred (the script prints each rect; `y == (1580 − h) / 2` for every one). The body is a child capped at 85% of the viewport that scrolls, with the footer pinned below it -- Export Comps, which used to be 1350 px tall with its buttons a few pixels above the status bar, is 1252 px and scrolls its LAYERS section under a footer that stays put. The thing learned: an auto-resizing child measures the *previous* frame's content, so on the frame a dialog appears it is a title bar, and centring it then puts every dialog at the same `y` with its content growing down off the screen. `beginDialog()` re-asserts the centre for the four frames a dialog takes to settle; the user's drag wins after that. | `beginDialog()`, `g_centreUntilFrame` |
+| **S8** precondition states | **Done.** Export Comps opens with no red: an empty folder disables Export and a hint says why. Revert on a never-saved document reads "“Untitled” has never been saved, so there is no saved version to revert to" and offers `Save As…` / `Cancel`; the destructive `Revert` is only drawn when there is something to revert to. The empty Recover Documents dialog says `OK`, not `Later`. | §2 |
+| **S9** Add Guide is a modal | **Done.** `beginDialog("Add Guide")` like its siblings, which also made it capturable: it is [add-guide.png](add-guide.png) now, and §3's open question is closed by removing its mechanism. | `ui/MacPaintUI.cpp` |
+
+What did **not** change, on purpose: the modal scrim still dims the chrome and
+not the canvas, so a live preview stays legible; every `BeginPopupModal` still
+passes `p_open == nullptr`, so there is no title-bar close box -- Escape and
+Cancel are the two ways out, which is one more than there was and the same two
+macOS sheets offer.
+
+The three golden views that photograph the export dialogs (`export_as`,
+`export_as_blocked`, `export_states` in `tools/golden/run_golden.sh`) were
+re-aimed at the new rects and re-blessed; the other fifty-five views did not
+move. `--selftest` is 8738 pass.
 
 ---
 
@@ -32,6 +79,11 @@ Two flags were added for this, both in `src/main.cpp`:
 - **`--screenshot` now prints the open modal's rect** —
   `[screenshot] modal "<title>" rect x y w h` — read off
   `ImGuiContext::OpenPopupStack`.
+- **`--press-key <Escape|Return> [frame]`** (added with §0) queues one key
+  press through `io.AddKeyEvent()`, the same queue the SDL backend feeds, on
+  the given frame (default 10) and releases it on the next. With `--open-modal`
+  and `--screenshot` this is how S1 is shown rather than claimed: a dialog plus
+  Escape must photograph no dialog.
 
 The rect is reported rather than guessed because every dialog here is
 `ImGuiWindowFlags_AlwaysAutoResize`: its size is a function of its content and
@@ -63,19 +115,19 @@ dialog's action, verbatim.
 
 | Dialog | Image | Menu path | Size | Commit | What it does |
 |---|---|---|---|---|---|
-| **New Document** | [new-document.png](new-document.png) | File > New Document | 1388 × 996 | `Create` | Preset list (six built-ins, tagged `built-in` / `user`), width/height, a save/remove-preset block writing `document-presets.txt`, and a "From Clipboard" section that probes the pasteboard once per open. Size is validated against both `validateDocumentPresetSize()` and the GPU's own `canvasDimensionRefusal()`. |
-| **Revert** | [revert.png](revert.png) | File > Revert | 362 × 266 | `Discard and revert` | Confirms discarding unsaved edits. The dialog body **is** `revertDocument()`'s own refusal text — there is no second sentence to drift from it. Shown here in its never-saved state (§4.7). |
-| **Recover Documents** | [recover-documents.png](recover-documents.png) | File > Recover Documents (also automatic at launch when a journal scratch dir survives) | 646 × 176 | per-session `Recover` | Offers unfinished journalled sessions, named and dated. Nothing opens by itself, declining deletes nothing, and a damaged entry is listed with its own explanation and no Recover button. Shown here empty. |
-| **Export As** | [export-as.png](export-as.png) | File > Export As… | 1056 × 778 | `Export` | One file out of the active document: preset combo, format / colour space / bit depth / resize, a validation block in `io/Export`'s own words, and an output path with a native `Choose…` panel. |
-| **Export Comps / Layers To Files** | [export-states.png](export-states.png) | File > Export Comps / Layers To Files… | 1200 × 1350 | `Export` | The batch twin: Comp-or-Layer radio, the same four settings, output folder, a `{name}`/`{doc}`/`{index}` name template, an overwrite checkbox and a per-item checklist. Shares `export-presets.json` with Export As. |
+| **New Document** | [new-document.png](new-document.png) · [before](before/new-document.png) | File > New Document | 1280 × 1040 | `Create` | Preset list (six built-ins, tagged `built-in` / `user`), width/height, a save/remove-preset block writing `document-presets.txt`, and a "From Clipboard" section that probes the pasteboard once per open. Size is validated against both `validateDocumentPresetSize()` and the GPU's own `canvasDimensionRefusal()`. |
+| **Revert** | [revert.png](revert.png) · [before](before/revert.png) | File > Revert | 920 × 274 | `Save As…` (never saved) / `Revert` | Confirms discarding unsaved edits. The dialog body **is** `revertDocument()`'s own refusal text — there is no second sentence to drift from it. Shown here in its never-saved state (§4.7). |
+| **Recover Documents** | [recover-documents.png](recover-documents.png) · [before](before/recover-documents.png) | File > Recover Documents (also automatic at launch when a journal scratch dir survives) | 1280 × 274 | per-session `Recover` | Offers unfinished journalled sessions, named and dated. Nothing opens by itself, declining deletes nothing, and a damaged entry is listed with its own explanation and no Recover button. Shown here empty. |
+| **Export As** | [export-as.png](export-as.png) · [before](before/export-as.png) | File > Export As… | 1280 × 1060 | `Export` | One file out of the active document: preset combo, format / colour space / bit depth / resize, a validation block in `io/Export`'s own words, and an output path with a native `Choose…` panel. |
+| **Export Comps / Layers To Files** | [export-states.png](export-states.png) · [before](before/export-states.png) | File > Export Comps / Layers To Files… | 1280 × 1252 | `Export` | The batch twin: Comp-or-Layer radio, the same four settings, output folder, a `{name}`/`{doc}`/`{index}` name template, an overwrite checkbox and a per-item checklist. Shares `export-presets.json` with Export As. |
 
 ### 2.2 Image geometry
 
 | Dialog | Image | Menu path | Size | Commit | What it does |
 |---|---|---|---|---|---|
-| **Image Size** | [image-size.png](image-size.png) | Image > Image Size… | 1766 × 336 | `Resize` | Resamples every layer — RGB, masks and Pigment latents alike — through one of five kernels (Nearest, Bilinear, Catmull-Rom, Mitchell, Lanczos3). |
-| **Canvas Size** | [canvas-size.png](canvas-size.png) | Image > Canvas Size… | 1200 × 490 | `Resize` | Changes the extent only, zero resamples, with a nine-cell anchor grid whose index *is* `CanvasAnchor`'s enumerator value. |
-| **Numeric Transform** | [numeric-transform.png](numeric-transform.png) | Edit > Transform… | 820 × 452 | `Apply` | Typed rotate / scale X / scale Y / move X / move Y instead of dragging the Free Transform gizmo. Begins the identical `TransformSession` Cmd+T would. Refuses (and says so) if a transform is already in progress. |
+| **Image Size** | [image-size.png](image-size.png) · [before](before/image-size.png) | Image > Image Size… | 920 × 480 | `Resize` | Resamples every layer — RGB, masks and Pigment latents alike — through one of five kernels (Nearest, Bilinear, Catmull-Rom, Mitchell, Lanczos3). |
+| **Canvas Size** | [canvas-size.png](canvas-size.png) · [before](before/canvas-size.png) | Image > Canvas Size… | 920 × 568 | `Resize` | Changes the extent only, zero resamples, with a nine-cell anchor grid whose index *is* `CanvasAnchor`'s enumerator value. |
+| **Numeric Transform** | [numeric-transform.png](numeric-transform.png) · [before](before/numeric-transform.png) | Edit > Transform… | 920 × 568 | `Apply` | Typed rotate / scale X / scale Y / move X / move Y instead of dragging the Free Transform gizmo. Begins the identical `TransformSession` Cmd+T would. Refuses (and says so) if a transform is already in progress. |
 
 ### 2.3 Filters — `Filter` menu, `ops/Blur` + `ops/Filters`
 
@@ -86,13 +138,13 @@ budget, so a per-tick recompute would freeze the app for the length of a drag.
 
 | Dialog | Image | Size | Commit | Controls |
 |---|---|---|---|---|
-| **Gaussian Blur** | [filter-gaussian-blur.png](filter-gaussian-blur.png) | 662 × 220 | `Blur` | Radius (sigma, texels) 0–250 |
-| **Sharpen** | [filter-sharpen.png](filter-sharpen.png) | 686 × 220 | `Sharpen` | Strength 0–3, at a fixed small sigma |
-| **Unsharp Mask** | [filter-unsharp-mask.png](filter-unsharp-mask.png) | 1386 × 336 | `Sharpen` | Amount 0–5, Radius 0.1–250, Threshold 0–0.20 |
-| **Add Noise** | [filter-add-noise.png](filter-add-noise.png) | 1362 × 394 | `Add Noise` | Amount 0–0.5, Uniform/Gaussian, Monochrome, `New seed` |
-| **Emboss** | [filter-emboss.png](filter-emboss.png) | 1648 × 394 | `Emboss` | Angle 0–360°, Distance 0–8 texels, Depth ±10, Amount 0–1 |
-| **Median / Despeckle** | [filter-median.png](filter-median.png) | 1638 × 220 | `Despeckle` | Radius 0–8 texels |
-| **Motion Blur** | [filter-motion-blur.png](filter-motion-blur.png) | 1542 × 278 | `Motion Blur` | Angle 0–180°, Distance 0–60 texels |
+| **Gaussian Blur** | [filter-gaussian-blur.png](filter-gaussian-blur.png) · [before](before/filter-gaussian-blur.png) | 920 × 294 | `Apply` | Radius (sigma, texels) 0–250 |
+| **Sharpen** | [filter-sharpen.png](filter-sharpen.png) · [before](before/filter-sharpen.png) | 920 × 294 | `Apply` | Strength 0–3, at a fixed small sigma |
+| **Unsharp Mask** | [filter-unsharp-mask.png](filter-unsharp-mask.png) · [before](before/filter-unsharp-mask.png) | 920 × 444 | `Apply` | Amount 0–5, Radius 0.1–250, Threshold 0–0.20 |
+| **Add Noise** | [filter-add-noise.png](filter-add-noise.png) · [before](before/filter-add-noise.png) | 920 × 480 | `Apply` | Amount 0–0.5, Uniform/Gaussian, Monochrome, `New seed` |
+| **Emboss** | [filter-emboss.png](filter-emboss.png) · [before](before/filter-emboss.png) | 920 × 506 | `Apply` | Angle 0–360°, Distance 0–8 texels, Depth ±10, Amount 0–1 |
+| **Median / Despeckle** | [filter-median.png](filter-median.png) · [before](before/filter-median.png) | 920 × 320 | `Apply` | Radius 0–8 texels |
+| **Motion Blur** | [filter-motion-blur.png](filter-motion-blur.png) · [before](before/filter-motion-blur.png) | 920 × 356 | `Apply` | Angle 0–180°, Distance 0–60 texels |
 
 ### 2.4 Adjustments — `Image > Adjustments`, `app/AdjustmentOps`
 
@@ -108,59 +160,59 @@ the commit label is not (§4.2).
 
 | Dialog | Image | Size | Commit | Controls |
 |---|---|---|---|---|
-| **Levels** | [adjust-levels.png](adjust-levels.png) | 580 × 850 | `Levels` | RGB/R/G/B channel combo, a draggable-handle histogram, Black in / White in (to 4.0, for scene-linear highlights) / Gamma, Black out / White out |
-| **Curves** | [adjust-curves.png](adjust-curves.png) | 672 × 728 | `Curves` | Channel combo and the shared `drawCurveWidget()` — the same editor the GRADE panel and the brush LINK editor use — plus `Reset channel` |
-| **Exposure** | [adjust-exposure.png](adjust-exposure.png) | 584 × 220 | `Exposure` | Stops ±6, a pure multiply in linear light |
-| **Channel Mixer** | [adjust-channel-mixer.png](adjust-channel-mixer.png) | 620 × 452 | `Mix` | Output-channel combo, then Red/Green/Blue source ±2 and Constant ±1 for that row, with a live source total |
-| **Brightness/Contrast** | [adjust-brightness-contrast.png](adjust-brightness-contrast.png) | 668 × 336 | `Apply` | Gain (contrast) 0–4, Offset (brightness) ±1, Gamma 0.1–4 — ASC-CDL order, not two invented sliders |
-| **Hue/Saturation** | [adjust-hue-saturation.png](adjust-hue-saturation.png) | 710 × 394 | `Apply` | Colorize checkbox swaps Hue/Saturation for Target hue/Target saturation; Lightness always. Hue rotates about the Rec.709 luma axis |
-| **Vibrance** | [adjust-vibrance.png](adjust-vibrance.png) | 626 × 220 | `Apply` | Amount −1…+2, weighted by existing saturation |
-| **Colour Balance** | [adjust-colour-balance.png](adjust-colour-balance.png) | 654 × 854 | `Apply` | Three tonal ranges (shadows lift / midtones gamma / highlights gain), each Cyan-Red, Magenta-Green, Yellow-Blue, plus Preserve luminosity |
-| **Black & White** | [adjust-black-and-white.png](adjust-black-and-white.png) | 584 × 530 | `Apply` | Six channel weights −1…+2 and `Reset to Rec.709`; the defaults match Desaturate to within one f16 storage step |
-| **Photo Filter** | [adjust-photo-filter.png](adjust-photo-filter.png) | 606 × 394 | `Apply` | Filter colour, Warming (85) / Cooling (80) presets, Density, Preserve luminosity |
-| **Posterize** | [adjust-posterize.png](adjust-posterize.png) | 720 × 220 | `Apply` | Levels 2–32, quantised in the shaper domain |
-| **Threshold** | [adjust-threshold.png](adjust-threshold.png) | 716 × 220 | `Apply` | Level 0–1 on Rec.709 luma |
-| **Gradient Map** | [adjust-gradient-map.png](adjust-gradient-map.png) | 754 × 336 | `Apply` | A stop list (position + colour, `x` to remove, `Add stop`), re-sorted on every edit |
+| **Levels** | [adjust-levels.png](adjust-levels.png) · [before](before/adjust-levels.png) | 920 × 996 | `Apply` | RGB/R/G/B channel combo, a draggable-handle histogram, Black in / White in (to 4.0, for scene-linear highlights) / Gamma, Black out / White out |
+| **Curves** | [adjust-curves.png](adjust-curves.png) · [before](before/adjust-curves.png) | 920 × 974 | `Apply` | Channel combo and the shared `drawCurveWidget()` — the same editor the GRADE panel and the brush LINK editor use — plus `Reset channel` |
+| **Exposure** | [adjust-exposure.png](adjust-exposure.png) · [before](before/adjust-exposure.png) | 920 × 294 | `Apply` | Stops ±6, a pure multiply in linear light |
+| **Channel Mixer** | [adjust-channel-mixer.png](adjust-channel-mixer.png) · [before](before/adjust-channel-mixer.png) | 920 × 616 | `Apply` | Output-channel combo, then Red/Green/Blue source ±2 and Constant ±1 for that row, with a live source total |
+| **Brightness/Contrast** | [adjust-brightness-contrast.png](adjust-brightness-contrast.png) · [before](before/adjust-brightness-contrast.png) | 920 × 444 | `Apply` | Gain (contrast) 0–4, Offset (brightness) ±1, Gamma 0.1–4 — ASC-CDL order, not two invented sliders |
+| **Hue/Saturation** | [adjust-hue-saturation.png](adjust-hue-saturation.png) · [before](before/adjust-hue-saturation.png) | 920 × 480 | `Apply` | Colorize checkbox swaps Hue/Saturation for Target hue/Target saturation; Lightness always. Hue rotates about the Rec.709 luma axis |
+| **Vibrance** | [adjust-vibrance.png](adjust-vibrance.png) · [before](before/adjust-vibrance.png) | 920 × 294 | `Apply` | Amount −1…+2, weighted by existing saturation |
+| **Colour Balance** | [adjust-colour-balance.png](adjust-colour-balance.png) · [before](before/adjust-colour-balance.png) | 920 × 1048 | `Apply` | Three tonal ranges (shadows lift / midtones gamma / highlights gain), each Cyan-Red, Magenta-Green, Yellow-Blue, plus Preserve luminosity |
+| **Black & White** | [adjust-black-and-white.png](adjust-black-and-white.png) · [before](before/adjust-black-and-white.png) | 920 × 666 | `Apply` | Six channel weights −1…+2 and `Reset to Rec.709`; the defaults match Desaturate to within one f16 storage step |
+| **Photo Filter** | [adjust-photo-filter.png](adjust-photo-filter.png) · [before](before/adjust-photo-filter.png) | 920 × 480 | `Apply` | Filter colour, Warming (85) / Cooling (80) presets, Density, Preserve luminosity |
+| **Posterize** | [adjust-posterize.png](adjust-posterize.png) · [before](before/adjust-posterize.png) | 920 × 294 | `Apply` | Levels 2–32, quantised in the shaper domain |
+| **Threshold** | [adjust-threshold.png](adjust-threshold.png) · [before](before/adjust-threshold.png) | 920 × 294 | `Apply` | Level 0–1 on Rec.709 luma |
+| **Gradient Map** | [adjust-gradient-map.png](adjust-gradient-map.png) · [before](before/adjust-gradient-map.png) | 920 × 444 | `Apply` | A stop list (position + colour, `x` to remove, `Add stop`), re-sorted on every edit |
 
 ### 2.5 Selection refinement — `Select` menu, `core/SelectionRefine`
 
 | Dialog | Image | Size | Commit | What it does |
 |---|---|---|---|---|
-| **Grow Selection** | [select-grow.png](select-grow.png) | 508 × 350 | `Grow` | Moves the selection edge outward by a real-number radius |
-| **Shrink Selection** | [select-shrink.png](select-shrink.png) | 508 × 298 | `Shrink` | The same, inward |
-| **Feather Selection** | [select-feather.png](select-feather.png) | 508 × 324 | `Feather` | Softens the edge rather than moving it |
-| **Colour Range** | [select-colour-range.png](select-colour-range.png) | 528 × 402 | `Select` | Every pixel within tolerance of a swatch — connected or not, unlike the magic wand. Edge softness is capped at the tolerance |
-| **Luminance Range** | [select-luminance-range.png](select-luminance-range.png) | 588 × 402 | `Select` | A display-encoded brightness band plus edge softness. Warns, rather than silently inverting, when Low > High |
+| **Grow Selection** | [select-grow.png](select-grow.png) · [before](before/select-grow.png) | 920 × 378 | `Grow` | Moves the selection edge outward by a real-number radius |
+| **Shrink Selection** | [select-shrink.png](select-shrink.png) · [before](before/select-shrink.png) | 920 × 352 | `Shrink` | The same, inward |
+| **Feather Selection** | [select-feather.png](select-feather.png) · [before](before/select-feather.png) | 920 × 378 | `Feather` | Softens the edge rather than moving it |
+| **Colour Range** | [select-colour-range.png](select-colour-range.png) · [before](before/select-colour-range.png) | 920 × 460 | `Select` | Every pixel within tolerance of a swatch — connected or not, unlike the magic wand. Edge softness is capped at the tolerance |
+| **Luminance Range** | [select-luminance-range.png](select-luminance-range.png) · [before](before/select-luminance-range.png) | 920 × 460 | `Select` | A display-encoded brightness band plus edge softness. Warns, rather than silently inverting, when Low > High |
 
 Grow / Shrink / Feather share one `RefineRadiusDialog` body; all three are
 photographed anyway, because a shared body is exactly what makes a per-dialog
 label drift invisible.
 
-### 2.6 Panel-opened
+### 2.6 Panel-opened, and View > Add Guide
 
 | Dialog | Image | Opened by | Size | Commit | What it does |
 |---|---|---|---|---|---|
-| **Layer Properties** | [layer-properties.png](layer-properties.png) | The LAYERS panel's gear button | 586 × 706 | *(none — live)* | Kind, name, opacity, blending mode, colour label, Visible / Locked / Clip to Layer Below, and the layer's own non-destructive op stack. **The only dialog here that applies every edit immediately and offers only `Close`** (§4.4). |
+| **Layer Properties** | [layer-properties.png](layer-properties.png) · [before](before/layer-properties.png) | The LAYERS panel's gear button | 920 × 864 | `Done` (live) | Kind, name, opacity, blending mode, colour label, Visible / Locked / Clip to Layer Below, and the layer's own non-destructive op stack. **The only dialog here that applies every edit immediately and offers only `Close`** (§4.4). |
+| **Add Guide** | [add-guide.png](add-guide.png) · *(no before: uncapturable then, see §3)* | View > Add Guide… | 920 × 356 | `Add` | A horizontal/vertical radio pair and a position field accepting `512` or `50%`. Was the one non-modal popup in the application; a modal since S9. |
 
 ---
 
 ## 3. What could not be captured
 
-The application has thirty-six `BeginPopupModal` ids plus one non-modal popup;
-§2 covers thirty-four of them. Here is the remainder, each with the reason,
-because "absent from the contact sheet" and "does not exist" must not look the
-same.
+The application has thirty-seven modal ids; §2 covers thirty-five of them.
+Here is the remainder, each with the reason, because "absent from the contact
+sheet" and "does not exist" must not look the same.
 
-- **View > Add Guide…** (`AddGuidePopup`, `ui/MacPaintUI.cpp:13594`) — a
-  horizontal/vertical radio pair, a position field accepting `512` or `50%`,
-  and Add / Cancel. It is the **only** dialog in the application that is a
-  non-modal `BeginPopup`, and ImGui closes a non-modal popup the moment
-  anything else takes focus (`FocusWindow()` → `ClosePopupsOverWindow()`,
-  imgui.cpp:13908). Under `--open-modal AddGuide` it does not survive to a
-  captured frame at **2, 5, 30 or 90** settle frames — all four photograph a
-  window with no popup in it. **Whether a real menu click fares better needs a
-  human at the keyboard**; the harness cannot tell those two apart, so this is
-  a flagged unknown, not a reported bug.
+- **View > Add Guide…** — *was* here, and is now
+  [add-guide.png](add-guide.png) in §2.6. As first evaluated it was the only
+  non-modal `BeginPopup` in the application, and ImGui closes a non-modal popup
+  the moment anything else takes focus (`FocusWindow()` →
+  `ClosePopupsOverWindow()`), so under `--open-modal AddGuide` it did not
+  survive to a captured frame at 2, 5, 30 or 90 settle frames. S9 made it a
+  modal, and the first capture after that photographed it at 90 frames like
+  every sibling -- which also settles the question this entry used to leave
+  open: the popup was closing on focus, not on anything a menu click would do
+  differently.
 - **Close document** (`kCloseDecisionPopup`) — the Save / Don't Save / Cancel
   question, raised only when the document being closed is dirty. `MenuAction::
   CloseDocument` on a clean `--demo-document` closes it instead of asking, and
@@ -182,6 +234,8 @@ Ten divergences, ordered by how much they cost a user. Every one is visible in
 the images above; the counts come from the source.
 
 ### 4.1 No keyboard dismissal, and no close button — 33 of 34
+
+> **Closed.** Escape cancels and Return commits in all thirty-five, through one footer, and the pair is photographed rather than asserted (§0, S1). The close box stays absent by design.
 
 This build never sets `ImGuiConfigFlags_NavEnableKeyboard`, and ImGui's Escape
 handling is gated on exactly that flag (`NavUpdateCancelRequest()`,
@@ -206,6 +260,8 @@ Nothing else does. This is the single largest gap, and the cheapest to close.
 
 ### 4.2 The commit button has nine different labels, and sits on the wrong side
 
+> **Closed.** Right-aligned Cancel-then-commit everywhere, the commit drawn as the default; `Apply` for the twenty-one previewing dialogs and a verb for the rest (§0, S2–S3).
+
 Reading down §2's Commit column: `Create`, `Discard and revert`, `Export`,
 `Resize`, `Apply`, `Blur`, `Sharpen`, `Add Noise`, `Emboss`, `Despeckle`,
 `Motion Blur`, `Levels`, `Curves`, `Exposure`, `Mix`, `Grow`, `Shrink`,
@@ -226,6 +282,8 @@ is nothing for a default to mean.
 
 ### 4.3 An unwrapped explanation sets the dialog's width, and cites header files
 
+> **Closed.** Two fixed widths, prose wrapped at them, Image Size 1766 → 920 px; the header citations are out of the dialog strings and the two engine strings that reached one (§0, S4).
+
 `AlwaysAutoResize` widens a window to its widest unwrapped line, and these
 explanations are `ImGui::TextDisabled()` with no wrap position set. So in six
 of these dialogs **one sentence decides how wide the dialog is**:
@@ -239,9 +297,9 @@ of these dialogs **one sentence decides how wide the dialog is**:
 | New Document | **1388 px** | "Reflects the clipboard as of the last time this window came to the front — copy, then click back into naturalPaint, before checking again." |
 | Unsharp Mask | **1386 px** | "Threshold is shaper-domain (**ops/Filters.hpp section 2**): 0.02 ignores differences smaller than 27% of the local level, at every brightness." |
 
-Look at [image-size.png](image-size.png): two fields and a combo occupying the
+Look at [before/image-size.png](before/image-size.png): two fields and a combo occupying the
 left third, then a wide band of empty dark grey, because of one line of prose.
-[filter-emboss.png](filter-emboss.png) is the same shape with four sliders.
+[before/filter-emboss.png](before/filter-emboss.png) is the same shape with four sliders.
 
 That prose also **cites source files at the user** — the bold spans above, plus
 `core/Half.hpp` in the Export Comps warning and `ops/PointOpTiles` elsewhere.
@@ -258,6 +316,8 @@ the docked column and by nothing in §2.
 
 ### 4.4 Three different commit models, undeclared
 
+> **Closed.** The previewing dialogs say `Apply`; the live one says `Done` with a footer note that changes apply as they are made; the rest say the verb (§0, S2–S3).
+
 - **Adjustments and filters**: preview live (or on release), then `Apply`/`Cancel`.
   Cancel discards the preview.
 - **Image Size, Canvas Size, New Document, the Select five, Export**: no
@@ -271,6 +331,8 @@ way to tell, before clicking, whether Cancel will undo what they just dragged.
 
 ### 4.5 Labels sit to the right of their controls — 33 of 34
 
+> **Closed.** A right-aligned 116 pt label column in all thirty-five (§0, S5).
+
 ImGui's default is a trailing label, and 33 of these dialogs take it:
 `[ 0.000 ] Black in`, `[ 1024 ] Width`, `[ Catmull-Rom ▾ ] Resample`. Desktop
 convention is a leading label — above the field, or right-aligned in a label
@@ -280,11 +342,13 @@ the eye has to re-find the label after each control.
 **Layer Properties is the exception**, and it is the exception because it uses
 `ctlSlider()` / `ctlBeginCombo()` / `ctlInputText()` from `ui/LabelledControl` —
 which draw a left label in a shared, measured column. Compare
-[layer-properties.png](layer-properties.png) with
-[adjust-levels.png](adjust-levels.png): the same widget vocabulary, two
+[before/layer-properties.png](before/layer-properties.png) with
+[before/adjust-levels.png](before/adjust-levels.png): the same widget vocabulary, two
 different reading orders, one of them already correct.
 
 ### 4.6 Placement is inconsistent, and tall dialogs overflow
+
+> **Closed.** All thirty-five exactly centred; the body scrolls under an 85% cap and the footer stays (§0, S7 -- including the first-frame trap that made the first attempt at this worse, not better).
 
 ImGui centres a modal on first appearance with `ImGuiCond_FirstUseEver`
 (imgui.cpp:13396) and then clamps it into the viewport. Twenty-six of the
@@ -306,16 +370,18 @@ dialog appears pinned to the ceiling while its 220 px neighbour appears centred,
 for no reason a user can see. Separately, **Export Comps is 1350 px tall in a
 1580 px window** (85%), which leaves the footer buttons a few pixels above the
 status bar and gives the dialog nowhere to grow — see
-[export-states.png](export-states.png).
+[before/export-states.png](before/export-states.png).
 
 ### 4.7 Some dialogs open already showing an error
+
+> **Closed.** Export Comps opens quiet with Export disabled and a hint; Revert on a never-saved document offers `Save As…` and no destructive button (§0, S8).
 
 Two of the images above are red or amber on arrival, before the user has done
 anything:
 
-- [export-states.png](export-states.png) — `export refused: no output directory
+- [before/export-states.png](before/export-states.png) — `export refused: no output directory
   was given.` in red, on open, as the first-run state.
-- [revert.png](revert.png) — the whole body is an amber engineering sentence
+- [before/revert.png](before/revert.png) — the whole body is an amber engineering sentence
   beginning lowercase, `revert refused: 'Untitled' has never been saved…`, and
   the dialog still offers **`Discard and revert`**, an irreversible action that
   cannot succeed here because there is nothing to revert to.
@@ -326,6 +392,8 @@ not be offered in a state where it has nothing to do.
 
 ### 4.8 Error and warning colours are hardcoded literals, off-palette
 
+> **Closed.** `kError` / `kWarning` in the theme and `docs/ui.md`; zero literals left in `src/ui` (§0, S6).
+
 `ImVec4(0.95f, 0.45f, 0.40f, 1.0f)` appears **17 times** in `ui/MacPaintUI.cpp`
 and again in `ui/NewDocumentDialog.cpp`; the amber `ImVec4(0.92f, 0.78f, 0.35f,
 1.0f)` twice more. `ui/AtelierTheme.hpp`'s token table — which `docs/ui.md`
@@ -335,12 +403,16 @@ nineteenth colour that nothing governs.
 
 ### 4.9 Empty and degenerate states use the wrong words
 
-[recover-documents.png](recover-documents.png) reads "No unfinished sessions
+> **Closed.** The empty Recover Documents dialog says `OK` (§0, S8).
+
+[before/recover-documents.png](before/recover-documents.png) reads "No unfinished sessions
 were found." and offers a button labelled **`Later`**. `Later` is the right word
 for declining an offer; there is no offer. An empty state's dismiss button is
 `OK` or `Close`.
 
 ### 4.10 One dialog is not a dialog
+
+> **Closed.** Add Guide is a modal, and captured (§0, S9).
 
 Add Guide (§3) is a `BeginPopup`, so it has no title bar, draws its own "Add
 Guide" as body text, and dismisses on any click outside — a menu's behaviour, in
@@ -371,7 +443,10 @@ the parts that work:
 ## 5. A proposed dialog standard
 
 A concrete target to build against. Ordered so the earlier items are
-independently shippable.
+independently shippable. **All nine are built** -- §0 has the per-item
+disposition and the one place the implementation departed from the wording
+below (S5's column is the dialog module's own constant, not `ui/LabelledControl`'s
+measured one, for the reason given there).
 
 **S1 — One dismissal contract.** Set `ImGuiConfigFlags_NavEnableKeyboard`, or
 add a shared `dialogFooter()` that reads Escape and Return itself the way

@@ -113,15 +113,12 @@ add select-luminance-range "--open-modal SelectLuminanceRange"
 # predates --open-modal.
 add layer-properties      "--open-layer-properties"
 
-# **View > Add Guide... is deliberately not in this list, and could not be.**
-# It is the one dialog here that is a `BeginPopup` rather than a
-# `BeginPopupModal`, and a non-modal popup is closed by ImGui the moment
-# anything else takes focus (`FocusWindow()` -> `ClosePopupsOverWindow()`,
-# imgui.cpp:13908). Under `--open-modal AddGuide` it does not survive to a
-# captured frame at any settle count -- 2, 5, 30 and 90 all photograph a
-# window with no popup in it. Whether a real menu click fares better needs a
-# human at the keyboard; see docs/modal-screenshots/README.md, which documents
-# the dialog from source and says so.
+# View > Add Guide... used to be the one dialog this script could not capture:
+# it was a non-modal `BeginPopup`, and ImGui closes those the moment anything
+# else takes focus (`FocusWindow()` -> `ClosePopupsOverWindow()`), so it never
+# survived to a captured frame. It is a `beginDialog()` modal now, like the
+# rest (docs/modal-screenshots/README.md, S9), and photographs like the rest.
+add add-guide             "--open-modal AddGuide"
 
 failed=0
 for i in $(seq 0 $((${#names[@]} - 1))); do

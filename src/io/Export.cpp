@@ -212,8 +212,8 @@ std::string exportRefusalReason(ImageFormat format, ExportTargetSpace targetSpac
         "export refused: the document's working space has primaries (red xy %.4f,%.4f; green "
         "xy %.4f,%.4f; blue xy %.4f,%.4f; white xy %.4f,%.4f) that differ from target space "
         "%s (red xy %.4f,%.4f; green xy %.4f,%.4f; blue xy %.4f,%.4f; white xy %.4f,%.4f). "
-        "This build converts transfer functions only -- no RGB<->XYZ primaries-conversion "
-        "matrix exists yet (color/Space.hpp) -- and writing the pixels out unconverted under "
+        "This build converts transfer functions only -- it has no RGB<->XYZ primaries "
+        "conversion yet -- and writing the pixels out unconverted under "
         "the target's name would misreport their colour. Pick a target space with matching "
         "primaries, or convert the document's working space first.",
         static_cast<double>(sourceSpace->primaries.redX),
