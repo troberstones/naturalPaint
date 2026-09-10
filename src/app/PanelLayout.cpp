@@ -34,6 +34,7 @@ constexpr KeyRow kKeyTable[] = {
     {ControlsSection::Layers, "layers"},
     {ControlsSection::History, "history"},
     {ControlsSection::Comps, "comps"},
+    {ControlsSection::Actions, "actions"},
     {ControlsSection::FlatsSegmentation, "flats_segmentation"},
     {ControlsSection::Grade, "grade"},
     {ControlsSection::Histogram, "histogram"},
@@ -109,6 +110,28 @@ PanelPlacement defaultPlacementFor(ControlsSection section) {
     // what says whether a panel is about the tool, the document, the view or
     // the simulation, and this one is unambiguously about the tool.
     case ControlsSection::FlatsTools: return PanelPlacement::Flyout;
+    // **The fourth exception, and the first `Document`-role one.** The ACTIONS
+    // panel (docs/automation-plan.md step 7) would land in the right dock by
+    // the rule below, where it would spend a 26 px grip and a splitter for the
+    // whole of every session that never records an action -- and that space
+    // comes straight out of the LAYERS list, which is the one panel in that
+    // dock whose content is a list and which app/selftest/PanelLayout pins at
+    // three visible rows. That is the exact budget mistake the paragraph above
+    // this function exists to record.
+    //
+    // Recording is a deliberate act begun a few times in a session, not a
+    // surface consulted every stroke, so it starts on the flyout rail: one
+    // 34 px button, one click to open it over the canvas. Not `Hidden`, which
+    // is reachable only through the PANELS menu -- a brand-new feature whose
+    // only route is a menu nobody has reason to open is a feature nobody
+    // finds.
+    //
+    // Giving it a `View` or `Simulation` role would have reached this
+    // placement through the rule below and needed no exception, and it would
+    // have been a lie for the same reason FLATS TOOLS records above: the role
+    // is also what orders the sections and what says what a panel is about,
+    // and every step of an action is an edit to the open document.
+    case ControlsSection::Actions: return PanelPlacement::Flyout;
     // The panel this edits (`AppState::pigmentOverride`, app/AppState.hpp)
     // is off by default, and a panel for turning on an off-by-default
     // override is not worth a permanent flyout slot until the user asks for

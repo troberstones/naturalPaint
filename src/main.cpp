@@ -3248,6 +3248,11 @@ int main(int argc, char** argv) {
     const bool recorderOk = np::runRecorderTest();
     const bool actionFileOk = np::runActionFileTest();
     const bool replayOk = np::runReplayTest();
+    // app/ActionsPanel: the ACTIONS panel's model -- which buttons are live
+    // when, what a step row reads, the two row verbs, and the arm/stop
+    // lifecycle that keeps a process-wide recorder from being left armed.
+    // See app/SelfTest.hpp.
+    const bool actionsPanelOk = np::runActionsPanelTest();
     // app/CommandsOpStack: the rows that carry an op as a parameter, keyed by
     // kind NAME, and the selection rows that cross the session/document line.
     // See app/SelfTest.hpp.
@@ -3610,6 +3615,7 @@ int main(int argc, char** argv) {
                     commandsLayersOk &&
                     recorderOk &&
                     actionFileOk && replayOk &&
+                    actionsPanelOk &&
                     commandsOpStackOk &&
                     commandOk && jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     commandsImageOk &&

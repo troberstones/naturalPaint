@@ -13,6 +13,7 @@
 #include "app/BrushLibraryFile.hpp"
 #include "app/CloseDecision.hpp"
 #include "app/CropTool.hpp"
+#include "app/ActionsPanel.hpp"
 #include "app/PanelLayout.hpp"
 #include "app/PenTool.hpp"
 #include "app/TextTool.hpp"
@@ -1251,6 +1252,23 @@ struct AppState {
   // artifacts are drawn on the CANVAS, so no panel crop can reach them and no
   // arrangement of panels can produce them.
   bool flatsDemoEdits = false;
+  // `--actions-demo`: the ACTIONS panel docked in the right dock, expanded,
+  // holding a recorded action -- the fixture the two ACTIONS golden views
+  // photograph. `--actions-demo recording` leaves the take LIVE instead, with
+  // a refusal in it, which is the panel's other state and the one no
+  // arrangement of panels can reach (it needs a recorder that is armed and a
+  // step that was refused).
+  bool actionsDemo = false;
+  bool actionsDemoRecording = false;
+
+  // T?: the ACTIONS panel's own state -- the take being edited, the selected
+  // row and the last sentence it has to say (app/ActionsPanel.hpp).
+  //
+  // Session state and deliberately not persisted, for the reason that header
+  // gives: an action that matters is a file in the library, and restoring a
+  // half-finished take from three launches ago would present it as the thing
+  // the user was doing.
+  ActionsPanelState actionsPanel;
 
   // --- Selection and clipboard commands, consumed in ui/MacPaintUI ---------
   //

@@ -53,11 +53,12 @@ bool runControlsLayoutTest() {
               positionIn(kOldOrder, ControlsSection::History) + 1, kOldOrder.size(),
               positionIn(newOrder, ControlsSection::History) + 1, newOrder.size());
 
-  check(sections.size() == 17, "every section has exactly one spec (17)");
-  check(newOrder.size() == kOldOrder.size() + 8,
+  check(sections.size() == 18, "every section has exactly one spec (18)");
+  check(newOrder.size() == kOldOrder.size() + 9,
         "the same sections plus COMPS, COLOR, BRUSH LIBRARY, HISTOGRAM, TOOLS and OPTIONS from "
-        "the dockable-panel revamp, and -- as of the flats panels (ADR-0009) -- FLATS TOOLS and "
-        "SEGMENTATION, reordered; none was dropped");
+        "the dockable-panel revamp, FLATS TOOLS and SEGMENTATION from the flats panels "
+        "(ADR-0009), and ACTIONS from docs/automation-plan.md step 7, reordered; none was "
+        "dropped");
   {
     // Every enumerator appears exactly once. Written against the list of
     // enumerators rather than against a count, so a section added to the enum
@@ -73,13 +74,14 @@ bool runControlsLayoutTest() {
     const ControlsSection kAll[] = {
         ControlsSection::Tools,      ControlsSection::Options,
         ControlsSection::Color,      ControlsSection::Layers,     ControlsSection::History,
-        ControlsSection::Comps,      ControlsSection::FlatsSegmentation,
+        ControlsSection::Comps,      ControlsSection::Actions,
+        ControlsSection::FlatsSegmentation,
         ControlsSection::Grade,      ControlsSection::Histogram,
         ControlsSection::BrushLibrary,
         ControlsSection::Brush,      ControlsSection::FlatsTools,
         ControlsSection::Pigment,    ControlsSection::Medium,
         ControlsSection::BoardTilt,  ControlsSection::Grid,       ControlsSection::Solver};
-    static_assert(sizeof(kAll) / sizeof(kAll[0]) == 17,
+    static_assert(sizeof(kAll) / sizeof(kAll[0]) == 18,
                   "kAll must list every ControlsSection enumerator");
     bool eachOnce = true;
     for (const ControlsSection s : kAll) {
@@ -189,8 +191,16 @@ bool runControlsLayoutTest() {
       // there were room"), and the answer is no for a panel that is blank
       // unless a Flats layer is selected. It is not load-bearing for the dock
       // arithmetic, and a future reader should not believe it is.
+      // **ACTIONS is the second Document section that does not start open**,
+      // and for the same shape of reason SEGMENTATION does not: LAYERS,
+      // HISTORY and COMPS have something to say the moment a file is open,
+      // and an ACTIONS panel has something to say only once a take has been
+      // recorded or an action loaded. It also does not start in the dock at
+      // all (app/PanelLayout's `defaultPlacementFor()`), so this flag is a
+      // statement of intent for it exactly as it is for SEGMENTATION.
       const bool shouldBeOpen = (spec.role == ControlsSectionRole::Document &&
-                                 spec.section != ControlsSection::FlatsSegmentation) ||
+                                 spec.section != ControlsSection::FlatsSegmentation &&
+                                 spec.section != ControlsSection::Actions) ||
                                 spec.section == ControlsSection::Color ||
                                 spec.section == ControlsSection::Tools ||
                                 spec.section == ControlsSection::Options;
@@ -408,11 +418,13 @@ bool runControlsLayoutTest() {
   // with a collision in it -- GRADE and GRID both read `GR` -- and the
   // revision that populated the rail by default put both on it at once.
   {
-    // The seven sections `PanelLayout` puts on the rail on a first run.
+    // The eight sections `PanelLayout` puts on the rail on a first run --
+    // seven until ACTIONS joined them (docs/automation-plan.md step 7), whose
+    // own placement exception is argued in app/PanelLayout.cpp.
     const std::vector<ControlsSection> rail = {
         ControlsSection::Grade,  ControlsSection::Histogram, ControlsSection::Pigment,
         ControlsSection::Medium, ControlsSection::BoardTilt,  ControlsSection::Grid,
-        ControlsSection::Solver,
+        ControlsSection::Solver, ControlsSection::Actions,
     };
 
     bool allUnique = true;

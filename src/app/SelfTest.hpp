@@ -3667,6 +3667,32 @@ bool runRecorderTest();
 // targeting by name, the refusal that touches nothing, and the one history
 // entry. See app/Replay.hpp.
 bool runReplayTest();
+
+// app/ActionsPanel -- the ACTIONS panel's model (docs/automation-plan.md
+// step 7), asserted as state-in / drawing-out rather than by drawing it.
+//
+// **What it proves:**
+//  - **SAVE is never offered for a recording with a hole in it, and the
+//    refusals are on screen whenever it is not.** `Recorder::usable()` is
+//    false once anything has been refused, and a holed take "replays
+//    confidently and does the wrong thing at step 4" -- so the implication
+//    `save.enabled => refusals.empty()` is asserted over every state this
+//    panel can reach, not over the one the test happened to build;
+//  - which buttons are live when: RECORD with no document, PLAY on an empty
+//    action, the row verbs with nothing selected and on the first/last row,
+//    and the whole list read-only while a take is being recorded;
+//  - what a row reads -- the command's LABEL and its advertised parameters,
+//    never its file-key id, and an unregistered id as a named unknown rather
+//    than as a missing row;
+//  - that reorder and delete produce the action the user sees, selection
+//    included, and refuse an out-of-range index rather than wrapping;
+//  - **the arm/stop lifecycle, which is what keeps a process-wide singleton
+//    from being left armed**: closing the document, switching to another one,
+//    and putting the panel away each stop the take and say so, and the guard
+//    that does it runs from the frame loop rather than from the draw.
+//
+// Headless, GPU-free and filesystem-free. See app/selftest/ActionsPanel.cpp.
+bool runActionsPanelTest();
 // app/CommandsOpStack -- the command rows that carry an *op* as a parameter,
 // and the selection rows that make every destructive step around them mean
 // what it meant when it was recorded (docs/automation-plan.md step 1).
