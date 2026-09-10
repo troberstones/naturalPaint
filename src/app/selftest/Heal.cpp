@@ -202,6 +202,16 @@ bool runHealTest() {
     // (c) The defining property, over a rim that is neither constant nor
     // linear: the answer is harmonic. Checked one cell in from the rim, where
     // every neighbour of the tested cell is itself interior.
+    //
+    // **Harmonic is necessary and nowhere near sufficient, and the spread below
+    // is here because a sabotage proved it.** With the smoother disabled
+    // entirely, `harmonicFill()` returns its own initial guess -- the mean of
+    // the rim, on every interior cell -- and a CONSTANT field has a five-point
+    // Laplacian of exactly zero. The Laplacian test alone was green over a
+    // solver that had done no work at all. The interior of this rim has to
+    // carry most of the step the rim carries, so the spread of the answer is
+    // the term that says the boundary was propagated inwards rather than
+    // averaged away.
     {
       std::vector<float> u(n, 0.0f);
       ringWrite(u, [&](int x, int y) {
@@ -209,6 +219,7 @@ bool runHealTest() {
       });
       harmonicFill(u, w, h);
       double worst = 0.0;
+      float lo = u[static_cast<size_t>(w) + 1], hi = lo;
       for (int y = 2; y < h - 2; ++y)
         for (int x = 2; x < w - 2; ++x) {
           const size_t i = static_cast<size_t>(y) * static_cast<size_t>(w) +
@@ -217,12 +228,17 @@ bool runHealTest() {
                                            u[i - static_cast<size_t>(w)] +
                                            u[i + static_cast<size_t>(w)]);
           worst = std::max(worst, std::fabs(lap));
+          lo = std::min(lo, u[i]);
+          hi = std::max(hi, u[i]);
         }
-      std::printf("  [measured] stepped rim: worst interior |laplacian| %.3e\n", worst);
-      check(worst < 1.0e-3,
+      std::printf("  [measured] stepped rim: worst interior |laplacian| %.3e, interior "
+                  "spread %.4f of the rim's 1.5\n",
+                  worst, static_cast<double>(hi - lo));
+      check(worst < 1.0e-3 && hi - lo > 0.75f,
             "solve: over a rim that is neither constant nor linear the interior comes back "
-            "HARMONIC -- the five-point Laplacian is zero everywhere inside, which is the "
-            "equation itself and not a property of any particular fixture");
+            "HARMONIC and carries the rim's own range -- a zero Laplacian is the equation "
+            "itself, and the range is what a constant field (which is also harmonic, and is "
+            "what an un-run solver returns) cannot fake");
     }
   }
 
@@ -284,19 +300,6 @@ bool runHealTest() {
         }
       const std::vector<std::array<float, 4>> out = healPatch(src, dst, w, h);
 
-      bool rimIsDst = true;
-      for (int x = 0; x < w; ++x) {
-        if (out[static_cast<size_t>(x)] != dst[static_cast<size_t>(x)]) rimIsDst = false;
-        const size_t b = static_cast<size_t>(h - 1) * static_cast<size_t>(w) +
-                         static_cast<size_t>(x);
-        if (out[b] != dst[b]) rimIsDst = false;
-      }
-      check(rimIsDst,
-            "patch: the border ring comes back as the DESTINATION, bit for bit -- it is the "
-            "Dirichlet condition rather than a computed value, and a caller that compared it "
-            "against dst to decide whether a texel needs writing would otherwise dirty a tile "
-            "per dab over a patch the solve had nothing to say about");
-
       // The gradient-domain guarantee itself: the answer carries the SOURCE's
       // texture. `laplace(healed) == laplace(src)` inside, because
       // `healed = src + h` and `h` is harmonic.
@@ -334,6 +337,46 @@ bool runHealTest() {
     }
 
     {
+      // **The border ring, on values chosen so that arithmetic alone cannot
+      // produce it.** `ops/Poisson` pins the rim to `dst` after the solve, and
+      // the first version of this assertion ran on the dyadic fixture above --
+      // where `src + (dst - src)` is exact, so deleting the pin left it green.
+      // Every value here is a non-dyadic float with a full mantissa, so the
+      // subtraction that builds the rim and the addition that applies it both
+      // round, and only a caller that writes `dst` back gets `dst` back.
+      std::vector<std::array<float, 4>> ndDst(n), ndSrc(n);
+      for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+          const size_t i = static_cast<size_t>(y) * static_cast<size_t>(w) +
+                           static_cast<size_t>(x);
+          const float d = 0.31f + 0.017f * static_cast<float>(x) + 0.0037f * static_cast<float>(y);
+          const float s = 0.73f + 0.011f * static_cast<float>(y) + 0.0029f * static_cast<float>(x);
+          ndDst[i] = {d, d * 0.37f, d * 0.19f, 1.0f};
+          ndSrc[i] = {s, s * 0.41f, s * 0.23f, 1.0f};
+        }
+      const std::vector<std::array<float, 4>> out = healPatch(ndSrc, ndDst, w, h);
+      bool rimIsDst = true;
+      for (int x = 0; x < w; ++x) {
+        if (out[static_cast<size_t>(x)] != ndDst[static_cast<size_t>(x)]) rimIsDst = false;
+        const size_t b = static_cast<size_t>(h - 1) * static_cast<size_t>(w) +
+                         static_cast<size_t>(x);
+        if (out[b] != ndDst[b]) rimIsDst = false;
+      }
+      for (int y = 1; y < h - 1; ++y) {
+        const size_t row = static_cast<size_t>(y) * static_cast<size_t>(w);
+        if (out[row] != ndDst[row]) rimIsDst = false;
+        if (out[row + static_cast<size_t>(w - 1)] != ndDst[row + static_cast<size_t>(w - 1)])
+          rimIsDst = false;
+      }
+      check(rimIsDst,
+            "patch: the border ring comes back as the DESTINATION, bit for bit, on values no "
+            "rounding can reproduce -- it is the Dirichlet condition rather than a computed "
+            "value, and a caller that compared it against dst to decide whether a texel needs "
+            "writing would otherwise dirty a tile per dab over a patch the solve had nothing "
+            "to say about");
+    }
+
+    {
       const std::vector<std::array<float, 4>> tiny(4, std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f});
       const std::vector<std::array<float, 4>> tinyDst(4, std::array<float, 4>{0.5f, 0.5f, 0.5f, 1.0f});
       const std::vector<std::array<float, 4>> out = healPatch(tiny, tinyDst, 2, 2);
@@ -364,6 +407,36 @@ bool runHealTest() {
           "clamp: a texel driven to zero coverage carries no colour -- premultiplied storage "
           "means colour is already scaled by coverage, so leaving it behind would MANUFACTURE "
           "the malformed texel the clone stamp's own rule refuses to launder");
+  }
+  {
+    // **And the DAB calls it**, which the three assertions above cannot see:
+    // they run the function directly, and a `healDab()` that had stopped
+    // calling it would leave every one of them green. That is the shape of
+    // failure this codebase has caught before -- a test that tests a copy.
+    //
+    // The fixture drives a real overshoot rather than a synthetic one. The
+    // source window's rim is bright and its inside is opaque black, and the
+    // destination is dark everywhere: the correction is about -0.8, and
+    // `src + h` at the middle of the patch is a NEGATIVE radiance at full
+    // alpha. Premultiplied storage has no meaning for that texel, and
+    // core/Composite would read it straight into its accumulator.
+    OpenDocument od = makeRgbDoc(256, 256);
+    TileStore& store = *od.document.layers[0].rgbTiles;
+    fillRect(store, 100, 100, 180, 180, {0.1f, 0.1f, 0.1f, 1.0f});  // the dark destination
+    fillRect(store, 15, 15, 45, 45, {0.9f, 0.9f, 0.9f, 1.0f});      // the source window's rim
+    fillRect(store, 22, 22, 39, 39, {0.0f, 0.0f, 0.0f, 1.0f});      // opaque black inside it
+    HealStroke s;
+    s.begin(store, Vec2{-100.0f, -100.0f}, 1.0f, false);
+    s.healDab(store, discTip(8.0f, 1.0f), Vec2{130.5f, 130.5f}, 256, 256, nullptr, nullptr);
+    s.end();
+    const std::array<float, 4> centre = readAt(store, 130, 130);
+    std::printf("  [measured] a dab whose solve overshoots: centre (%.4f %.4f %.4f %.4f)\n",
+                static_cast<double>(centre[0]), static_cast<double>(centre[1]),
+                static_cast<double>(centre[2]), static_cast<double>(centre[3]));
+    check(centre[0] >= 0.0f && centre[1] >= 0.0f && centre[2] >= 0.0f && centre[3] <= 1.0f &&
+              centre[3] > 0.9f,
+          "clamp: and a dab whose solve overshoots stores a WELL-FORMED texel -- the call is "
+          "in the deposit loop, which is a different claim from the function being correct");
   }
 
   // ======================================================================
