@@ -230,6 +230,28 @@ bool runInpaintTest() {
       check(everyHoleTexelWritten,
             "engine: every texel of the hole was reached -- no unfilled island left behind by "
             "the march");
+
+      // A hole is a scratch, not a rectangle, so the previous check is run
+      // again on a shape whose BOUNDING BOX contains texels the selection
+      // excludes -- which the square above, by construction, could not. The
+      // scatter walks the bounding box; only the selected texels inside it
+      // may be written, and this is the assertion that says so.
+      Selection diagonal;
+      inpaintSelectTexel(diagonal, 40, 40);
+      inpaintSelectTexel(diagonal, 41, 41);
+      InpaintParams diagParams;
+      diagParams.hole = &diagonal;
+      diagParams.radius = 5;
+      TileStore diagFilled;
+      inpaintTiles(damaged, canvas, diagParams, &diagFilled);
+      const std::array<float, 4> kUntouched{0.0f, 0.0f, 0.0f, 0.0f};
+      check(inpaintReadAt(diagFilled, 41, 40) == kUntouched &&
+                inpaintReadAt(diagFilled, 40, 41) == kUntouched &&
+                inpaintReadAt(diagFilled, 40, 40) != kUntouched &&
+                inpaintReadAt(diagFilled, 41, 41) != kUntouched,
+            "engine: for a hole whose bounding box is not the hole, the excluded texels "
+            "INSIDE that box are left untouched -- the scatter is gated on the selection, "
+            "not on the rectangle it walks");
     }
 
     // --- **The one that proves the inversion.** ---------------------------
