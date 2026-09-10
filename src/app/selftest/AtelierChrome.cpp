@@ -354,14 +354,16 @@ bool runAtelierChromeTest() {
     }
     check(namesOk, "every tool has a distinct non-empty name");
     // The tripwire that makes the walk above complete rather than merely long,
-    // the same shape app/selftest/Fonts.cpp uses for LayerKind. 28 now, from
-    // 27, from an original 7: the palette rebuild added twenty slot-only
-    // cells, and PRD E3's elliptical marquee then added one more. It is a
-    // separate Tool value rather than a mode on Marquee because
-    // docs/shortcuts.md reserves `M` for "rectangle | ellipse" and a flyout
-    // member IS a Tool value (ui/AtelierChrome's kToolGroups).
-    check(std::string(toolName(static_cast<Tool>(28))) == "?",
-          "Tool still has exactly 28 values, so the walk above covers all of them");
+    // the same shape app/selftest/Fonts.cpp uses for LayerKind. 29 now, from
+    // 28, from 27, from an original 7: the palette rebuild added twenty
+    // slot-only cells, PRD E3's elliptical marquee then added one, and PRD D6's
+    // Heal (PLAN.md Phase 8) added this one. Each of the recent two is a
+    // separate Tool value rather than a mode on the tool it varies, for one
+    // reason: docs/shortcuts.md gives each its own letter row (`M` for
+    // "rectangle | ellipse", `J` for Heal) and a flyout member IS a Tool value
+    // (ui/AtelierChrome's kToolGroups).
+    check(std::string(toolName(static_cast<Tool>(29))) == "?",
+          "Tool still has exactly 29 values, so the walk above covers all of them");
   }
 
   // --- Part F: the tool palette's icons ------------------------------------

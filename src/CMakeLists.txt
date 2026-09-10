@@ -145,6 +145,7 @@ add_executable(naturalPaint
   app/selftest/Gradient.cpp
   app/selftest/GuidesGridSnap.cpp
   app/selftest/Half.cpp
+  app/selftest/Heal.cpp
   app/selftest/Histogram.cpp
   app/selftest/History.cpp
   app/selftest/HistoryPanel.cpp

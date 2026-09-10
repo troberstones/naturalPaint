@@ -8,6 +8,7 @@
 #include "core/SelectionShapes.hpp"
 #include "ops/Poisson.hpp"
 #include "ui/AtelierChrome.hpp"
+#include "ui/ToolCursor.hpp"
 
 namespace np {
 
@@ -100,6 +101,30 @@ bool runHealTest() {
                       const std::array<float, 4>& t) {
     for (int32_t y = y0; y <= y1; ++y)
       for (int32_t x = x0; x <= x1; ++x) writeAt(store, x, y, t);
+  };
+
+  // **A source patch with STRUCTURE in it**, and the reason the sections below
+  // do not use the flat rectangle they read more simply with.
+  //
+  // A heal carries the source's texture and the destination's light. Over the
+  // ramp fixture a *flat* source is therefore the one case where a correct heal
+  // is a perfect no-op: the rim is `ramp - constant`, which is linear, so its
+  // harmonic extension is that same linear function and the healed patch is the
+  // ramp again, bit for bit. Section 3 uses exactly that to make its exactness
+  // claim -- and it is a trap everywhere else, because "the dab changed
+  // something" is then a measurement of nothing. Three assertions below were
+  // written against a flat source and went red on a correct engine for this
+  // reason. A short sawtooth is not harmonic, so a healed texel is provably not
+  // the fixture value it replaced, and changing the source's texture changes the
+  // answer -- which is what section 4 needs to be a claim about the snapshot at
+  // all.
+  auto fillTexture = [&](TileStore& store, int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                         int32_t phase) {
+    for (int32_t y = y0; y <= y1; ++y)
+      for (int32_t x = x0; x <= x1; ++x) {
+        const float v = 0.75f + static_cast<float>((x * 3 + y * 5 + phase) % 7) / 64.0f;
+        writeAt(store, x, y, {v, v * 0.5f, v * 0.25f, 1.0f});
+      }
   };
 
   auto makeRgbDoc = [](int32_t w, int32_t h) {
@@ -420,10 +445,13 @@ bool runHealTest() {
       OpenDocument od = makeRgbDoc(256, 256);
       TileStore& store = *od.document.layers[0].rgbTiles;
       fillRamp(store, 0, 0, 255, 255);
-      fillRect(store, 0, 100, 60, 160, {0.75f, 0.25f, 0.5f, 1.0f});  // the source patch
+      fillTexture(store, 0, 100, 60, 160, 0);  // the source patch
       HealStroke s;
       s.begin(store, Vec2{-100.0f, 0.0f}, 1.0f, false);
-      if (mutateAfterBegin) fillRect(store, 0, 100, 60, 160, {0.125f, 0.875f, 0.0625f, 1.0f});
+      // A different PHASE of the same sawtooth, not a different flat fill: what
+      // the snapshot has to protect is the source's texture, and two flat fills
+      // heal to the same answer however far apart they are.
+      if (mutateAfterBegin) fillTexture(store, 0, 100, 60, 160, 3);
       s.healDab(store, discTip(12.0f, 1.0f), Vec2{130.5f, 130.5f}, 256, 256, nullptr, nullptr);
       s.end();
       std::vector<std::array<float, 4>> out;
@@ -456,10 +484,13 @@ bool runHealTest() {
     OpenDocument od = makeRgbDoc(256, 256);
     TileStore& store = *od.document.layers[0].rgbTiles;
     fillRamp(store, 0, 0, 255, 255);
-    fillRect(store, 0, 100, 60, 160, {0.75f, 0.25f, 0.5f, 1.0f});
+    fillTexture(store, 0, 100, 60, 160, 0);
 
-    Selection sel;
-    setSelectionToRect(sel, PixelRect{100, 100, 30, 60}, 256, 256);
+    // Texels 100..129 across and 100..159 down, at full coverage: the dab at
+    // (125.5, 130.5) with a radius of 20 reaches well past the right edge of
+    // this rectangle, so the two assertions below are about one dab that
+    // straddles the ants rather than two dabs placed either side of them.
+    const Selection sel = selectRectangle(100.0f, 100.0f, 130.0f, 160.0f);
     const std::array<float, 4> outsideBefore = readAt(store, 140, 130);
 
     HealStroke s;
@@ -557,7 +588,7 @@ bool runHealTest() {
       OpenDocument od = makeRgbDoc(256, 256);
       TileStore& store = *od.document.layers[0].rgbTiles;
       fillRamp(store, 0, 0, 255, 255);
-      fillRect(store, 0, 100, 60, 160, {0.75f, 0.25f, 0.5f, 1.0f});
+      fillTexture(store, 0, 100, 60, 160, 0);
       BrushTip t = discTip(20.0f, 1.0f);
       if (grain) {
         t.grain.enabled = true;
@@ -571,21 +602,25 @@ bool runHealTest() {
       const DepositCount c =
           s.healDab(store, t, Vec2{130.5f, 130.5f}, 256, 256, nullptr, nullptr);
       s.end();
-      // How many texels the dab left standing at the fixture's own value.
-      // Grain lowers coverage rather than stopping a write, so the observable
-      // is that the repair stops being complete wherever the tooth stands up.
-      int32_t untouched = 0;
+      // **How FAR the dab moved the layer, not how many texels it touched.**
+      // Grain lowers a texel's coverage; it does not veto the write, and at
+      // this depth it never reaches zero -- so counting texels that still hold
+      // the fixture value byte for byte counts the same number twice and the
+      // assertion would be green with the grain call deleted. The distance
+      // from the fixture is monotone in coverage, which is the thing the tooth
+      // actually changes.
+      double moved = 0.0;
       for (int32_t y = 112; y <= 148; ++y)
         for (int32_t x = 112; x <= 148; ++x)
-          if (readAt(store, x, y) == rampTexel(x)) ++untouched;
-      return std::pair<size_t, int32_t>{c.texels, untouched};
+          moved += std::fabs(static_cast<double>(readAt(store, x, y)[0]) - rampValue(x));
+      return std::pair<size_t, double>{c.texels, moved};
     };
     const auto plain = dabWithGrain(false);
     const auto grained = dabWithGrain(true);
-    std::printf("  [measured] one dab of %zu texels: %d left at the fixture value smooth, %d "
+    std::printf("  [measured] one dab of %zu texels moved the layer by %.4f smooth, %.4f "
                 "through paper tooth\n",
                 plain.first, plain.second, grained.second);
-    check(grained.second > plain.second,
+    check(plain.second > 0.0 && grained.second < plain.second * 0.95,
           "grain: the paper tooth is applied on THIS route too -- `grainReachesRoute()` "
           "answers true for it, and this asserts the CALL is there rather than that a table "
           "says so, which is the failure that once left a working control greyed out");

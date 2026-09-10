@@ -1,7 +1,6 @@
 #pragma once
 
 #include <array>
-#include <cstdint>
 #include <vector>
 
 // ops/Poisson -- **the gradient-domain solve behind the Heal tool.**

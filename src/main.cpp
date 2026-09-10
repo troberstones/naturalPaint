@@ -3318,6 +3318,17 @@ int main(int argc, char** argv) {
     // an unset source refuses out loud rather than stamping the layer onto
     // itself, which is a perfect no-op and therefore invisible.
     const bool cloneStampOk = np::runCloneStampTest();
+    // ops/Poisson, brush/Heal and app/StrokeSession §1c -- PRD D6's heal, the
+    // tenth stroke tool and the first route whose answer is the solution to an
+    // equation rather than a composite of samples. Everything it shares with
+    // the clone stamp -- the anchor, the snapshot, the footprint, the ceiling
+    // -- makes "it looks about right" worthless as evidence, so the section is
+    // built out of claims a clone cannot pass: the solver against analytic
+    // answers (a constant rim exactly, a linear rim reproduced, a zero
+    // Laplacian inside), the two exactness cases at zero tolerance, and one dab
+    // over a ramp that a heal must leave bit-identical while the clone stamp,
+    // on the identical fixture at the identical offset, moves every texel.
+    const bool healOk = np::runHealTest();
     // PRD D25/D26 -- the paint bucket's refusals. ops/FloodFill was never
     // wrong; the gate in front of it was inside the click condition, so a
     // bucket click on the layer kind a new layer defaults to disappeared with
@@ -3588,7 +3599,7 @@ int main(int argc, char** argv) {
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk && smudgeOk &&
                     smudgeOptionsOk &&
                     pigmentSelectionOk && bucketRefusalOk &&
-                    pigmentSelectionOk && cloneStampOk && bucketRefusalOk &&
+                    pigmentSelectionOk && cloneStampOk && healOk && bucketRefusalOk &&
                     layerMultiSelectOk && layerPanel2aOk && toolCursorOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&
