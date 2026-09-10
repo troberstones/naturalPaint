@@ -329,6 +329,28 @@ enum class FullRecompositeReason {
   // tiles nor ops nor shapes, so pass 1's whitelist compares EQUAL on every
   // field for a layer whose entire string just changed.
   TextContentChanged,
+  // PLAN.md phase 16 / ADR-0009. A `LayerKind::Flats` layer's parameters or
+  // recorded repairs moved.
+  //
+  // **The third parametric kind, and it was missed -- with exactly the
+  // consequence the two comments above predict.** A Flats layer holds no
+  // tiles, no ops, no shapes and no text: its content is `flats` (the
+  // `FlatParams` and the recorded edits), so pass 1's whitelist compared
+  // EQUAL on every field for a layer whose entire segmentation had just
+  // changed. Every flatting edit -- a deleted fill, a bridge, a hand-drawn
+  // shape -- and every parameter change landed in the model, invalidated the
+  // evaluation cache, rebuilt the layer's tiles correctly, and then was
+  // never composited, so nothing appeared on screen until something
+  // unrelated dirtied the canvas. **Toggling the layer's eye icon off and
+  // back on was the reliable way to see your own edit**, which is how this
+  // was reported.
+  //
+  // Its own enumerator rather than sharing one, for the reason
+  // `TextContentChanged` gives: `fullRecompositeExplanation()` exists so a
+  // slow frame can say what the user did, and "vector layer geometry
+  // changed" pointed at a re-flat would send a reader hunting a path edit
+  // that never happened.
+  FlatsContentChanged,
 };
 
 const char* fullRecompositeReasonName(FullRecompositeReason reason) noexcept;

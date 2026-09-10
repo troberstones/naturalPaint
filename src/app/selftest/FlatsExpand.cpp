@@ -126,6 +126,32 @@ bool runFlatsExpandTest() {
     check(!anyFlats,
           "flats expand: the source Flats layer is consumed, not left behind hidden -- a "
           "leftover would composite the same picture twice or accumulate silently");
+
+    // **The end of the gesture the user actually performs**: expand, then drag
+    // the group below the line art. Reported from the app -- the group row
+    // moved and its children stayed where they were, because `moveLayer()`
+    // rotated one element. The two halves are tested apart (this file for the
+    // shape, selftest/LayerGroup for the block move) and this is the seam
+    // between them, which is where the defect actually lived: each half was
+    // correct on its own.
+    if (groupRow != od.document.layers.size() && groupRow >= 2) {
+      const std::string tag = od.document.layers[groupRow].groupTag;
+      const LayerOpResult moved = moveLayer(od.document, groupRow, 0);
+      const size_t landed = moved.index;
+      check(moved.ok && landed == 2,
+            "flats expand: the expanded group drags to the bottom -- its row lands at 2, "
+            "because its two members have to fit below it");
+      check(landed < od.document.layers.size() &&
+                od.document.layers[landed].kind == LayerKind::Group &&
+                od.document.layers[landed].groupTag == tag &&
+                od.document.layers[1].parent == tag && od.document.layers[0].parent == tag,
+            "flats expand: **and its members came with it** -- the whole point of the "
+            "gesture, and what an expanded group below the line art has to mean");
+      check(od.document.layers[3].kind != LayerKind::Group &&
+                od.document.layers[3].parent != tag,
+            "flats expand: ...with the line art now ABOVE the group, which is what the drag "
+            "asked for");
+    }
   }
 
   // ---- the colour domain, which is the silent one ------------------------

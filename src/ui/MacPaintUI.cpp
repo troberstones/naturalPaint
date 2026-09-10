@@ -581,7 +581,13 @@ bool toolButton(AppState& st, Tool t, float cellSize) {
   const bool live = implemented && onSurface;
   const bool clickedRaw = ImGui::InvisibleButton("##tool", size);
   const bool clicked = clickedRaw && live;
-  const bool selected = implemented && st.brush.tool == t;
+  // **`!flatsToolIsActive()`: the tool state is exclusive.** While a flatting
+  // tool is active this palette draws NOTHING selected, because the flats
+  // palette is drawing the selection instead and two lit cells leave a user
+  // unable to say what a click will do. `st.brush.tool` is deliberately still
+  // whatever they had -- it is remembered, not cleared, so leaving flatting
+  // mode gives it back (app/ToolSwitch.hpp carries the argument).
+  const bool selected = implemented && st.brush.tool == t && !flatsToolIsActive(st);
   const bool hovered = ImGui::IsItemHovered();
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -806,7 +812,11 @@ void toolGroupButton(AppState& st, int groupIndex, float cellSize, bool forceOpe
     // idle/hovered background and the dark on-accent ink against the
     // selected one both hold real contrast in both states.
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    const bool selected = toolImplemented(current) && st.brush.tool == current;
+    // The same exclusivity as the cell it is drawn on: the badge picks its
+    // colour from selected/not, so leaving this one alone would ink a
+    // triangle for the accent fill that is no longer there.
+    const bool selected =
+        toolImplemented(current) && st.brush.tool == current && !flatsToolIsActive(st);
     const ImU32 triColor = selected ? IM_COL32(20, 22, 24, 255) : atelierToken(kTextPrimary);
     const float s = std::max(5.0f, cellSize * 0.28f);
     const ImVec2 corner(p.x + cellSize, p.y + cellSize);
@@ -1084,7 +1094,19 @@ constexpr float kAntDash = 6.0f;
 // Read once per frame by each caller and threaded through, rather than sampled
 // per segment, so two segments of the same outline cannot land on two different
 // clock readings.
+// **Pinned to zero on a `--screenshot` run.** The phase is a clock reading,
+// and a clock in a golden view is a view that fails on a slow machine and
+// passes on a fast one. The Text caret was exactly this defect and cost a
+// bisect: text views failed on main's OWN binary. Frozen here rather than at
+// each of the six call sites, so a seventh caller inherits it.
+//
+// It is also what makes a CANVAS crop possible at all: this file's golden
+// views are all strictly inside a panel, and the note in run_golden.sh saying
+// a single canvas pixel would make a flats view non-deterministic "by
+// construction" was true only because of this line.
+bool g_antPhaseFrozen = false;
 float marchingAntPhase() {
+  if (g_antPhaseFrozen) return 0.0f;
   return static_cast<float>(std::fmod(ImGui::GetTime() * 18.0, kAntDash * 2.0));
 }
 
@@ -2874,7 +2896,13 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
           if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("NP_LAYER_ROW")) {
             const size_t from = *static_cast<const size_t*>(payload->Data);
             const bool droppedAboveMidpoint = ImGui::GetMousePos().y < (o.y + rowH * 0.5f);
-            const size_t to = layerDropTargetIndex(i, droppedAboveMidpoint, count);
+            // Snapped out of any collapsed group the raw target would land
+            // inside: those rows are not drawn, so joining one would be a
+            // membership the user could not see themselves choosing.
+            // app/LayerPanel.hpp argues it; the arithmetic above stays pure.
+            const size_t to = layerDropOutOfCollapsedGroups(
+                doc, from, layerDropTargetIndex(i, droppedAboveMidpoint, count),
+                g_layers.collapsedGroups);
             if (from != to) run(moveLayer(doc, from, to));
             structureChanged = true;
           }
@@ -11647,6 +11675,33 @@ struct FlatsPanelSubject {
 // lasso-shaped flatting tools is actually picked in the palette -- an
 // explicit, visible mode with an accented cell, not a hidden meaning the
 // Lasso acquires whenever the active layer happens to be a Flats layer.
+// **Does a flatting tool own the pointer this frame?**
+//
+// One definition, two readers, and that is the whole point of it existing.
+// The canvas route below asks so it can act; the SELECTION-tool block asks so
+// it can stand down. Two spellings of this condition would agree until they
+// did not, and the way they stop agreeing is a lasso that both draws a
+// marquee selection and records a flats group from one gesture.
+//
+// The flats route now takes these gestures INSTEAD of the ordinary tools
+// rather than as well as them, which is what lets `setFlatsTool()` leave
+// `st.brush.tool` alone (see app/ToolSwitch.cpp).
+bool flatsToolOwnsCanvasNow(AppState& st, bool transformActive) {
+  // **Owned whenever a flatting tool is picked**, not only when it can act.
+  //
+  // The layer test used to live here and it is what let two tools be live at
+  // once: with DELETE picked and an RGB layer selected this returned false,
+  // so the ordinary tool got the pointer back and painted. A tool the user
+  // did not pick must not act, and "the wrong layer is selected" is something
+  // to SAY, not a reason to hand the canvas to someone else. The route below
+  // answers the layer question itself, on the click, with a sentence.
+  //
+  // `transformActive` stays: a Free Transform gizmo owns the canvas outright,
+  // which is the same exception every selection tool already makes.
+  return st.flatsTool != FlatsTool::None && !transformActive &&
+         st.documents.active() != nullptr;
+}
+
 bool flatsLassoCommit(AppState& st, OpenDocument* od) {
   if (od == nullptr) return false;
   if (st.flatsTool != FlatsTool::Group && st.flatsTool != FlatsTool::ShapeFill) return false;
@@ -11922,6 +11977,69 @@ void drawFlatsSegmentationSection(AppState& st) {
   }
 }
 
+// One FLATS TOOLS cell. `toolButton()`'s twin -- see
+// `drawFlatsToolsSection()` for why it is a twin and not a shared function --
+// so the two palettes agree pixel for pixel on the things a user reads
+// without thinking: the square, the border, the centred glyph, and the
+// inversion that means "this one is picked".
+//
+// `live` is the panel's own subject test (a Flats layer, unlocked) rather
+// than `toolImplemented()`/`toolActsWithoutDocument()`: every one of these
+// nine is built, and the axis that decides whether a cell can act is which
+// layer is selected. A dead cell draws the same halved-alpha secondary that
+// TOOLS uses, which is the cue that survives a screenshot with no cursor.
+bool flatsToolButton(AppState& st, const FlatsToolRow& row, float cellSize, bool live) {
+  ImGui::PushID(static_cast<int>(row.tool));
+  const ImVec2 p = ImGui::GetCursorScreenPos();
+  const ImVec2 size(cellSize, cellSize);
+  const bool clickedRaw = ImGui::InvisibleButton("##flatstool", size);
+  const bool clicked = clickedRaw && live;
+  const bool selected = st.flatsTool == row.tool;
+  const bool hovered = ImGui::IsItemHovered();
+
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImU32 bg = selected             ? ImGui::GetColorU32(ImGuiCol_ButtonActive)
+                    : (hovered && live) ? ImGui::GetColorU32(ImGuiCol_ButtonHovered)
+                                        : ImGui::GetColorU32(ImGuiCol_Button);
+  dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y), bg);
+  dl->AddRect(p, ImVec2(p.x + size.x, p.y + size.y), ImGui::GetColorU32(ImGuiCol_Border));
+
+  const ImU32 fg = selected ? IM_COL32(20, 22, 24, 255)
+                   : live
+                       ? ImGui::GetColorU32(ImGuiCol_Text)
+                       : (atelierToken(kTextSecondary) & 0x00FFFFFFu) | IM_COL32(0, 0, 0, 110);
+  const ImVec2 c(p.x + size.x * 0.5f, p.y + size.y * 0.5f);
+  // No `drawToolIcon()` fallback to fall back TO -- that function draws
+  // vectors for `Tool` values and knows nothing of these -- so a machine with
+  // no Lucide source gets the label's first two letters instead of an empty
+  // square. ui/Fonts.cpp degrades silently by design, which is exactly the
+  // failure this covers.
+  if (!drawToolGlyph(dl, row.codepoint, c, fg)) {
+    const char* l = row.label;
+    const char stub[3] = {l[0], l[1] ? l[1] : '\0', '\0'};
+    const ImVec2 ts = ImGui::CalcTextSize(stub);
+    dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), fg, stub);
+  }
+
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    // The tool palette's own tooltip shape ("Brush Tool  B"), so the two
+    // read alike: name, what it is, then the reserved chord.
+    std::string tip = row.label;
+    tip += "  ";
+    tip += row.shortcut;
+    tip += "\n";
+    tip += row.tip;
+    if (!live) tip += "\n\nSelect an unlocked Flats layer to use this.";
+    ImGui::SetTooltip("%s", tip.c_str());
+  }
+  // Clicking the lit cell puts the tool down, which is the one place this
+  // differs from TOOLS on purpose: there is always an active `Tool`, and
+  // there is deliberately no active `FlatsTool` most of the time.
+  if (clicked) setFlatsTool(st, selected ? FlatsTool::None : row.tool);
+  ImGui::PopID();
+  return clicked;
+}
+
 void drawFlatsToolsSection(AppState& st) {
   const FlatsPanelSubject sub = flatsPanelSubject(st);
   const bool live = sub.layer != nullptr && !sub.locked;
@@ -11933,30 +12051,43 @@ void drawFlatsToolsSection(AppState& st) {
 
   // ---- the sticky tools -------------------------------------------------
   //
-  // Text labels, not Lucide glyphs, and that is a decision rather than a
-  // shortcut: a new icon needs its codepoint in `toolIconCodepoints()` or
-  // the font merge drops it silently, and app/selftest/Fonts.cpp pins the
-  // required-glyph count with a hand-written justification. Nine ASCII cells
-  // keep that whole file out of this change, and the labels are verbs.
+  // **Drawn as the tool palette draws its own cells**, which was the user's
+  // instruction and is also the honest presentation: these are tools, they
+  // are picked and held exactly as a brush is, and a column of wide text
+  // buttons said "commands" when nothing here is one. So this is
+  // `toolButton()`'s geometry and colour rule -- a square cell, a Lucide
+  // glyph centred in it, the selected cell inverted to the accent with dark
+  // ink, the unavailable cell at halved-alpha secondary -- over a flowed
+  // grid, so the palette works docked as a column or as a row the same way
+  // TOOLS does.
+  //
+  // Not literally `toolButton()`, because that function's whole subject is a
+  // `Tool`: it reads `toolImplemented()`, compares against `st.brush.tool`
+  // and ends by calling `setActiveTool()`. A flats tool is none of those
+  // things. The cell is redrawn here rather than generalised over both,
+  // which would need a callback for each of those four decisions and be
+  // longer than the copy.
+  //
+  // The cell size and flow come from the same constants TOOLS uses
+  // (`kToolCellMax`, `kToolCellMin`), but NOT from `atelierToolGrid()`:
+  // that fitter is sized for `kToolCellCount` cells and would reserve room
+  // for eighteen where there are nine.
   const float availW = ImGui::GetContentRegionAvail().x;
+  const float cell = std::max(kToolCellMin, std::min(kToolCellMax, availW));
+  const int columns = std::max(1, static_cast<int>(availW / cell));
+  // Zero spacing for `drawToolsPanelBody()`'s own measured reason: the cells
+  // account for every pixel they have, and 6px of chrome spacing between
+  // them is gaps the arithmetic never saw.
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
+  int inRow = 0;
   for (size_t i = 0; i < kFlatsToolCount; ++i) {
     const FlatsToolRow& row = kFlatsTools[i];
-    const bool on = st.flatsTool == row.tool;
-    ImGui::PushID(static_cast<int>(i));
-    if (on) {
-      float ac[3], fg[3];
-      unpackRgb(kAccent, ac);
-      unpackRgb(kOnAccent, fg);
-      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(ac[0], ac[1], ac[2], 1.0f));
-      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(ac[0], ac[1], ac[2], 1.0f));
-      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(fg[0], fg[1], fg[2], 1.0f));
-    }
-    if (ImGui::Button(row.label, ImVec2(availW, 0.0f)))
-      setFlatsTool(st, on ? FlatsTool::None : row.tool);  // clicking the lit one puts it down
-    if (on) ImGui::PopStyleColor(3);
-    ImGui::SetItemTooltip("%s  (%s)\n\n%s", row.label, row.shortcut, row.tip);
-    ImGui::PopID();
+    if (inRow > 0) ImGui::SameLine(0.0f, 0.0f);
+    flatsToolButton(st, row, cell, live);
+    if (++inRow >= columns) inRow = 0;
   }
+  ImGui::PopStyleVar();
+  ImGui::Spacing();
 
   // ---- the point-free actions -------------------------------------------
   //
@@ -13148,6 +13279,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // it would let a crosshair outlive the pointer being over the canvas.
   g_canvasCursor.reset();
   g_canvasBitmapTool.reset();  // same reasoning, ui/ToolCursor.hpp §7
+  // Constant for the life of the process, but read here rather than wired
+  // from main.cpp so the flag and the function that obeys it stay in one file.
+  g_antPhaseFrozen = st.screenshotCliActive;
 
   // Next, and before anything reads the state those actions write: whatever
   // the native menu bar collected since the last frame.
@@ -13634,6 +13768,42 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // than nine identical grey buttons -- the same argument the
         // pen_options / text_options views make about an accented chip.
         setFlatsTool(st, FlatsTool::DeleteFill);
+        if (st.flatsDemoEdits) {
+          // One of every kind, at coordinates chosen against the three boxes
+          // above so each artifact lands somewhere legible rather than on top
+          // of its neighbour. Written straight into the model rather than
+          // through `flats/Tool`, because the tool functions refuse where the
+          // evaluation says there is nothing to act on -- and this fixture
+          // needs all seven present unconditionally, including the two the
+          // segmenter would decline to give.
+          // **All seven inside doc (60,60)-(500,660).** That rectangle is the
+          // part of the canvas this window shows to the LEFT of the flyout
+          // rail and ABOVE the status bar at the reference size; the first
+          // arrangement of this fixture spread the marks across the whole
+          // 1024 document and put three of them off-screen, which is a
+          // correct overlay no photograph contains.
+          FlatEdits& ed = fdoc.layers[at].flats.edits;
+          ed.mergeStrokes.push_back({ed.nextId++, FlatPolyline{120, 120, 300, 200, 380, 360}});
+          ed.mergePairs.push_back({ed.nextId++, 140, 380, 360, 140});
+          ed.bridges.push_back({ed.nextId++, FlatPolyline{455, 100, 455, 250}, false});
+          ed.bridges.push_back({ed.nextId++, FlatPolyline{490, 300, 490, 430}, true});
+          ed.deleteMarks.push_back({ed.nextId++, 200, 480});
+          ed.carves.push_back({ed.nextId++, 340, 480});
+          ed.shapeFills.push_back({ed.nextId++,
+                                   FlatPolyline{90, 520, 185, 510, 205, 610, 100, 630},
+                                   FlatRgb{220, 90, 90}, "Shape 1"});
+          ed.groups.push_back(
+              {ed.nextId++, "hair", FlatPolyline{255, 520, 465, 520, 465, 645, 255, 645}});
+          setFlatsTool(st, FlatsTool::SelectEdits);
+          // Two selected, not one and not all: one cell of every state --
+          // idle, selected, and a selected POINT edit, whose highlight is
+          // drawn by a different branch than a stroke's.
+          st.flatsEditSelection = {flatEditKey(FlatEditRef{4, ed.deleteMarks[0].id}),
+                                   flatEditKey(FlatEditRef{6, ed.groups[0].id})};
+          // The flyout is what `flats_tools` photographs; here it sits over
+          // the canvas this view exists to show, so it is shut.
+          st.flyoutOpen = false;
+        }
       }
       st.panels.setCollapsed(ControlsSection::FlatsSegmentation, false);
       st.panels.setCollapsed(ControlsSection::Color, true);
@@ -14983,7 +15153,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // rather than a copy of it (app/StrokeSession §6b).
     const bool selectionTool = toolDrawsSelection(st.brush.tool);
 
-    if (selectionTool && !panning && !rotating && !sizingHeld && !st.pendingGuide.has_value()) {
+    // `!flatsOwnsCanvas`: a flats tool takes the pointer before the ordinary
+    // tools see it. Without this the Lasso would still accumulate a path and
+    // commit a SELECTION underneath the flats group being recorded from the
+    // same drag -- and every other selection tool would still rubber-band
+    // over a layer that takes no pixels.
+    const bool flatsOwnsCanvas = flatsToolOwnsCanvasNow(st, transformActive);
+    if (selectionTool && !flatsOwnsCanvas && !panning && !rotating && !sizingHeld &&
+        !st.pendingGuide.has_value()) {
       const ImGuiIO& mods = ImGui::GetIO();
       // `!transformActive`: while a Free Transform gizmo owns the canvas the
       // selection tools do not get the mouse. Without this a drag on the box
@@ -15091,10 +15268,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                 // first -- so a lasso released away from where it started is
                 // completed with a straight line, which is what every editor
                 // does rather than refusing the gesture.
-                if (!flatsLassoCommit(st, od)) {
-                  if (st.lassoPoints.size() >= 3) drawn = selectPolygon(st.lassoPoints);
-                  commitDrawnSelection(st, *od, drawn);
-                }
+                if (st.lassoPoints.size() >= 3) drawn = selectPolygon(st.lassoPoints);
+                commitDrawnSelection(st, *od, drawn);
               }
               st.lassoPoints.clear();
             }
@@ -15123,10 +15298,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             st.polygonLassoActive = false;
             if (od != nullptr) {
               std::optional<Selection> drawn;
-              if (!flatsLassoCommit(st, od)) {
-                if (st.lassoPoints.size() >= 3) drawn = selectPolygon(st.lassoPoints);
-                commitDrawnSelection(st, *od, drawn);
-              }
+              if (st.lassoPoints.size() >= 3) drawn = selectPolygon(st.lassoPoints);
+              commitDrawnSelection(st, *od, drawn);
             }
             st.lassoPoints.clear();
           }
@@ -16060,23 +16233,195 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     //
     // GROUP and SHAPE are absent here on purpose: they are lasso gestures and
     // are committed where the lasso commits, beside `selectPolygon()`.
-    bool flatsToolOwnsCanvas = false;
-    if (st.flatsTool != FlatsTool::None) {
+    // The same answer the selection block above stood down on -- one
+    // predicate, so the two cannot disagree about who has the pointer.
+    const bool flatsToolOwnsCanvas = flatsOwnsCanvas;
+    if (flatsToolOwnsCanvas) {
       OpenDocument* ftod = st.documents.active();
-      Layer* ftl = ftod != nullptr ? activeLayerOf(*ftod) : nullptr;
-      const std::optional<size_t> fti = ftod != nullptr ? activeLayerIndex(*ftod) : std::nullopt;
-      if (ftl != nullptr && ftl->kind == LayerKind::Flats && !ftl->locked && fti.has_value() &&
-          !transformActive) {
-        // The ordinary tool must not also act. The hosts ADR-0009 gives these
-        // gestures (Pencil, Eraser, Paint Bucket) all write pixels, and a
-        // Flats layer takes none -- so without this the user would get the
-        // flatting edit AND the RGB route's "this layer cannot take pixels"
-        // refusal, with the refusal landing second and being the one they read.
-        flatsToolOwnsCanvas = true;
+      Layer* ftl = activeLayerOf(*ftod);
+      const std::optional<size_t> fti = activeLayerIndex(*ftod);
+      // Owning the pointer and being able to USE it are now two questions.
+      // The tool is active either way -- it keeps the palette highlight and
+      // the cursor -- but on the wrong layer a click gets a sentence instead
+      // of an edit, and the ordinary tool still does not act. Consuming the
+      // click rather than passing it on is the whole point: this is what
+      // stopped a flats tool from silently doing nothing while the brush
+      // painted underneath it.
+      const bool flatsCanAct =
+          ftl != nullptr && ftl->kind == LayerKind::Flats && !ftl->locked && fti.has_value();
+      if (!flatsCanAct) {
+        const bool clickedOff = hovered && tx >= 0 && ty >= 0 && tx < texW && ty < texH &&
+                                ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+        if (clickedOff) {
+          // On the click, not every frame: a band that permanently reads a
+          // refusal stops being read at all, and this sentence has to land
+          // the moment the user tries something.
+          g_strokeRefusal = ftl != nullptr && ftl->kind == LayerKind::Flats && ftl->locked
+                                ? "this Flats layer is locked -- unlock it in LAYERS."
+                                : "the flatting tools act on a Flats layer: pick one in LAYERS, "
+                                  "or pick an ordinary tool to leave flatting mode.";
+        }
+      } else {
+        // The ordinary tools do not also act: the selection block above stood
+        // down on this same predicate, and the RGB write route below is gated
+        // on it too. Without that a bridge drag would record the flats edit
+        // AND raise the RGB route's "this layer cannot take pixels" refusal,
+        // with the refusal landing second and being the one the user reads.
         const bool onCanvas = hovered && tx >= 0 && ty >= 0 && tx < texW && ty < texH;
         const FlatsTool ft = st.flatsTool;
         const bool strokeTool = ft == FlatsTool::BridgePen || ft == FlatsTool::BridgeEraser ||
                                 ft == FlatsTool::DrawMerge;
+        const bool lassoTool = ft == FlatsTool::Group || ft == FlatsTool::ShapeFill;
+        const bool selectTool = ft == FlatsTool::SelectEdits;
+
+        // ---- SELECT EDITS: a recorded repair is an object, not history ---
+        //
+        // Every flatting edit is a persistent thing in the layer -- geometry
+        // replayed against a fresh segmentation, per ADR-0009 -- so it gets
+        // the vocabulary every persistent thing has: click to select,
+        // Shift-click to add or remove, drag a box round several, Delete to
+        // remove them, Esc to clear. The overlay draws the whole set and
+        // brightens the selected ones, so what Delete is about to take is
+        // visible before it is taken.
+        //
+        // This tool used to remove the nearest repair on the click itself.
+        // That is an undo with extra steps: no way to see what was about to
+        // go, no way to take two at once, and no way to change your mind.
+        if (selectTool) {
+          const FlatEdits& fedits = ftl->flats.edits;
+          auto keyIt = [&](uint64_t k) {
+            return std::find(st.flatsEditSelection.begin(), st.flatsEditSelection.end(), k);
+          };
+          auto say = [&](const char* suffix) {
+            const size_t n = st.flatsEditSelection.size();
+            g_strokeRefusal =
+                n == 0 ? std::string()
+                       : std::to_string(n) + (n == 1 ? " edit selected" : " edits selected") + suffix;
+          };
+          if (onCanvas && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            st.flatsEditBox = std::array<float, 4>{tx, ty, tx, ty};
+            // Latched at mouse-down, not read on release: `marqueeCombine`'s
+            // own documented rule -- the modifier is a question asked once,
+            // at the start, not re-read from a hand that moved during the
+            // drag.
+            st.flatsEditBoxAdditive = ImGui::GetIO().KeyShift;
+          }
+          if (st.flatsEditBox.has_value()) {
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+              (*st.flatsEditBox)[2] = tx;
+              (*st.flatsEditBox)[3] = ty;
+            } else {
+              const std::array<float, 4> b = *st.flatsEditBox;
+              const bool additive = st.flatsEditBoxAdditive;
+              st.flatsEditBox.reset();
+              st.flatsEditBoxAdditive = false;
+              // **A drag is a box, a click is a pick -- measured on SCREEN.**
+              // In texels the same hand movement means different things at
+              // different zooms: at 8x a two-texel wobble is sixteen screen
+              // pixels, so every click would commit as a box that caught
+              // nothing and silently cleared the selection.
+              const float dx = (b[2] - b[0]) * st.view.zoom;
+              const float dy = (b[3] - b[1]) * st.view.zoom;
+              if (std::fabs(dx) >= 4.0f || std::fabs(dy) >= 4.0f) {
+                if (!additive) st.flatsEditSelection.clear();
+                const std::vector<FlatEditRef> in =
+                    flatEditsInBox(fedits, b[0], b[1], b[2], b[3]);
+                for (FlatEditRef r : in) {
+                  const uint64_t k = flatEditKey(r);
+                  if (keyIt(k) == st.flatsEditSelection.end()) st.flatsEditSelection.push_back(k);
+                }
+                if (st.flatsEditSelection.empty())
+                  g_strokeRefusal = "nothing in the box.";
+                else
+                  say(" -- Delete removes them, Esc clears.");
+              } else {
+                // The reach is the bridge eraser's radius, so "near enough to
+                // point at" means the same distance in both tools rather than
+                // being a second number invented here.
+                const FlatEditRef hit = flatEditAt(fedits, b[0], b[1], kFlatEraseRadius);
+                if (hit.kind == 0) {
+                  // Clicking empty canvas clears -- unless Shift is down, in
+                  // which case the user is mid-way through building a
+                  // selection and a missed click must not undo the work.
+                  if (!additive) {
+                    st.flatsEditSelection.clear();
+                    g_strokeRefusal = "no recorded repair there -- click one, or drag a box.";
+                  }
+                } else {
+                  const uint64_t k = flatEditKey(hit);
+                  if (!additive) st.flatsEditSelection.clear();
+                  const auto it = keyIt(k);
+                  if (it != st.flatsEditSelection.end())
+                    st.flatsEditSelection.erase(it);
+                  else
+                    st.flatsEditSelection.push_back(k);
+                  say(" -- Delete removes, Shift-click adds.");
+                }
+              }
+            }
+          }
+          // **Bare keys, so `WantTextInput` guards them** -- the layer-rename
+          // box is one Delete away otherwise, and this is the same guard the
+          // Hand and the eyedropper use for their own bare keys.
+          if (!ImGui::GetIO().WantTextInput && !st.flatsEditSelection.empty()) {
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+              st.flatsEditSelection.clear();
+              g_strokeRefusal.clear();
+            } else if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) ||
+                       ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) {
+              std::vector<FlatEditRef> refs;
+              refs.reserve(st.flatsEditSelection.size());
+              for (uint64_t k : st.flatsEditSelection)
+                refs.push_back(FlatEditRef{static_cast<int>(k >> 32), static_cast<uint32_t>(k)});
+              // **One call, so it is ONE undo step.** Removing them in a loop
+              // with a `recordEdit` each would make Cmd+Z put them back one
+              // at a time, which is not what deleting a selection means
+              // anywhere else in the app.
+              const size_t n = flatRemoveEdits(ftl->flats.edits, refs);
+              st.flatsEditSelection.clear();
+              if (n > 0) {
+                ftod->recordEdit(n == 1 ? "flats remove edit" : "flats remove edits",
+                                 EditKind::Content);
+                g_strokeRefusal.clear();
+              }
+            }
+          }
+        } else
+
+        // ---- the lasso tools: GROUP and SHAPE ---------------------------
+        //
+        // **Moved here from `case Tool::Lasso:`**, which is what makes
+        // `setFlatsTool()` able to leave the tool palette alone. The commit
+        // used to be an interception inside the Lasso's own case, so these
+        // two worked only while `st.brush.tool == Tool::Lasso` -- installing
+        // that tool behind the user's back was load-bearing, not cosmetic.
+        //
+        // `st.lassoPoints` is reused rather than given a flats twin: it is
+        // what `flatsGroupFromPath()`/`flatsShapeFromPath()` want, and it is
+        // what the marching-ant preview already draws. The in-progress FLAG
+        // is this route's own (`flatsLassoActive`) -- see app/AppState.hpp
+        // for why borrowing `marqueeDragging` would be a gesture a sibling's
+        // else-arm wipes.
+        if (lassoTool) {
+          if (onCanvas && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            st.flatsLassoActive = true;
+            st.lassoPoints.clear();
+            st.lassoPoints.push_back(SelectionPoint{tx, ty});
+          }
+          if (st.flatsLassoActive) {
+            // One vertex per texel of travel, the freehand lasso's own guard
+            // -- coincident vertices are zero-length edges the rasteriser
+            // still walks.
+            const SelectionPoint& last = st.lassoPoints.back();
+            if (std::fabs(tx - last.x) >= 1.0f || std::fabs(ty - last.y) >= 1.0f)
+              st.lassoPoints.push_back(SelectionPoint{tx, ty});
+            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+              st.flatsLassoActive = false;
+              flatsLassoCommit(st, ftod);
+              st.lassoPoints.clear();
+            }
+          }
+        } else
 
         // ---- the stroke tools: accumulate while dragging, commit on release
         if (strokeTool) {
@@ -16141,17 +16486,6 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                   g_strokeRefusal = "no room to carve a fill here -- raise GAP or pick another spot.";
                 }
                 break;
-              case FlatsTool::SelectEdits:
-                // The reach is the bridge eraser's radius, so "near enough to
-                // rub out" means the same distance in both tools rather than
-                // being a second number invented here.
-                if (flatsRemoveEditAt(*ftl, tx, ty, kFlatEraseRadius)) {
-                  ftod->recordEdit("flats remove edit", EditKind::Content);
-                  g_strokeRefusal.clear();
-                } else {
-                  g_strokeRefusal = "no recorded repair near enough to remove.";
-                }
-                break;
               case FlatsTool::MergePair:
                 // The same two-stage gesture `M` performs, and it shares
                 // `flatsMergeFirst` with it deliberately: arming with the key
@@ -16176,6 +16510,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                   }
                 }
                 break;
+              // SELECT EDITS is handled before this branch: it needs the
+              // drag as well as the click, so it cannot live in a switch
+              // reached only by `IsMouseClicked`.
+              case FlatsTool::SelectEdits:
               case FlatsTool::Group:
               case FlatsTool::ShapeFill:
               case FlatsTool::BridgePen:
@@ -16186,13 +16524,24 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             }
           }
         }
-      } else if (ftl != nullptr && ftl->kind != LayerKind::Flats) {
-        // The palette greys itself out in this case, but the tool can also be
-        // left picked and the layer changed underneath it.
-        g_strokeRefusal = "the flatting tools act on a Flats layer: pick one in LAYERS.";
       }
     }
     if (!flatsToolOwnsCanvas && st.flatsStroke.empty() == false) st.flatsStroke.clear();
+    // A box-select drag is abandoned the same way, and for the same reason.
+    // The SELECTION itself is not cleared here: `app/ToolSwitch` owns that,
+    // on the tool change, so a selection survives a moment of the pointer
+    // leaving the canvas.
+    if (!flatsToolOwnsCanvas && st.flatsEditBox.has_value()) {
+      st.flatsEditBox.reset();
+      st.flatsEditBoxAdditive = false;
+    }
+    // Same rule for the lasso: switching layer or tool mid-path abandons it
+    // rather than resuming a stale one, which is what `Tool::PolygonLasso`'s
+    // own else-arm does for the same reason.
+    if (!flatsToolOwnsCanvas && st.flatsLassoActive) {
+      st.flatsLassoActive = false;
+      st.lassoPoints.clear();
+    }
 
     if (toolWritesRgbPixels(st.brush.tool) && !flatsToolOwnsCanvas && !panning && !rotating && !sizingHeld &&
         !st.pendingGuide.has_value()) {
@@ -16505,7 +16854,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // solver, exactly `app/ToolSurface`'s `toolActsWithoutDocument()` (which
     // this predicate must keep agreeing with) says for Brush/Water/Dry
     // Brush now that PaintSim no longer stands with nothing open.
-    const bool paintTool = (st.brush.tool == Tool::Brush ||
+    // `!flatsToolOwnsCanvas` on all three: these are the flags that deposit,
+    // and a flatting tool being active has to mean they do not. Without this
+    // the palette says DELETE and a drag lays down paint, which is the
+    // "two tools active at once" this whole revision is about.
+    const bool paintTool = !flatsToolOwnsCanvas && (st.brush.tool == Tool::Brush ||
                             st.brush.tool == Tool::Water ||
                             st.brush.tool == Tool::DryBrush) &&
                            !transformActive && st.documents.active() != nullptr;
@@ -16518,7 +16871,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // (app/StrokeSession.hpp §1's Eraser rows). Folding it into `paintTool` would
     // have been one word and would have made the eraser deposit watercolour on
     // the canvas texture the moment no document was open.
-    const bool eraseTool = st.brush.tool == Tool::Eraser && !transformActive;
+    const bool eraseTool = !flatsToolOwnsCanvas && st.brush.tool == Tool::Eraser && !transformActive;
     // **The pencil is a stroke tool and never a solver stroke either**, and it
     // is a third flag for the identical reason the eraser is a second one. It
     // joins `paintTool` at the branches that reach a layer and at the cursor
@@ -16527,7 +16880,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // granulation, so a pencil reaching it would draw the softest mark in the
     // build with the one tool chosen for having no soft edge
     // (brush/PencilDeposit §0, app/StrokeSession.hpp §1's Pencil rows).
-    const bool pencilTool = st.brush.tool == Tool::Pencil && !transformActive;
+    const bool pencilTool = !flatsToolOwnsCanvas && st.brush.tool == Tool::Pencil && !transformActive;
     // **Dodge and Burn are stroke tools and never SOLVER strokes**, a third
     // flag for the identical reason `eraseTool` is a second one: `sim::PaintSim`
     // has no tonal step, so a Dodge reaching it would run the *paint* path with
@@ -17292,7 +17645,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           dl->AddLine(tip, outer, atelierToken(kAccent), 1.5f);
         }
       }
-    } else if (st.marqueeDragging || st.polygonLassoActive) {
+    } else if (st.marqueeDragging || st.polygonLassoActive || st.flatsLassoActive) {
       // The lasso path as it is being drawn.
       //
       // This branch previously did not exist, and the marquee's rubber band ran
@@ -17380,8 +17733,113 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           for (size_t i = 0; i < eval->suggestions.size(); i++)
             antPath(eval->suggestions[i], static_cast<int>(i) == st.flatsGapFocus ? 3 : 1);
         }
-        for (const FlatBridgeStroke& b : fl->flats.edits.bridges)
-          if (!b.erase) antPath(b.pts, 1);
+
+        // ---- the recorded repairs, as SELECTABLE ARTIFACTS ---------------
+        //
+        // **Only while a flatting tool is picked.** Outside flatting mode a
+        // Flats layer is just artwork you are painting near, and a canvas
+        // strewn with delete crosses and group lassos would be in the way.
+        // The one exception is the bridges, which drew unconditionally
+        // before this and still do -- they are invisible in the render by
+        // design, so with the overlay off there is nothing at all to say a
+        // gap was closed by hand.
+        //
+        // Ants are deliberately NOT used here. This block's own rule is that
+        // ants mean "under review": a gap SUGGESTION is a proposal, and that
+        // is what the loop above draws. A recorded edit is a decision the
+        // user already made, so it draws as a solid line -- dark casing under
+        // a coloured core, the vector overlay's idiom below, for the same
+        // reason: this is drawn over the user's picture at whatever colour
+        // that happens to be.
+        const bool showAllEdits = st.flatsTool != FlatsTool::None;
+        {
+          const ImU32 kCasing = IM_COL32(0, 0, 0, 150);
+          const ImU32 kHalo = IM_COL32(255, 255, 255, 235);
+          // Indexed by `FlatEditRef::kind`; [0] is the "no edit" sentinel and
+          // is never drawn. Merge stroke and merge pair share a colour
+          // because they are the same operation recorded two ways.
+          static const ImU32 kEditColor[8] = {
+              0,
+              IM_COL32(90, 200, 255, 235),   // 1 bridge
+              IM_COL32(80, 235, 90, 235),    // 2 draw merge
+              IM_COL32(80, 235, 90, 235),    // 3 merge pair
+              IM_COL32(255, 105, 105, 240),  // 4 deleted fill
+              IM_COL32(205, 130, 255, 235),  // 5 shape
+              IM_COL32(255, 200, 40, 235),   // 6 group
+              IM_COL32(255, 150, 60, 240),   // 7 carve
+          };
+          for (const FlatEditItem& h : flatEditList(fl->flats.edits)) {
+            if (!showAllEdits && h.ref.kind != 1) continue;
+            const bool sel =
+                std::find(st.flatsEditSelection.begin(), st.flatsEditSelection.end(),
+                          flatEditKey(h.ref)) != st.flatsEditSelection.end();
+            const ImU32 col = kEditColor[h.ref.kind];
+            // An erased bridge is the same object as a bridge and picks the
+            // same way, but it UNDID one -- so it is drawn hollow-dim rather
+            // than in the bridge's own colour, which would claim a barrier
+            // exists where the user removed one.
+            const ImU32 core = (h.ref.kind == 1 && h.label[0] == 'u') ? IM_COL32(90, 200, 255, 110)
+                                                                      : col;
+            if (h.pts.size() == 2) {
+              // A point edit: a cross in a ring, big enough to hit and small
+              // enough not to hide the fill it marks.
+              const Vec2 c = xform.toScreen(Vec2{h.pts[0], h.pts[1]});
+              const float r = 6.0f;
+              auto cross = [&](ImU32 c2, float w) {
+                dl->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), c2, w);
+                dl->AddLine(ImVec2(c.x + r, c.y - r), ImVec2(c.x - r, c.y + r), c2, w);
+                dl->AddCircle(ImVec2(c.x, c.y), r * 1.6f, c2, 0, w);
+              };
+              // **Three passes when selected, and the WHITE one in the
+              // middle.** A white halo under a dark casing shows only where
+              // the casing does not cover it -- under a pixel each side, which
+              // is invisible; a white halo with no casing disappears entirely
+              // on the white paper this fixture draws on. Dark outside, white
+              // band, colour core reads on any ground.
+              if (sel) {
+                cross(kCasing, 6.4f);
+                cross(kHalo, 4.2f);
+              } else {
+                cross(kCasing, 2.8f);
+              }
+              cross(core, sel ? 2.0f : 1.5f);
+              continue;
+            }
+            std::vector<ImVec2> pv;
+            pv.reserve(h.pts.size() / 2);
+            for (size_t i = 0; i + 1 < h.pts.size(); i += 2) {
+              const Vec2 sp = xform.toScreen(Vec2{h.pts[i], h.pts[i + 1]});
+              pv.push_back(ImVec2(sp.x, sp.y));
+            }
+            if (pv.size() < 2) continue;
+            // **No interior shading, deliberately.** autoFlats tints the
+            // inside of a group so "click inside it counts as a hit" has
+            // something on screen behind it, using a canvas fill that honours
+            // the nonzero winding rule. ImDrawList has only
+            // `AddConvexPolyFilled`, and a freehand lasso is never convex --
+            // it would paint a shape the user did not draw, over their own
+            // artwork. The interior hit stays (flats/Model's `flatEditAt`
+            // scores it just worse than any line); the outline is what says
+            // where it is.
+            const ImDrawFlags close = h.closed ? ImDrawFlags_Closed : 0;
+            if (sel) {
+              dl->AddPolyline(pv.data(), static_cast<int>(pv.size()), kCasing, close, 6.4f);
+              dl->AddPolyline(pv.data(), static_cast<int>(pv.size()), kHalo, close, 4.2f);
+            } else {
+              dl->AddPolyline(pv.data(), static_cast<int>(pv.size()), kCasing, close, 2.8f);
+            }
+            dl->AddPolyline(pv.data(), static_cast<int>(pv.size()), core, close, sel ? 2.0f : 1.5f);
+          }
+        }
+        // The box-select drag in flight. Ants, like the marquee: it IS a
+        // selection rectangle, and reading as one is the point.
+        if (st.flatsEditBox.has_value()) {
+          const std::array<float, 4>& b = *st.flatsEditBox;
+          drawAntPolyline(dl, xform,
+                          std::vector<Vec2>{Vec2{b[0], b[1]}, Vec2{b[2], b[1]}, Vec2{b[2], b[3]},
+                                            Vec2{b[0], b[3]}},
+                          /*closed=*/true, antPhase);
+        }
         if (st.flatsMergeFirst.has_value())
           antPath(FlatPolyline{(*st.flatsMergeFirst)[0], (*st.flatsMergeFirst)[1], tx, ty}, 1);
       }
@@ -18271,9 +18729,22 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // `Refuse` is the "this gesture will not land" case, and it has to
         // reach the user as the slashed circle rather than as a perfectly
         // ordinary brush icon over a locked layer.
-        const ToolCursor cursor = toolCursorOnTarget(st.brush.tool, strokeTarget);
-        g_canvasCursor = sdlCursorFor(cursor);
-        if (cursor != ToolCursor::Refuse) g_canvasBitmapTool = st.brush.tool;
+        //
+        // **A flatting tool takes the cursor too**, for the same reason it
+        // takes the palette highlight: the cursor is the other place a user
+        // reads which tool they are holding, and a Brush tip over a gesture
+        // that deposits nothing is the same lie the second lit cell was.
+        // `Select` rather than `Paint` because every one of these nine
+        // defines geometry -- a mark, a pair of points, a path -- and none of
+        // them puts down a texel. The bitmap tool is withheld as it is on a
+        // refusal, so no brush-shaped bitmap wins over it.
+        if (flatsToolIsActive(st)) {
+          g_canvasCursor = sdlCursorFor(ToolCursor::Select);
+        } else {
+          const ToolCursor cursor = toolCursorOnTarget(st.brush.tool, strokeTarget);
+          g_canvasCursor = sdlCursorFor(cursor);
+          if (cursor != ToolCursor::Refuse) g_canvasBitmapTool = st.brush.tool;
+        }
       }
     }
   }

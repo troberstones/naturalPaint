@@ -728,7 +728,7 @@ enum class FlatsTool {
   BridgeEraser,  // drag        -> FlatBridgeStroke{erase}
   Group,         // lasso       -> FlatGroup
   ShapeFill,     // lasso       -> FlatShapeFill
-  SelectEdits,   // click       -> remove the nearest recorded edit
+  SelectEdits,   // click/box   -> select recorded edits; Delete removes them
 };
 
 // One row of the FLATS TOOLS palette. `shortcut` is the chord ADR-0009's
@@ -740,32 +740,45 @@ struct FlatsToolRow {
   const char* label;
   const char* shortcut;
   const char* tip;
+  // **The Lucide icon, so the palette draws like the tool palette.** The
+  // name is carried beside the codepoint for the same reason `kToolMeta`
+  // carries both: app/selftest/AtelierChrome checks every name against
+  // `third_party/lucide/codepoints.json`, so a mistyped codepoint is a red
+  // line rather than a blank cell. Every one of these was read out of that
+  // file, none guessed.
+  //
+  // `UNBRIDGE` deliberately shares `eraser` with `Tool::Eraser`: it IS an
+  // eraser, and `toolIconCodepoints()` deduplicates, so the shared glyph
+  // costs the font merge nothing.
+  const char* iconName;
+  uint32_t codepoint;
 };
 inline constexpr size_t kFlatsToolCount = 9;
 inline constexpr FlatsToolRow kFlatsTools[kFlatsToolCount] = {
     {FlatsTool::DeleteFill, "DELETE", "K",
      "Click a fill to delete it. Recorded as a mark at that point, so the fill stays deleted "
-     "when the line art changes and the drawing re-flats."},
+     "when the line art changes and the drawing re-flats.", "square-minus", 57713u},
     {FlatsTool::MergePair, "MERGE", "M",
      "Click one fill, then another: the second merges into the first. Recorded as the two "
-     "points, never as the two region ids they resolved to."},
+     "points, never as the two region ids they resolved to.", "combine", 58444u},
     {FlatsTool::Carve, "CARVE", "â¥G",
-     "Click inside a leaked area to cut a new fill out of it, using GAP as the ball radius."},
+     "Click inside a leaked area to cut a new fill out of it, using GAP as the ball radius.", "scissors", 57678u},
     {FlatsTool::DrawMerge, "DRAW MERGE", "â§U",
      "Drag from one fill across others: everything the stroke crosses merges into the fill it "
-     "started in."},
+     "started in.", "git-merge", 57572u},
     {FlatsTool::BridgePen, "BRIDGE", "B",
      "Draw an invisible barrier across a broken line so the fill stops there. Never rendered "
-     "and never exported -- it only closes the gap."},
-    {FlatsTool::BridgeEraser, "UNBRIDGE", "E", "Rub out a bridge you drew."},
+     "and never exported -- it only closes the gap.", "pen-line", 57648u},
+    {FlatsTool::BridgeEraser, "UNBRIDGE", "E", "Rub out a bridge you drew.", "eraser", 57999u},
     {FlatsTool::Group, "GROUP", "â§K",
      "Lasso round some fills to group them. Membership is recomputed from the lasso path on "
-     "every re-flat, so it survives edits to the line art."},
+     "every re-flat, so it survives edits to the line art.", "group", 58468u},
     {FlatsTool::ShapeFill, "SHAPE", "Y",
      "Lasso a fill by hand. It is stamped after segmentation and wins over whatever the "
-     "segmenter put there, because you drew it on purpose."},
-    {FlatsTool::SelectEdits, "UNDO EDIT", "â§V",
-     "Click near a repair you recorded to remove just that one, leaving the rest."},
+     "segmenter put there, because you drew it on purpose.", "lasso-select", 57807u},
+    {FlatsTool::SelectEdits, "SELECT EDITS", "â§V",
+     "Click a recorded repair to select it, Shift-click to add, or drag a box round several. "
+     "Delete removes the selection; Esc clears it.", "undo-dot", 58449u},
 };
 
 // A per-session override of the three physical constants that otherwise
@@ -957,6 +970,39 @@ struct AppState {
   // state, not document state -- what the document keeps is the recorded edit
   // the release produces.
   FlatPolyline flatsStroke;
+
+  // **The flats lasso's own in-progress flag.** GROUP and SHAPE accumulate a
+  // path exactly as `Tool::Lasso` does, but they must not borrow
+  // `marqueeDragging` to say so. That flag already has several writers, and
+  // the selection block's `else` arm clears it every frame the block does not
+  // run -- which is every frame a flats tool owns the canvas. A gesture whose
+  // live flag a sibling wipes is the defect `marqueeDragging` produced once
+  // already (the gradient tool never committed a single drag), so this is a
+  // separate bool with exactly one writer.
+  bool flatsLassoActive = false;
+
+  // **The recorded repairs the user has SELECTED**, as `flatEditKey()` values.
+  //
+  // A flatting edit is a persistent object in the layer, not a command that
+  // ran once -- so it needs the vocabulary every other persistent object
+  // has: you can see it, click it, Shift-click to add, drag a box round
+  // several, and press Delete. That is what SELECT EDITS is; it replaced a
+  // click that removed the nearest repair outright, which gave the user no
+  // way to see what they were about to lose.
+  //
+  // Session state, and deliberately transient: a key means nothing except
+  // against one layer's edit list, so `app/ToolSwitch` clears this on every
+  // tool change and the canvas clears it when the active layer changes.
+  // Removal itself goes through `flatRemoveEdits()` in ONE call, so a
+  // multi-edit delete is one undo step.
+  std::vector<uint64_t> flatsEditSelection;
+  // The box-select drag in progress, [x0,y0,x1,y1] in texel space; the first
+  // two are the anchor and do not move. Empty when no drag is in flight.
+  std::optional<std::array<float, 4>> flatsEditBox;
+  // Whether the box-select drag that is in flight ADDS to the selection --
+  // latched at mouse-down for `marqueeCombine`'s own documented reason: Shift
+  // is read once, at the start, not from a hand that moved during the drag.
+  bool flatsEditBoxAdditive = false;
   // The active layer's kind on the previous frame, so ui/MacPaintUI can
   // reveal the FLATS TOOLS flyout on the TRANSITION into a Flats layer
   // rather than every frame one is selected. Level-triggering it would
@@ -1200,6 +1246,11 @@ struct AppState {
   // views photograph, and the only way to reach those panels' populated state
   // from a launch flag (they are blank unless a Flats layer is active).
   bool flatsDemo = false;
+  // `--flats-demo edits`: the same fixture, plus one recorded repair of every
+  // kind and a selection over two of them, with SELECT EDITS picked. The
+  // artifacts are drawn on the CANVAS, so no panel crop can reach them and no
+  // arrangement of panels can produce them.
+  bool flatsDemoEdits = false;
 
   // --- Selection and clipboard commands, consumed in ui/MacPaintUI ---------
   //

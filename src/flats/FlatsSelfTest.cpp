@@ -454,6 +454,90 @@ bool runFlatsTest() {
     check(flatsRemoveEditAt(layer, 165, 220, 4.f) && layer.flats.edits.deleteMarks.empty(),
           "tool: the edit picker removes the nearest recorded edit");
 
+    // --- recorded edits as SELECTABLE ARTIFACTS -------------------------
+    //
+    // A flatting edit is a persistent object in the layer, so the UI lets
+    // the user see it, click it, box-select several and delete them.
+    // `flatEditList()` is the single enumeration all three of those read,
+    // and `flatEditAt()` is written against it -- which is the point: a
+    // kind that is in `FlatEdits` but not in the list would be DRAWN by
+    // nothing, PICKED by nothing and BOXED by nothing, silently. That was
+    // the state bridges were in before this: rendered on the canvas, and
+    // absent from autoFlats' own picker.
+    {
+      FlatEdits ed;
+      ed.bridges.push_back({1, FlatPolyline{10, 10, 30, 10}, false});
+      ed.mergeStrokes.push_back({2, FlatPolyline{10, 30, 30, 30}});
+      ed.mergePairs.push_back({3, 10, 50, 30, 50});
+      ed.deleteMarks.push_back({4, 10, 70});
+      ed.shapeFills.push_back({5, FlatPolyline{10, 90, 30, 90, 30, 110, 10, 110}, FlatRgb{1, 2, 3}, "s"});
+      ed.groups.push_back({6, "g", FlatPolyline{10, 130, 30, 130, 30, 150, 10, 150}});
+      ed.carves.push_back({7, 10, 170});
+      ed.nextId = 8;
+
+      const std::vector<FlatEditItem> list = flatEditList(ed);
+      check(list.size() == 7, "edit list: every recorded edit appears exactly once");
+      // **All seven KINDS, checked by kind and not by count.** Seven items
+      // would also be seven bridges; what matters is that the enumeration
+      // is total over `FlatEdits`, so a new kind added to the model and not
+      // to the list is a red line here rather than a feature that quietly
+      // cannot be selected.
+      bool sawKind[8] = {};
+      for (const FlatEditItem& h : list) {
+        check(h.ref.kind >= 1 && h.ref.kind <= 7, "edit list: every item carries a real kind");
+        check(!sawKind[h.ref.kind], "edit list: no kind is listed twice for one edit");
+        sawKind[h.ref.kind] = true;
+        check(h.pts.size() >= 2, "edit list: every item carries geometry to draw and to hit-test");
+      }
+      for (int k = 1; k <= 7; k++)
+        check(sawKind[k], "edit list: kind is present -- an unlisted kind is invisible AND unpickable");
+
+      // Every listed edit is pickable AT ITS OWN FIRST VERTEX. The two are
+      // written against one enumeration precisely so they cannot disagree,
+      // and this is what proves the refactor that made that true.
+      for (const FlatEditItem& h : list)
+        check(flatEditAt(ed, h.pts[0], h.pts[1], 3.f) == h.ref,
+              "edit picker: every listed edit is the nearest thing to its own first vertex");
+      check(flatEditAt(ed, 500, 500, 3.f).kind == 0,
+            "edit picker: nothing within reach picks nothing -- which is what clears a selection");
+
+      // A group's INTERIOR is a hit, scoring just worse than any line, so a
+      // stroke drawn inside a lasso still wins when you click the stroke.
+      check(flatEditAt(ed, 20, 140, 3.f).kind == 6,
+            "edit picker: a lassoed path's interior counts as a hit");
+
+      // The box takes anything with a VERTEX inside it. Not the bounding
+      // box (a bridge drawn across the page would be caught by a box over
+      // empty canvas) and not containment (a group lassoing the whole
+      // drawing would be unselectable).
+      const std::vector<FlatEditRef> box = flatEditsInBox(ed, 5, 5, 35, 55);
+      check(box.size() == 3, "edit box: takes the three edits with a vertex inside it");
+      for (FlatEditRef r : box)
+        check(r.kind >= 1 && r.kind <= 3, "edit box: ...and takes exactly those three");
+      check(flatEditsInBox(ed, 35, 5, 5, 55).size() == 3,
+            "edit box: a rectangle dragged right-to-left is the same rectangle");
+      check(flatEditsInBox(ed, 200, 200, 300, 300).empty(), "edit box: an empty box takes nothing");
+
+      // Two kinds sharing an id must not alias. `nextId` is one counter
+      // today, so they cannot -- but `flatRemoveEdit` is (kind, id)
+      // addressed and a key that dropped the kind would delete the wrong
+      // repair the day that changes.
+      check(flatEditKey(FlatEditRef{1, 7}) != flatEditKey(FlatEditRef{7, 7}),
+            "edit key: kind and id both, so a bridge and a carve sharing an id stay distinct");
+
+      // One call, so the UI can make it one undo step.
+      FlatEdits cut = ed;
+      check(flatRemoveEdits(cut, std::vector<FlatEditRef>{{4, 4}, {6, 6}, {2, 2}}) == 3 &&
+                flatEditList(cut).size() == 4,
+            "edit removal: a whole selection goes in one call, and reports how many it found");
+      check(cut.deleteMarks.empty() && cut.groups.empty() && cut.mergeStrokes.empty() &&
+                cut.bridges.size() == 1 && cut.carves.size() == 1,
+            "edit removal: ...and takes exactly the three named, leaving the rest");
+      check(flatRemoveEdits(cut, std::vector<FlatEditRef>{{4, 4}, {1, 99}}) == 0 &&
+                flatEditList(cut).size() == 4,
+            "edit removal: a stale selection removes nothing rather than removing something else");
+    }
+
     // Gap acceptance, on the leaky box.
     const FlatArt lb = flatLeakyBox(20);
     Layer gl;

@@ -408,6 +408,27 @@ size_t layerGroupDepth(const Document& doc, size_t layerIndex) noexcept;
 bool layerHiddenByCollapsedGroup(const Document& doc, size_t layerIndex,
                                  const std::set<std::string>& collapsedGroupTags) noexcept;
 
+// A drop target nudged OUT of any collapsed group it would land inside.
+//
+// `layerDropTargetIndex()` above is pure arithmetic on the hovered row, and it
+// has to be: it is the panel's own reversal, and mixing a document query into
+// it is how "up" becomes "down". But the rows a collapsed group hides are not
+// drawn, so the slot the arithmetic names can be one the user cannot see --
+// drop on the row just under a collapsed group's block and the target lands
+// among members that are not on screen. `core::moveLayer()` would then quietly
+// make the dragged layer a member of a group whose contents are hidden, which
+// is a correct application of its rule to a slot the user never chose.
+//
+// So the slot is snapped to the nearest edge of that group's block, outside
+// it: **you cannot drop into a group you cannot see inside.** Open it first.
+// Nested collapsed groups are handled by repeating until the target is stable,
+// which terminates because each step moves it strictly outside one more block.
+//
+// `from` is the layer being dragged; its own block is never something to be
+// snapped out of.
+size_t layerDropOutOfCollapsedGroups(const Document& doc, size_t from, size_t to,
+                                     const std::set<std::string>& collapsedGroupTags) noexcept;
+
 // The layers the panel draws, as **model indices ascending** (bottom-first).
 // The panel walks the result in reverse, which is the same single reversal
 // `layerIndexForPanelRow()` owns -- this function deliberately does not return

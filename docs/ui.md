@@ -194,8 +194,35 @@ Every cell shows its **shortcut letter** on hover and in its tooltip when
 [shortcuts.md](shortcuts.md) section 1 reserves one for it — this is the letter that
 tooltip shows, not a claim the key is wired to a tool switch yet; `keymaps/default.json`
 does not bind any tool-select key today, and wiring that is separate, later work. The
-palette also **switches to the flatting set when a Flats layer is active** — those tools
-are scoped to that layer kind rather than holding global keys.
+palette also **gains a flatting set when a Flats layer is active** — those tools are
+scoped to that layer kind rather than holding global keys.
+
+**Built as a second palette, not as a switch of this one**, which is the one place the
+shipped chrome departs from the sentence above. FLATS TOOLS is its own dockable panel
+(§2c) drawing the same cells this palette draws — square, Lucide glyph, accent inversion
+when picked — so it can be floated beside TOOLS or docked anywhere, and vector layers get
+the same mechanism later. What the design's "switches" was protecting is kept by a
+different means: **the tool state is exclusive.** Activating a flatting tool deactivates
+the regular one, so exactly one palette shows a selection and one cursor shape at any
+instant. `st.brush.tool` is *remembered* rather than cleared — `flatsToolIsActive()`
+(`app/ToolSwitch.hpp`) is what stops it counting as active — so leaving flatting mode
+gives back the tool you had instead of dropping you on one you never chose. Golden view
+`tools_flats_active` photographs the TOOLS column at the instant a flats tool is lit,
+which is the only way to catch two accented cells at once.
+
+**A recorded repair is an object on the canvas, not an entry in the undo stack.**
+Every flatting edit is stored as geometry replayed against a fresh segmentation
+(ADR-0009), so while any flatting tool is picked the overlay draws the whole set over
+the picture: bridges cyan, merges green, delete marks red, carves orange, shape fills
+violet, group lassos amber — a cross in a ring for the two point-shaped kinds, a solid
+line with a dark casing for the rest. Marching ants are deliberately not used, because
+in this overlay ants already mean *"a proposal, not yet accepted"* and that is what a
+gap suggestion is. SELECT EDITS clicks one, Shift-clicks to add or remove, drags a box
+round several, and Delete removes the selection in one undo step; Esc clears it. The
+whole set vanishes outside flatting mode, where a Flats layer is just artwork you are
+painting near — the one exception is bridges, which are invisible in the render by
+design, so with the overlay off nothing at all would say a gap had been closed by hand.
+Golden view `flats_edits` photographs it, both selection states side by side.
 
 ### 2a. Icons: Lucide, one per tool, 15px
 
@@ -562,6 +589,38 @@ It is drawn disabled rather than hidden on a Flats layer: that layer resolves it
 source, so the combo has nothing to say there, and a control that vanishes as the
 selection moves teaches nobody why and re-flows the band while a painter is aiming at the
 slider beside it.
+
+#### 3.2b Dragging a layer around a group
+
+The LAYERS panel is a flat list that indents by group depth (`layerGroupDepth()` reads a
+layer's `parent`), so "inside a group" is a visible thing and dragging has to mean
+something for it. The rule is **`parent` follows position**, applied by
+`core::moveLayer()` on every reorder — the panel drag, Move Up/Down, the Layer menu and
+the multi-selection raise/lower all get it, rather than each learning about groups
+separately.
+
+* **A Group drags as a block** — its own row plus its whole member run. Reordering the
+  row alone left the children behind holding a `parent` that still named the group;
+  nothing was corrupt and nothing warned, which is why it survived.
+* **Landing directly under a Group's row joins it** as the topmost member. That slot has
+  one meaning, and it is the only way to give an empty group its first member.
+* **Landing among its members joins it too** — both neighbours have to belong to the same
+  group. Under the group's *lowest* member with something ungrouped below is a drop past
+  the group, not into it.
+* **Landing anywhere else clears the tag.** A layer dragged out that kept its tag went on
+  drawing indented under a group it had left.
+* **A Group dropped into a Group nests**: only the block's head is re-parented, so the
+  members go on naming their own group.
+
+Two costs, stated rather than hidden. You cannot drag a layer into a group's *bottom-most*
+slot — landing there reads as "below the group", and a flat list with no insertion caret
+has no second gesture to tell the two apart. The alternative rule (consult only the row
+above) makes the reverse impossible instead: with a group's lowest member at the bottom of
+the stack there would be no slot at all for "put this underneath everything", and a layer
+would be swallowed with no way to keep it out. And you cannot drop into a **collapsed**
+group at all: its rows are not drawn, so the target is snapped to the nearest edge of its
+block (`app::layerDropOutOfCollapsedGroups()`) — membership you cannot see yourself
+choosing is not membership you chose.
 
 ### 3.3 The colour picker cannot express pigment
 

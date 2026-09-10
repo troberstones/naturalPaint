@@ -28,7 +28,7 @@ a Flats layer is the model, and the paint bucket's `FILL: Flats` mode is the ent
 | `LayerCommand::NewFlatsLayer`, `makeFlatsLayer()`, the NEW popup row | built |
 | Paint bucket `FILL: Flats` — recolour / Option carve / Shift same-colour on a Flats layer; bake of the sag basin on an RGB layer; SHEET / GAP / DECLUTTER in the options row | built (ui/AtelierChrome, ui/MacPaintUI) |
 | Flats-scoped keys: `K` delete, `M` two-click merge, `,` `.` `Return` gap review, `⌘⇧K` cluster small; suggestion and bridge overlay | built; `main.cpp` now resolves chords against the active layer's kind |
-| Bridge pen / eraser, draw-merge, lasso → group / shape, select-edits (`flats/Tool` has each as a one-call function) | **model and tool functions built and tested; canvas gestures not yet wired** — the seams are the lasso commit (`selectPolygon` in ui/MacPaintUI) and the Pencil/Eraser stroke route on a Flats layer |
+| Bridge pen / eraser, draw-merge, lasso → group / shape, select-edits (`flats/Tool` has each as a one-call function) | **wired.** Each is a cell in the FLATS TOOLS palette and a branch of the flats canvas route; the lasso commit moved out of `case Tool::Lasso:` so the flats route owns it. Select-edits went further than autoFlats: it selects and box-selects **all seven** recorded kinds, where autoFlats' own picker covers four and leaves barriers unselectable |
 | Fills panel; `FLATS · N FILLS` sub-line; expand to layers (N9); PSD group export | not built |
 | GPU membrane on `jacobi.wgsl` (N8), GPU growth kernel, capped-resolution preview | not built; the CPU port is the fixed answer they are held to |
 | Wash via a Media layer (N12) | not built |

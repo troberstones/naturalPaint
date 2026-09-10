@@ -475,6 +475,17 @@ bool runAtelierChromeTest() {
     check(everyIconListed && std::find(merged.begin(), merged.end(), kMoreIconCodepoint) != merged.end(),
           "every tool's icon codepoint, plus the More cell's, is in toolIconCodepoints()");
 
+    // The FLATS TOOLS palette draws Lucide cells the same way, so its nine
+    // icons need the same merge -- and a missing one is the quietest possible
+    // failure: `drawToolGlyph()` returns false, the cell falls back to two
+    // letters, and nothing else in the build notices.
+    bool everyFlatsIconListed = true;
+    for (const FlatsToolRow& r : kFlatsTools)
+      if (r.codepoint == 0u || std::find(merged.begin(), merged.end(), r.codepoint) == merged.end())
+        everyFlatsIconListed = false;
+    check(everyFlatsIconListed,
+          "every FLATS TOOLS icon codepoint is in toolIconCodepoints() too");
+
     // "Every name you use MUST exist in codepoints.json -- verify each one
     // programmatically, do not guess" -- this is that verification, run
     // against the vendored file itself rather than trusted from the table
@@ -524,6 +535,21 @@ bool runAtelierChromeTest() {
       if (moreWant < 0 || static_cast<uint32_t>(moreWant) != kMoreIconCodepoint) codepointsMatch = false;
       check(codepointsMatch,
             "every icon name's codepoint matches third_party/lucide/codepoints.json exactly");
+
+      // The same verification for the flats palette, against the same file.
+      // "Do not guess" applies identically to nine names added later than the
+      // rule was written.
+      bool flatsCodepointsMatch = true;
+      for (const FlatsToolRow& r : kFlatsTools) {
+        const long want = lookup(r.iconName);
+        if (want < 0 || static_cast<uint32_t>(want) != r.codepoint) {
+          flatsCodepointsMatch = false;
+          std::printf("    %-20s codepoints.json says %ld, kFlatsTools says %u\n", r.iconName,
+                      want, r.codepoint);
+        }
+      }
+      check(flatsCodepointsMatch,
+            "every FLATS TOOLS icon name matches third_party/lucide/codepoints.json exactly");
     }
   }
 

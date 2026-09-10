@@ -253,8 +253,48 @@ std::vector<FlatMergePair> flatClusterSmall(const FlatEvaluation& e, int maxArea
 // tool. Kind: 0 none, 1 bridge, 2 merge stroke, 3 merge pair, 4 delete,
 // 5 shape, 6 group, 7 carve.
 struct FlatEditRef { int kind = 0; uint32_t id = 0; };
+inline bool operator==(FlatEditRef a, FlatEditRef b) { return a.kind == b.kind && a.id == b.id; }
+inline bool operator!=(FlatEditRef a, FlatEditRef b) { return !(a == b); }
+
+// One key per edit, for a selection set that outlives no more than a gesture.
+//
+// **Both halves, not just the id.** `FlatEdits::nextId` is one counter shared
+// by every list, so ids happen to be unique across kinds today -- but
+// `flatRemoveEdit` is (kind, id) addressed, a document round-tripped through
+// a future writer need not preserve that, and a key that silently aliased
+// would delete the wrong repair. Cheap to be exact here.
+inline constexpr uint64_t flatEditKey(FlatEditRef r) {
+  return (static_cast<uint64_t>(static_cast<uint32_t>(r.kind)) << 32) | r.id;
+}
+
+// Every recorded edit, flattened into one uniform shape: its identity, its
+// geometry as a polyline (a point edit is a single point), whether the path
+// closes, and a label for a status line.
+//
+// **This is the one enumeration of "what edits exist".** `flatEditAt` and the
+// box-select are both written against it, and the UI overlay draws from it,
+// so a kind added to `FlatEdits` and to this function is immediately
+// pickable, box-selectable and visible -- rather than being drawn but not
+// selectable, which is exactly the state bridges were in.
+struct FlatEditItem {
+  FlatEditRef ref;
+  FlatPolyline pts;
+  bool closed = false;   // groups and shape fills are lassoed paths
+  const char* label = "";
+};
+std::vector<FlatEditItem> flatEditList(const FlatEdits& edits);
+
 FlatEditRef flatEditAt(const FlatEdits& edits, float x, float y, float reach);
+
+// Every edit with at least one vertex inside the box. A rectangle in image
+// space; the caller normalises it.
+std::vector<FlatEditRef> flatEditsInBox(const FlatEdits& edits, float x0, float y0, float x1,
+                                        float y1);
+
 bool flatRemoveEdit(FlatEdits& edits, FlatEditRef ref);
+// Removes a whole selection at once and returns how many were actually
+// found. One call so it is one undo step, not one per edit.
+size_t flatRemoveEdits(FlatEdits& edits, const std::vector<FlatEditRef>& refs);
 
 // Geometry helpers shared with the tools.
 bool flatPointInPoly(float x, float y, const FlatPolyline& p);
