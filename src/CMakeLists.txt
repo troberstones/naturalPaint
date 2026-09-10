@@ -8,6 +8,7 @@ add_executable(naturalPaint
   app/CloseDecision.cpp
   app/Action.cpp
   app/Batch.cpp
+  app/BatchDialog.cpp
   app/Command.cpp
   app/CommandCoverage.cpp
   app/CommandsImage.cpp
@@ -170,6 +171,7 @@ add_executable(naturalPaint
   app/selftest/Recorder.cpp
   app/selftest/Replay.cpp
   app/selftest/Batch.cpp
+  app/selftest/BatchDialog.cpp
   app/selftest/ActionsPanel.cpp
   app/selftest/CommandsOpStack.cpp
   app/selftest/CommandsImage.cpp

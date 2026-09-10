@@ -3693,6 +3693,10 @@ bool runReplayTest();
 //
 // See app/Batch.hpp, whose §1 and §2 are the arguments these assert.
 bool runBatchTest();
+
+// docs/automation-plan.md step 7: the BATCH dialog's model -- which button is
+// live and why, and the preview/run distinction. See app/BatchDialog.hpp.
+bool runBatchDialogTest();
 // app/ActionsPanel -- the ACTIONS panel's model (docs/automation-plan.md
 // step 7), asserted as state-in / drawing-out rather than by drawing it.
 //
