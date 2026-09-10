@@ -3662,6 +3662,11 @@ bool runCommandsLayersTest();
 //
 // See app/selftest/Recorder.cpp.
 bool runRecorderTest();
+
+// docs/automation-plan.md step 5: replaying an action against a document --
+// targeting by name, the refusal that touches nothing, and the one history
+// entry. See app/Replay.hpp.
+bool runReplayTest();
 // app/CommandsOpStack -- the command rows that carry an *op* as a parameter,
 // and the selection rows that make every destructive step around them mean
 // what it meant when it was recorded (docs/automation-plan.md step 1).

@@ -168,7 +168,12 @@ RecorderTap::RecorderTap(const OpenDocument& doc, const Command& command) : comm
   Recorder& recorder = sessionRecorder();
   // Everything below costs a name copy and, under a live marquee, a memcmp per
   // saved channel. None of it is paid unless a recording is running.
-  if (!recorder.isRecording()) return;
+  //
+  // `isSuspended()` is checked at the same gate rather than inside `note()`,
+  // so a suspended recorder does not pay the pre-state capture either -- and,
+  // more to the point, so that suspension is *one* decision made in front of
+  // the whole tap instead of a flag two separate places have to remember.
+  if (!recorder.isRecording() || recorder.isSuspended()) return;
   recorder_ = &recorder;
 
   const std::optional<size_t> active = activeLayerIndex(doc);
@@ -188,5 +193,11 @@ CommandResult RecorderTap::record(CommandResult result) {
   if (recorder_ != nullptr) recorder_->note(command_, result, before_);
   return result;
 }
+
+RecorderSuspension::RecorderSuspension() : recorder_(&sessionRecorder()) {
+  ++recorder_->suspendCount_;
+}
+
+RecorderSuspension::~RecorderSuspension() { --recorder_->suspendCount_; }
 
 }  // namespace np

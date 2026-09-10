@@ -228,6 +228,11 @@ class Recorder {
   // this first.
   bool usable() const noexcept { return refusals_.empty(); }
 
+  // Whether the tap should ignore commands right now, **without the recording
+  // being over**. Set only by `RecorderSuspension` below; see it for why this
+  // is a second state and not `stop()`.
+  bool isSuspended() const noexcept { return suspendCount_ > 0; }
+
   // The tap itself. Called once per `applyCommand()`, after the applier.
   void note(const Command& command, const CommandResult& result, const RecorderPreState& before);
 
@@ -242,6 +247,36 @@ class Recorder {
   // updated by a structural command's implicit move -- see §3.
   bool haveLastActive_ = false;
   std::string lastActiveLayer_;
+
+  // Nesting depth of `RecorderSuspension`. A counter rather than a bool so a
+  // replay reached from inside something that already suspended -- which is
+  // what a future "run action X" step would be -- resumes at the right level
+  // instead of the inner scope switching recording back on for the outer one.
+  int suspendCount_ = 0;
+  friend class RecorderSuspension;
+};
+
+// Suspends the session recorder for a scope, and restores it on the way out
+// however the scope is left.
+//
+// **Why this is not `stop()`.** Stopping ends the recording: the ACTIONS panel
+// would show the take as finished and offer to save it, and there would be no
+// way to put the user back where they were. What a replay needs is for the
+// recorder to stay armed and simply not see the steps going past -- see
+// app/Replay.hpp section 4 for why recording a replay's expansion is the wrong
+// answer rather than merely a noisy one.
+//
+// Costs nothing when nothing is recording; the tap's early-out reads one int.
+class RecorderSuspension {
+ public:
+  RecorderSuspension();
+  ~RecorderSuspension();
+
+  RecorderSuspension(const RecorderSuspension&) = delete;
+  RecorderSuspension& operator=(const RecorderSuspension&) = delete;
+
+ private:
+  Recorder* recorder_ = nullptr;
 };
 
 // The one recorder. See §1 for why it is a global and not a member of

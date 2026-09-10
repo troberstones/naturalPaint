@@ -3247,6 +3247,7 @@ int main(int argc, char** argv) {
     // app/SelfTest.hpp.
     const bool recorderOk = np::runRecorderTest();
     const bool actionFileOk = np::runActionFileTest();
+    const bool replayOk = np::runReplayTest();
     // app/CommandsOpStack: the rows that carry an op as a parameter, keyed by
     // kind NAME, and the selection rows that cross the session/document line.
     // See app/SelfTest.hpp.
@@ -3608,7 +3609,7 @@ int main(int argc, char** argv) {
                     brushModelIoOk && brushModelDiffOk && brushPanelBindingOk &&
                     commandsLayersOk &&
                     recorderOk &&
-                    actionFileOk &&
+                    actionFileOk && replayOk &&
                     commandsOpStackOk &&
                     commandOk && jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     commandsImageOk &&
