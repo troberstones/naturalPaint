@@ -16,6 +16,7 @@
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
 #include "io/PsdImport.hpp"
+#include "core/Composite.hpp"
 #include "io/PsdLayerSection.hpp"
 #include "io/PsdLayerExtras.hpp"
 #include "io/PsdWrite.hpp"
@@ -514,6 +515,57 @@ bool runPsdLayerSectionTest() {
           warning.find("group") != std::string::npos)
         groupWarned = true;
     check(!groupWarned, "groups: a carried group no longer warns that it was dropped");
+  }
+
+  // --- G. A mask survives, and the rect it is sized by ---------------------
+  //
+  // **Added at gather**, because the mask wiring had no assertion at this
+  // level at all: io/PsdLayerExtras' own tests cover `psdMaskRect()` and
+  // `encodePsdMaskChannel()` in isolation, and this module's tests were
+  // written while masks were explicitly out of scope. Neither could see
+  // whether a record actually carries the block AND the `-2` channel
+  // together -- and a record that writes one without the other declares a
+  // channel table that does not match its own extra data, which our reader
+  // walks straight off the end of.
+  //
+  // The rect matters as much as the coverage. A mask channel is sized by the
+  // MASK's own rect, not the layer's -- verified on ten real Photoshop masks,
+  // every one a different size from its layer (docs/psd-import-gaps.md
+  // section 1). The fixture below makes those two deliberately different: a
+  // full-canvas layer with a mask that hides four texels in one corner.
+
+  {
+    Document doc;
+    doc.width = 32;
+    doc.height = 32;
+    Layer l = makeRasterLayer("Masked");
+    fillRect(l, 0, 0, 32, 32, 0.6f, 0.6f, 0.6f, 1.0f);
+    l.mask.emplace();
+    for (int32_t y = 4; y < 6; ++y)
+      for (int32_t x = 4; x < 6; ++x)
+        l.mask->getOrCreate(tileCoordAt(PixelCoord{x, y}))
+            .writeCoverage(tileLocalOffset(PixelCoord{x, y}), 0.0f);
+    doc.layers.push_back(std::move(l));
+
+    const RoundTrip rt = roundTrip(doc);
+    check(rt.ok && rt.document.layers.size() == 1 && rt.document.layers[0].mask.has_value(),
+          "mask: a masked layer comes back masked, not bare");
+    if (rt.ok && !rt.document.layers.empty() && rt.document.layers[0].mask) {
+      const Layer& back = rt.document.layers[0];
+      check(layerMaskCoverageAt(back, PixelCoord{4, 4}) < 0.01f &&
+                layerMaskCoverageAt(back, PixelCoord{5, 5}) < 0.01f,
+            "mask: the hidden texels come back hidden");
+      check(layerMaskCoverageAt(back, PixelCoord{0, 0}) > 0.99f &&
+                layerMaskCoverageAt(back, PixelCoord{20, 20}) > 0.99f,
+            "mask: everything outside the mask rect still reveals");
+      // The inverted default is the trap this fixture exists for. `MaskTile`
+      // defaults to 1.0, so the empty-tile skip inverts relative to a colour
+      // tile, and the block's default-colour byte of 255 is what makes the
+      // area outside the rect agree with it. Get either backwards and the
+      // layer comes back a black rectangle, or entirely gone.
+      check(layerMaskCoverageAt(back, PixelCoord{6, 4}) > 0.99f,
+            "mask: a texel one past the hidden run is not hidden too");
+    }
   }
 
   // --- G. The two claims that are about bytes, not about a round trip ----
