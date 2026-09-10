@@ -675,7 +675,13 @@ bool runToolCursorTest() {
       const bool opaque = isCoreInk(b, b.hotspotX, b.hotspotY);
       // §8's layout: the crosshair's centre is design (8, 23), and these
       // bitmaps are rasterised at scale 1.0, so the pixel IS (6, 26).
-      const bool onCross = b.hotspotX == 8 && b.hotspotY == 23;
+      // §10's exception: a tool whose icon IS a pointer wears no crosshair,
+      // so it is excluded from this claim and carries its own, below. Excluded
+      // by the SAME predicate the rasteriser branches on -- a test with its own
+      // list of exceptions is a second place for the exception to be wrong.
+      const bool onCross = toolCursorPointsFromItsTip(bitmapCursors[i])
+                               ? (b.hotspotX != 8 || b.hotspotY != 23)
+                               : (b.hotspotX == 8 && b.hotspotY == 23);
       // ...and there is still a GLYPH. The crosshair's topmost pixel is
       // y = 23 - 6 = 17, so any core ink above that row came from the tool's
       // own picture. Without this line a rasteriser that lost the glyph
@@ -697,9 +703,10 @@ bool runToolCursorTest() {
           "ink -- not merely inside its bounding box (G2, which fifteen hotspots satisfied "
           "while pointing at nothing) and not an alpha-4 anti-aliased fringe either");
     check(everyHotspotIsCrosshair,
-          "hotspot: ...and it is §8's crosshair centre (8,23) for EVERY tool, not a per-tool "
-          "placement that happens to land on ink -- one layout rule, so a tool added "
-          "tomorrow inherits a correct hotspot with no entry in any table");
+          "hotspot: ...and it is §8's crosshair centre (8,23) for every tool that wears the "
+          "composite -- one layout rule, so a tool added tomorrow inherits a correct hotspot "
+          "with no entry in any table -- while §10's tip-pointing tools are provably NOT "
+          "there, which is what says the exception actually took effect");
     check(everyGlyphInked,
           "hotspot: ...and every cursor still carries a tool glyph above the crosshair -- a "
           "rasteriser that drew only the crosshair would pass both lines above while making "
@@ -755,6 +762,7 @@ bool runToolCursorTest() {
     for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
       const Tool t = static_cast<Tool>(i);
       if (!toolHasBitmapCursor(t)) continue;
+      if (toolCursorPointsFromItsTip(t)) continue;  // §10: no crosshair, no arms
       // The arm length is `px(6, scale)` -- §8's `kCrossArm` through the same
       // rounding the generator used. Written out rather than shared, because a
       // test that computed it from the same constant the code did would agree
@@ -763,6 +771,62 @@ bool runToolCursorTest() {
       if (!haloBeyondEveryArm(rasterizeToolCursorBitmap(t, cursorBaseScale()), 5))
         everyArmOutlined = false;
     }
+    // -- G1d. §10: the arrow points from its own tip ----------------------
+    //
+    // The exception §8 admitted to and this section is where it is held. Three
+    // claims, and the second is the one the request is actually about.
+    {
+      int tipTools = 0;
+      for (int i = 0; i < static_cast<int>(Tool::Count); ++i)
+        if (toolCursorPointsFromItsTip(static_cast<Tool>(i))) ++tipTools;
+      check(tipTools == 1 && toolCursorPointsFromItsTip(Tool::PathSelect),
+            "arrow: §10 has exactly ONE member and it is Path Select -- the exception is a "
+            "named tool, not a policy that could quietly grow back into the per-tool "
+            "placement §8 deleted");
+
+      const CursorBitmap a = rasterizeToolCursorBitmap(Tool::PathSelect);
+      // **"From its tip", stated so a regression cannot satisfy it.** The
+      // hotspot must be the topmost row that carries any of the arrow's own
+      // ink, and the leftmost inked pixel on that row. Nothing above it, and
+      // nothing to its left on its own row: that is what a tip IS, and it is
+      // false for any placement further into the body.
+      bool nothingAbove = true, nothingLeftOnItsRow = true;
+      for (int y = 0; y < a.height; ++y)
+        for (int x = 0; x < a.width; ++x) {
+          if (!isCoreInk(a, x, y)) continue;
+          if (y < a.hotspotY) nothingAbove = false;
+          if (y == a.hotspotY && x < a.hotspotX) nothingLeftOnItsRow = false;
+        }
+      std::printf("    Path Select           hotspot (%d,%d) topmost=%s leftmost-on-row=%s\n",
+                  a.hotspotX, a.hotspotY, nothingAbove ? "yes" : "NO",
+                  nothingLeftOnItsRow ? "yes" : "NO");
+      check(nothingAbove && nothingLeftOnItsRow,
+            "arrow: Path Select's hotspot is the TIP -- no ink of its own above it, none to "
+            "its left on its own row. A hotspot anywhere further into the body of the arrow "
+            "fails this, and so does a regression to §8's composite");
+
+      // **Orthogonal neighbours, not the diagonal one, and that is a fact
+      // about `applyCursorOutline()` rather than a convenience.** Its halo is
+      // a disc of radius `strokeWidth(scale)`, so at the base scale -- radius
+      // 1 -- `dx*dx + dy*dy <= 1` admits the four edge neighbours and excludes
+      // the four corners. A first version of this line probed the diagonal and
+      // went red against a perfectly good arrow.
+      //
+      // Checking the two edges that meet AT the tip proves both halves anyway:
+      // the outline reached the tip, and the arrow is clear of the canvas edge
+      // where the outline would have nowhere to go -- the §8 defect that was
+      // found by eye rather than by this file.
+      auto haloAt = [&](int x, int y) {
+        if (x < 0 || y < 0 || x >= a.width || y >= a.height) return false;
+        const size_t d = (static_cast<size_t>(y) * a.width + x) * 4;
+        return a.rgba[d + 3] != 0 && a.rgba[d] == 255;
+      };
+      check(haloAt(a.hotspotX - 1, a.hotspotY) && haloAt(a.hotspotX, a.hotspotY - 1),
+            "arrow: ...and the two pixels just outside that tip, left and above, are white "
+            "halo -- the tip is outlined, and it is not sitting on the canvas edge where the "
+            "outline would have nowhere to go");
+    }
+
     check(everyArmOutlined,
           "hotspot: all four of the crosshair's arms end in a WHITE HALO pixel, at 1x and at "
           "the shipping scale -- an arm that reached the canvas edge would lose its outline "

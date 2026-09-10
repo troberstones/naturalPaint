@@ -1692,11 +1692,24 @@ The per-tool anchor table is gone with the class of bug rather than the
 instances: the glyph identifies the tool and points at nothing, so a tool
 added tomorrow inherits a correct hotspot with no entry in any table.
 
-**Admitted cost.** The glyph no longer sits under the pointer. For an icon
-that is itself a pointing thing — the Path Select arrow above all — that is a
-real loss, and Illustrator would keep the hotspot at the arrow tip. Uniformity
-was chosen over that deliberately, because per-tool judgement is what produced
-the fifteen. The arrow is the first entry worth revisiting.
+**Admitted cost, and the one exception taken.** The glyph no longer sits under
+the pointer. For an icon that is itself a pointing thing that is a real loss,
+and Illustrator would keep the hotspot at the arrow tip.
+
+Path Select was the entry that proved it and **was fixed the same day**
+(`ui/ToolCursor` §10): it now shows a filled pointer aiming from its own tip,
+with no crosshair, because an arrow tip already IS the click mark and a second
+one below-left would say the click lands somewhere it does not.
+
+That does not reopen the argument. The exception is a named tool rather than a
+policy, and its tip is a coordinate the file **chooses** rather than a fraction
+of a picture it has to infer — which is exactly where the anchor table went
+wrong. The arrow is drawn procedurally rather than taken from Lucide for the
+same reason: `mouse-pointer-2` is a hollow stroked outline whose apex is one or
+two pixels of partial-alpha ink, so hanging a hotspot on it would have meant
+weakening the "fully opaque" assertion back to "some ink" — the trap that let
+the original fifteen ship. The Pen's nib is the next plausible candidate and is
+deliberately not taken: a nib is a pointy end, not a pointer.
 
 **And `Caps Lock` works.** `docs/shortcuts.md` §2 has promised "precise
 crosshair cursor" since it was written; nothing implemented it. §9 does, over

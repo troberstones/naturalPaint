@@ -447,6 +447,101 @@ void drawHotspotCrosshair(CursorBitmap& out, float scale) {
   out.hotspotY = crossY;
 }
 
+// ================================= §10: the tool whose icon IS a pointer
+//
+// **The exception §8 predicted, and the reason it is a narrow one.** §8 moved
+// every glyph out from under the pointer because per-tool placement is what
+// put fifteen hotspots on transparent pixels. For an icon that is *itself a
+// pointing thing*, though, displacing it is worse than the disease: every
+// arrow ever drawn aims from its own tip, and a user who has to discover
+// otherwise has already mis-clicked. Illustrator keeps its selection arrow's
+// hotspot at the tip and badges it with modifiers rather than offsetting it.
+//
+// So this is one exception with one member, gated by a predicate rather than
+// by an `if` in the middle of the rasteriser, and it does not reopen §8: the
+// tip is a coordinate this file CHOOSES, not a fraction of a picture it has to
+// infer. That is the whole difference. `cursorHotspotAnchorFor()` failed
+// because it guessed where a glyph's working end was; here the working end is
+// vertex zero of a polygon drawn on purpose.
+//
+// **Why the arrow is drawn rather than taken from Lucide**, which is the part
+// worth recording. `mouse-pointer-2` -- the palette's own Path Select icon --
+// is a HOLLOW stroked outline. At the shipping 24x24 its apex is one or two
+// pixels of anti-aliased ink at partial alpha, so a hotspot on that apex would
+// be exactly the invisible-fringe case §8 measured: Brush at alpha 1,
+// Eyedropper at 4. Making the tip land on a pixel a human eye can see would
+// have meant weakening §8's own assertion from "fully opaque" back to "some
+// ink", which is the trap that let fifteen of these ship in the first place.
+//
+// A filled arrow has no such apex problem, and it is also what every pointer
+// on every platform actually looks like. Same precedent as the marquee pair
+// four functions down: no Lucide glyph is this shape, so this file draws it.
+// The cost is that the cursor no longer matches its palette cell pixel for
+// pixel -- it is still an arrow, and it is still the only arrow in the set.
+constexpr int kArrowTipX = 2, kArrowTipY = 2;
+
+// The classic seven-vertex pointer, clockwise from the tip, in design units.
+// Vertex 0 IS the hotspot, which is why it is written first and why nothing
+// below reorders this list.
+constexpr int kArrow[7][2] = {
+    {kArrowTipX, kArrowTipY},  // the tip, and the hotspot
+    {2, 24},                   // straight down the left edge
+    {8, 19},                   // in to the notch
+    {12, 27},                  // down the tail's left side
+    {15, 26},                  // across the tail's foot
+    {10, 17},                  // back up the tail's right side
+    {17, 17},                  // out to the wing, and closed back to the tip
+};
+
+void drawPointerArrow(CursorBitmap& out, float scale) {
+  const int t = strokeWidth(scale);
+  int xs[7], ys[7];
+  for (int i = 0; i < 7; ++i) {
+    xs[i] = px(kArrow[i][0], scale);
+    ys[i] = px(kArrow[i][1], scale);
+  }
+
+  // Scanline fill, sampling at each row's centre. Even-odd is the same as
+  // non-zero for this polygon -- it is simple and does not self-intersect --
+  // so the cheaper rule is the honest one to use.
+  int minY = ys[0], maxY = ys[0];
+  for (int i = 1; i < 7; ++i) {
+    minY = std::min(minY, ys[i]);
+    maxY = std::max(maxY, ys[i]);
+  }
+  for (int y = minY; y <= maxY; ++y) {
+    const float sy = static_cast<float>(y) + 0.5f;
+    float xsAt[8];
+    int n = 0;
+    for (int i = 0; i < 7 && n < 8; ++i) {
+      const int j = (i + 1) % 7;
+      const float y0 = static_cast<float>(ys[i]), y1 = static_cast<float>(ys[j]);
+      if ((sy >= y0) == (sy >= y1)) continue;  // this edge does not cross the row
+      const float u = (sy - y0) / (y1 - y0);
+      xsAt[n++] = static_cast<float>(xs[i]) + u * static_cast<float>(xs[j] - xs[i]);
+    }
+    std::sort(xsAt, xsAt + n);
+    for (int k = 0; k + 1 < n; k += 2)
+      for (int x = static_cast<int>(std::lround(xsAt[k])); x <= static_cast<int>(std::lround(xsAt[k + 1]));
+           ++x)
+        setPixel(out.rgba, out.width, out.height, x, y, 255);
+  }
+
+  // **The outline, stroked on top of the fill, and it is not decoration.** A
+  // scanline fill samples row centres, so a shape that tapers to a point --
+  // which is exactly what an arrow does at the vertex this file is about to
+  // hang the hotspot on -- can lose its last row or two entirely. Stroking the
+  // boundary puts them back, and `drawLine()` stamps at its start coordinate,
+  // so vertex 0 is opaque black by construction rather than by luck.
+  for (int i = 0; i < 7; ++i) {
+    const int j = (i + 1) % 7;
+    drawLine(out.rgba, out.width, out.height, xs[i], ys[i], xs[j], ys[j], t);
+  }
+
+  out.hotspotX = xs[0];
+  out.hotspotY = ys[0];
+}
+
 // The two shapes no font carries. Drawn into §8's glyph slot exactly as a
 // Lucide glyph is, so the marquees are no longer a special case of the
 // LAYOUT -- only of where their picture comes from.
@@ -664,6 +759,14 @@ int cursorBasePoints() noexcept { return kCursorBasePoints; }
 float cursorBaseScale() noexcept { return kCursorBaseScale; }
 
 
+bool toolCursorPointsFromItsTip(Tool tool) noexcept {
+  // One member, and §10 argues why it is one rather than a policy. A tool
+  // added here loses §8's crosshair, so the bar is "this icon is itself a
+  // pointing thing" -- not "this icon has a pointy end", which is most of
+  // them.
+  return tool == Tool::PathSelect;
+}
+
 bool toolHasBitmapCursor(Tool tool) noexcept {
   // The two marquees get §7's procedural composite -- the shape plus an offset
   // crosshair the report asked for by name -- and everything else gets its own
@@ -697,6 +800,20 @@ CursorBitmap rasterizeToolCursorBitmap(Tool tool, float scale) noexcept {
   // §7's fallback contract: a font that did not load must still produce a
   // bitmap `create()` refuses to install, not a crosshair with no tool on it.
   bool inked = false;
+  if (toolCursorPointsFromItsTip(tool)) {
+    // §10: no glyph slot and no crosshair. The arrow occupies the canvas and
+    // the hotspot is its own tip -- `drawPointerArrow()` sets it, so the
+    // `drawHotspotCrosshair()` call below must be skipped rather than merely
+    // producing a mark nobody looks at: it would overwrite the hotspot.
+    drawPointerArrow(out, scale);
+    applyCursorOutline(out, scale);
+    for (size_t i = 3; i < out.rgba.size(); i += 4)
+      if (out.rgba[i] != 0) {
+        out.nonBlank = true;
+        break;
+      }
+    return out;
+  }
   if (tool == Tool::Marquee) {
     // The two shapes no Lucide glyph carries -- the report described them in
     // words rather than by icon ("a circle or square with a crosshair to the

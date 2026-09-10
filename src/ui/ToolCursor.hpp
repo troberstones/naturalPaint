@@ -346,12 +346,18 @@
 //
 // **The cost, stated rather than swallowed.** The glyph no longer sits under
 // the pointer; it hangs up and to the right of it. For a tool whose icon is
-// itself a pointing thing -- the Path Select arrow above all, and the Pen's
-// nib -- that is a real loss: Illustrator puts those hotspots at the nib and
-// the arrow tip and badges them with modifiers instead. Uniformity was chosen
-// over that, deliberately, because per-tool judgement is what produced the
-// fifteen. The Path Select arrow is the first entry worth revisiting if the
-// composite proves wrong in the hand.
+// itself a pointing thing that is a real loss: Illustrator puts those hotspots
+// at the arrow tip and the nib and badges them with modifiers instead.
+// Uniformity was chosen over that deliberately, because per-tool judgement is
+// what produced the fifteen.
+//
+// **Path Select was the entry that proved it, and §10 is the exception.** The
+// arrow now aims from its own tip. That does not reopen §8: the exception is a
+// named tool rather than a policy, and -- the part that matters -- its tip is a
+// coordinate this file CHOOSES rather than a fraction of a picture it has to
+// infer, which is precisely where the anchor table went wrong. The Pen's nib
+// is the next plausible candidate and is deliberately NOT taken: a nib is a
+// pointy end, not a pointer, and §10's bar is the second thing.
 //
 // ==========================================================================
 // 9. Caps Lock: the precise cursor
@@ -479,6 +485,16 @@ struct CursorBitmap {
 // `cursorBaseScale()` and the Retina alternate at twice it.
 int cursorBasePoints() noexcept;
 float cursorBaseScale() noexcept;
+
+// §10: does this tool's cursor point from its own tip instead of wearing §8's
+// composite? True for `Tool::PathSelect` and nothing else today.
+//
+// A tool that answers true gets a filled pointer occupying the whole canvas,
+// with the hotspot at its tip and NO crosshair -- an arrow tip is the click
+// mark, and adding a second one below-left would say the click lands somewhere
+// it does not. See the .cpp's §10 for why the exception is this narrow and why
+// the arrow is drawn rather than taken from the palette's own Lucide glyph.
+bool toolCursorPointsFromItsTip(Tool tool) noexcept;
 
 // Which tools have a bitmap cursor: the two marquees (§7's procedural
 // composite) and every tool the palette has an icon for -- which today is all
