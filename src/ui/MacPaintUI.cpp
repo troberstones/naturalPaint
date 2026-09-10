@@ -356,6 +356,21 @@ LayerEditorUiState g_layers;
 // it bumps the document's revision (which is what makes ui/DocumentTexture
 // recomposite and the canvas change), appends a history entry and marks the
 // document structurally dirty.
+//
+// **`runLayerGesture()` since docs/automation-plan.md step 2**: the gesture
+// reaches `applyLayerCommand()` through `app::applyCommand()` now, so a menu
+// item or a panel button the user pressed is a step a recorder can see. This
+// function keeps everything that is a *panel* concern -- the no-document
+// sentence, the multi-selection collapse, the message band -- and nothing
+// that is a document concern.
+//
+// The selection is read back rather than assigned: `fromLayerEdit()` already
+// adopts `LayerEditResult::selected` through `setActiveLayer()`, and a second
+// assignment here would be the two answers to "where did the selection land"
+// that app/CommandSupport.hpp exists to prevent. It reads the same value the
+// old `setActiveLayer(*od, r.selected)` wrote, including on a refusal -- a
+// refusal reports "the unchanged selection" (app/LayerEditor.hpp), which is
+// the index already there.
 void runLayerCommand(AppState& st, LayerCommand command) {
   OpenDocument* od = st.documents.active();
   if (od == nullptr) {
@@ -363,10 +378,9 @@ void runLayerCommand(AppState& st, LayerCommand command) {
         "layer command refused: no document is open. File > New Document makes one.";
     return;
   }
-  const LayerEditResult r = applyLayerCommand(*od, command, od->activeLayer);
-  setActiveLayer(*od, r.selected);
-  g_layers.selection = singleLayerSelection(r.selected);
-  g_layers.lastError = r.ok ? std::string() : r.error;
+  const LayerCommandOutcome r = runLayerGesture(*od, command);
+  g_layers.selection = singleLayerSelection(od->activeLayer);
+  g_layers.lastError = r.error;
   g_layers.lastWarnings = r.warnings;
 }
 
@@ -396,6 +410,29 @@ void runFlatsExpand(AppState& st, FlatsExpandMode mode) {
 //   deleted, moved or aligned by a gesture aimed at the rows on screen;
 //   a restriction that empties the set **refuses with the count**, rather than
 //   leaving a button that appears to do nothing.
+//
+// **NOT migrated to `app::applyCommand()`** (docs/automation-plan.md step 2),
+// and named here as an exception rather than migrated wrongly. Three reasons,
+// each of which alone would settle it:
+//
+//  1. `resolveLayerSet()` refuses a `"layers"` list whose names do not resolve
+//     one-to-one, and says why at length: names are not unique, so a list of
+//     five that resolves to four is refused rather than silently narrowed.
+//     That is right for a file. Here it would mean the Multi-selection buttons
+//     stopped working entirely on any document with two layers sharing a name
+//     -- which a Duplicate Layer produces -- where today they act on exactly
+//     the rows the user ticked.
+//  2. `CommandResult` cannot carry `LayerSetEditResult::selection`, and the
+//     panel's multi-selection is session state `applyCommand()` may not reach
+//     for (app/Command.hpp §2). The line below that assigns `g_layers
+//     .selection = r.selection` has no source through the command layer.
+//  3. `fromLayerSetEdit()` adopts the TOP row of where the set landed
+//     (`indices.back()`); this panel adopts the bottom (`indices.front()`).
+//     One of them would have to change, and both are deliberate.
+//
+// The route out is the same one the eye and the padlock need: a stable
+// per-layer id. Until then this is a set of user actions the recorder cannot
+// see, which is a real gap and is stated as one.
 void runLayerSetCommand(AppState& st, LayerSetCommand command) {
   OpenDocument* od = st.documents.active();
   if (od == nullptr) {
@@ -2633,6 +2670,25 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
     return out.ok;
   };
 
+  // The same thing for a control that acts on the ACTIVE layer, through
+  // `app::applyCommand()` so the recorder sees it (docs/automation-plan.md
+  // step 2). `runActiveLayerSetter()` does the `recordLayerEdit()` this
+  // lambda's sibling does, one layer further in -- every setter row goes
+  // through `fromDocumentOpResult(recordLayerEdit(...))`, so the history
+  // entry, the revision bump and the refusal sentence are the same ones.
+  //
+  // **Two lambdas, deliberately, and the difference is the target.** `run()`
+  // above takes an already-executed `LayerOpResult` and so can address any
+  // row; this one can only address the active layer, because an action's
+  // targeting is by name and layer names are not unique. The three controls
+  // that act on an arbitrary row -- the eye, the padlock and the inline
+  // rename -- therefore stay on `run()`, with their own note where they are.
+  auto runActive = [&](const Command& command) {
+    const LayerCommandOutcome out = runActiveLayerSetter(*od, command);
+    g_layers.lastError = out.error;
+    return out.ok;
+  };
+
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const float panelW = ImGui::GetContentRegionAvail().x;
   const ImU32 ruleCol = atelierToken(kRule);
@@ -2786,7 +2842,7 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
       for (size_t m = 0; m < menu.size(); ++m) {
         const bool isSelected = (m == sel);
         if (ImGui::Selectable(blendMenuEntryText(menu[m]).c_str(), isSelected))
-          run(setLayerBlend(doc, selected, menu[m]));
+          runActive(setLayerBlendCommand(menu[m]));
         if (isSelected) ImGui::SetItemDefaultFocus();
       }
       ImGui::EndCombo();
@@ -2808,7 +2864,7 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
     const bool moved = layerOpacityMeter("##activeLayerOpacity", &opacity, kLayerOpacityW,
                                          ImGui::GetTextLineHeight() + 2.0f);
     popAtelierMono();
-    if (moved) run(setLayerOpacity(doc, selected, opacity));
+    if (moved) runActive(setLayerOpacityCommand(opacity));
     ImGui::SetItemTooltip("The selected layer's opacity -- click or drag anywhere\n"
                         "across the meter. A locked layer refuses every frame of\n"
                         "the drag, not merely the first.");
@@ -3329,6 +3385,11 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
             ImGui::InputText("##inlineRename", g_layers.renameFieldBuf,
                              sizeof(g_layers.renameFieldBuf), ImGuiInputTextFlags_EnterReturnsTrue);
         if (committed) {
+          // Not through `applyCommand()`, and for the reason the eye and the
+          // padlock below carry in full: this renames row `i`, which is any
+          // row, and a command can only name a target that names it back.
+          // Layer Properties' own "Name" field -- the other half of this one
+          // redundancy -- edits the ACTIVE layer and IS migrated.
           run(setLayerName(doc, i, g_layers.renameFieldBuf));
           g_layers.renaming.reset();
         } else if (ImGui::IsItemDeactivated()) {
@@ -3356,6 +3417,29 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
       }
 
       // ---- the icon buttons, last, so they take the mouse -------------------
+      //
+      // **These two, and the inline rename above, are the three controls in
+      // this panel that do NOT go through `app::applyCommand()`** -- the
+      // exceptions docs/automation-plan.md step 2 asks to be named rather than
+      // migrated wrongly, and they are all one reason.
+      //
+      // They act on row `i`, which is any row, and clicking the eye
+      // deliberately does not select it (only the two thumbnails do, T16).
+      // `applyCommand()` addresses a layer by NAME and cannot address one by
+      // index -- that is app/Command.hpp's whole point, because an index means
+      // a different layer on a replayed document. Layer names are explicitly
+      // not unique (core/LayerOps.hpp), so `"layer": <this row's name>` would
+      // resolve to the FIRST layer sharing it: hiding the wrong layer on any
+      // document with two layers called "Layer 1", which is a document a
+      // Duplicate Layer produces.
+      //
+      // The two ways out are both worse than the gap. Selecting the row first
+      // changes what a click on the eye means, which is the behaviour change
+      // step 2 forbids. An index-shaped target in the command layer would put
+      // back the coupling `.npaction` files exist to avoid. What closes it
+      // honestly is a stable per-layer id -- `Layer::id`, which is 0 on every
+      // layer this build creates (app/StrokeSession §5) -- and that is a
+      // different piece of work.
       ImGui::SetCursorScreenPos(eyeAt);
       if (ImGui::InvisibleButton("##vis", ImVec2(kLayerEyeW, kLayerEyeW)))
         run(setLayerVisible(doc, i, !layer.visible));
@@ -3743,7 +3827,7 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
 
       std::snprintf(renameBuf, sizeof(renameBuf), "%s", layer.name.c_str());
       if (ctlInputText("Name", renameBuf, sizeof(renameBuf), ImGuiInputTextFlags_EnterReturnsTrue))
-        run(setLayerName(doc, i, renameBuf));
+        runActive(setLayerNameCommand(renameBuf));
 
       float opacity = layer.opacity;
       // SliderFloat reports a change every frame of a drag; each one goes
@@ -3751,7 +3835,7 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
       // rather than the first only. History (Phase 5 step 7) is what owns
       // coalescing an interaction into one undo entry.
       if (ctlSlider("Opacity", &opacity, 0.0f, 1.0f, "%.2f"))
-        run(setLayerOpacity(doc, i, opacity));
+        runActive(setLayerOpacityCommand(opacity));
 
       // The blend dropdown, identical in every particular to the one above the
       // list -- two controls for the one field, exactly the redundancy the
@@ -3766,7 +3850,7 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
         for (size_t m = 0; m < menu.size(); ++m) {
           const bool isSelected = (m == sel);
           if (ImGui::Selectable(blendMenuEntryText(menu[m]).c_str(), isSelected))
-            run(setLayerBlend(doc, i, menu[m]));
+            runActive(setLayerBlendCommand(menu[m]));
           if (isSelected) ImGui::SetItemDefaultFocus();
         }
         ImGui::EndCombo();
@@ -3785,7 +3869,7 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
       // exact colour that shows there. `PushID(name)` gives each swatch its own
       // ID despite every one of them sharing the label "##colorLabel".
       if (ImGui::SmallButton("None##colorLabelNone"))
-        run(setLayerColorLabel(doc, i, kNoLayerColorLabel));
+        runActive(setLayerColorLabelCommand(kNoLayerColorLabel));
       for (const char* name : kLayerColorLabelNames) {
         ImGui::SameLine();
         ImGui::PushID(name);
@@ -3794,22 +3878,23 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
           ImGui::PushStyleColor(ImGuiCol_Button,
                                 ImGui::GetColorU32(ImVec4(swatch->r, swatch->g, swatch->b, 1.0f)));
         if (ImGui::Button("##colorLabel", ImVec2(18.0f, 18.0f)))
-          run(setLayerColorLabel(doc, i, name));
+          runActive(setLayerColorLabelCommand(name));
         if (swatch.has_value()) ImGui::PopStyleColor();
         ImGui::SetItemTooltip("%s", name);
         ImGui::PopID();
       }
 
       bool visible = layer.visible;
-      if (ImGui::Checkbox("Visible", &visible)) run(setLayerVisible(doc, i, visible));
+      if (ImGui::Checkbox("Visible", &visible)) runActive(setLayerVisibleCommand(visible));
       bool locked = layer.locked;
-      if (ImGui::Checkbox("Locked", &locked)) run(setLayerLocked(doc, i, locked));
+      if (ImGui::Checkbox("Locked", &locked)) runActive(setLayerLockedCommand(locked));
       // PLAN.md Phase 5 step 9 / PRD C9. Disabled at the bottom of the stack,
       // the same "nothing below this layer" rule the row's own checkbox used to
       // enforce.
       ImGui::BeginDisabled(i == 0 && !layer.clipped);
       bool clipped = layer.clipped;
-      if (ImGui::Checkbox("Clip to Layer Below", &clipped)) run(setLayerClipped(doc, i, clipped));
+      if (ImGui::Checkbox("Clip to Layer Below", &clipped))
+        runActive(setLayerClippedCommand(clipped));
       ImGui::EndDisabled();
       ImGui::SetItemTooltip("Clip to the layer below (PRD C9): this layer shows only\n"
                           "where the layer beneath it has alpha. The bottom layer\n"

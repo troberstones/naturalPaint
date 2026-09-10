@@ -734,6 +734,27 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
 // core/Merge's five buttons on the session's document, through the same
 // `applyLayerCommand()` the `Layer` menu and the LAYERS panel call.
 //
+// **Deliberately still `applyLayerCommand()`, not `app::applyCommand()`**
+// (docs/automation-plan.md step 2 asks each demo driver to be decided rather
+// than swept along). Three reasons, in order of weight:
+//
+//  1. **It addresses a layer by INDEX, on purpose.** The `name:index` form
+//     below exists because the default row is the wrong one for exactly one of
+//     the five, and `applyCommand()` cannot express an index -- addressing by
+//     name is the property that makes an action replayable on another
+//     document, and layer names are not unique, so a name derived from an
+//     index here would silently drive a different layer.
+//  2. **Nothing it does needs recording.** The reroute exists so that a user
+//     action reaches the recorder; a screenshot driver is not a user action,
+//     and a recording of one would be an artefact of the flag rather than of
+//     anything a person did.
+//  3. The flag's own stated job is to press "the identical entry point the
+//     LAYERS panel calls" for these five gestures. That entry point is
+//     `applyLayerCommand()`, and it is still `applyLayerCommand()` after step
+//     2 -- `runLayerGesture()` reaches it through the command row. Pointing
+//     this at the row instead would make the demo exercise the adapter rather
+//     than the gesture, which is the opposite of what it is for.
+//
 // It exists for one reason: PRD C10 is a P0 whose whole deliverable is *a
 // picture that changed*, and there was no way to make a merge happen from
 // outside the window. Running the app twice -- once with the flag and once
@@ -752,6 +773,13 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
 // `app::applyLayerSetCommand()` -- the identical entry point the LAYERS panel's
 // Multi-selection buttons and the `Layer` > Selection menu items call, so a
 // screenshot of the result is a screenshot of what a click does.
+//
+// Also deliberately not migrated, and more strongly than `--ui-merge-demo`:
+// its `select:0.2.4` token IS a list of indices, which is the one thing a
+// `"layers"` list may not be. The panel's own set commands are not migrated
+// either, for the reasons `runLayerSetCommand()` in ui/MacPaintUI.cpp states
+// in full -- so pointing this at the command layer would make the demo stop
+// photographing what a click does, which is its entire purpose.
 //
 // `runUiLayerDemo()`'s reason for existing, one level up: a fixture that wrote
 // `Layer::colorLabel` directly would photograph a struct field, not a feature.
