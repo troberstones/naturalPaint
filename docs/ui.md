@@ -34,6 +34,8 @@ Dark chrome, light paper. The canvas is the only bright surface.
 | row selected | `#7c1405` |
 | canvas paper | `#f8f4f4` |
 | on-accent foreground | `#201e1d` |
+| error — a refusal: locked layer, unwritable path, unallocatable size | `#f27366` |
+| warning — a caution the user may proceed past: an export that quantises | `#ebc759` |
 
 Rules: **2px `#201e1d`** between major regions, **1px `#444141`** internally. Type is
 Archivo (400 / 600 / 800) with `ui-monospace` for all numerics and caps labels;
@@ -194,8 +196,35 @@ Every cell shows its **shortcut letter** on hover and in its tooltip when
 [shortcuts.md](shortcuts.md) section 1 reserves one for it — this is the letter that
 tooltip shows, not a claim the key is wired to a tool switch yet; `keymaps/default.json`
 does not bind any tool-select key today, and wiring that is separate, later work. The
-palette also **switches to the flatting set when a Flats layer is active** — those tools
-are scoped to that layer kind rather than holding global keys.
+palette also **gains a flatting set when a Flats layer is active** — those tools are
+scoped to that layer kind rather than holding global keys.
+
+**Built as a second palette, not as a switch of this one**, which is the one place the
+shipped chrome departs from the sentence above. FLATS TOOLS is its own dockable panel
+(§2c) drawing the same cells this palette draws — square, Lucide glyph, accent inversion
+when picked — so it can be floated beside TOOLS or docked anywhere, and vector layers get
+the same mechanism later. What the design's "switches" was protecting is kept by a
+different means: **the tool state is exclusive.** Activating a flatting tool deactivates
+the regular one, so exactly one palette shows a selection and one cursor shape at any
+instant. `st.brush.tool` is *remembered* rather than cleared — `flatsToolIsActive()`
+(`app/ToolSwitch.hpp`) is what stops it counting as active — so leaving flatting mode
+gives back the tool you had instead of dropping you on one you never chose. Golden view
+`tools_flats_active` photographs the TOOLS column at the instant a flats tool is lit,
+which is the only way to catch two accented cells at once.
+
+**A recorded repair is an object on the canvas, not an entry in the undo stack.**
+Every flatting edit is stored as geometry replayed against a fresh segmentation
+(ADR-0009), so while any flatting tool is picked the overlay draws the whole set over
+the picture: bridges cyan, merges green, delete marks red, carves orange, shape fills
+violet, group lassos amber — a cross in a ring for the two point-shaped kinds, a solid
+line with a dark casing for the rest. Marching ants are deliberately not used, because
+in this overlay ants already mean *"a proposal, not yet accepted"* and that is what a
+gap suggestion is. SELECT EDITS clicks one, Shift-clicks to add or remove, drags a box
+round several, and Delete removes the selection in one undo step; Esc clears it. The
+whole set vanishes outside flatting mode, where a Flats layer is just artwork you are
+painting near — the one exception is bridges, which are invisible in the render by
+design, so with the overlay off nothing at all would say a gap had been closed by hand.
+Golden view `flats_edits` photographs it, both selection states side by side.
 
 ### 2a. Icons: Lucide, one per tool, 15px
 
@@ -224,6 +253,7 @@ what the file actually says).
 | Measure | `ruler` | close | Photoshop itself calls this the Ruler tool; no dedicated "measure" icon exists or is needed. |
 | Frame / Artboard | `frame` | exact | — |
 | Clone Stamp | `stamp` | substitution | no clone-stamp icon exists; a rubber stamp is the closest available glyph for "copies a source elsewhere." |
+| Heal | `bandage` | substitution | no healing-brush icon exists; a sticking plaster is Photoshop's own metaphor for the tool, not an invented one. |
 | Eraser | `eraser` | exact | — |
 | Paint Bucket | `paint-bucket` | exact | — |
 | Gradient | `blend` | substitution | no gradient icon exists in Lucide; `blend` is its closest existing glyph for a gradual colour transition. |
@@ -243,11 +273,11 @@ what the file actually says).
 | Zoom | `zoom-in` | close | Lucide has `zoom-in`/`zoom-out` but no neutral "zoom" glyph; `zoom-in` matches the tool's own default cursor. |
 | More ("…") | `ellipsis` | exact | Not a `Tool` — the overflow cell at the foot of the palette; see §4a. |
 
-15 of these 28 are exact Lucide matches; 4 are close-enough renamings that need no
-substitution note (Rectangle Marquee, Measure, Curve, Zoom); 9 are genuine substitutions
-with no matching Lucide concept at all (Polygon Lasso, Magic Wand, Clone Stamp, Gradient,
-Water, Dry Brush, Smudge, Dodge, Burn). Sun/moon for Dodge/Burn is Photoshop's own
-lighten/darken metaphor, not an invented one.
+15 of these 29 are exact Lucide matches; 4 are close-enough renamings that need no
+substitution note (Rectangle Marquee, Measure, Curve, Zoom); 10 are genuine substitutions
+with no matching Lucide concept at all (Polygon Lasso, Magic Wand, Clone Stamp, Heal,
+Gradient, Water, Dry Brush, Smudge, Dodge, Burn). Sun/moon for Dodge/Burn and the plaster
+for Heal are Photoshop's own metaphors, not invented ones.
 
 ### 2b. Flyout groups: what each cell shows by default
 
@@ -270,7 +300,7 @@ this reason (§4a), and the rest of the table follows the same instinct.
 | 4 | Magic Wand | Magic Wand |
 | 5 | Crop, Slice | Crop |
 | 6 | Eyedropper, Measure | Eyedropper — implemented |
-| 7 | Clone Stamp | Clone Stamp |
+| 7 | Clone Stamp, Heal | Clone Stamp |
 | 8 | Eraser | Eraser |
 | 9 | Gradient, Paint Bucket | Gradient |
 | 10 | Brush, Pencil, Water, Dry Brush | Brush — implemented |
@@ -284,12 +314,19 @@ this reason (§4a), and the rest of the table follows the same instinct.
 
 Then the "…" More cell, unchanged — 17 groups + 1 = 18 palette cells, down from 28.
 
-Groups of one member today (Magic Wand, Clone Stamp, Eraser, Smudge, Text, Shape, Hand,
-Zoom) still get their own slot rather than folding into a neighbour — per the user's own
-instruction, "keep the pairings even where a group currently has one member," because
-these are exactly where this build's not-yet-built variants will land as later phases add
-them (a second selection-brush tool beside Magic Wand, for instance), without another
-palette rebuild to make room.
+Groups of one member today (Magic Wand, Eraser, Smudge, Text, Shape, Hand, Zoom) still
+get their own slot rather than folding into a neighbour — per the user's own instruction,
+"keep the pairings even where a group currently has one member," because these are exactly
+where this build's not-yet-built variants will land as later phases add them (a second
+selection-brush tool beside Magic Wand, for instance), without another palette rebuild to
+make room.
+
+**Slot 7 is the first one to cash that promise.** It was `Clone Stamp` alone for the whole
+life of this table; **Heal** (PRD D6, Phase 8) landed straight into it as a flyout sibling
+— no palette rebuild, no re-numbering of the ten slots below it, and the cell still shows
+Clone Stamp by default because `toolGroupDefaultMember()` takes the group's first
+implemented member and Clone Stamp is listed first. The only visible change is the corner
+triangle that marks a slot with more than one member.
 
 ---
 
@@ -297,7 +334,7 @@ palette rebuild to make room.
 
 The chrome had two welded control bands (the 52px tool palette on the left edge, the 46px
 options bar under the tab strip) and one scrolling right-hand column of thirteen
-`CollapsingHeader`s. All three are gone. What replaced them is **seventeen panels, each of
+`CollapsingHeader`s. All three are gone. What replaced them is **eighteen panels, each of
 which can be in any of four docks, on a flyout rail, or put away**, with the arrangement
 persisted across relaunches.
 
@@ -562,6 +599,38 @@ It is drawn disabled rather than hidden on a Flats layer: that layer resolves it
 source, so the combo has nothing to say there, and a control that vanishes as the
 selection moves teaches nobody why and re-flows the band while a painter is aiming at the
 slider beside it.
+
+#### 3.2b Dragging a layer around a group
+
+The LAYERS panel is a flat list that indents by group depth (`layerGroupDepth()` reads a
+layer's `parent`), so "inside a group" is a visible thing and dragging has to mean
+something for it. The rule is **`parent` follows position**, applied by
+`core::moveLayer()` on every reorder — the panel drag, Move Up/Down, the Layer menu and
+the multi-selection raise/lower all get it, rather than each learning about groups
+separately.
+
+* **A Group drags as a block** — its own row plus its whole member run. Reordering the
+  row alone left the children behind holding a `parent` that still named the group;
+  nothing was corrupt and nothing warned, which is why it survived.
+* **Landing directly under a Group's row joins it** as the topmost member. That slot has
+  one meaning, and it is the only way to give an empty group its first member.
+* **Landing among its members joins it too** — both neighbours have to belong to the same
+  group. Under the group's *lowest* member with something ungrouped below is a drop past
+  the group, not into it.
+* **Landing anywhere else clears the tag.** A layer dragged out that kept its tag went on
+  drawing indented under a group it had left.
+* **A Group dropped into a Group nests**: only the block's head is re-parented, so the
+  members go on naming their own group.
+
+Two costs, stated rather than hidden. You cannot drag a layer into a group's *bottom-most*
+slot — landing there reads as "below the group", and a flat list with no insertion caret
+has no second gesture to tell the two apart. The alternative rule (consult only the row
+above) makes the reverse impossible instead: with a group's lowest member at the bottom of
+the stack there would be no slot at all for "put this underneath everything", and a layer
+would be swallowed with no way to keep it out. And you cannot drop into a **collapsed**
+group at all: its rows are not drawn, so the target is snapped to the nearest edge of its
+block (`app::layerDropOutOfCollapsedGroups()`) — membership you cannot see yourself
+choosing is not membership you chose.
 
 ### 3.3 The colour picker cannot express pigment
 
@@ -927,6 +996,41 @@ multi-year part of a text engine, and none of them serve annotation.
 - **The History panel** (PRD O2) joins the right-hand docked column. It lists entries by
   originating tool, and clicking one moves the history cursor — which for Media layers is a
   single replay from the nearest keyframe, not N replays.
+
+## 5a. Modal dialogs
+
+**`src/ui/Dialog.hpp` is the spec**, every modal dialog in the application is
+written against it, and [ADR-0010](adr/0010-every-modal-dialog-goes-through-ui-dialog.md)
+makes that a rule the suite asserts: a bare `BeginPopupModal()` anywhere in
+`src/ui` but `ui/Dialog.cpp` fails `--selftest` by file name. §1's tokens, §2's layout and §4a's palette rules stop at
+the chrome; the thirty-five dialogs behind the File, Edit, Image, Filter, Select
+and View menus were built one at a time against no shared rule, and
+[modal-screenshots/README.md](modal-screenshots/README.md) photographed what
+that produced -- nine commit-button labels, labels trailing their controls in
+33 of 34, no Escape key anywhere, one dialog 1766 px wide because an unwrapped
+sentence citing a header path set its width. That document's §0 says what the
+module fixed, finding by finding, with the before images kept beside the after.
+
+The rule, in one paragraph: a dialog is 460 pt wide (640 for one carrying a
+list or a path field), centred, its body capped at 85% of the viewport and
+scrolling under a pinned footer; labels sit right-aligned in a 116 pt column to
+the left of their controls; a slider is a track plus a typeable field with the
+unit after it; the footer is right-aligned Cancel then the commit button, drawn
+as the default in the accent, `Apply` when the dialog previews and a verb when
+it does not, never the dialog's name; Escape cancels and Return commits, read
+once by the footer because this build leaves ImGui's keyboard navigation off; a
+destructive third choice sits alone at the left where no key reaches it; error
+and warning text use the two tokens below. Regenerate the images with
+`tools/modal-shots/capture_modals.sh`; photograph a key press with `--press-key`.
+
+Two constraints on any restyling this file's design language would drive:
+
+- **The modal scrim dims the chrome and deliberately not the canvas**
+  (`ui/AtelierTheme.hpp`), so a live adjustment preview stays legible under its
+  dialog. Any new dialog treatment has to keep that.
+- **The error and warning rows in §1's table are the only red and amber a
+  dialog may use** -- `dialogStatusLine()` / `dialogStatusColor()` are how a
+  call site reaches them, and there are no literals left to copy from.
 
 ## 6. Naming
 

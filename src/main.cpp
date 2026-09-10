@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "app/AbrReport.hpp"
+#include "app/Batch.hpp"
 #include "app/ProfileToggle.hpp"
 #include "app/PsdReport.hpp"
 #include "app/DabLibrary.hpp"
@@ -42,6 +43,7 @@
 #include "app/StrokeBake.hpp"
 #include "app/StrokeSession.hpp"
 #include "app/CropTool.hpp"
+#include "app/TilePreview.hpp"
 #include "app/ToolSwitch.hpp"
 #include "app/ZoomAndSize.hpp"
 #include "brush/Deposit.hpp"
@@ -72,6 +74,11 @@
 #include "ui/AtelierTheme.hpp"
 
 #include "imgui.h"
+// The one reach into ImGui's internals in this program, for one thing:
+// `ImGuiContext::OpenPopupStack`, so `--screenshot` can report where the open
+// modal actually is. See the print site in the frame loop for why that rect
+// cannot be derived from the outside.
+#include "imgui_internal.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_wgpu.h"
 
@@ -438,7 +445,8 @@ void runMaskDemo(np::OpenDocument& od, bool maskTarget) {
                   : 0);
 }
 
-// --vector-demo [components|marquee] (PLAN.md Phase 13; docs/vector-editing.md):
+// --vector-demo [components|anchorpair|marquee|pendraw] (PLAN.md Phase 13;
+// docs/vector-editing.md):
 // puts a `LayerKind::Vector` layer on the session's document, selects
 // `Tool::Pen`, and drives `app/PenTool`'s real pen-down/pen-up transitions so
 // the on-canvas path overlay can be photographed.
@@ -464,6 +472,12 @@ void runMaskDemo(np::OpenDocument& od, bool maskTarget) {
 //   components    Component mode: the same click, which in that mode selects
 //                 every anchor of the shape -- so the picture carries the
 //                 tangent handles, which are drawn for selected anchors ONLY.
+//   anchorpair    Component mode with exactly TWO ADJACENT anchors selected --
+//                 the blob's north and east. The only selection Shape mode
+//                 cannot express, and the only one that makes the PATHS panel
+//                 look different in Component mode at all (INSERT lights).
+//                 See `runVectorDemo()`'s own mode-4 comment for the measured
+//                 reason the obvious four-anchor state was not used.
 //   marquee       A marquee held open mid-drag: pen-down on empty canvas and a
 //                 move, with no pen-up. The rubber band exists only while the
 //                 pointer is down, so it is unphotographable any other way --
@@ -571,8 +585,7 @@ void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
     const np::PathPoint p3{650.0f, 360.0f};
     for (const np::PathPoint& p : {p1, p2, p3}) {
       np::pathEditBeginPen(&st.pathEdit, &shapes, &od.document.layers[at].nextShapeId, p,
-                           pickTexels, false, np::SelectionCombine::Replace, od.id,
-                           /*curveMode=*/false);
+                           pickTexels, od.id, /*curveMode=*/false, np::penVectorStyle(st));
       np::pathEditEnd(&st.pathEdit, shapes);
     }
     // The rubber band's destination, PINNED rather than read from a live
@@ -583,6 +596,43 @@ void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
     std::printf("[vector-demo] pendraw: %zu anchors placed, open=%d\n",
                 shapes.back().path.subpaths[0].anchors.size(),
                 static_cast<int>(np::pathEditHasOpenPath(st.pathEdit)));
+    return;
+  }
+
+  if (mode == 4) {
+    // **Two ADJACENT anchors, which is the one selection Shape mode cannot
+    // express** -- and therefore the only thing that makes a PATHS-panel
+    // photograph of Component mode differ from one of Shape mode at all.
+    //
+    // That is not what this view was originally planned to show. The plan
+    // (docs/path-editing-plan.md section 5) asked for "Component mode: the
+    // ANCHOR group lit", on the assumption that SMOOTH/CORNER/BREAK/DELETE are
+    // Component-only. They are not: `app/PathOps.cpp`'s own comment makes them
+    // valid in BOTH modes, Shape mode meaning "every anchor of the selected
+    // shapes". So `--vector-demo components` -- four anchors -- renders a PATHS
+    // panel pixel-identical to the default mode's but for ONE pixel, measured.
+    // A golden view of that would have asserted nothing and passed forever.
+    //
+    // JOIN and INSERT are what Component mode really buys: both need exactly
+    // two anchors named individually (`twoAnchorPrecondition()`). The blob's
+    // anchors sit at the compass points, so north and east are neighbours on
+    // one subpath -- INSERT's precondition exactly -- and it lights here and
+    // nowhere else. JOIN stays greyed on `NotAnEndpoint`, the subpath being
+    // closed, which is correct and is itself worth photographing.
+    np::pathEditSetSelectMode(&st.pathEdit, np::PathSelectMode::Component, shapes);
+    np::pathEditBegin(&st.pathEdit, shapes, np::PathPoint{400.0f, 190.0f}, pickTexels, false,
+                      np::SelectionCombine::Replace, od.id);
+    np::pathEditEnd(&st.pathEdit, shapes);
+    np::pathEditBegin(&st.pathEdit, shapes, np::PathPoint{590.0f, 380.0f}, pickTexels, false,
+                      np::SelectionCombine::Add, od.id);
+    np::pathEditEnd(&st.pathEdit, shapes);
+    std::printf("[vector-demo] anchorpair: %zu components selected\n",
+                st.pathEdit.selection.components.size());
+    if (st.pathEdit.selection.components.size() != 2)
+      std::fprintf(stderr,
+                   "[vector-demo] anchorpair wanted exactly two anchors and got %zu -- the "
+                   "presses missed, and INSERT will be greyed in the photograph\n",
+                   st.pathEdit.selection.components.size());
     return;
   }
 
@@ -841,6 +891,27 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
 // core/Merge's five buttons on the session's document, through the same
 // `applyLayerCommand()` the `Layer` menu and the LAYERS panel call.
 //
+// **Deliberately still `applyLayerCommand()`, not `app::applyCommand()`**
+// (docs/automation-plan.md step 2 asks each demo driver to be decided rather
+// than swept along). Three reasons, in order of weight:
+//
+//  1. **It addresses a layer by INDEX, on purpose.** The `name:index` form
+//     below exists because the default row is the wrong one for exactly one of
+//     the five, and `applyCommand()` cannot express an index -- addressing by
+//     name is the property that makes an action replayable on another
+//     document, and layer names are not unique, so a name derived from an
+//     index here would silently drive a different layer.
+//  2. **Nothing it does needs recording.** The reroute exists so that a user
+//     action reaches the recorder; a screenshot driver is not a user action,
+//     and a recording of one would be an artefact of the flag rather than of
+//     anything a person did.
+//  3. The flag's own stated job is to press "the identical entry point the
+//     LAYERS panel calls" for these five gestures. That entry point is
+//     `applyLayerCommand()`, and it is still `applyLayerCommand()` after step
+//     2 -- `runLayerGesture()` reaches it through the command row. Pointing
+//     this at the row instead would make the demo exercise the adapter rather
+//     than the gesture, which is the opposite of what it is for.
+//
 // It exists for one reason: PRD C10 is a P0 whose whole deliverable is *a
 // picture that changed*, and there was no way to make a merge happen from
 // outside the window. Running the app twice -- once with the flag and once
@@ -859,6 +930,13 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
 // `app::applyLayerSetCommand()` -- the identical entry point the LAYERS panel's
 // Multi-selection buttons and the `Layer` > Selection menu items call, so a
 // screenshot of the result is a screenshot of what a click does.
+//
+// Also deliberately not migrated, and more strongly than `--ui-merge-demo`:
+// its `select:0.2.4` token IS a list of indices, which is the one thing a
+// `"layers"` list may not be. The panel's own set commands are not migrated
+// either, for the reasons `runLayerSetCommand()` in ui/MacPaintUI.cpp states
+// in full -- so pointing this at the command layer would make the demo stop
+// photographing what a click does, which is its entire purpose.
 //
 // `runUiLayerDemo()`'s reason for existing, one level up: a fixture that wrote
 // `Layer::colorLabel` directly would photograph a struct field, not a feature.
@@ -1588,15 +1666,17 @@ int main(int argc, char** argv) {
   bool smudgeDemo = false;
   bool maskDemo = false;
   bool maskDemoTarget = true;
-  // --vector-demo [components|marquee|pendraw]: see runVectorDemo().
+  // --vector-demo [components|anchorpair|marquee|pendraw]: see runVectorDemo().
   bool vectorDemo = false;
-  int vectorDemoMode = 0;  // 0 = shape, 1 = components, 2 = marquee, 3 = pendraw
+  int vectorDemoMode = 0;  // 0 = shape, 1 = components, 2 = marquee, 3 = pendraw,
+                           // 4 = anchorpair
 
   // --text-demo [paragraph|newline|pointbreak|emptyframe|rotated|frame]:
   // see runTextDemo().
   bool textDemo = false;
   int textDemoMode = 0;  // 0 = point text, 1 = paragraph, 2 = held-open frame drag
   bool overRangeDemo = false;
+  bool tileDemo = false;
   bool munsellDemo = false;
   int munsellDemoSteps = 9;
   float munsellDemoHue = 252.0f;
@@ -1610,6 +1690,7 @@ int main(int argc, char** argv) {
   bool panelStackDemo = false;
   bool gradeKindsDemo = false;
   bool flatsDemo = false;
+  bool flatsDemoEdits = false;
   bool uiLayerDemoClip = true;
   bool splitDemo = false;
   np::AtelierSplit splitDemoMode = np::AtelierSplit::Columns;
@@ -1619,10 +1700,24 @@ int main(int argc, char** argv) {
   const char* controlsScrollTo = nullptr;
   bool openLayerMenu = false;
   bool openExportStates = false;
+  bool openBatch = false;
+  bool actionsDemo = false;
+  bool actionsDemoRecording = false;
+  bool openBatchReport = false;
   const char* exportStatesFolder = nullptr;
   bool openExportAs = false;
   const char* exportAsPath = nullptr;
   bool openLayerProperties = false;
+  // --open-modal <MenuActionName>: enqueue one menu action on the first frame
+  // so `--screenshot` can photograph the modal it opens. `MenuAction::None`
+  // means the flag was not given. See the flag's own comment in the parse
+  // loop for why this is one flag rather than thirty.
+  np::MenuAction openModalAction = np::MenuAction::None;
+  // --press-key <Escape|Return> [frame]: one synthetic key press through
+  // ImGui's own event queue, so a `--screenshot` can photograph what a dialog
+  // does with it. See the injection in the frame loop.
+  ImGuiKey pressKey = ImGuiKey_None;
+  int pressKeyFrame = 10;
   bool advancedDynamics = false;
   // D4 (docs/reachability-audit.md): `naturalPaint foo.npaint` used to open
   // nothing, because this loop matched only `--flag` strings and fell
@@ -1679,6 +1774,17 @@ int main(int argc, char** argv) {
   // extract a pack's scanned patterns into patterns-imported/ and report what
   // landed. See app/DabLibrary's extractAbrPatterns().
   const char* pattWritePath = nullptr;
+  // --batch <action.npaction> <output-dir> <file...> : docs/automation-plan.md
+  // step 6. One action over many files, headless, before SDL_Init -- which is
+  // what makes it usable from a shell on a box with no display and drivable
+  // from --selftest. See app/Batch.hpp; the two optional flags below are the
+  // only settings it takes, because everything else a run needs is either in
+  // the action file or in the ExportRequest defaults PRD I1 guarantees.
+  const char* batchActionPath = nullptr;
+  const char* batchOutputDir = nullptr;
+  std::vector<std::string> batchSources;
+  const char* batchFormatToken = nullptr;
+  const char* batchNameTemplate = nullptr;
   const char* dabDemoId = nullptr;
   bool brushSettingsDemo = false;
   int brushSettingsDemoTab = -1;
@@ -2000,6 +2106,9 @@ int main(int argc, char** argv) {
         } else if (arg == "pendraw") {
           vectorDemoMode = 3;
           ++i;
+        } else if (arg == "anchorpair") {
+          vectorDemoMode = 4;
+          ++i;
         }
       }
     } else if (a == "--text-demo") {
@@ -2063,6 +2172,20 @@ int main(int argc, char** argv) {
       // panel is what every other view of the app already shows, so a second
       // spelling would only photograph the status quo.
       overRangeDemo = true;
+    } else if (a == "--tile-demo") {
+      // PRD D8 / PLAN.md Phase 9. Same argument as `--munsell-demo` just
+      // below, and it is the argument that matters for this whole harness:
+      // the 3x3 repeat preview is a *state*, not a document and not a tool.
+      // No demo document and no stroke puts the canvas into it, so without
+      // this flag the entire branch is unreachable from the command line and
+      // therefore invisible to `--screenshot` and to tools/golden -- which is
+      // the golden harness's one structural blind spot (states no launch flag
+      // can reach) and costs three lines to not have here.
+      //
+      // No sub-word: the preview has exactly one state worth a picture. Its
+      // interesting variations (mirrored, rotated) are `--demo-document`
+      // plus the existing view toggles, not a second spelling of this one.
+      tileDemo = true;
     } else if (a == "--munsell-demo") {
       // docs/munsell-picker.md. The COLOR panel's third mode is a *state*, not
       // a document or a tool: nothing about a demo document or a stroke puts
@@ -2171,6 +2294,14 @@ int main(int argc, char** argv) {
       // flatting tool so the palette photographs its LIT state, and fronts
       // the two flats panels -- see the apply block below.
       flatsDemo = true;
+      // `edits` records one of every repair kind on the Flats layer, selects
+      // two of them, and picks SELECT EDITS -- the canvas-overlay state the
+      // two panel views cannot reach, because the artifacts are drawn over
+      // the picture and not in a panel.
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "edits") {
+        flatsDemoEdits = true;
+        ++i;
+      }
     } else if (a == "--ui-layer-demo") {
       // UI detour step 3: build a stack through the layer editor's own
       // commands. See runUiLayerDemo(). `noclip` runs the same script without
@@ -2224,6 +2355,24 @@ int main(int argc, char** argv) {
       // UI detour step 3: hold the `Layer` menu open so --screenshot can
       // photograph it. See AppState::openLayerMenu.
       openLayerMenu = true;
+    } else if (a == "--actions-demo") {
+      // docs/automation-plan.md step 7: the ACTIONS panel lives on the flyout
+      // rail, so a launch has to open it -- no panel arrangement reaches the
+      // state where its list and its buttons can be photographed.
+      actionsDemo = true;
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "recording") {
+        actionsDemoRecording = true;
+        ++i;
+      }
+    } else if (a == "--open-batch") {
+      // docs/automation-plan.md step 7: hold File > Batch... open so
+      // --screenshot can photograph it. `report` additionally fills the report
+      // half. See AppState::openBatchDialog.
+      openBatch = true;
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "report") {
+        openBatchReport = true;
+        ++i;
+      }
     } else if (a == "--open-export-states") {
       // Phase 5 step 13: hold File > Export Comps / Layers To Files... open so
       // --screenshot can photograph it. See AppState::openExportStatesDialog.
@@ -2238,6 +2387,65 @@ int main(int argc, char** argv) {
       // photographable -- "no output file yet" state.
       openExportAs = true;
       if (i + 1 < argc && argv[i + 1][0] != '-') exportAsPath = argv[++i];
+    } else if (a == "--open-modal") {
+      // **One flag for every dialog a menu item opens.** The three
+      // `--open-*-dialog` flags above each exist because one modal had no
+      // route from a launch; there are thirty-six `BeginPopupModal` ids in
+      // this program (thirty-one string literals, two named constants, and
+      // three instances sharing `RefineRadiusDialog::popupId`), and thirty-six
+      // bespoke flags with thirty-six `AppState` fields is not a shape worth
+      // repeating. Every one of these dialogs is already opened by exactly one
+      // `MenuAction` going through `performMenuAction()`, and the native menu
+      // bar already has a way to hand this loop a `MenuAction` from outside an
+      // ImGui frame (`enqueueMenuAction()`), so this flag is that queue with a
+      // name resolved off `menuActionName()` -- the same table --selftest
+      // prints -- rather than a second list that could drift from it.
+      //
+      // Resolved here, at parse time, so an unknown name fails before a window
+      // opens. A screenshot harness that silently photographed the wrong
+      // dialog -- or the plain window with no dialog at all -- is the exact
+      // failure this project has hit before with a mistyped popup id.
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        const std::string want = argv[++i];
+        for (int m = 1; m < static_cast<int>(np::MenuAction::Count); ++m) {
+          if (want == np::menuActionName(static_cast<np::MenuAction>(m))) {
+            openModalAction = static_cast<np::MenuAction>(m);
+            break;
+          }
+        }
+        if (openModalAction == np::MenuAction::None) {
+          std::fprintf(stderr, "[open-modal] '%s' is not a MenuAction. Known names:\n",
+                       want.c_str());
+          for (int m = 1; m < static_cast<int>(np::MenuAction::Count); ++m)
+            std::fprintf(stderr, "  %s\n", np::menuActionName(static_cast<np::MenuAction>(m)));
+          return 2;
+        }
+      } else {
+        std::fprintf(stderr, "[open-modal] needs a MenuAction name\n");
+        return 2;
+      }
+    } else if (a == "--press-key") {
+      // The other half of --open-modal: with a dialog open, press one key and
+      // photograph the result. This is what makes ui/Dialog's keyboard
+      // contract -- Return commits, Escape cancels -- a thing the harness can
+      // show rather than a thing the code claims: `--open-modal AdjustLevels
+      // --press-key Escape` must photograph no dialog at all. Through
+      // `io.AddKeyEvent()`, the same queue the SDL backend feeds, so the
+      // frame being tested is the real one.
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        const std::string name = argv[++i];
+        if (name == "Escape") pressKey = ImGuiKey_Escape;
+        else if (name == "Return" || name == "Enter") pressKey = ImGuiKey_Enter;
+        else {
+          std::fprintf(stderr, "[press-key] '%s' is not a key this flag knows (Escape, Return)\n",
+                       name.c_str());
+          return 2;
+        }
+        if (i + 1 < argc && argv[i + 1][0] != '-') pressKeyFrame = std::atoi(argv[++i]);
+      } else {
+        std::fprintf(stderr, "[press-key] needs a key name\n");
+        return 2;
+      }
     } else if (a == "--open-layer-properties") {
       // The LAYERS panel's own gear-button modal, same justification as
       // --open-export-states one dialog over: it too is opened by a click and
@@ -2245,6 +2453,21 @@ int main(int argc, char** argv) {
       openLayerProperties = true;
     } else if (a == "--patt-write") {
       if (i + 1 < argc) pattWritePath = argv[++i];
+    } else if (a == "--batch") {
+      // <action> <output-dir> then EVERY remaining non-flag argument, taken
+      // greedily here rather than left to the positional collector below --
+      // `naturalPaint --batch a.npaction out/ p1.exr p2.exr` must not also
+      // open p1 and p2 as documents, and this branch claiming them is what
+      // stops that. `looksLikePositionalArgument()`'s rule is reused for
+      // "non-flag" so there is one spelling of that test, not two.
+      if (i + 1 < argc) batchActionPath = argv[++i];
+      if (i + 1 < argc) batchOutputDir = argv[++i];
+      while (i + 1 < argc && np::looksLikePositionalArgument(argv[i + 1]))
+        batchSources.emplace_back(argv[++i]);
+    } else if (a == "--batch-format") {
+      if (i + 1 < argc) batchFormatToken = argv[++i];
+    } else if (a == "--batch-template") {
+      if (i + 1 < argc) batchNameTemplate = argv[++i];
     } else if (a == "--advanced-dynamics") {
       // --advanced-dynamics : reopen the shelved 10x12 LINK MATRIX editor
       // (ui/DynamicsMatrixPanel.hpp) in the BRUSH column. Off by default now
@@ -2278,6 +2501,15 @@ int main(int argc, char** argv) {
   if (abrKeysPath != nullptr) return np::runAbrKeyCensus(abrKeysPath);
   if (dabImportPath != nullptr) return np::runDabImport(dabImportPath);
   if (pattWritePath != nullptr) return np::runPattWrite(pattWritePath);
+  // Before SDL for the same reason every branch around it is, and for one
+  // more: a batch is the mode most likely to be run on a machine with no
+  // display at all -- a render farm node, a CI box, a shell over ssh -- and
+  // `SDL_Init(SDL_INIT_VIDEO)` fails there. Nothing in app/Batch touches a
+  // window, a device or a surface; the composite it exports runs on the CPU
+  // (core/Composite), which is what makes that true rather than hopeful.
+  if (batchActionPath != nullptr)
+    return np::runBatchCli(batchActionPath, batchOutputDir, batchSources, batchFormatToken,
+                           batchNameTemplate);
   if (dabScan) return np::runDabScan();
   if (brushSheetAbr != nullptr && brushSheetOut != nullptr)
     return np::runBrushSheet(brushSheetAbr, brushSheetOut, brushSheetExperiment);
@@ -2462,6 +2694,12 @@ int main(int argc, char** argv) {
     // Phase 2 step 15: app/Keymap load, conflict detection and resolve().
     // Headless, GPU-free -- pure CPU/file-IO, no PaintSim involvement.
     const bool keymapOk = np::runKeymapTest();
+    // docs/shortcuts.md §1's tool letters: the two-directional check that
+    // `kToolMeta`'s shortcut column and keymaps/default.json say the same
+    // thing. That column was display-only text for the whole life of the
+    // build -- twenty-one tooltips promising a key nothing read -- and this
+    // is what makes going back to that state a red line. Headless, GPU-free.
+    const bool toolHotkeysOk = np::runToolHotkeysTest();
     // UI detour: ui/Fonts -- ImGui's built-in ProggyClean holds no glyph above
     // U+00FF, so six of docs/ui.md 3.2's seven layer-kind glyphs could not be
     // drawn at all. Headless and GPU-free: it bakes a real font atlas on the
@@ -2559,6 +2797,9 @@ int main(int argc, char** argv) {
     // Headless and GPU-free.
     const bool flatsExpandOk = np::runFlatsExpandTest();
     const bool flatsSourceOk = np::runFlatsSourceTest();
+    // PLAN.md phase 8's substrate -- see `runStrokesLayerTest()`'s own comment
+    // in app/SelfTest.hpp for the list. Headless and GPU-free.
+    const bool strokesLayerOk = np::runStrokesLayerTest();
     const bool toolSwitchOk = np::runToolSwitchTest();
     // app/ToolSwitch: the spring-loaded Eyedropper (Alt/Option), the Hand's
     // borrow-and-give-back shape applied to a second tool -- eligibility
@@ -2669,6 +2910,12 @@ int main(int argc, char** argv) {
     // runFiltersExtTest() for the shape of the argument. Also headless and
     // GPU-free.
     const bool filtersExtOk = np::runFiltersExtTest();
+    // PLAN.md "Phase 8 -- Repair it" (PRD D7, first half): ops/Inpaint's
+    // diffusion fill and the Filter > Inpaint command. The one op here whose
+    // selection is the HOLE rather than a bound on the result -- see
+    // app/SelfTest.hpp's comment on runInpaintTest() for why that inversion is
+    // asserted from both ends. Also headless and GPU-free.
+    const bool inpaintOk = np::runInpaintTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD E1, E2, M1): core/SelectionMask's
     // uint8 coverage store, its antialiased rectangle constructor, and the
     // coverage-weighted clear. Also headless and GPU-free -- pure CPU tile
@@ -2797,12 +3044,34 @@ int main(int argc, char** argv) {
     // shape-vs-component affine asymmetry between them, and toolEditsPath().
     // Headless and GPU-free; writes no files; touches no ui/ file.
     const bool penToolOk = np::runPenToolTest();
+    // app/PathOps -- the PATHS panel's verbs: close/open/join/reverse over
+    // subpaths, smooth/corner/break/insert/delete over anchors,
+    // compound/release over shapes, and the refusal enum that specifies them.
+    // Also covers `reverseSubPath()`'s handle swap and `fitAnchorTangent()`,
+    // both promoted into core/Path so Curve mode and the SMOOTH button share
+    // one implementation. Headless and GPU-free; writes no files.
+    const bool pathOpsOk = np::runPathOpsTest();
+    // The PATHS panel (docs/path-editing-plan.md section 4): its registration
+    // in three of the four tables a section must appear in, that every verb
+    // button greys on its own `pathOpCanRun()` answer, that
+    // `pathEditPruneSelection()` repairs the selection and the open placement
+    // session after a verb erases geometry, and the layer-below rule MAKE
+    // FILL and MAKE STROKE need and no other paint command in this build
+    // does. Headless and GPU-free; writes no files; opens no window.
+    const bool pathsPanelOk = np::runPathsPanelTest();
     // app/PenTool section 9 -- Pen/Curve placement: a press creating and
     // extending a shape, a press on its own first anchor closing it, a drag
     // setting a mirrored tangent, Escape leaving what was placed, and
     // Curve's Catmull-Rom tangent fit proven C1-continuous numerically.
     // Headless and GPU-free; writes no files; touches no ui/ file.
     const bool penDrawOk = np::runPenDrawTest();
+    // app/VectorStyle -- the Pen's paint: the stroke-on/fill-off default,
+    // `pathEditBeginPen()` stamping it onto the shape it creates (without
+    // which every pen-drawn path rasterised to nothing), the options bar's
+    // selection-first-else-default rule and its mixed readout, and the
+    // linear-not-sRGB colour path from the foreground to `Paint::rgba`.
+    // Headless and GPU-free; writes no files.
+    const bool vectorStyleOk = np::runVectorStyleTest();
     // app/TextTool -- the headless core of PLAN.md phase 14's Text tool: the
     // gate predicate, the caret-editing session's UTF-8-safe string edits
     // (insert/backspace/forward-delete/caret movement, all routed through
@@ -3342,6 +3611,54 @@ int main(int argc, char** argv) {
     // answers, in BOTH NP_USE_OIIO configurations -- the EXR seam is refused
     // before the first byte in OFF rather than skipped. Headless and
     // GPU-free; writes and removes a selftest_exportstates/ directory.
+    // io/Json: the shared JSON reader/writer the export presets, the keymap
+    // and (next) the action format all read through. See app/SelfTest.hpp.
+    // app/Command: the recordable-command table and its one door. See
+    // app/SelfTest.hpp.
+    const bool commandOk = np::runCommandTest();
+    // app/CommandsLayers: the three layer vocabularies as rows in that table
+    // -- the exhaustiveness gate over LayerCommand and LayerSetCommand, the
+    // by-name set resolution that refuses rather than narrowing, and the
+    // lock's two directions. See app/SelfTest.hpp.
+    const bool commandsLayersOk = np::runCommandsLayersTest();
+    // app/Recorder: what `applyCommand()` writes down while a recording is
+    // armed, and the two things it refuses to be quietly wrong about -- a
+    // moved active layer, and a live marquee no channel names. See
+    // app/SelfTest.hpp.
+    const bool recorderOk = np::runRecorderTest();
+    const bool actionFileOk = np::runActionFileTest();
+    const bool replayOk = np::runReplayTest();
+    // app/Batch: one action over many files, and the pre-flight that makes PRD
+    // P4 -- "never partially overwrites an input" -- a property of the module
+    // rather than a promise about it. A thirty-file run, headless, into a temp
+    // directory, with every input hashed on both sides. See app/SelfTest.hpp.
+    const bool batchOk = np::runBatchTest();
+    const bool batchDialogOk = np::runBatchDialogTest();
+    // app/ActionsPanel: the ACTIONS panel's model -- which buttons are live
+    // when, what a step row reads, the two row verbs, and the arm/stop
+    // lifecycle that keeps a process-wide recorder from being left armed.
+    // See app/SelfTest.hpp.
+    const bool actionsPanelOk = np::runActionsPanelTest();
+    // app/CommandsOpStack: the rows that carry an op as a parameter, keyed by
+    // kind NAME, and the selection rows that cross the session/document line.
+    // See app/SelfTest.hpp.
+    const bool commandsOpStackOk = np::runCommandsOpStackTest();
+    // app/CommandsImage: the thirty rows that change pixels or the document's
+    // geometry, and the adapter layer between a JSON object and the appliers
+    // they drive. See app/SelfTest.hpp for the four ways an adapter can be
+    // wrong while looking right, which is what this section is for.
+    const bool commandsImageOk = np::runCommandsImageTest();
+    // app/CommandsPatterns + ops/Lens + ops/Pattern: PLAN.md Phase 19 step 5's
+    // two parked P2 image ops, asserted as arithmetic -- a bit-exact identity
+    // pass, a corrected ramp against the published radial model, and a
+    // pattern's own seams. See app/SelfTest.hpp.
+    const bool commandsPatternsOk = np::runCommandsPatternsTest();
+    // The UI -> command-layer reroute (docs/automation-plan.md step 2): that
+    // every migrated menu item, dialog and panel control reaches
+    // `applyCommand()` and therefore the recorder, and that reaching it left
+    // the pixels bit-identical. See app/SelfTest.hpp.
+    const bool commandCallsitesOk = np::runCommandCallsitesTest();
+    const bool jsonOk = np::runJsonTest();
     const bool exportStatesOk = np::runExportStatesTest();
     // app/ExportDialog: the decisions BOTH export dialogs make -- which
     // control is live, what sentence goes beside a greyed Export button, and
@@ -3429,6 +3746,17 @@ int main(int argc, char** argv) {
     // an unset source refuses out loud rather than stamping the layer onto
     // itself, which is a perfect no-op and therefore invisible.
     const bool cloneStampOk = np::runCloneStampTest();
+    // ops/Poisson, brush/Heal and app/StrokeSession §1c -- PRD D6's heal, the
+    // tenth stroke tool and the first route whose answer is the solution to an
+    // equation rather than a composite of samples. Everything it shares with
+    // the clone stamp -- the anchor, the snapshot, the footprint, the ceiling
+    // -- makes "it looks about right" worthless as evidence, so the section is
+    // built out of claims a clone cannot pass: the solver against analytic
+    // answers (a constant rim exactly, a linear rim reproduced, a zero
+    // Laplacian inside), the two exactness cases at zero tolerance, and one dab
+    // over a ramp that a heal must leave bit-identical while the clone stamp,
+    // on the identical fixture at the identical offset, moves every texel.
+    const bool healOk = np::runHealTest();
     // PRD D25/D26 -- the paint bucket's refusals. ops/FloodFill was never
     // wrong; the gate in front of it was inside the click condition, so a
     // bucket click on the layer kind a new layer defaults to disappeared with
@@ -3460,6 +3788,9 @@ int main(int argc, char** argv) {
     // of 2a that are deliberately NOT drawn, each pinned so a later revision
     // cannot quietly invent the number behind it.
     const bool layerPanel2aOk = np::runLayerPanel2aTest();
+    // The same panel's list box: fixed to the dock's height, so the command
+    // row below it does not walk up and down as layers are added and deleted.
+    const bool layerListHeightOk = np::runLayerListHeightTest();
     // Phase 12 / PRD G7, G9: io/Descriptor, the Action Descriptor reader, against
     // synthetic fixtures parsed out of guard-paged mappings.
     const bool descriptorOk = np::runDescriptorTest();
@@ -3540,6 +3871,14 @@ int main(int argc, char** argv) {
     // See SelfTest.hpp for why this section deliberately re-tests neither the
     // maths nor the selection blend. Headless and GPU-free.
     const bool adjustmentMenuOk = np::runAdjustmentMenuTest();
+    // PRD D8 / PLAN.md phase 9: lighting-gradient removal and offset with
+    // wrap, the two make-tileable pixel ops, through the same
+    // app/PixelOpBridge.hpp templates the Filter menu already runs on. Proves
+    // what is new -- that the light comes out, that the mean is put back,
+    // that the mean's rectangle is not the request's, that an offset copies
+    // rather than filters, and that an offset refuses a selection out loud.
+    // Headless and GPU-free.
+    const bool tileableOk = np::runTileableTest();
     // Reachability audit A5/B2/B3: the BRUSH panel's shared-field ranges, the
     // WET slider's route-dependent disabled state, and the loaded pigment's
     // ownership of Density/Staining/Granulation. Headless -- no ImGui frame,
@@ -3560,6 +3899,11 @@ int main(int argc, char** argv) {
     // anchor math and the brush-size gesture/bracket-key range, both as pure
     // functions -- app/ZoomAndSize.hpp. Headless and GPU-free.
     const bool zoomAndSizeOk = np::runZoomAndSizeTest();
+    // PRD D8 / PLAN.md Phase 9: the 3x3 repeat preview -- where the nine
+    // copies go, that they abut through the real ViewTransform, and that
+    // entering and leaving give the user's view back (app/TilePreview.hpp).
+    // Headless and GPU-free.
+    const bool tilePreviewOk = np::runTilePreviewTest();
     // naturalPaint canvasdim bug fix: `canvasDimensionsFor()` (app/
     // ZoomAndSize.hpp section 4) -- the active document's own size is now
     // `ui/MacPaintUI.cpp`'s canvas block's one source of truth for its
@@ -3631,6 +3975,10 @@ int main(int argc, char** argv) {
     // this task added so the binary can leave the machine that built it.
     // Headless and GPU-free -- pure filesystem, no PaintSim involvement.
     const bool resourcePathsOk = np::runResourcePathsTest();
+    // ADR-0010: no bare BeginPopupModal() in src/ui outside ui/Dialog.cpp.
+    // A source scan, because the rule is invisible to the compiler and to
+    // every runtime assertion in this suite. Headless and GPU-free.
+    const bool dialogModuleOk = np::runDialogModuleTest();
     // core/Composite.cpp's opaque-floor early exit: a layer, clip base, or
     // Mix pair whose own effective alpha is exactly 1.0 everywhere in a
     // tile makes everything strictly below it in that tile provably
@@ -3664,7 +4012,8 @@ int main(int argc, char** argv) {
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     eyedropperOk && sceneReferredColourOk && measureOk && toolSwitchOk &&
-                    springEyedropperOk && flatsExpandOk && flatsSourceOk && toolSurfaceOk &&
+                    springEyedropperOk && flatsExpandOk && flatsSourceOk && strokesLayerOk &&
+                    toolSurfaceOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     halfOk && histogramOk && pointOpsOk && toneOpsOk && colorOpsOk && monoOpsOk &&
                     autoLevelsOk &&
@@ -3679,14 +4028,23 @@ int main(int argc, char** argv) {
                     gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
                     textShaperOk && vectorLayerOk && textContentOk &&
                     transformPreviewTextureOk &&
-                    transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && curveEditOk &&
+                    transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && inpaintOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
                     multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk &&
                     userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     shelvedLinksOk && scatterCountOk && strokePathOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk
                     && paperTextureOk && dabLibraryOk && patternExtractOk && dabPickerOk && brushSettingsWindowOk &&
                     brushModelIoOk && brushModelDiffOk && brushPanelBindingOk &&
-                    exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
+                    commandsLayersOk &&
+                    recorderOk &&
+                    actionFileOk && replayOk &&
+                    batchOk && batchDialogOk &&
+                    actionsPanelOk &&
+                    commandsOpStackOk &&
+                    commandOk && jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
+                    commandsImageOk &&
+                    commandsPatternsOk &&
+                    commandCallsitesOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && documentResidencyOk && layerEditorOk &&
@@ -3699,21 +4057,24 @@ int main(int argc, char** argv) {
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk && smudgeOk &&
                     smudgeOptionsOk &&
                     pigmentSelectionOk && bucketRefusalOk &&
-                    pigmentSelectionOk && cloneStampOk && bucketRefusalOk &&
-                    layerMultiSelectOk && layerPanel2aOk && toolCursorOk &&
+                    pigmentSelectionOk && cloneStampOk && healOk && bucketRefusalOk &&
+                    layerMultiSelectOk && layerPanel2aOk && layerListHeightOk &&
+                    toolCursorOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk && pigmentPanelOk &&
-                    openAnyFileOk && psdImportOk && filterMenuOk && adjustmentMenuOk && selectMenuOk &&
-                    chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk && canvasDimensionsOk &&
+                    openAnyFileOk && psdImportOk && filterMenuOk && adjustmentMenuOk && tileableOk &&
+                    selectMenuOk &&
+                    chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk && tilePreviewOk &&
+                    canvasDimensionsOk &&
                     angleConventionOk && wheelInputOk && touchGestureOk && touchGestureSessionOk && pressureFeelOk
                     && transferDynamicsOk && toolOptionsBlendOk &&
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
-                    clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
+                    clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk && dialogModuleOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
-                    penToolOk && penDrawOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
-                    textKeyCaptureOk && noDocumentCanvasOk;
+                    penToolOk && pathOpsOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
+                    textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -3940,6 +4301,7 @@ int main(int argc, char** argv) {
   st.panelStackDemo = panelStackDemo;
   st.gradeKindsDemo = gradeKindsDemo;
   st.flatsDemo = flatsDemo;
+  st.flatsDemoEdits = flatsDemoEdits;
   if (gradeKindsDemo) {
     // Enabled, and with params well away from both the identity and the
     // params structs' own defaults -- an editor showing a default value would
@@ -3967,8 +4329,90 @@ int main(int argc, char** argv) {
     st.brushSettingsDemoTab = brushSettingsDemoTab;
   }
   st.openExportStatesDialog = openExportStates;
+  st.actionsDemo = actionsDemo;
+  st.actionsDemoRecording = actionsDemoRecording;
+  st.openBatchDialog = openBatch;
+  if (openBatch) {
+    // A known state for the golden views, built from literals.
+    //
+    // **Nothing here touches the disk, and that is the point.** A view whose
+    // content came from a real run would photograph this machine's temp paths
+    // and this machine's file sizes, and would differ on the next one. The
+    // chrome's job is to render a `BatchDialogView`; app/selftest/BatchDialog
+    // is what asserts that a real `BatchReport` maps onto one correctly, and
+    // the two halves are better checked apart than photographed together.
+    np::Action demo;
+    demo.name = "Height prep 512";
+    {
+      np::JsonValue p = np::JsonValue::object();
+      p.set("sigma", np::JsonValue::number(4.0));
+      demo.steps.push_back(np::Command{"filter_gaussian_blur", std::move(p)});
+    }
+    {
+      np::JsonValue p = np::JsonValue::object();
+      p.set("threshold", np::JsonValue::number(0.5));
+      p.set("amount", np::JsonValue::number(1.0));
+      demo.steps.push_back(np::Command{"adjust_threshold", std::move(p)});
+    }
+    {
+      np::JsonValue p = np::JsonValue::object();
+      p.set("width", np::JsonValue::number(512));
+      p.set("height", np::JsonValue::number(512));
+      demo.steps.push_back(np::Command{"image_size", std::move(p)});
+    }
+    st.batchDialog.action = demo;
+    st.batchDialog.actionPath = "height-prep-512.npaction";
+    st.batchDialog.sourcesText =
+        "plates/bark01.exr\nplates/bark02.exr\nplates/bark03.exr\nplates/stone01.exr\n";
+    st.batchDialog.outputDirectory = "plates/height";
+    st.batchDialog.nameTemplate = "{name}_h";
+    if (openBatchReport) {
+      // One of each outcome, including the one this whole feature exists to
+      // make visible: a file written UNCHANGED.
+      np::BatchReport report;
+      report.ok = false;
+      auto row = [](size_t n, const char* src, const char* out, np::ExportItemOutcome outcome,
+                    const char* reason, size_t bytes, bool unchanged) {
+        np::BatchItem item;
+        item.ordinal = n;
+        item.sourcePath = src;
+        item.sourceName = src;
+        item.filename = out;
+        item.outputPath = std::string("plates/height/") + out;
+        item.outcome = outcome;
+        item.reason = reason;
+        item.bytesWritten = bytes;
+        item.unchangedByAction = unchanged;
+        item.stepsRun = 3;
+        return item;
+      };
+      report.items.push_back(
+          row(1, "plates/bark01.exr", "bark01_h.png", np::ExportItemOutcome::Written, "", 41233, false));
+      report.items.push_back(
+          row(2, "plates/bark02.exr", "bark02_h.png", np::ExportItemOutcome::Written, "", 39880, true));
+      report.items.push_back(row(3, "plates/bark03.exr", "bark03_h.png",
+                                 np::ExportItemOutcome::Failed,
+                                 "refused: step 2 (\"adjust_threshold\") refused, so the action "
+                                 "was not applied and the document is unchanged.",
+                                 0, false));
+      report.items.push_back(row(4, "plates/stone01.exr", "stone01_h.png",
+                                 np::ExportItemOutcome::NotAttempted,
+                                 "not attempted: the action was refused by "
+                                 "'plates/bark03.exr' first", 0, false));
+      st.batchDialog.report = std::move(report);
+      st.batchDialog.haveReport = true;
+      st.batchDialog.reportWasPreview = false;
+      st.batchDialog.status = "Run finished.";
+    }
+  }
   st.openExportAsDialog = openExportAs;
   st.openLayerProperties = openLayerProperties;
+  // Through the same queue a native menu click uses, drained at the top of the
+  // first UI frame -- which is the only moment `performMenuAction()` has an
+  // ImGui frame, an `AppState&` and a canvas size all at once. Everything the
+  // dialogs need (a document, a selection) is already built by the demo flags
+  // above, so this line goes last.
+  if (openModalAction != np::MenuAction::None) np::enqueueMenuAction(openModalAction, 0);
   st.showAdvancedDynamics = advancedDynamics;
   if (exportStatesFolder != nullptr) st.exportStatesFolder = exportStatesFolder;
   if (exportAsPath != nullptr) st.exportAsPath = exportAsPath;
@@ -4170,6 +4614,16 @@ int main(int argc, char** argv) {
                 "the readout and the OVER RANGE badge and the swatch is clamped\n",
                 static_cast<double>(st.brush.rgb[0]), static_cast<double>(st.brush.rgb[1]),
                 static_cast<double>(st.brush.rgb[2]));
+  }
+  if (tileDemo) {
+    // Through `setTilePreview()`, not by writing `active` directly: that
+    // function is what raises the fit request, and a demo that skipped it
+    // would photograph the preview at the single-tile zoom -- a picture of a
+    // state no menu pick can actually produce, which is worse than no picture.
+    np::setTilePreview(st.tilePreview, st.view, st.requestFitWindow, true);
+    std::printf("[tile-demo] View > 3x3 Repeat Preview on -- the document drawn nine "
+                "times through ui/CanvasQuad, fitted so all nine are visible; the "
+                "centre tile keeps the canvas border and is the document\n");
   }
   if (munsellDemo) {
     st.brush.colorMode = np::ColorMode::Munsell;
@@ -4678,8 +5132,24 @@ int main(int argc, char** argv) {
         // `mirror_x`/`delete_selection`. Cmd/Ctrl chords still reach
         // `resolve()` (Cmd+Z etc.), and every chord does when no session is
         // live, which is every key-down before this gate existed.
+        //
+        // **`io.WantTextInput` is the second half of that same sentence, and
+        // it was missing.** `textSessionActive()` knows about the canvas Text
+        // tool and nothing else; an ImGui `InputText` -- the layer-rename box
+        // is the one every user meets -- is just as much a text-editing
+        // session and was reaching `resolve()` unfiltered, so typing a layer
+        // name containing an `f` already toggled the mirror. That was one
+        // stray letter and survived unnoticed; with the twenty-one tool
+        // bindings below it becomes "rename a layer to Background and land on
+        // the Gradient tool", which is why the gate is widened in the same
+        // commit that adds them rather than left as someone else's bug.
+        // `ui/MacPaintUI.cpp` already guards every bare key it reads directly
+        // (the spring Hand, the nudge arrows, the flats keys) on exactly this
+        // flag; this is that rule applied at the one place it was not.
+        const bool typingIntoAWidget =
+            np::textSessionActive(st.textEdit) || ImGui::GetIO().WantTextInput;
         const std::optional<std::string> action =
-            np::keyChordReachesKeymap(chord, np::textSessionActive(st.textEdit))
+            np::keyChordReachesKeymap(chord, typingIntoAWidget)
                 ? keymap.resolve(chord, activeScope)
                 : std::nullopt;
         // ...and a chord that DID resolve puts the caret away, unless it is
@@ -4843,6 +5313,30 @@ int main(int argc, char** argv) {
         else if (action == "toggle_guides") st.showGuides = !st.showGuides;
         else if (action == "toggle_snapping") st.snappingEnabled = !st.snappingEnabled;
         else if (action == "toggle_grid") st.showGrid = !st.showGrid;
+        // docs/shortcuts.md §1, "unmodified letters are tools" -- **one arm,
+        // not twenty-one.**
+        //
+        // Every other line in this chain is a literal action name, and the
+        // obvious way to write this one was twenty-one more of them. The
+        // reason it is a table walk instead is the defect this commit exists
+        // to fix: `kToolMeta`'s shortcut column had been display-only text for
+        // the whole life of the build, twenty-one tooltips promising a letter
+        // no code read, precisely because "wire the key too" was a separate
+        // per-tool edit that nobody made. A prefix plus
+        // `ui/AtelierChrome`'s own table makes the next tool's hotkey a row in
+        // the data, and `app/selftest/ToolHotkeys.cpp` fails if that row is
+        // missing -- neither of which is true of an `else if` chain.
+        //
+        // `MenuAction::ToolItem` (ui/MacPaintUI.cpp) is the precedent and the
+        // sibling: one menu arm carrying the `Tool` as its param, calling the
+        // same `setActiveTool()`. Both routes end in app/ToolSwitch's single
+        // writer of `st.brush.tool`, so the key, the menu row and the palette
+        // cell cannot disagree about what picking a tool does.
+        else if (const std::optional<np::Tool> picked =
+                     action ? np::toolFromSelectAction(*action) : std::nullopt;
+                 picked.has_value()) {
+          np::setActiveTool(st, *picked);
+        }
       }
     }
 
@@ -4908,6 +5402,13 @@ int main(int argc, char** argv) {
     // Injected after `ImGui_ImplSDL3_NewFrame()` and before `NewFrame()`,
     // which is the window in which ImGui accepts queued input events for the
     // frame about to be built.
+    // --press-key: down on one frame, up on the next, through the same queue.
+    if (pressKey != ImGuiKey_None) {
+      if (static_cast<int>(frameIndex) == pressKeyFrame)
+        ImGui::GetIO().AddKeyEvent(pressKey, true);
+      else if (static_cast<int>(frameIndex) == pressKeyFrame + 1)
+        ImGui::GetIO().AddKeyEvent(pressKey, false);
+    }
     if (penDemo) {
       const int step = static_cast<int>(frameIndex) - kPenDemoFirstFrame;
       if (step >= 0 && step <= kPenDemoSteps) {
@@ -5083,7 +5584,15 @@ int main(int argc, char** argv) {
     // per-tool bitmap over the system shape above. That is now the normal
     // path -- `bitmapCursorsEnabled()` defaults to true -- and the system
     // shape is the fallback for a bitmap that failed to rasterise.
-    cursors.apply(np::canvasCursorRequest(), np::canvasCursorToolRequest());
+    //
+    // The third is §9's: Caps Lock, read here rather than inside `apply()`
+    // because `apply()` is the one function in ui/ToolCursor no test can
+    // reach, and the rule it feeds -- `shouldUsePreciseCursor()` -- is
+    // covered exhaustively by `--selftest` precisely because it takes this
+    // as an argument. `SDL_GetModState()` reports the LATCHED Caps state, not
+    // a key that is down, which is what makes it a toggle rather than a hold.
+    cursors.apply(np::canvasCursorRequest(), np::canvasCursorToolRequest(),
+                  (SDL_GetModState() & SDL_KMOD_CAPS) != 0);
 
     ImGui::Render();
     const uint64_t renderNs = frameTrace ? SDL_GetTicksNS() : 0;
@@ -5251,6 +5760,38 @@ int main(int argc, char** argv) {
         std::printf("[screenshot] wrote %s (%ux%u)\n", shotPath.c_str(), gpu.width, gpu.height);
       else
         std::fprintf(stderr, "[screenshot] %s\n", shotError.c_str());
+      // Where the modal is, for a harness that wants to crop to it.
+      //
+      // **Read off ImGui rather than guessed.** These dialogs are
+      // `AlwaysAutoResize` and centred by ImGui's own popup placement, so
+      // their size is a function of their content and their position is a
+      // function of their size -- both change the moment a label gets a word
+      // longer, which is exactly the kind of change a UI review is looking
+      // for. A hardcoded crop box would silently start cutting the dialog in
+      // half, and a diff-against-a-baseline crop cannot work here at all:
+      // seven of these dialogs live-preview into the canvas, so the region
+      // that differs from a no-dialog launch is the whole window.
+      //
+      // `OpenPopupStack` is `imgui_internal.h`, the one place in this program
+      // that reaches into it. The alternative was thirty-one dialog functions
+      // each reporting their own rect, which is thirty-one places for one to
+      // be forgotten. `Window` is null until `BeginPopup()` resolves it, so a
+      // popup that was opened and never drawn prints nothing rather than
+      // printing zeroes that look like a rect.
+      if (const ImGuiContext* g = ImGui::GetCurrentContext()) {
+        if (!g->OpenPopupStack.empty()) {
+          const ImGuiWindow* pw = g->OpenPopupStack.back().Window;
+          if (pw != nullptr) {
+            // Framebuffer pixels, not ImGui points -- the PNG is the former.
+            const float sc = ImGui::GetIO().DisplayFramebufferScale.x > 0.0f
+                                 ? ImGui::GetIO().DisplayFramebufferScale.x
+                                 : 1.0f;
+            std::printf("[screenshot] modal \"%s\" rect %d %d %d %d\n", pw->Name,
+                        static_cast<int>(pw->Pos.x * sc), static_cast<int>(pw->Pos.y * sc),
+                        static_cast<int>(pw->Size.x * sc), static_cast<int>(pw->Size.y * sc));
+          }
+        }
+      }
       st.requestScreenshot = false;
       if (screenshotPath != nullptr) st.quit = true;  // --screenshot is capture-and-exit
     }

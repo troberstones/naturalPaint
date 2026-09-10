@@ -163,6 +163,19 @@ bool runSolverFootprintTest(GpuContext& gpu, PaintSim& sim);
 // scope-correct action for a scoped-only binding.
 bool runKeymapTest();
 
+// docs/shortcuts.md §1's tool letters, and the bidirectional assertion that
+// keeps `ui/AtelierChrome.cpp`'s `shortcut` column from going back to being
+// decorative text. Every row that reserves a letter must have exactly one
+// global `tool_<slug>` binding in keymaps/default.json on exactly that chord,
+// and every `tool_*` binding in that file must name a slug some `Tool`
+// declares. Also: the slug column is unique and reversible, one real chord is
+// followed through `resolve()` -> `toolFromSelectAction()` -> `setActiveTool()`
+// (the route main.cpp's key-down handler takes), and every bound tool chord is
+// proven to be refused by `keyChordReachesKeymap()` while a text session is
+// live -- twenty-one bare letters that would otherwise retype a caption as a
+// sequence of tool changes. Headless and GPU-free.
+bool runToolHotkeysTest();
+
 // Headless, GPU-free check on ui/Fonts -- the glyph coverage the layers panel
 // depends on. **This section exists because nine other sections could not
 // have caught the bug it guards**: nine of them assert `layerKindGlyph()`
@@ -503,6 +516,18 @@ bool runFlatsExpandTest();
 // flats/FlatsLayer's source resolution: which layers a flats evaluation reads,
 // what the staleness signature covers, and the bake's three source modes.
 bool runFlatsSourceTest();
+
+// core/StrokesContent + brush/StrokesLayer + io/StrokesSerial -- the
+// `LayerKind::Strokes` substrate (PLAN.md phase 8). The dab record and its
+// bounds, the spatial index over those bounds (asserted as a GRID rather
+// than only as a correct answer -- a degenerate one-bucket index answers
+// every query right and is a linear scan wearing the name), the
+// samples-only-from-below rule and PRD D6's regrade tracking, the checkpoint
+// replay of section 2 (asserted through the mechanism, since checkpointed
+// and from-scratch replays produce identical pixels by construction), the
+// `np:dabs` round trip, PRD C11's rasterise and PRD F11's record deletion.
+// Headless and GPU-free.
+bool runStrokesLayerTest();
 
 bool runToolSwitchTest();
 
@@ -982,6 +1007,78 @@ bool runFiltersTest();
 // on both axes at once. Also headless and GPU-free.
 bool runFiltersExtTest();
 
+// ops/Inpaint and Filter > Inpaint (PLAN.md "Phase 8 -- Repair it"; PRD D7's
+// first half, the diffusion one). Headless and GPU-free.
+//
+// **The section exists for one inversion.** Every other pixel op here treats
+// the selection as a BOUND on where a result is blended; inpaint treats it as
+// the HOLE, reads only what is outside it, and refuses an empty one by name
+// rather than running over everything. Getting that backwards produces no
+// crash and no obviously wrong pixel -- it produces a filter that erases the
+// layer, or one that does nothing -- so the inversion is asserted from both
+// ends: a null `Selection*` is refused instead of being read as "no
+// restriction", and two documents differing ONLY inside the hole fill
+// bit-identically.
+//
+// The arithmetic is not re-derived against a second implementation of itself.
+// What is asserted are the properties it was chosen for: every filled texel
+// inside the convex hull of what it read (so the premultiplied invariant
+// survives and no clamp is hiding an overshoot), a constant field filling with
+// exactly that constant to the f16 store's own floor, and a horizontal ramp
+// filling as a monotone ramp rather than as a puddle of its rim's mean.
+bool runInpaintTest();
+// ---------------------------------------------------------------------------
+// PRD D8 / PLAN.md phase 9 ("Tile it"): the two make-tileable pixel ops
+// ---------------------------------------------------------------------------
+//
+// Lighting-gradient removal (ops/Filters.hpp section 10) and offset with wrap
+// (section 4), wired to the Filter menu through app/FilterOps.hpp's
+// `applyRemoveLightingGradient()`/`applyOffset()` and their `preview*` twins.
+//
+// **Deliberately narrow, in `runAdjustmentMenuTest()`'s sense**: the blur is
+// `runBlurTest()`'s, the offset engine's own wrap arithmetic is
+// `runFiltersTest()`'s, and the selection blend, copy-on-write discipline and
+// one-entry history rule are `runFilterMenuTest()`'s, exercised through the
+// very same app/PixelOpBridge.hpp templates. What this section owns is what is
+// new:
+//
+//  A. **The light actually comes out.** A flat texture times a strong linear
+//     lighting ramp, measured in two bands four sigma clear of the canvas
+//     edge: they differ by more than 1.5x before the op and agree within 2%
+//     after it. The ramp is asserted present first, so the second assertion
+//     cannot pass by measuring a flat input.
+//  B. **The re-centred mean**, which is the step PLAN.md:511 names and a naive
+//     implementation forgets. The canvas mean after the op is within 0.2% of
+//     the mean before it; the un-re-centred field's own mean is 1.0 regardless
+//     of the input's exposure, and far from it. Both halves, so the assertion
+//     is proved sensitive rather than merely satisfied.
+//  C. **The statistics rectangle is not the request rectangle.** A request
+//     split in two is bit-identical to the same request made whole -- the seam
+//     invariant a global mean would otherwise break -- and the same half
+//     computed against its OWN mean demonstrably differs, which is the naive
+//     implementation this parameter exists to prevent.
+//  D. **Sigma 0 is the erase, not the identity**, and is refused rather than
+//     clamped: the one filter in the menu whose neutral setting is infinity.
+//     Measured, not argued -- at a near-delta sigma every texel comes out the
+//     same colour.
+//  E. **Offset is an addressing change.** Every output texel is bit-identical
+//     to the one source texel `offsetSourceTexel()` names, and offsetting by
+//     half twice returns the layer bit-identical to the original. `offsetBy
+//     Half()` floors on an odd canvas, so the canonical gesture never asks for
+//     a half-texel shift nothing could honour without resampling.
+//  F. **Offset refuses under a selection**, with `PixelOpRefusal::Selection
+//     Active` -- both the commit and the preview, leaving no history entry and
+//     no changed texel -- and succeeds on the identical request once the
+//     marquee is dropped. A locked layer under a marquee still refuses for the
+//     lock, so the layer-shaped question keeps its place at the front.
+//  G. One history entry named for the op with an exact undo, a refused sigma
+//     recording nothing, and both menu rows present, enabled by
+//     `filterLayerUsable`, `Deferred`, and labelled with the ellipsis their
+//     dialogs promise.
+//
+// Headless and GPU-free, like every ops/ section it sits beside.
+bool runTileableTest();
+
 // core/SelectionMask (PLAN.md "Phase 7 -- Select and paste"; PRD E1, E2, M1).
 // The antialiased coverage store, its constructors, and PRD M1's
 // coverage-weighted clear. Headless and GPU-free -- pure CPU tile arithmetic.
@@ -1190,6 +1287,12 @@ bool runEllipseMarqueePreviewTest();
 // pinned by an assertion that fails the moment the number or the binding
 // appears, because an omission with only a comment behind it is one a later
 // revision reverses by reaching for a plausible-looking value.
+// The LAYERS panel's list box is sized by the dock, not by the number of
+// layers in it -- the negative property no screenshot can prove, since a
+// screenshot only ever photographs one row count. See the section's own
+// comment for what used to move around the panel.
+bool runLayerListHeightTest();
+
 bool runLayerPanel2aTest();
 
 // ops/Transform (PLAN.md "Phase 6 -- Filter and transform it"; PRD D14, D15,
@@ -3557,6 +3660,290 @@ bool runLayerGroupPanelTest();
 // with `exportRequestAvailability()`'s string verbatim rather than four
 // identical per-file failures. Headless and GPU-free; writes and removes a
 // selftest_exportstates/ scratch directory.
+// io/Json -- the reader, escaper and ordered document model promoted out of
+// io/ExportAs.cpp and app/Keymap.cpp once the copy count reached three
+// (docs/automation-plan.md step 0). Asserts the promotion's two new
+// properties against hand-typed text: a float round-trips to the identical
+// bit pattern, and object key order survives a rewrite -- which is what makes
+// an action file diffable (PRD P5). Headless, GPU-free, filesystem-free.
+// app/Command -- the one door every recordable document edit goes through
+// (docs/automation-plan.md step 1). Asserts the layer between the command
+// table and the appliers it dispatches to: a string identity that cannot be
+// moved by an enum, an unknown id REFUSED rather than skipped, a precondition
+// that runs before the applier, and layers addressed by name so a replay on a
+// reordered document cannot act on a different one. Drives the plan's own
+// composite case -- flatten, blur, set blend to Subtract, threshold -- entirely
+// through applyCommand(). Headless, GPU-free, filesystem-free.
+// io/ActionFile + app/Action -- the action model and its .npaction file
+// (docs/automation-plan.md step 4). Asserts the FORMAT, not the appliers:
+//
+//  - a **hand-typed** fixture decodes to the six expected steps, with its keys
+//    in an order no writer here produces and its version key LAST, which is
+//    what proves the version is found by key rather than by position. Typed at
+//    a keyboard on purpose -- io/OpSerial's own section states the rule: a
+//    fixture that shares the encoder's assumptions cannot catch the encoder
+//    being wrong;
+//  - write -> read -> write is byte-identical, and a parameter's double comes
+//    back as the identical BIT PATTERN, so a sigma does not drift a digit per
+//    re-save;
+//  - four refusals, each of which is a silent wrong answer if it is missing: a
+//    file with no "npaction" key, a version this build does not read, a
+//    "steps" that is not an array (which must not become an empty action that
+//    reports success over every file in a batch), and a step naming a command
+//    this build does not have -- refused at LOAD, not at run;
+//  - the flat form's one reserved key: a parameter called "cmd" is refused by
+//    name rather than silently lost to a duplicate key;
+//  - `actionFromLayerOps()` (PRD P6): a graded layer converts to a
+//    `select_layer` plus one step per op, and a non-point-op entry refuses by
+//    name having emitted nothing.
+//
+// Headless, GPU-free. Writes and removes a selftest_actions/ scratch directory
+// for the library-listing section, under NP_ACTION_DIR so the real
+// ~/Library/Application Support library is never touched.
+bool runActionFileTest();
+
+bool runCommandTest();
+
+// app/CommandsLayers -- the three layer vocabularies as recordable commands
+// (docs/automation-plan.md step 1). **PROVES four things nothing else can
+// see**, each about the registration between a gesture and its applier rather
+// than about either end:
+//
+//  1. **Exhaustiveness.** Every enumerator of `LayerCommand` and of
+//     `LayerSetCommand` has a registered row, checked by walking
+//     `allLayerCommands()` / `allLayerSetCommands()` and asking the
+//     registration which id each landed under -- so an enumerator added later
+//     FAILS the suite instead of being silently unrecordable, which is step
+//     1's own stated gate.
+//  2. **A set is all-or-nothing at resolution time.** A step naming a layer
+//     this document does not have is refused, naming that layer, with the
+//     members that DID resolve untouched and nothing recorded -- because
+//     "skip the ones that resolved" is silently a different edit from the one
+//     the file describes. Two names resolving to one row (layer names are not
+//     unique) is refused for the same reason.
+//  3. **A create adopts the layer it created, asserted BY NAME.** An index
+//     assertion passes with the adoption deleted, because `activeLayerIndex()`
+//     clamps; the name does not clamp.
+//  4. **The lock belongs to core/LayerOps, in both directions.** The setters a
+//     locked layer refuses are refused through the adapter, AND the three it
+//     deliberately allows -- hide, label, unlock -- still go through, which is
+//     what a well-meaning blanket lock check in an adapter would break.
+//
+// Headless, GPU-free, filesystem-free.
+bool runCommandsLayersTest();
+// app/Recorder -- the session sink `applyCommand()` appends to while armed
+// (docs/automation-plan.md step 3). Headless, GPU-free, filesystem-free.
+//
+// **What it proves**, and every item is a way a recording can be wrong while
+// looking right:
+//
+//  * the plan's own case -- flatten, blur, set blend, threshold, driven
+//    through `applyCommand()` alone -- records as exactly five steps in
+//    order, the extra one being the `select_layer` the flatten made
+//    necessary, with its layer named and every parameter intact;
+//  * a REFUSED command records nothing, asserted for both refusal routes (an
+//    unknown id, and a precondition that says no) -- replaying a refusal
+//    either repeats the noise or, on a document where the precondition
+//    happens to hold, does something the user never did;
+//  * a create emits a `select_layer` for the NEW layer before the next step
+//    that depends on it, which is the case a "did the user click a layer
+//    row?" recorder would miss entirely, since `fromLayerEdit()` moves the
+//    selection with nobody clicking anything;
+//  * back-to-back steps on one layer emit ONE pin, not one each, and a
+//    `select_layer` the user issued is not immediately followed by the
+//    recorder's own duplicate of it;
+//  * a selection-bounded step taken under an unnamed marquee is REFUSED by
+//    name, with the fix in the sentence, and the same step under a marquee a
+//    saved alpha channel matches exactly is recorded with a warning -- the
+//    difference being that a channel is document data and a marquee is not
+//    (docs/automation-plan.md §7);
+//  * `channelMatchingSelection()` itself: it matches the channel a selection
+//    was saved as, refuses a channel of equal area but a different shape, and
+//    does not match an empty selection to everything;
+//  * and arm / stop / re-arm, including that a stopped recorder appends
+//    nothing and that re-arming discards the previous recording.
+//
+// See app/selftest/Recorder.cpp.
+bool runRecorderTest();
+
+// docs/automation-plan.md step 5: replaying an action against a document --
+// targeting by name, the refusal that touches nothing, and the one history
+// entry. See app/Replay.hpp.
+bool runReplayTest();
+
+// docs/automation-plan.md step 6: `app/Batch` -- one action over many files.
+//
+// **What it proves:**
+//  - **PRD P4, on bytes.** A thirty-file run hashes every input before and
+//    after and asserts the two digests are identical. Not an mtime: a
+//    truncating `fopen` on an input would leave the mtime moving and the bytes
+//    gone, and only the second of those is the thing P4 is about.
+//  - **The input/output collision pre-flight refuses the WHOLE run**, before
+//    anything is opened, and refuses it for paths that are *spelled
+//    differently* -- string equality already handles the easy case, so the
+//    assertions are aimed at `.`/`..` segments, a trailing slash, and an
+//    ASCII case difference on a case-insensitive filesystem.
+//  - **The run stops at the first `Failed`** and every later file reports
+//    `NotAttempted` rather than `Skipped` or silence, with nothing written for
+//    any of them.
+//  - **Import warnings, replay warnings and encoder warnings all reach the
+//    per-file report**, each prefixed with where it came from.
+//  - **A file the action changed nothing in is conspicuous**: counted, and
+//    named in the summary sentence.
+//  - **The pixel-unit table is held to the command registry in both
+//    directions**, so a renamed parameter and a new command reusing `radius`
+//    both fail here rather than quietly widening what a batch accepts.
+//
+// See app/Batch.hpp, whose §1 and §2 are the arguments these assert.
+bool runBatchTest();
+
+// docs/automation-plan.md step 7: the BATCH dialog's model -- which button is
+// live and why, and the preview/run distinction. See app/BatchDialog.hpp.
+bool runBatchDialogTest();
+// app/ActionsPanel -- the ACTIONS panel's model (docs/automation-plan.md
+// step 7), asserted as state-in / drawing-out rather than by drawing it.
+//
+// **What it proves:**
+//  - **SAVE is never offered for a recording with a hole in it, and the
+//    refusals are on screen whenever it is not.** `Recorder::usable()` is
+//    false once anything has been refused, and a holed take "replays
+//    confidently and does the wrong thing at step 4" -- so the implication
+//    `save.enabled => refusals.empty()` is asserted over every state this
+//    panel can reach, not over the one the test happened to build;
+//  - which buttons are live when: RECORD with no document, PLAY on an empty
+//    action, the row verbs with nothing selected and on the first/last row,
+//    and the whole list read-only while a take is being recorded;
+//  - what a row reads -- the command's LABEL and its advertised parameters,
+//    never its file-key id, and an unregistered id as a named unknown rather
+//    than as a missing row;
+//  - that reorder and delete produce the action the user sees, selection
+//    included, and refuse an out-of-range index rather than wrapping;
+//  - **the arm/stop lifecycle, which is what keeps a process-wide singleton
+//    from being left armed**: closing the document, switching to another one,
+//    and putting the panel away each stop the take and say so, and the guard
+//    that does it runs from the frame loop rather than from the draw.
+//
+// Headless, GPU-free and filesystem-free. See app/selftest/ActionsPanel.cpp.
+bool runActionsPanelTest();
+// app/CommandsOpStack -- the command rows that carry an *op* as a parameter,
+// and the selection rows that make every destructive step around them mean
+// what it meant when it was recorded (docs/automation-plan.md step 1).
+//
+// **What it proves:**
+//  - **All nine `PointOpKind`s survive command -> JSON text -> command ->
+//    applied, bit for bit.** Every float is compared with `memcmp`, never with
+//    `==`, and several of the fixture's fields are adjacent floats one ULP
+//    apart -- a writer that printed six significant digits, or a reader that
+//    went through a `float` where a `double` was needed, fails here and passes
+//    any friendlier comparison. The sweep is driven off `PointOpKind`'s own
+//    count, so a tenth kind is asserted the day it is added.
+//  - **The fixture is hostile on purpose**: no field left at its default (a
+//    reader that drops a field would round-trip a default-built fixture
+//    perfectly) and no two fields of one op sharing a value (a reader that
+//    transposes two fields is invisible when both hold the same number).
+//  - **A hand-typed op**, written at a keyboard rather than produced by the
+//    encoder, decodes field for field -- io/OpSerial's own fixture discipline,
+//    and the only thing separating "the reader agrees with the writer" from
+//    "the reader is right".
+//  - **An op kind nothing knows refuses, naming it; a non-PointA op refuses
+//    rather than being stored inert**, in both directions. This is the one
+//    place the document rule and the action rule are deliberately opposite:
+//    `OpClass::Unknown` exists so a document from a newer build round-trips
+//    (PRD I10), while an action is *executed*, and a stack replayed with one
+//    step missing composites happily and writes files that look correct.
+//  - **The session/document line**: `load_channel_as_selection` refuses a
+//    channel the document lacks, by name, changing nothing; save-then-load
+//    round-trips a selection texel for texel; and a second save under a taken
+//    name warns, because `saveSelectionAsChannel()` uniquifies rather than
+//    replacing and a later load of the requested name would silently bound
+//    every following step to the OLDER channel.
+//  - `invert_selection` with nothing selected is a **named refusal** where the
+//    UI is a deliberate silent no-op -- docs/automation-plan.md §7's reason: in
+//    a batch that silence is thirty files reported as successes.
+//
+// Headless, GPU-free, filesystem-free.
+bool runCommandsOpStackTest();
+// app/CommandsImage -- the command rows for everything that changes pixels or
+// the document's own geometry (docs/automation-plan.md step 1): the Filter
+// menu's seven, Image > Adjustments' nineteen including its four auto solvers,
+// and the four document-geometry commands.
+//
+// **What this PROVES, and what it deliberately does not.** Every applier these
+// rows dispatch to is already asserted by its own section (FilterMenu.cpp,
+// AdjustmentMenu.cpp, FiltersExt.cpp, CropTool.cpp); nothing here re-tests a
+// blur, a curve or a crop. What is new is the ADAPTER between a JSON object
+// and those appliers, and the four ways one can be wrong while looking right:
+//
+//  - **A parameter of the wrong type reads as its default.**
+//    `JsonValue::numberOr()` answers its fallback for `"sigma": "four"`, so a
+//    filter runs at a default parameter and reports success. Asserted per JSON
+//    type, including the one value JSON cannot carry losslessly at all: a
+//    uint64 noise seed past 2^53, which would round into a different grain
+//    than the one the file names.
+//  - **An enum-valued parameter can be parsed and then dropped.** A row that
+//    reads `"anchor"` into a local and passes `CanvasAnchor::Center` anyway
+//    round-trips every name perfectly. So each of the four enum parameters is
+//    driven twice with two different names and the two resulting PICTURES must
+//    differ -- for the noise distribution, at the identical seed, so the
+//    distribution is the only thing that could have changed.
+//  - **A no-op reported as a success is this feature's designed failure mode**
+//    (docs/automation-plan.md §7 -- in a batch it is thirty files written
+//    unmodified). A `trim_to_content` with nothing to trim must succeed and
+//    report ZERO texels changed, which only `fromDocumentTransform()` can see;
+//    and a step naming none of an adjustment's controls must refuse rather
+//    than run an identity.
+//  - **A row wired to the wrong precondition.** Every image row is driven at a
+//    document with no layers and at a Pigment layer: the pixel ops must refuse
+//    the latter (a Pigment layer holds Latents, app/FilterOps.hpp's stated
+//    structural limit) while the four document-geometry rows must still run,
+//    because ops/DocumentTransform §5 says a document-level op moves every
+//    layer including ones with no RGB store.
+//
+// Sections A-C are LOOPS over `allCommands()` and over one fixture per row,
+// and each row's fixture must set exactly the keys its `paramNames` advertises
+// -- in both directions -- so a row added later without a test fails section A
+// before it can silently pass anything else. Headless, GPU-free,
+// filesystem-free.
+bool runCommandsImageTest();
+// app/CommandsPatterns + ops/Lens + ops/Pattern -- PLAN.md Phase 19 step 5's
+// two parked P2 image ops, and the three command rows that reach them.
+//
+// **What it PROVES**, as distinct from what it exercises:
+//
+//  * that a zero-strength lens correction is the identity **to the bit** --
+//    asserted twice, once through the short-circuit that guarantees it and
+//    once with that short-circuit switched off, so the claim is about the
+//    gather and not about the branch in front of it. A zero-coefficient pass
+//    that quietly re-ran a reconstruction kernel over every texel is invisible
+//    in one pass and cumulative over a batch;
+//  * that the lens geometry **is the published model**: a corrected linear
+//    ramp reads `a + b * srcX` for the `srcX` that `lensSourcePosition()`
+//    reports, which pins the sign convention, the half-diagonal normalisation
+//    and the half-texel centre convention independently of the sampler;
+//  * that `frame`, not `outRect`, sets the optical centre -- a strip's texels
+//    are bit-identical to the whole canvas's, which is ops/Blur's seam
+//    invariant applied to a global gather;
+//  * that chromatic aberration moves R and leaves G and B **bit**-identical,
+//    so green really is the reference channel;
+//  * that a pattern tiled at its own size reproduces itself exactly at the
+//    tile boundaries -- four bit-identical blocks, plus the two seam columns
+//    and two seam rows named individually, which is where the off-by-one
+//    lives; and
+//  * that `patternSourceTexel()` uses a **euclidean** modulus, asserted at
+//    negative operands, because C's truncating `%` reads off the front of the
+//    pattern buffer the moment an origin or a document texel goes negative.
+//
+// It also asserts the three rows refuse by name -- an unnamed pattern, an
+// unknown pattern, a fractional tiling origin, an unknown kernel, and a
+// coefficient pair whose radial map folds the picture through itself -- and
+// that a fill is bounded by the selection through app/PixelOpBridge rather
+// than by an answer this op invented for itself.
+//
+// Headless, GPU-free and filesystem-free.
+bool runCommandsPatternsTest();
+
+bool runJsonTest();
+
 bool runExportStatesTest();
 // PLAN.md Phase 5 -- **the CPU Pigment deposit**: `brush/Deposit` (what one dab
 // does to one texel) and `app/StrokeSession` (the stroke lifecycle around it).
@@ -4169,6 +4556,97 @@ bool runPigmentSelectionTest();
 // Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
 // it reads no file at all. Headless and GPU-free; writes no files.
 bool runCloneStampTest();
+// **The Heal tool** (PRD D6, PLAN.md Phase 8): the gradient-domain solve
+// (`ops/Poisson`), the stroke that drives it (`brush/Heal`), the route that
+// makes it reachable (app/StrokeSession §1c), and the registration a new `Tool`
+// value has to reach.
+//
+// **This section exists because a heal that is only a clone passes almost every
+// test a clone passes.** The two tools share a source, an Option+click gesture,
+// a snapshot, a composite and a footprint; the single thing that separates them
+// is what happens to the copied values on the way. So the load-bearing
+// assertions here are *comparative*: the same fixture, the same offset and the
+// same tip run through both engines, with the clone's answer printed beside the
+// heal's, so an implementation that had quietly become a second clone stamp
+// cannot pass.
+//
+// What this section proves:
+//
+//  - **The solver is checked against analytic answers rather than a recorded
+//    fixture.** A constant rim comes back as that constant on every interior
+//    cell, bit for bit; a rim carrying a linear ramp is reproduced across the
+//    interior, because a linear function is harmonic; and over a rim that is
+//    neither, the interior comes back with a five-point Laplacian of zero --
+//    which is the equation itself. This is the standard `app/selftest/Flats.cpp`
+//    holds `flats/Membrane` to with its strip and disc.
+//  - **Two of the patch's claims are EXACT, and that is the point** (`ops/Poisson`
+//    §1). Healing from a region identical to the destination changes not one
+//    bit -- a tool that perturbed the picture by a rounding error per dab would
+//    dirty tiles and re-upload textures through a drag that changed nothing.
+//    Healing from a source that differs by a pure *constant* restores the
+//    destination bit for bit: the one property that separates this tool from
+//    the clone stamp, asserted at zero tolerance rather than within a
+//    convergence bound a cycle count could move.
+//  - **Both halves of the gradient-domain promise, separated.** Over a source
+//    with a different texture *and* a different mean, the answer carries the
+//    SOURCE's Laplacian everywhere inside (the half a clone also keeps) and
+//    sits at the DESTINATION's level (the half it does not) -- the second
+//    measured against the copy's own seam. The border ring comes back as the
+//    destination bit for bit because it is the Dirichlet condition, and a 2x2
+//    patch with no interior at all is a legitimate input rather than an error.
+//  - **What the solve may hand back is not what may be stored**: an alpha
+//    driven above 1 is clamped, negative light is clamped while light above 1
+//    is left alone (a working-space value over 1 IS a measurement), and a texel
+//    driven to zero coverage carries no colour -- premultiplied storage means
+//    leaving it behind would manufacture the malformed texel the clone's own
+//    rule refuses to launder.
+//  - **One dab over a linear ramp at a horizontal offset leaves the layer
+//    bit-identical**, because a shifted ramp differs from the original by a
+//    constant and there is nothing to repair -- with the clone stamp on the
+//    identical fixture at the identical offset moving every one of those
+//    texels, which is what makes the first claim about the solve rather than
+//    about a stroke that failed to run.
+//  - **The source is the PRE-STROKE SNAPSHOT** (`brush/Heal` §2), proven
+//    directly: the live store's source region is overwritten *after*
+//    `begin()`, and the dab is unaffected -- with the negative half asserted
+//    too, since "identical" over two untouched fixtures is no claim at all.
+//  - **The selection bounds what is WRITTEN and not what is SOLVED** (PRD E1):
+//    a texel outside the ants is bit-identical after a dab that crossed it,
+//    while one inside was healed -- the gate is a gate and not an off switch.
+//  - **Healing nothing costs nothing, and healing FROM nothing does not** --
+//    `brush/Heal` §4, the one place this tool deliberately parts company with
+//    `brush/CloneStamp` §4. Forty dabs of blank-on-blank allocate not one tile
+//    (the correction over an all-zero rim is exactly zero, so this is
+//    arithmetic and not an optimisation), but an empty source *into* paint
+//    fills the hole with that paint: an inpaint, which is the answer the
+//    equation actually gives and what a spot heal over featureless paint does.
+//  - **Opacity is a per-stroke ceiling** -- thirty scrubbed dabs stop exactly
+//    at it, asserted on the accumulator rather than on the binary16 texel it
+//    produced -- and **the paper tooth reaches this route**, asserted by
+//    running the grain rather than by reading the table that says it should.
+//  - **The routing table's Heal rows**, including the ones that are decisions:
+//    its own route rather than a flag on the clone's, a Pigment layer refusing
+//    by name while still taking the brush, no layer at all being None and not
+//    PaintSim, a locked layer refusing, an ALPHA-LOCKED one not, a mask target
+//    refusing, and a history label that is its own noun -- two tools sharing a
+//    source, a gesture and a composite must not share a row in the panel.
+//  - **The registration a new `Tool` value has to reach** (docs/spec §2):
+//    implemented *through* the canvas-handler probe with no recorded exception,
+//    carrying docs/shortcuts.md's reserved `J`, sharing palette slot 7 with the
+//    Clone Stamp as a flyout sibling whose cell still draws the Clone Stamp,
+//    the cursor derived beside the clone's rather than from a second opinion,
+//    and the Option+click gesture reaching it through `toolUsesCloneSource()`
+//    -- a predicate, not a list at the three call sites that read it.
+//  - **The gesture end to end**: a heal with no source refuses out loud and
+//    names ITSELF rather than the clone stamp it shares an anchor with, moving
+//    no texel and recording no undo step; and with a source set, the whole
+//    stroke is one entry labelled "heal", the offset is latched into the heal
+//    engine with the clone engine left holding nothing, and the snapshot is
+//    dropped at pen-up.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
+// it reads no file at all. Headless and GPU-free; writes no files.
+bool runHealTest();
 
 // PLAN.md Phase 5 step 11 ("Multi-select, align and distribute, colour labels,
 // linking, panel filtering"; PRD C12 (P0), C13 (P1), C15 (P2)).
@@ -5035,6 +5513,36 @@ bool runSaveReadbackTest();
 bool runZoomAndSizeTest();
 
 // ---------------------------------------------------------------------------
+// PRD D8 / PLAN.md Phase 9: the 3x3 repeat preview -- `app/TilePreview` plus
+// the View-menu item and dispatch that reach it. Headless and GPU-free.
+// Covers:
+//  - `tilePreviewTiles()`: ONE copy with the preview off (so the canvas
+//    block's draw loop with it off is the single-quad path it replaced, not
+//    a second arrangement), nine with it on, each of the -1..1 grid exactly
+//    once, and the document queued LAST so no repeat can cover it.
+//  - `tilePreviewSpan()`/`tilePreviewField()`: the divisor fit-to-window
+//    uses, and the rectangle the drop shadow goes behind -- the document's
+//    own rectangle with the preview off, the centred 3x3 block with it on.
+//  - The tiling property itself, through the real `app/ViewTransform` and
+//    under zoom/rotation/mirror: adjacent copies share their edge exactly,
+//    and the nine together fill exactly the field the shadow is drawn behind.
+//    A gap here would draw a seam into a document that has none, which is
+//    the one lie this feature must not tell.
+//  - `setTilePreview()`: the view is saved on the way in and given back on
+//    the way out, mirror/rotation/grayscale flipped INSIDE the preview
+//    survive leaving it, re-entering a preview that is already on does not
+//    overwrite the saved view, and a pending Fit to Window is never swallowed.
+//  - The menu, through `performMenuAction()` itself rather than a copy of
+//    its switch: the item is a Check, appears once, ticks from
+//    `MenuContext::tilePreview` both ways, and does not write the grayscale
+//    preview's flag.
+// Not reachable from here: the canvas block that hands the nine quads to
+// `addCanvasQuad()` (F4). `runPresentTransferTest()` owns that call's transfer
+// function, and `tools/golden/run_golden.sh`'s `tile_preview` view is what
+// would notice a quad dropped past `kMaxQuads`.
+bool runTilePreviewTest();
+
+// ---------------------------------------------------------------------------
 // naturalPaint canvasdim bug fix: app/ZoomAndSize.hpp's `canvasDimensionsFor()`
 // -- the pure function `ui/MacPaintUI.cpp`'s canvas block now calls for its
 // `texW`/`texH` instead of reading `main.cpp`'s fixed `kCanvasW`/`kCanvasH`
@@ -5322,6 +5830,16 @@ bool runResamplePerfTest();
 // app/selftest/ResourcePaths.cpp.
 bool runResourcePathsTest();
 
+// ADR-0010: every modal dialog goes through ui/Dialog. A source scan of the
+// src/ui this binary was built from (NP_UI_SOURCE_DIR): `BeginPopupModal(`
+// appears in code -- comments stripped -- exactly once, in ui/Dialog.cpp, and
+// the two colour literals the module retired do not reappear. The exception
+// table (kAllowedBareModals) is asserted empty so growing it is a visible
+// act. A rule the compiler cannot see and the golden harness only sees per
+// view, so the suite reads the source. Headless, GPU-free, filesystem only.
+// See app/selftest/DialogModule.cpp.
+bool runDialogModuleTest();
+
 // core/Composite.cpp's opaque-floor early exit: a layer whose own effective
 // premultiplied source alpha is exactly 1.0 everywhere in a tile, and whose
 // blend mode is `Normal` (an ordinary layer, a clip base via its folded
@@ -5526,6 +6044,60 @@ bool runSvgImportTest();
 // priority order is exactly docs/vector-editing.md section 3's, with
 // `gnomonSuppressed` proven to make the next tier down reachable. See
 // app/selftest/PenTool.cpp.
+// app/PathOps -- the PATHS panel's verbs (docs/path-editing-plan.md section
+// 1): CLOSE / OPEN / JOIN / REVERSE over subpaths, SMOOTH / CORNER / BREAK /
+// INSERT / DELETE over anchors, COMPOUND / RELEASE over shapes, and the
+// refusal enum that is their specification. Plus the two primitives promoted
+// into `core/Path` for them, `reverseSubPath()` and `fitAnchorTangent()`.
+//
+// The three assertions this section exists for, each guarding a defect a
+// count-based check cannot see:
+//
+//   * `reverseSubPath()` swaps every anchor's two HANDLES as well as
+//     flipping the order -- `in` controls the arriving segment and `out` the
+//     leaving one, so a reversal exchanges them. Reversing the order alone
+//     yields identical anchor positions, an identical bounds and a different
+//     curve.
+//   * JOIN's four endpoint combinations (head-head, head-tail, tail-head,
+//     tail-tail) each produce the right anchor ORDER, asserted by position.
+//     A normalisation slip gives the correct COUNT in an order that makes the
+//     joined path double back on itself.
+//   * INSERT leaves the curve UNCHANGED: the de Casteljau split's two halves
+//     are evaluated and checked against the original cubic's own points, so
+//     an arithmetic slip that still inserts one anchor in the right slot --
+//     while rounding off the user's shape -- fails.
+//
+// Headless, GPU-free; writes no files; touches no `ui/` file and no
+// `AppState`. See app/selftest/PathOps.cpp.
+bool runPathOpsTest();
+
+// The PATHS panel (docs/path-editing-plan.md section 4) -- `app/PathsPanel`
+// plus the two `PathEditState` transitions the panel needs and the canvas did
+// not.
+//
+// Four things, and the third is the one with teeth:
+//
+//   * REGISTRATION in three of the four tables a section must appear in --
+//     `controlsSections()`'s spec, `PanelLayout`'s persistence key in both
+//     directions, and the flyout placement a fresh layout gives it. The
+//     fourth, `drawPanelBody()`'s switch, is enforced by `-Werror=switch` and
+//     is a build failure rather than an assertion.
+//   * THE GREYING RULE, per verb, against `pathOpCanRun()`'s own answer --
+//     so a sweep returning the right set of refusals against the wrong slots
+//     fails. The fixtures are asserted to produce five distinct refusals
+//     between them, because a set of fixtures that all answered the same
+//     thing would let a sweep ignoring the verb pass.
+//   * `pathEditPruneSelection()` against an erased shape id, against a stale
+//     subpath INDEX with no id gone at all, against an open placement session
+//     on both, and -- the assertion that makes the other four mean something
+//     -- against geometry that still resolves, where it must do nothing.
+//   * The MAKE FILL / MAKE STROKE target rule, over a stack whose Fill and
+//     Stroke answers are deliberately DIFFERENT layers.
+//
+// Headless, GPU-free; writes no files; opens no window. See
+// app/selftest/PathsPanel.cpp.
+bool runPathsPanelTest();
+
 bool runPenToolTest();
 
 // app/PenTool section 9 -- Pen/Curve PLACEMENT: `pathEditBeginPen()`
@@ -5539,6 +6111,33 @@ bool runPenToolTest();
 // Headless and GPU-free; writes no files; touches no ui/ file. See
 // app/selftest/PenDraw.cpp.
 bool runPenDrawTest();
+
+// app/VectorStyle -- the Pen's PAINT (docs/path-editing-plan.md section 2).
+//
+// The section exists because a pen-drawn path was invisible: the shape was
+// default-constructed, `Paint::on` is false on both the fill and the stroke,
+// and `core/VectorRaster.cpp` gates on exactly those two flags. The overlay
+// drew the path anyway, so the defect only showed on a tool switch.
+//
+// The four things asserted, each guarding a failure a count-based check
+// cannot see:
+//
+//   * the default style is stroke-ON / fill-OFF, and a bare `VectorShape` is
+//     neither -- the two states named side by side rather than assumed apart.
+//   * a placed shape carries the style's WIDTH and both ALPHAS, not merely
+//     its on-flags. The fixture uses 7.25 px and alpha 0.5 so a stamp that
+//     forgot `strokeStyle` (leaving `StrokeStyle`'s own 1.0) or premultiplied
+//     the colour cannot coincide with the right answer.
+//   * selection-first-else-default, over a layer whose shapes are in an order
+//     that is NOT id order, including a component selection resolving to its
+//     shapes and a stale selection naming a deleted id.
+//   * the colour path is LINEAR: `foregroundLinearRgba()` decodes, and the
+//     fixture avoids 0.0 and 1.0 -- the two values where an sRGB encode and a
+//     decode agree, and therefore where the assertion would survive its own
+//     sabotage.
+//
+// Headless and GPU-free; writes no files. See app/selftest/VectorStyle.cpp.
+bool runVectorStyleTest();
 
 // app/TextTool -- the headless core of PLAN.md phase 14's Text tool: the
 // gate predicate (`toolEditsText()`), the caret-editing session's UTF-8-safe
@@ -5701,5 +6300,35 @@ bool runPathConsumersTest();
 // under it. Headless, GPU-free, writes no files. See
 // app/selftest/TextKeyCapture.cpp.
 bool runTextKeyCaptureTest();
+
+// The UI -> command-layer reroute (docs/automation-plan.md step 2) -- that
+// every migrated route reaches `app::applyCommand()`, and that reaching it
+// changed nothing.
+//
+// **What it PROVES**, as distinct from what it exercises:
+//
+//  * that the three UI boundaries `ui/MacPaintUI.hpp` publishes --
+//    `runPixelCommand()`, `runLayerGesture()`, `runActiveLayerSetter()` --
+//    each produce a RECORDED STEP with the control's own parameter in it.
+//    That is the assertion a missed site fails: a dialog that called its
+//    applier directly would still paint the right pixels and still pass every
+//    other section in this suite, and would be a user action no recorder can
+//    ever see;
+//  * that the reroute is pixel-identical. All twenty-six pixel commands the
+//    UI can now issue are run against the applier the control used to call,
+//    on two copies of one fixture, and compared BIT-EXACTLY -- with the count
+//    of cases that actually moved a texel asserted beside the match count, so
+//    a fixture that had gone flat could not make the comparison vacuous;
+//  * that every key an ENCODER writes is a key its row advertises. This is
+//    the reverse of app/selftest/CommandsImage.cpp's own check and catches
+//    the one bug the pixel comparison cannot: a misspelt optional key whose
+//    silent default happens to equal the fixture's value;
+//  * that a refusal is still not a step on the UI path, and that the
+//    dialogs' three-way outcome still maps the way it did -- including the
+//    one case step 2 knowingly changed, an identity parameter refused by name
+//    rather than run as a no-op.
+//
+// Headless, GPU-free, writes no files. See app/selftest/CommandCallsites.cpp.
+bool runCommandCallsitesTest();
 
 }  // namespace np

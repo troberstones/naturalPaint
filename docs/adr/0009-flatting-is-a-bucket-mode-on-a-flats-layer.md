@@ -68,7 +68,16 @@ the command; both produce the same fills.
 | Lasso + `Y` | **shape fill** — a fill drawn by hand | `FlatShapeFill` |
 | Marquee + `⇧V` | select recorded edits to remove | — |
 | `⇧U` | draw-merge: stroke from a fill, everything crossed merges into it | `FlatMergeStroke` |
-| `M` (Flats-scoped) | two-click merge | `FlatMergePair` |
+| `U` (Flats-scoped) | two-click merge | `FlatMergePair` |
+
+> `U`, not the `M` this table originally named. `M` is docs/shortcuts.md §1's global
+> Marquee, and once that letter actually selects a tool (it does now —
+> `keymaps/default.json`'s `tool_rect_marquee`) a Flats-scoped `M` is a keymap conflict
+> the load-time detector reports, *and* it would make the Marquee the one tool
+> unreachable by key while flatting. §1.1 of the shortcuts document already assigns
+> `U` to “Merge fills (Flats)” and `⇧U` to draw-merge, so this table was the outlier
+> rather than a second opinion, and `kFlatsTools`' MERGE tooltip now says `U` too.
+
 | `K` | delete the fill under the cursor | `FlatDeleteMark` |
 | `,` / `.` / `Return` | cycle and accept gap suggestions | `FlatBridgeStroke` |
 | `Layer ▸ Cluster small fills` | small open-bordered fills into their neighbours | `FlatMergePair` ×N |

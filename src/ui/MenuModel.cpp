@@ -52,6 +52,7 @@ const MenuItemSpec* specTable() {
     set(MenuAction::CloseDocument, "Close Document", "");
     set(MenuAction::ExportAs, "Export As...", "");
     set(MenuAction::ExportStates, "Export Comps / Layers To Files...", "");
+    set(MenuAction::Batch, "Batch...", "");
 
     // **Quit.** No key equivalent and omitted from File on a platform whose
     // own menu bar carries an application menu -- both for the same reason,
@@ -174,6 +175,16 @@ const MenuItemSpec* specTable() {
     set(MenuAction::GrayscalePreview, "Grayscale Preview", "Cmd+Y",
         MenuKeyEquivalent{'y', kMenuModCmd, "toggle_grayscale"});
 
+    // PRD D8 / PLAN.md Phase 9. No shortcut and no key equivalent:
+    // `docs/shortcuts.md` assigns none, and claiming a chord from a native
+    // menu **consumes** it before SDL ever sees it (MenuKeyEquivalent's own
+    // header) -- not something to do speculatively, and the same reasoning
+    // `BrushSettings` and `Rulers` already make below. Spelt "3x3" rather
+    // than with a multiplication sign because this string reaches an AppKit
+    // menu title and an accessibility label, and nothing else in this table
+    // is non-ASCII.
+    set(MenuAction::TilePreview, "3x3 Repeat Preview", "");
+
     // Rulers has no shortcut string, and the reason is a spec conflict rather
     // than an oversight: `docs/shortcuts.md` §3 assigns rulers ⌘R, but ⌘R is
     // already bound to `reload_shaders` (main.cpp's dispatch carries the full
@@ -212,6 +223,14 @@ const MenuItemSpec* specTable() {
     set(MenuAction::Emboss, "Emboss...", "");
     set(MenuAction::Median, "Median...", "");
     set(MenuAction::MotionBlur, "Motion Blur...", "");
+    // No key equivalent: `docs/shortcuts.md` assigns none, and claiming a
+    // chord from a native menu consumes it before SDL sees it.
+    set(MenuAction::Inpaint, "Inpaint...", "");
+    // PRD D8's two. No key equivalents: `docs/shortcuts.md` assigns neither,
+    // and a native menu item does not merely display a chord, it consumes it
+    // before SDL sees it -- not a thing to claim speculatively.
+    set(MenuAction::RemoveLightingGradient, "Remove Lighting Gradient...", "");
+    set(MenuAction::Offset, "Offset...", "");
 
     // --- Image ----------------------------------------------------------
     set(MenuAction::ImageSize, "Image Size...", "");
@@ -410,6 +429,7 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::CloseDocument: return "CloseDocument";
     case MenuAction::ExportAs: return "ExportAs";
     case MenuAction::ExportStates: return "ExportStates";
+    case MenuAction::Batch: return "Batch";
     case MenuAction::Quit: return "Quit";
     case MenuAction::Undo: return "Undo";
     case MenuAction::FreeTransform: return "FreeTransform";
@@ -446,6 +466,7 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::ResetRotation: return "ResetRotation";
     case MenuAction::ResetView: return "ResetView";
     case MenuAction::GrayscalePreview: return "GrayscalePreview";
+    case MenuAction::TilePreview: return "TilePreview";
     case MenuAction::Rulers: return "Rulers";
     case MenuAction::Navigator: return "Navigator";
     case MenuAction::BrushSettings: return "BrushSettings";
@@ -464,6 +485,9 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::Emboss: return "Emboss";
     case MenuAction::Median: return "Median";
     case MenuAction::MotionBlur: return "MotionBlur";
+    case MenuAction::Inpaint: return "Inpaint";
+    case MenuAction::RemoveLightingGradient: return "RemoveLightingGradient";
+    case MenuAction::Offset: return "Offset";
     case MenuAction::ImageSize: return "ImageSize";
     case MenuAction::CanvasSize: return "CanvasSize";
     case MenuAction::CropToSelection: return "CropToSelection";
@@ -523,6 +547,11 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::ClearGuides:
     case MenuAction::Grid:
     case MenuAction::Snap:
+    // Merged in from main 2026-09-10 and classified here because `-Wswitch`
+    // would not let it be inherited: `setTilePreview()` writes
+    // `st.tilePreview` and `st.view`, so a tiled preview is a way of LOOKING
+    // at the document, not a way of changing it -- the same seat as Zoom.
+    case MenuAction::TilePreview:
       return false;
 
     // Window, plus the two developer toggles that live beside them: window
@@ -559,7 +588,7 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     //
     // Listed rather than caught by a `default:`, so that adding a
     // `MenuAction` is a decision this function is forced to make. A new item
-    // that silently inherited "does not end the transform" would be T28
+    // that silently inherited "does not end the transform" would be T29
     // arriving again through a door nobody remembered was there.
     //
     // The four that make the case on their own: `Undo`/`Redo` replace the
@@ -640,6 +669,16 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::AdjustAutoContrast:
     case MenuAction::AdjustAutoColor:
     case MenuAction::AdjustEqualize:
+    // Merged in from main 2026-09-10. Each rewrites the pixels the pending
+    // matrix is aimed at (`Inpaint` diffuses into the selection,
+    // `RemoveLightingGradient` divides the light out, `Offset` slides the
+    // layer's own texels) or, for `Batch`, opens a modal that runs operations
+    // over documents. All four are the default answer, and the default is what
+    // `-Wswitch` made someone look at rather than inherit.
+    case MenuAction::Inpaint:
+    case MenuAction::RemoveLightingGradient:
+    case MenuAction::Offset:
+    case MenuAction::Batch:
     case MenuAction::Count:
       return true;
   }
@@ -662,6 +701,7 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     // opened inside `BeginMenu()` is opened against the menu's own ID stack.
     case MenuAction::ExportAs:
     case MenuAction::ExportStates:
+    case MenuAction::Batch:
     case MenuAction::RecoverDocuments:
     case MenuAction::AddGuide:
       return MenuEffect::Deferred;
@@ -694,6 +734,10 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     case MenuAction::Emboss:
     case MenuAction::Median:
     case MenuAction::MotionBlur:
+    case MenuAction::Inpaint:
+    // PRD D8's two, for the identical reason -- each opens a modal.
+    case MenuAction::RemoveLightingGradient:
+    case MenuAction::Offset:
     case MenuAction::ImageSize:
     case MenuAction::CanvasSize:
     // Image > Adjustments' four dialogs, for the identical reason: opening one
@@ -809,6 +853,11 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     f.push_back(separator());
     f.push_back(item(MenuAction::ExportAs));
     f.push_back(item(MenuAction::ExportStates));
+    // **No `ctx.hasDocument` guard, unlike every other item in this group.**
+    // A batch reads its inputs off disk and never touches the open document --
+    // it is the one File item that means exactly as much with nothing open,
+    // and greying it would be the app refusing a job it can do.
+    f.push_back(item(MenuAction::Batch));
 
     // See MenuItemSpec::omitWhenNativeAppMenu. Under a native menu bar the
     // separator goes with the item, otherwise the File menu ends on a rule.
@@ -1063,12 +1112,14 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
 
   // ---------------------------------------------------------------- Filter
   //
-  // ops/Blur + ops/Filters, through app/FilterOps.hpp (PRD D4/D5;
-  // docs/reachability-audit.md C1). All seven items share one enable
-  // predicate and one refusal sentence -- `ctx.filterLayerUsable` /
+  // ops/Blur + ops/Filters + ops/Inpaint, through app/FilterOps.hpp (PRD
+  // D4/D5/D7; docs/reachability-audit.md C1). The first seven items share one
+  // enable predicate and one refusal sentence -- `ctx.filterLayerUsable` /
   // `ctx.filterRefusalNote` -- because all seven ask the identical question
   // of the active layer ("can it take a pixel op"), the same one the paint
-  // bucket and the gradient already ask via `PixelOpRefusal`.
+  // bucket and the gradient already ask via `PixelOpRefusal`. Inpaint, below
+  // the last separator, asks that question and one more; its own block says
+  // why.
   //
   // Grouped as `ops/Filters.hpp` itself groups them: the blur-based
   // sharpening pair together; Add Noise and Median (its rough opposite --
@@ -1095,6 +1146,32 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     flt.push_back(separator());
     flt.push_back(filterItem(MenuAction::Emboss));
     flt.push_back(filterItem(MenuAction::MotionBlur));
+    // Set apart, and the separator is the point: the eight above are filters
+    // BOUNDED by the selection, and this one FILLS it (ops/Inpaint.hpp
+    // section 1). It is also the only one whose enable predicate asks a
+    // second question -- an inpaint with no hole has nothing to do, so the
+    // item goes grey with the reason in its tooltip rather than staying
+    // clickable and refusing afterwards.
+    flt.push_back(separator());
+    {
+      const bool usable = ctx.filterLayerUsable && ctx.hasEngagedSelection;
+      MenuNode n = item(MenuAction::Inpaint, usable);
+      if (!ctx.filterLayerUsable) {
+        n.tooltip = ctx.filterRefusalNote;
+      } else if (!ctx.hasEngagedSelection) {
+        n.tooltip = "Inpaint fills the SELECTED texels from what surrounds them. Select the "
+                    "scratch or speck first.";
+      }
+      flt.push_back(std::move(n));
+    }
+    // PRD D8's pair, set apart from the eight above because they are a
+    // workflow rather than a taste: docs/operations.md:275 lists offset,
+    // patch and heal as one sequence, and lighting-gradient removal is the
+    // step PRD.md:208 says has to come before any of it. Removal first, in
+    // the order the work is done.
+    flt.push_back(separator());
+    flt.push_back(filterItem(MenuAction::RemoveLightingGradient));
+    flt.push_back(filterItem(MenuAction::Offset));
     bar.push_back(std::move(filter));
   }
 
@@ -1113,6 +1190,10 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     v.push_back(item(MenuAction::ResetView));
     v.push_back(separator());
     v.push_back(check(MenuAction::GrayscalePreview, ctx.grayscale));
+    // Beside Grayscale Preview because the two are the same kind of thing --
+    // a display state that shows the document differently without changing
+    // it -- and not up with Fit/100%/Zoom, which are one-shot commands.
+    v.push_back(check(MenuAction::TilePreview, ctx.tilePreview));
     v.push_back(separator());
     v.push_back(check(MenuAction::Rulers, ctx.showRulers));
     v.push_back(check(MenuAction::Navigator, ctx.showNavigator));

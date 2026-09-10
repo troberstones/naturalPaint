@@ -11,6 +11,7 @@
 
 #include "app/PenTool.hpp"
 #include "app/TextTool.hpp"    // toolEditsText()
+#include "app/VectorStyle.hpp"
 #include "app/CloseDecision.hpp"
 #include "app/CropTool.hpp"
 #include "app/DocumentLifecycle.hpp"
@@ -187,24 +188,34 @@ namespace {
 // requiredUiCodepoints() lists (ui/Fonts.cpp), and adding one more codepoint
 // for a single tooltip character is not worth the merge-range entry when
 // plain ASCII already says the same thing unambiguously.
+//
+// `shortcut` and `slug` are the keymap pair and sit next to each other for
+// that reason: `slug` is the stable machine name a `keymaps/default.json`
+// binding says (`"tool_rect_marquee"`), `shortcut` is the chord that binding
+// must carry, and `app/selftest/ToolHotkeys.cpp` asserts the two columns and
+// the data file agree in both directions. See AtelierChrome.hpp's
+// `toolSlug()` for why the slug is not just `name` or `lucideName`
+// lower-cased -- both of those are allowed to be renamed by someone who is
+// not thinking about anyone's keymap file.
 struct ToolMeta {
   const char* name;
   const char* lucideName;
   uint32_t codepoint;
   const char* shortcut;  // "" when docs/shortcuts.md reserves none yet
+  const char* slug;      // never "" -- every Tool has an identity
   bool implemented;
 };
 
 constexpr ToolMeta kToolMeta[] = {
     // --- the tools with real behaviour --------------------------------
-    {"Brush", "brush", 57811u, "B", true},
-    {"Water", "droplet", 57524u, "", true},
-    {"Dry Brush", "paintbrush-2", 58088u, "", true},
-    {"Eyedropper", "pipette", 57659u, "I", true},
-    {"Rectangle Marquee", "square-dashed", 57803u, "M", true},
-    {"Elliptical Marquee", "circle-dashed", 58544u, "Shift+M", true},
-    {"Hand", "hand", 57815u, "H", true},
-    {"Zoom", "zoom-in", 57782u, "Z", true},
+    {"Brush", "brush", 57811u, "B", "brush", true},
+    {"Water", "droplet", 57524u, "", "water", true},
+    {"Dry Brush", "paintbrush-2", 58088u, "", "dry_brush", true},
+    {"Eyedropper", "pipette", 57659u, "I", "eyedropper", true},
+    {"Rectangle Marquee", "square-dashed", 57803u, "M", "rect_marquee", true},
+    {"Elliptical Marquee", "circle-dashed", 58544u, "Shift+M", "ellipse_marquee", true},
+    {"Hand", "hand", 57815u, "H", "hand", true},
+    {"Zoom", "zoom-in", 57782u, "Z", "zoom", true},
     // --- the name/icon/slot-only cells (app/AppState.hpp) -------------
     // **Built**, as of app/MoveTool: a pen-down begins an app/TransformSession
     // on the active layer (or on the selection's pixels), the drag accumulates
@@ -213,10 +224,10 @@ constexpr ToolMeta kToolMeta[] = {
     // this half of the table: the rows are in `Tool`'s declaration order and
     // the static_assert rests on that, so the divider marks where the enum's
     // not-built run began, not a second list to keep in step.
-    {"Move", "move", 57633u, "V", true},
-    {"Lasso", "lasso", 57806u, "L", true},
-    {"Polygon Lasso", "pentagon", 58667u, "Shift+L", true},
-    {"Magic Wand", "wand-sparkles", 58199u, "W", true},
+    {"Move", "move", 57633u, "V", "move", true},
+    {"Lasso", "lasso", 57806u, "L", "lasso", true},
+    {"Polygon Lasso", "pentagon", 58667u, "Shift+L", "polygon_lasso", true},
+    {"Magic Wand", "wand-sparkles", 58199u, "W", "magic_wand", true},
     // **Built**: app/CropTool, gated by `toolCropsCanvas()` -- the eighth
     // canvas gate, and a new predicate rather than a name added to an existing
     // one for `toolMeasuresCanvas()`'s reason, which is concrete here:
@@ -227,14 +238,14 @@ constexpr ToolMeta kToolMeta[] = {
     // perspective through `transformFromQuad()` + `transformDocument()`.
     // `Tool::Slice`, which shares its palette group and its cursor, is still
     // one of the not-built cells and stays false.
-    {"Crop", "crop", 57515u, "C", true},
+    {"Crop", "crop", 57515u, "C", "crop", true},
     // **Built**: app/MeasureLine, gated by `toolMeasuresCanvas()` -- the one
     // tool in this palette whose gesture writes no texel at all. Same
     // arrangement as the eraser row below: the rows are in `Tool` declaration
     // order, so a built tool stays where the enum puts it and the divider
     // above marks the enum's not-built run, not a second sorted half.
-    {"Measure", "ruler", 57675u, "", true},
-    {"Frame", "frame", 58001u, "", false},
+    {"Measure", "ruler", 57675u, "", "measure", true},
+    {"Frame", "frame", 58001u, "", "frame", false},
     // **Built**, as of the clone route: brush/CloneStamp, and
     // app/StrokeSession §1b for the table it routes through. It stays in this
     // half of the table for the same reason the Eraser row just below does --
@@ -243,7 +254,21 @@ constexpr ToolMeta kToolMeta[] = {
     // not a second list to keep in step. This tool needs the flag twice over:
     // it makes the palette cell clickable at all, and its Option+click source
     // gesture only exists while the cell is selected.
-    {"Clone Stamp", "stamp", 58299u, "S", true},
+    {"Clone Stamp", "stamp", 58299u, "S", "clone_stamp", true},
+    // **Built on arrival**: PRD D6, brush/Heal, `StrokeRoute::Heal`, and
+    // app/StrokeSession §1c for the table it routes through. This is the one
+    // row here that was never false -- the enum value, the route, the canvas
+    // gate and this flag landed in a single change, so there has been no window
+    // in which the palette offered a heal that reached nothing. That is what
+    // every other "Built, as of ..." note above records the absence of.
+    // `J` is docs/shortcuts.md section 1's own reserved letter for the tool,
+    // and `bandage` is Photoshop's own metaphor for it rather than an invented
+    // one -- docs/ui.md §2a's substitution table carries that note.
+    //
+    // The `slug` arrived from main's side of this merge: it is the stable
+    // string identity `toolFromSlug()` reverse-looks-up, which is how an
+    // action file names a tool without depending on an enum ordinal.
+    {"Heal", "bandage", 58909u, "J", "heal", true},
     // **Built**, as of the RGB erase route: PRD F9/F10 (P0), ADR-0007,
     // brush/RgbErase. It stays in this half of the table because the rows are in
     // `Tool`'s declaration order and the static_assert below rests on that --
@@ -251,16 +276,16 @@ constexpr ToolMeta kToolMeta[] = {
     // list to keep in step. Flipping this flag is what makes the palette cell
     // clickable at all; a route that works behind a disabled cell is a feature
     // no user can reach.
-    {"Eraser", "eraser", 57999u, "E", true},
-    {"Paint Bucket", "paint-bucket", 58086u, "Shift+G", true},
-    {"Gradient", "blend", 58780u, "G", true},
+    {"Eraser", "eraser", 57999u, "E", "eraser", true},
+    {"Paint Bucket", "paint-bucket", 58086u, "Shift+G", "paint_bucket", true},
+    {"Gradient", "blend", 58780u, "G", "gradient", true},
     // **Built**, as of the aliased-mark route: brush/PencilDeposit,
     // `StrokeRoute::PencilDeposit`, app/StrokeSession §1's Pencil rows. Same
     // note as the Eraser above about why it stays in this half of the table:
     // the rows are in `Tool`'s declaration order and the static_assert below
     // rests on that, so the divider marks where the enum's not-built run began
     // rather than a second list to keep in step.
-    {"Pencil", "pencil", 57849u, "", true},
+    {"Pencil", "pencil", 57849u, "", "pencil", true},
     // **Built**, as of the tonal route: `strokeRouteFor()` sends both to
     // `StrokeRoute::TonalBrush` on a writable RGB layer (brush/TonalBrush;
     // app/StrokeSession.hpp §1's Dodge/Burn rows). Two rows for one engine and
@@ -268,9 +293,9 @@ constexpr ToolMeta kToolMeta[] = {
     // direction is what the pick means. Same placement argument as the Eraser
     // row above: the rows are in `Tool`'s declaration order and the
     // static_assert below rests on that.
-    {"Smudge", "droplets", 57525u, "N", true},
-    {"Dodge", "sun", 57720u, "O", true},
-    {"Burn", "moon", 57630u, "Shift+O", true},
+    {"Smudge", "droplets", 57525u, "N", "smudge", true},
+    {"Dodge", "sun", 57720u, "O", "dodge", true},
+    {"Burn", "moon", 57630u, "Shift+O", "burn", true},
     // **Built**, as of the smudge route: brush/Smudge, StrokeRoute::Smudge.
     // Same rule as the Eraser row above -- the flag flips in the commit that
     // wires the drag, not in the one that writes the arithmetic, and until it
@@ -283,16 +308,29 @@ constexpr ToolMeta kToolMeta[] = {
     // and separately asserts `toolNoHandlerException()` is empty, so flipping
     // either half alone turns the suite red -- and the tempting repair is a
     // row in the table that is asserted to have none.
-    {"Pen", "pen-tool", 57649u, "P", true},
-    {"Curve", "spline", 58251u, "Shift+P", true},
-    {"Text", "type", 57752u, "T", true},
-    {"Shape", "shapes", 58547u, "", false},
-    {"Slice", "slice", 58096u, "", false},
+    {"Pen", "pen-tool", 57649u, "P", "pen", true},
+    {"Curve", "spline", 58251u, "Shift+P", "curve", true},
+    {"Text", "type", 57752u, "T", "text", true},
+    {"Shape", "shapes", 58547u, "", "shape", false},
+    {"Slice", "slice", 58096u, "", "slice", false},
+    // **Built**: app/PenTool, gated by `toolEditsPath()` alongside Pen and
+    // Curve. Photoshop's black arrow, and the tool that lets the Pen stop
+    // being one: before this, Pen presses on existing geometry ran the
+    // gnomon, the marquee, anchor drags and tangent drags, so "the pen" was
+    // also the manipulator. Those gestures live here now and the Pen only
+    // places points (docs/path-editing-plan.md section 3.3).
+    //
+    // `A` is not a new claim -- docs/shortcuts.md section 1 has reserved it
+    // for "Path select" since before any of this existed. It is now a
+    // WORKING key rather than a tooltip's promise, which is the other half
+    // of this merge: the slug column beside it is what `keymaps/default.json`
+    // binds against.
+    {"Path Select", "mouse-pointer-2", 57795u, "A", "path_select", true},
 };
 static_assert(std::size(kToolMeta) == static_cast<size_t>(Tool::Count),
               "one ToolMeta row per Tool value, in app/AppState.hpp's declaration order");
 
-constexpr ToolMeta kUnknownTool{"?", "", 0u, "", false};
+constexpr ToolMeta kUnknownTool{"?", "", 0u, "", "", false};
 
 // `t` past the table (Tool::Count, or any other stray cast) reads as the
 // unknown row -- the same "?" contract the old per-field switches gave
@@ -306,6 +344,36 @@ const ToolMeta& metaFor(Tool t) noexcept {
 
 const char* toolName(Tool t) { return metaFor(t).name; }
 bool toolImplemented(Tool t) noexcept { return metaFor(t).implemented; }
+
+// ------------------------------------------------ tool select actions
+//
+// The prefix a tool-select keymap action carries. One string, defined once:
+// `toolSelectActionName()` writes it and `toolFromSelectAction()` reads it,
+// so the two cannot drift into disagreeing about what a tool binding looks
+// like -- which is the whole failure mode a `starts_with("tool_")` written
+// out twice invites.
+constexpr std::string_view kToolActionPrefix = "tool_";
+
+const char* toolSlug(Tool t) { return metaFor(t).slug; }
+
+std::optional<Tool> toolForSlug(std::string_view slug) {
+  // The empty slug is `kUnknownTool`'s, never a row's -- matching it would
+  // turn `toolFromSelectAction("tool_")` into a tool switch.
+  if (slug.empty()) return std::nullopt;
+  for (size_t i = 0; i < std::size(kToolMeta); ++i)
+    if (slug == kToolMeta[i].slug) return static_cast<Tool>(i);
+  return std::nullopt;
+}
+
+std::string toolSelectActionName(Tool t) {
+  return std::string(kToolActionPrefix) + toolSlug(t);
+}
+
+std::optional<Tool> toolFromSelectAction(std::string_view action) {
+  if (action.size() <= kToolActionPrefix.size()) return std::nullopt;
+  if (action.substr(0, kToolActionPrefix.size()) != kToolActionPrefix) return std::nullopt;
+  return toolForSlug(action.substr(kToolActionPrefix.size()));
+}
 
 bool toolHasCanvasHandler(Tool t) noexcept {
   // Ten gates, each of them the expression the corresponding block in
@@ -383,6 +451,17 @@ const std::vector<uint32_t>& toolIconCodepoints() {
         points.push_back(m.codepoint);
     points.push_back(kMoreIconCodepoint);
     points.push_back(kSettingsIconCodepoint);
+    // The FLATS TOOLS palette draws Lucide cells exactly as the tool palette
+    // does, so its nine icons need the same merge. Walked from
+    // `app/AppState.hpp`'s own table rather than restated here, for the
+    // reason the `kToolMeta` walk above exists: a flats tool added without an
+    // icon becomes a gap in this list, not a cell that silently draws
+    // nothing forever. `eraser` is already here from `Tool::Eraser` and the
+    // dedup below absorbs it.
+    for (const FlatsToolRow& r : kFlatsTools)
+      if (r.codepoint != 0u &&
+          std::find(points.begin(), points.end(), r.codepoint) == points.end())
+        points.push_back(r.codepoint);
     std::sort(points.begin(), points.end());
     return points;
   }();
@@ -1268,6 +1347,187 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     // alive over a layer the gesture then refuses would be a control lying
     // about what the next click does.
     if (pathLayer != nullptr && pathLayer->kind != LayerKind::Vector) pathLayer = nullptr;
+
+    // --- STROKE and FILL ----------------------------------------------------
+    //
+    // **Without this row the Pen drew nothing.** `pathEditBeginPen()` built a
+    // default-constructed `VectorShape`, whose `fill.on` and `stroke.on` are
+    // both false, so every path it ever laid down rasterised to nothing;
+    // app/VectorStyle.hpp section 1 has the whole account. The paint now comes
+    // from `st.vectorStyle` plus the foreground, and this is where a user says
+    // what it should be.
+    //
+    // **Selection first, else default** -- app/VectorStyle.hpp section 3, and
+    // the one rule both controls follow. With shapes selected (in EITHER mode:
+    // Component mode's anchors resolve to the shapes they sit on) these edit
+    // THOSE SHAPES and record a document edit; with nothing selected they edit
+    // the tool default, which is what the next pen stroke will be.
+    //
+    // The consequence, and the reason the readout is computed before anything
+    // is drawn: **the control shows the SELECTION's value, not the default's.**
+    // A width box reading 1.0 while a drag would change a selected 12 px stroke
+    // is a control lying about what it is about to do -- the same class of
+    // defect as a menu item wired to the wrong engine.
+    //
+    // Cap and join are deliberately NOT here: they are per-shape finishing
+    // choices, they belong in the PATHS panel, and this band already carries
+    // MODE and SELECTED.
+    VectorStyleReadout pathStyle;
+    pathStyle.style = st.vectorStyle;
+    if (pathLayer != nullptr)
+      pathStyle = vectorStyleReadout(pathLayer->shapes, st.pathEdit.selection, st.vectorStyle);
+
+    // **A drag is ONE undo entry, not sixty** -- the same split
+    // `pathEditUpdate()` returns as `EditBegan` / `EditContinued`, and the
+    // reason it returns it. The first frame of a gesture that changes anything
+    // records; every frame after it amends.
+    //
+    // "Still the same gesture" is asked as "is the pointer still down", NOT as
+    // ImGui's item-active state, because the colour swatch's picker lives in a
+    // popup: the swatch itself is not the active item while the user drags
+    // inside that popup, so an active-state test would open a fresh undo entry
+    // per frame for exactly the control that needs the grouping most.
+    struct PathStyleGesture {
+      bool open = false;
+    };
+    static PathStyleGesture gStrokeWidth, gStrokeColor, gFillColor;
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      gStrokeWidth.open = false;
+      gStrokeColor.open = false;
+      gFillColor.open = false;
+    }
+    // One funnel for both controls, so the rule above is written once rather
+    // than five times. `gesture` null means a single-click change (the NONE
+    // chips) that can never need amending.
+    auto editPathStyle = [&](const char* what, PathStyleGesture* gesture,
+                             const VectorStyleMutator& mutate) {
+      std::vector<VectorShape>* shapesPtr = pathLayer != nullptr ? &pathLayer->shapes : nullptr;
+      const size_t n =
+          applyVectorStyleEdit(shapesPtr, st.pathEdit.selection, &st.vectorStyle, mutate);
+      // Zero means the selection named no shape and the TOOL DEFAULT was
+      // written. Nothing in the document moved, so recording an edit here
+      // would put an undo entry on the stack that undoes nothing visible.
+      if (n == 0 || pathOd == nullptr) return;
+      const bool continuing = gesture != nullptr && gesture->open;
+      if (gesture != nullptr) gesture->open = true;
+      // `amendEdit()` answers false when there is no entry of ours to fold
+      // into; falling back to a fresh record is the honest recovery, and is
+      // what its own header asks a caller to do rather than assume.
+      if (!continuing || !pathOd->amendEdit(what, EditKind::Content))
+        pathOd->recordEdit(what, EditKind::Content);
+    };
+
+    bandSeparator();
+    capsLabel("STROKE");
+    ImGui::SameLine();
+    pushAtelierMono();
+    ImGui::BeginDisabled(pathLayer == nullptr);
+
+    ImGui::SetNextItemWidth(86.0f);
+    float pathStrokeW = pathStyle.style.strokeStyle.width;
+    // A drag, not a slider, for the reason SIZE above is one: a stroke width
+    // has no natural maximum and a slider would have to invent one. The `~`
+    // in the mixed format string is the mixed affordance -- the number shown
+    // is the FIRST selected shape's, and without the mark it would read as
+    // everybody's.
+    if (ImGui::DragFloat("##pathStrokeWidth", &pathStrokeW, 0.1f, 0.0f, 4096.0f,
+                         pathStyle.mixedStrokeWidth ? "~%.2f px" : "%.2f px")) {
+      const float w = std::max(0.0f, pathStrokeW);
+      editPathStyle("stroke width", &gStrokeWidth,
+                    [w](VectorStyle& vs) { vs.strokeStyle.width = w; });
+    }
+    ImGui::SetItemTooltip(
+        "Stroke width in document pixels. %s A width of 0 draws nothing, which is not the "
+        "same as NONE: the stroke is still there and still round-trips.",
+        pathStyle.fromSelection ? "Edits the SELECTED shapes."
+                                : "Nothing is selected, so this sets what the NEXT path "
+                                  "you draw will use.");
+
+    ImGui::SameLine();
+    // sRGB-encoded into the picker and decoded back out. `Paint::rgba` is
+    // linear-light STRAIGHT alpha (core/VectorShape.hpp section 1) and ImGui's
+    // picker is display-referred; skipping either half is how a stroke ends up
+    // roughly twice as dark as the swatch that promised it.
+    {
+      const std::array<float, 4>& lin = pathStyle.style.stroke.rgba;
+      float enc[4] = {srgbEncode(lin[0]), srgbEncode(lin[1]), srgbEncode(lin[2]), lin[3]};
+      if (ImGui::ColorEdit4("##pathStrokeColor", enc,
+                            ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar |
+                                ImGuiColorEditFlags_AlphaPreviewHalf)) {
+        const std::array<float, 4> out = {srgbDecode(enc[0]), srgbDecode(enc[1]),
+                                          srgbDecode(enc[2]), enc[3]};
+        editPathStyle("stroke colour", &gStrokeColor, [out](VectorStyle& vs) {
+          vs.stroke.rgba = out;
+          // Setting a colour means wanting to see it. Leaving `on` false would
+          // make the swatch a control with no visible effect.
+          vs.stroke.on = true;
+        });
+      }
+    }
+    ImGui::SetItemTooltip(
+        "Stroke colour.%s A new path takes the FOREGROUND colour instead -- the same colour "
+        "every other tool here paints with -- and this overrides it.",
+        pathStyle.mixedStrokeColor ? " The selection has more than one; this is the first "
+                                     "shape's."
+                                   : "");
+
+    ImGui::SameLine();
+    // NONE is lit when the paint is OFF, which is what it is naming. SVG's
+    // `stroke="none"` is a real state and is not an alpha of zero
+    // (core/VectorShape.hpp): a shape with neither fill nor stroke still
+    // exists, still hit-tests and still round-trips.
+    const bool pathStrokeOff = !pathStyle.style.stroke.on;
+    if (atelierToggleChip(pathStyle.mixedStrokeOn ? "NONE ~##pathStrokeNone"
+                                                  : "NONE##pathStrokeNone",
+                          pathStrokeOff && !pathStyle.mixedStrokeOn)) {
+      const bool on = pathStrokeOff;
+      editPathStyle("stroke on", nullptr, [on](VectorStyle& vs) { vs.stroke.on = on; });
+    }
+    ImGui::SetItemTooltip(
+        "No stroke at all -- SVG's `stroke=\"none\"`, which is different from a "
+        "transparent one: the shape keeps no stroke rather than an invisible one.");
+
+    bandSeparator();
+    capsLabel("FILL");
+    ImGui::SameLine();
+    // **Fill is off by default and there is no width control for it**, because
+    // a fill is only defined over an enclosed region: filling an OPEN path
+    // means implicitly closing it, so the user would see a straight edge they
+    // never drew joining the last anchor back to the first, moving with every
+    // further click. app/VectorStyle.hpp section 2.
+    {
+      const std::array<float, 4>& lin = pathStyle.style.fill.rgba;
+      float enc[4] = {srgbEncode(lin[0]), srgbEncode(lin[1]), srgbEncode(lin[2]), lin[3]};
+      if (ImGui::ColorEdit4("##pathFillColor", enc,
+                            ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar |
+                                ImGuiColorEditFlags_AlphaPreviewHalf)) {
+        const std::array<float, 4> out = {srgbDecode(enc[0]), srgbDecode(enc[1]),
+                                          srgbDecode(enc[2]), enc[3]};
+        editPathStyle("fill colour", &gFillColor, [out](VectorStyle& vs) {
+          vs.fill.rgba = out;
+          vs.fill.on = true;
+        });
+      }
+    }
+    ImGui::SetItemTooltip(
+        "Fill colour. Setting one turns the fill ON.%s An OPEN path is filled as though "
+        "closed, which is SVG's rule and why this is off until you ask for it.",
+        pathStyle.mixedFillColor ? " The selection has more than one; this is the first "
+                                   "shape's."
+                                 : "");
+
+    ImGui::SameLine();
+    const bool pathFillOff = !pathStyle.style.fill.on;
+    if (atelierToggleChip(pathStyle.mixedFillOn ? "NONE ~##pathFillNone" : "NONE##pathFillNone",
+                          pathFillOff && !pathStyle.mixedFillOn)) {
+      const bool on = pathFillOff;
+      editPathStyle("fill on", nullptr, [on](VectorStyle& vs) { vs.fill.on = on; });
+    }
+    ImGui::SetItemTooltip("No fill at all -- SVG's `fill=\"none\"`. The default for a pen, "
+                          "which draws lines.");
+
+    ImGui::EndDisabled();
+    popAtelierMono();
 
     bandSeparator();
     capsLabel("MODE");

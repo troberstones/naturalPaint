@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 
 #include "core/Blend.hpp"
 #include "core/Document.hpp"
@@ -204,6 +205,13 @@ Layer makeTextLayer(std::string name);
 // is the kind's whole meaning.
 Layer makeFlatsLayer(std::string name);
 
+// A `LayerKind::Strokes` layer with no dab records (PLAN.md phase 8; PRD C1).
+// Same shape of emptiness as the makers above: no tiles, no mask, no ops.
+// Like an empty Text layer and unlike a Flats layer it draws nothing until
+// something is recorded into it -- a dab record is content, and there is no
+// dab record that means "flat whatever is beneath me".
+Layer makeStrokesLayer(std::string name);
+
 // A default name for a new group: "Group N", `defaultNewLayerName()`'s own
 // rule restricted to Group-kind layers -- see core/LayerOps.cpp.
 std::string defaultNewGroupName(const Document& doc);
@@ -250,6 +258,60 @@ LayerOpResult removeLayer(Document& doc, size_t index);
 // layer clips to is derived from position (core/Layer.hpp), so every other
 // reorder legitimately re-parents it, which is exactly what dragging a clipped
 // layer around a stack is for.
+// The contiguous run of layers directly below `groupIndex` whose `parent` names
+// that group -- PLAN.md Phase 5 section 5's invariant, read back rather than
+// assumed. A downward scan, so a same-tag layer that is NOT contiguous with the
+// group (a state this codebase's own operations never produce, but a hand-built
+// or hand-edited `Document` might) is simply not included: the same "absent
+// means neutral" answer core/Mask.hpp gives a missing tile. It does not crash
+// and it does not guess.
+//
+// Returns `[groupIndex + 1, groupIndex]` -- an empty, well-formed range with
+// `first > second` -- for a group with no members, so callers test
+// `first <= second` rather than special-casing size 0.
+//
+// **Here rather than in core/LayerSetOps, where it was file-local, because
+// `moveLayer()` below needs it.** A Group layer that reorders without its
+// members leaves them behind with a `parent` that still names it, which this
+// function then reads as "not members" -- the group arrives somewhere new and
+// empty, and the children stay where they were. That was a real defect, and it
+// was invisible from inside LayerSetOps because every operation THERE moves
+// spans already.
+std::pair<size_t, size_t> groupMemberSpan(const Document& doc, size_t groupIndex);
+
+// **The group a layer landing in a given slot joins**, or "" for none. The
+// slot is named by its two neighbours *after* the move: `aboveIndex` is the
+// layer that will sit directly on top of it and `belowIndex` the one directly
+// under, either of which may be out of range at an end of the stack.
+//
+// This is `moveLayer()`'s re-parenting rule, and it is deliberately positional:
+// **`parent` follows position.** A layer dragged out of a group that kept its
+// old tag still draws indented under a group it is no longer part of (the
+// panel's `layerGroupDepth()` reads `parent`, not contiguity), and one dragged
+// into the middle of a group's run used to splice itself in and orphan every
+// member below it -- the group silently losing layers with nothing on screen
+// to say so.
+//
+// The rule, in the two shapes it takes:
+//
+//   * **Directly under a Group's own row** -- that slot has exactly one
+//     meaning, "the group's topmost member", so it joins. This is also the
+//     only way to put the first member into an empty group.
+//   * **Otherwise, both neighbours must belong to the same group.** Landing
+//     under a group's LOWEST member with something ungrouped below is a drop
+//     *past* the group, not into it.
+//
+// **The known cost, stated rather than hidden:** you cannot drag a layer into
+// a group's bottom-most slot -- landing there reads as "below the group", and
+// there is no second gesture to tell the two apart in a flat list with no
+// insertion caret. Drop it one row higher and reorder inside. The alternative
+// rule (consult only the row above) makes the reverse case impossible instead:
+// with a group's lowest member at index 0 there would be no slot at all for
+// "put this at the bottom of the stack", and a layer would be swallowed into a
+// group with no way to keep it out. An unreachable slot beats an unreachable
+// intent.
+std::string layerGroupTagForSlot(const Document& doc, size_t aboveIndex, size_t belowIndex);
+
 LayerOpResult moveLayer(Document& doc, size_t from, size_t to);
 
 // Inserts a deep copy of the layer at `index` **directly above it**, at

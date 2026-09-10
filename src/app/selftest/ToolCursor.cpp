@@ -516,7 +516,7 @@ bool runToolCursorTest() {
           "were written with while still unbuilt -- the promise above, collected three times");
   }
 
-  std::printf("  -- G. §7's bitmap cursors: non-blank, hotspot bounds, and flag-off identity --\n");
+  std::printf("  -- G. §7's bitmap cursors, and §8's hotspot: ink, layout, flag-off identity --\n");
 
   {
     // Headless the same way sections A-F are: `rasterizeToolCursorBitmap()`
@@ -638,90 +638,265 @@ bool runToolCursorTest() {
           "bitmap: ...and every one of those hotspots lands inside its own glyph's drawn "
           "bounding box");
 
-    // **The reported defect, as an assertion rather than a claim.** "The lasso
-    // draw point comes from the centre of the cursor, not the tail of the
-    // lasso" was the bug; in-bounds (above) does not catch it, because the
-    // centre of a glyph is emphatically in bounds. These three pin the actual
-    // placement, and the second half of each is what makes it a test of the
-    // FIX rather than of the shape: a regression to centre-of-glyph reddens
-    // them, and nothing above.
     // Like `alphaBounds` above, but restricted to the glyph's own black ink --
     // excluding `ui/ToolCursor.cpp`'s `applyCursorOutline()` white halo, which
     // by design paints INTO pixels that were transparent in the original
-    // glyph and would otherwise widen every one of these bounds outward by
-    // the halo's radius. The three checks just below pin a hotspot to the
-    // exact edge of the GLYPH -- the lasso's tail, the wand's tip -- not to
-    // the edge of a couple of pixels of pure decoration drawn outside it, so
-    // this is the bounds function that actually answers the question those
-    // checks ask. `p[0] != 0` is enough to tell the two apart because every
-    // pixel this file draws is either black ink (`setPixel()`, RGB 0/0/0) or
-    // the halo's white (`applyCursorOutline()`, RGB 255/255/255) -- nothing
-    // else ever writes into a cursor bitmap.
-    auto inkBounds = [](const CursorBitmap& b, int* minX, int* minY, int* maxX, int* maxY) {
-      bool any = false;
-      *minX = *minY = 0;
-      *maxX = *maxY = 0;
-      for (int y = 0; y < b.height; ++y)
+    // glyph. The checks below are about where the tool DREW, so a couple of
+    // pixels of pure decoration outside it must not count. `p[0] != 0` is
+    // enough to tell the two apart because every pixel this file draws is
+    // either black ink (`setPixel()`, RGB 0/0/0) or the halo's white
+    // (`applyCursorOutline()`, RGB 255/255/255) -- nothing else ever writes
+    // into a cursor bitmap.
+    auto isCoreInk = [](const CursorBitmap& b, int x, int y) {
+      if (x < 0 || y < 0 || x >= b.width || y >= b.height) return false;
+      const size_t idx = (static_cast<size_t>(y) * b.width + x) * 4;
+      return b.rgba[idx + 3] == 255 && b.rgba[idx] == 0;
+    };
+
+    // -- G1b. §8: the hotspot is a pixel the cursor actually DREW ----------
+    //
+    // **This is the measured defect, as an assertion.** The rule §7 shipped
+    // resolved each hotspot as a fraction of its glyph's inked BOUNDING BOX,
+    // and a bounding box's corner is not a point on the drawing: instrumented
+    // at the shipping 24x24, nine of the twenty-nine hotspots sat on a fully
+    // transparent pixel (Measure five pixels from its own ink) and six more on
+    // ink below alpha 22, which is the invisible outermost fringe. G2 below
+    // passed for every one of them, because "inside the bounding box" is
+    // exactly the weaker claim a bounding-box anchor cannot fail.
+    //
+    // So this is the claim that had to be made instead, and it is the one the
+    // report is actually about: **the pixel the OS points with is a pixel the
+    // user can see.** Full alpha and black, not merely non-zero -- an
+    // anti-aliased fringe at alpha 4 is transparent to a human eye, and
+    // accepting it here is how fifteen of these passed for a release.
+    // **Over EVERY tool, and the count below is what says so.** A first
+    // revision of this block looped over `bitmapCursors` -- T17's five -- while
+    // its own assertion text said "every tool's hotspot". Five of twenty-nine,
+    // none of them a §10 member, and it was a sabotage that carved a nib's slit
+    // through its own hotspot which exposed it: the cursor was broken and this
+    // line stayed green. That is the same narrow-set mistake as the
+    // bounding-box claim it replaced, made while replacing it.
+    bool everyHotspotOpaqueInk = true, everyHotspotIsCrosshair = true, everyGlyphInked = true;
+    int hotspotsChecked = 0;
+    for (int ti = 0; ti < static_cast<int>(Tool::Count); ++ti) {
+      const Tool tool = static_cast<Tool>(ti);
+      if (!toolHasBitmapCursor(tool)) continue;
+      ++hotspotsChecked;
+      const CursorBitmap b = rasterizeToolCursorBitmap(tool);
+      const bool opaque = isCoreInk(b, b.hotspotX, b.hotspotY);
+      // §8's layout: the crosshair's centre is design (8, 23), and these
+      // bitmaps are rasterised at scale 1.0, so the pixel IS (6, 26).
+      // §10's exception: a tool whose icon IS a pointer wears no crosshair,
+      // so it is excluded from this claim and carries its own, below. Excluded
+      // by the SAME predicate the rasteriser branches on -- a test with its own
+      // list of exceptions is a second place for the exception to be wrong.
+      const bool onCross = toolCursorPointsFromItsTip(tool)
+                               ? (b.hotspotX != 8 || b.hotspotY != 23)
+                               : (b.hotspotX == 8 && b.hotspotY == 23);
+      // ...and there is still a PICTURE. The crosshair's topmost pixel is
+      // y = 23 - 6 = 17, so any core ink above that row came from the tool's
+      // own glyph rather than from the shared crosshair. Without this line a
+      // rasteriser that lost the glyph entirely would ship twenty-nine
+      // identical crosshairs and satisfy every other check in this section.
+      // §10's shapes have no crosshair at all, and both of them reach well
+      // above row 17, so the same probe holds for them without an exception.
+      // **Any ink, not FULLY OPAQUE ink, and the difference was measured.**
+      // `Tool::Crop` and `Tool::Frame` are thin Lucide outlines: at the glyph
+      // slot's 17 design units not one of their pixels reaches alpha 255, so
+      // an `isCoreInk()` probe here calls them blank while they are drawn
+      // perfectly well. The hotspot claim above wants full opacity because it
+      // is about one pixel a human has to SEE; this claim only wants to know a
+      // picture is there, and black-at-any-alpha is what says that. The halo
+      // is white, so testing the red channel is what separates the two.
+      int glyphInk = 0;
+      for (int y = 0; y < 17; ++y)
         for (int x = 0; x < b.width; ++x) {
           const size_t idx = (static_cast<size_t>(y) * b.width + x) * 4;
-          if (b.rgba[idx + 3] == 0 || b.rgba[idx] != 0) continue;  // transparent, or the white halo
-          if (!any) {
-            *minX = *maxX = x;
-            *minY = *maxY = y;
-            any = true;
-          } else {
-            *minX = std::min(*minX, x);
-            *maxX = std::max(*maxX, x);
-            *minY = std::min(*minY, y);
-            *maxY = std::max(*maxY, y);
-          }
+          if (b.rgba[idx + 3] != 0 && b.rgba[idx] == 0) ++glyphInk;
         }
-      return any;
-    };
-
-    auto anchorReport = [&](Tool t, const char* what) {
-      const CursorBitmap b = rasterizeToolCursorBitmap(t);
-      int x0, y0, x1, y1;
-      alphaBounds(b, &x0, &y0, &x1, &y1);
-      std::printf("    %-16s %-14s hotspot (%d,%d) in x[%d,%d] y[%d,%d], centre (%d,%d)\n",
-                  toolName(t), what, b.hotspotX, b.hotspotY, x0, x1, y0, y1, (x0 + x1) / 2,
-                  (y0 + y1) / 2);
-      return b;
-    };
-
-    {
-      const CursorBitmap lasso = anchorReport(Tool::Lasso, "tail");
-      int x0, y0, x1, y1;
-      inkBounds(lasso, &x0, &y0, &x1, &y1);
-      check(lasso.hotspotX == x0 && lasso.hotspotY == y1 && lasso.hotspotY != (y0 + y1) / 2,
-            "hotspot: the lasso points from its TAIL -- the bottom-left of its own ink -- and "
-            "that is provably not the centre of the loop, which is where a centre-of-glyph "
-            "rule put it and which is the bug this line was written for");
+      if (!opaque) everyHotspotOpaqueInk = false;
+      if (!onCross) everyHotspotIsCrosshair = false;
+      if (glyphInk == 0) everyGlyphInked = false;
+      // Only the failures and §10's two are printed by name: twenty-nine
+      // identical "opaque ink" rows are not a table anybody reads, and the
+      // count assertion below is what covers the silent ones.
+      if (!opaque || !onCross || glyphInk == 0 || toolCursorPointsFromItsTip(tool))
+        std::printf("    %-22s hotspot (%2d,%2d) %-10s ink above the crosshair row: %d px\n",
+                    toolName(tool), b.hotspotX, b.hotspotY, opaque ? "opaque ink" : "NOT INK",
+                    glyphInk);
     }
-    {
-      const CursorBitmap wand = anchorReport(Tool::MagicWand, "tip");
-      int x0, y0, x1, y1;
-      inkBounds(wand, &x0, &y0, &x1, &y1);
-      check(wand.hotspotX == x1 && wand.hotspotY == y0,
-            "hotspot: the wand points from its TIP -- the top-right end of the shaft, where "
-            "the icon draws its sparkles -- not from the middle of the stick");
-    }
-    {
-      const CursorBitmap zoom = anchorReport(Tool::Zoom, "lens");
-      int x0, y0, x1, y1;
-      alphaBounds(zoom, &x0, &y0, &x1, &y1);
-      check(zoom.hotspotX < (x0 + x1) / 2 && zoom.hotspotY < (y0 + y1) / 2,
-            "hotspot: the magnifier points through its LENS, up and left of the icon's own "
-            "centre -- the icon is a lens plus a handle running to the lower right, so its "
-            "bounding-box centre sits on the glass's rim rather than in the middle of it");
-    }
+    // **The coverage claim, without which the three below can narrow silently.**
+    // This is the line the first revision of this block did not have, and its
+    // absence is exactly what let five tools stand in for twenty-nine.
+    check(hotspotsChecked == static_cast<int>(Tool::Count),
+          "hotspot: all of the tools were checked, not a named handful -- the three "
+          "assertions below iterate whatever this loop covered, so the count IS their scope");
+    check(everyHotspotOpaqueInk,
+          "hotspot: every tool's hotspot is a FULLY OPAQUE black pixel of the cursor's own "
+          "ink -- not merely inside its bounding box (G2, which fifteen hotspots satisfied "
+          "while pointing at nothing) and not an alpha-4 anti-aliased fringe either");
+    check(everyHotspotIsCrosshair,
+          "hotspot: ...and it is §8's crosshair centre (8,23) for every tool that wears the "
+          "composite -- one layout rule, so a tool added tomorrow inherits a correct hotspot "
+          "with no entry in any table -- while §10's tip-pointing tools are provably NOT "
+          "there, which is what says the exception actually took effect");
+    check(everyGlyphInked,
+          "hotspot: ...and every cursor still carries a tool picture above the crosshair row "
+          "-- a rasteriser that drew only the crosshair would pass both lines above while "
+          "making all twenty-nine cursors identical");
 
-    // -- G2. every hotspot lands inside the pixels it is a hotspot OF --
+    // **The glyph still says WHICH tool.** §8 demotes it from "the thing that
+    // points" to "the thing that identifies", so this is now the whole of its
+    // job and it is worth one line: all twenty-nine bitmaps are pairwise
+    // distinct. `everyGlyphInked` above proves a glyph is drawn; only this
+    // proves a DIFFERENT one is drawn for each tool.
+    // Every tool again, for the reason above: five bitmaps being distinct says
+    // nothing about the twenty-four that were not compared.
+    std::vector<std::pair<Tool, std::vector<uint8_t>>> all;
+    for (int ti = 0; ti < static_cast<int>(Tool::Count); ++ti) {
+      const Tool tool = static_cast<Tool>(ti);
+      if (!toolHasBitmapCursor(tool)) continue;
+      all.emplace_back(tool, rasterizeToolCursorBitmap(tool).rgba);
+    }
+    bool allDistinct = true;
+    for (size_t i = 0; i < all.size() && allDistinct; ++i)
+      for (size_t j = i + 1; j < all.size(); ++j)
+        if (all[i].second == all[j].second) {
+          std::printf("    %s and %s rasterise IDENTICALLY\n", toolName(all[i].first),
+                      toolName(all[j].first));
+          allDistinct = false;
+          break;
+        }
+    check(allDistinct,
+          "hotspot: all of the tool cursors are pairwise distinct bitmaps -- the crosshair is "
+          "shared by design, so the glyph is the only thing that can differ and this is what "
+          "says it does");
+
+    // -- G1c. the crosshair is clear of the canvas edge -------------------
     //
-    // **This is the answer to objection 2** -- "a hotspot nothing in
-    // --selftest could check". A hotspot outside the drawn glyph would put
-    // the OS's notion of "where this cursor points" on a transparent pixel,
-    // which is sabotage (b)'s target.
+    // **Found by eye, not by this suite, which is why it is now a line.**
+    // `applyCursorOutline()` draws the white halo INSIDE the existing canvas,
+    // so a shape whose ink reaches an edge simply has no halo on that side.
+    // The marquee pair shipped its crosshair at (6, 26) with 5-unit arms --
+    // bottom pixel on row 31 of 31 -- and against a dark canvas that lower arm
+    // ended in nothing. Harmless for two cursors; not harmless once the
+    // crosshair is the click-point affordance on all twenty-nine.
+    //
+    // Checked at BOTH scales `create()` actually installs, because the margin
+    // is in design units and the rounding to pixels is where it would be lost.
+    // A pixel beyond each of the four arm tips must be halo: alpha above zero
+    // and white, which is `applyCursorOutline()`'s own colour and nothing
+    // else's.
+    auto haloBeyondEveryArm = [](const CursorBitmap& b, int arm) {
+      const int probes[4][2] = {{b.hotspotX - arm - 1, b.hotspotY},
+                                {b.hotspotX + arm + 1, b.hotspotY},
+                                {b.hotspotX, b.hotspotY - arm - 1},
+                                {b.hotspotX, b.hotspotY + arm + 1}};
+      for (const auto& pt : probes) {
+        if (pt[0] < 0 || pt[1] < 0 || pt[0] >= b.width || pt[1] >= b.height) return false;
+        const size_t idx = (static_cast<size_t>(pt[1]) * b.width + pt[0]) * 4;
+        if (b.rgba[idx + 3] == 0 || b.rgba[idx] != 255) return false;
+      }
+      return true;
+    };
+    bool everyArmOutlined = true;
+    for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
+      const Tool t = static_cast<Tool>(i);
+      if (!toolHasBitmapCursor(t)) continue;
+      if (toolCursorPointsFromItsTip(t)) continue;  // §10: no crosshair, no arms
+      // The arm length is `px(6, scale)` -- §8's `kCrossArm` through the same
+      // rounding the generator used. Written out rather than shared, because a
+      // test that computed it from the same constant the code did would agree
+      // with a wrong constant.
+      if (!haloBeyondEveryArm(rasterizeToolCursorBitmap(t, 1.0f), 6)) everyArmOutlined = false;
+      if (!haloBeyondEveryArm(rasterizeToolCursorBitmap(t, cursorBaseScale()), 5))
+        everyArmOutlined = false;
+    }
+    // -- G1d. §10: the arrow points from its own tip ----------------------
+    //
+    // The exception §8 admitted to and this section is where it is held. Three
+    // claims, and the second is the one the request is actually about.
+    {
+      int tipTools = 0;
+      for (int i = 0; i < static_cast<int>(Tool::Count); ++i)
+        if (toolCursorPointsFromItsTip(static_cast<Tool>(i))) ++tipTools;
+      check(tipTools == 2 && toolCursorPointsFromItsTip(Tool::PathSelect) &&
+                toolCursorPointsFromItsTip(Tool::Pen) && !toolCursorPointsFromItsTip(Tool::Curve),
+            "arrow: §10 has exactly TWO members, Path Select and the Pen, and Curve is NOT "
+            "one -- the exception is a named list, not a policy that could quietly grow back "
+            "into the per-tool placement §8 deleted. Curve places anchors exactly as the Pen "
+            "does, so its exclusion is the line that says §10's bar is the icon's shape");
+
+      // Every §10 member, not the one this section was written for. Without
+      // the loop, adding the Pen to the predicate would have inherited exactly
+      // nothing from these three claims -- the shape that catches a regression
+      // is the one that iterates the same predicate the rasteriser branches on.
+      bool everyTipIsATip = true, everyTipOutlined = true;
+      for (int ti = 0; ti < static_cast<int>(Tool::Count); ++ti) {
+      const Tool tipTool = static_cast<Tool>(ti);
+      if (!toolCursorPointsFromItsTip(tipTool)) continue;
+      const CursorBitmap a = rasterizeToolCursorBitmap(tipTool);
+      // **"From its tip", stated so a regression cannot satisfy it.** The
+      // hotspot must be the topmost row that carries any of the arrow's own
+      // ink, and the leftmost inked pixel on that row. Nothing above it, and
+      // nothing to its left on its own row: that is what a tip IS, and it is
+      // false for any placement further into the body.
+      bool nothingAbove = true, nothingLeftOnItsRow = true;
+      for (int y = 0; y < a.height; ++y)
+        for (int x = 0; x < a.width; ++x) {
+          if (!isCoreInk(a, x, y)) continue;
+          if (y < a.hotspotY) nothingAbove = false;
+          if (y == a.hotspotY && x < a.hotspotX) nothingLeftOnItsRow = false;
+        }
+      std::printf("    %-22s hotspot (%d,%d) topmost=%s leftmost-on-row=%s\n",
+                  toolName(tipTool), a.hotspotX, a.hotspotY, nothingAbove ? "yes" : "NO",
+                  nothingLeftOnItsRow ? "yes" : "NO");
+      if (!(nothingAbove && nothingLeftOnItsRow)) everyTipIsATip = false;
+
+      // **Orthogonal neighbours, not the diagonal one, and that is a fact
+      // about `applyCursorOutline()` rather than a convenience.** Its halo is
+      // a disc of radius `strokeWidth(scale)`, so at the base scale -- radius
+      // 1 -- `dx*dx + dy*dy <= 1` admits the four edge neighbours and excludes
+      // the four corners. A first version of this line probed the diagonal and
+      // went red against a perfectly good arrow.
+      //
+      // Checking the two edges that meet AT the tip proves both halves anyway:
+      // the outline reached the tip, and the arrow is clear of the canvas edge
+      // where the outline would have nowhere to go -- the §8 defect that was
+      // found by eye rather than by this file.
+      auto haloAt = [&](int x, int y) {
+        if (x < 0 || y < 0 || x >= a.width || y >= a.height) return false;
+        const size_t d = (static_cast<size_t>(y) * a.width + x) * 4;
+        return a.rgba[d + 3] != 0 && a.rgba[d] == 255;
+      };
+      if (!(haloAt(a.hotspotX - 1, a.hotspotY) && haloAt(a.hotspotX, a.hotspotY - 1)))
+        everyTipOutlined = false;
+      }
+      check(everyTipIsATip,
+            "arrow: every §10 cursor's hotspot is its TIP -- no ink of its own above it, none "
+            "to its left on its own row. A hotspot further into the body of the arrow or the "
+            "nib fails this, and so does a regression to §8's composite");
+      check(everyTipOutlined,
+            "arrow: ...and the two pixels just outside each tip, left and above, are white "
+            "halo -- the tip is outlined, and it is not sitting on the canvas edge where the "
+            "outline would have nowhere to go");
+    }
+
+    check(everyArmOutlined,
+          "hotspot: all four of the crosshair's arms end in a WHITE HALO pixel, at 1x and at "
+          "the shipping scale -- an arm that reached the canvas edge would lose its outline "
+          "there and vanish against a dark canvas, which is what the marquee's own lower arm "
+          "used to do");
+
+    // -- G2. the coarse version of G1b, and the bounds report ------------
+    //
+    // This was hpp §7's answer to "a hotspot nothing in --selftest could
+    // check", and it was too weak: every one of the fifteen hotspots §8
+    // measured as pointing at nothing satisfied it. G1b above is the claim
+    // that actually holds the line now. This one is KEPT for its printout --
+    // the per-tool bounds are what makes a hotspot regression readable rather
+    // than merely red -- and because a bitmap whose ink moved out from under
+    // a still-correct hotspot reddens here first.
 
     bool everyHotspotInBounds = true;
     for (size_t i = 0; i < std::size(bitmapCursors); ++i) {
@@ -736,20 +911,19 @@ bool runToolCursorTest() {
     }
     check(everyHotspotInBounds,
           "bitmap: every hotspot lies inside its own bitmap's drawn (non-transparent) "
-          "bounding box -- a hotspot on a transparent pixel points at nothing, which is "
-          "sabotage (b)'s target");
+          "bounding box -- the coarse form of G1b, kept for its bounds report");
 
     // **The specific claim the report makes for the marquee pair**: the
     // hotspot is the CROSSHAIR's centre, not the shape's own centre and not
-    // the canvas's centre. `drawMarqueeCrosshair()` places the crosshair at
-    // (6, 26) and the shape's centre near (20, 12) in its 32x32 canvas --
+    // the canvas's centre. `drawHotspotCrosshair()` places the crosshair at
+    // (8, 23) and the shape's centre near (20, 12) in its 32x32 canvas --
     // both pinned here so a generator that moved the crosshair without
     // moving the hotspot with it, or vice-versa, cannot pass by accident.
     const CursorBitmap& marqueeBitmap = bitmaps[0];
     const CursorBitmap& ellipseMarqueeBitmap = bitmaps[1];
-    check(marqueeBitmap.hotspotX == 6 && marqueeBitmap.hotspotY == 26 &&
-              ellipseMarqueeBitmap.hotspotX == 6 && ellipseMarqueeBitmap.hotspotY == 26,
-          "bitmap: both marquees' hotspot is the crosshair's own centre pixel (6, 26) -- "
+    check(marqueeBitmap.hotspotX == 8 && marqueeBitmap.hotspotY == 23 &&
+              ellipseMarqueeBitmap.hotspotX == 8 && ellipseMarqueeBitmap.hotspotY == 23,
+          "bitmap: both marquees' hotspot is the crosshair's own centre pixel (8, 23) -- "
           "the exact bug report ('a crosshair at the bottom-left') is about this point, not "
           "merely about SOME pixel inside the composite");
     check(marqueeBitmap.hotspotX != marqueeBitmap.width / 2 || marqueeBitmap.hotspotY != marqueeBitmap.height / 2,
@@ -878,8 +1052,8 @@ bool runToolCursorTest() {
       // through the SAME rounding the crosshair's own arms went through, not
       // a second rounding of the same product.
       const CursorBitmap m = rasterizeToolCursorBitmap(Tool::Marquee, s);
-      const int hx = static_cast<int>(std::lround(6.0 * static_cast<double>(s)));
-      const int hy = static_cast<int>(std::lround(26.0 * static_cast<double>(s)));
+      const int hx = static_cast<int>(std::lround(8.0 * static_cast<double>(s)));
+      const int hy = static_cast<int>(std::lround(23.0 * static_cast<double>(s)));
       if (m.hotspotX != hx || m.hotspotY != hy) everyHotspotTracks = false;
       std::printf("    %.4fx -> %dx%d canvas, marquee hotspot (%d,%d), %zu inked px\n",
                   static_cast<double>(s), m.width, m.height, m.hotspotX, m.hotspotY,
@@ -920,8 +1094,8 @@ bool runToolCursorTest() {
           "path that only works at its original 22px is a blank cursor for an accessibility "
           "user, which is the failure this whole section is about");
     check(everyHotspotTracks,
-          "scale: the marquee hotspot is round(6*s), round(26*s) at every scale -- it tracks "
-          "the crosshair it is the hotspot OF, rather than staying at (6,26) while the "
+          "scale: the marquee hotspot is round(8*s), round(23*s) at every scale -- it tracks "
+          "the crosshair it is the hotspot OF, rather than staying at (8,23) while the "
           "crosshair moves away from it");
 
     // **The non-vacuity check, and the one that catches a hairline.** A
@@ -962,6 +1136,81 @@ bool runToolCursorTest() {
   // assertions still reach main.cpp's `ok` chain, but a reader scanning a run
   // for section names cannot see that it ran at all -- which is how a section
   // that silently stopped being called gets missed.
+
+  std::printf("  -- I. §9's precise cursor: Caps Lock, and the gate under it --\n");
+
+  {
+    // Headless like everything above it: a bitmap and a pure predicate. What
+    // this section CANNOT see is the same thing section G cannot -- that
+    // `apply()` really consults the predicate, and that `main.cpp` really
+    // passes `SDL_GetModState()` into it. Both are one line each and both are
+    // outside a suite that never makes a window; stated here rather than left
+    // for a reader to assume, because §7's own three-times-too-big bug was
+    // exactly a fact this file could not see and did not admit to not seeing.
+    const CursorBitmap precise = rasterizePreciseCursorBitmap(cursorBaseScale());
+    std::printf("    precise -> %dx%d, hotspot (%d,%d), %s\n", precise.width, precise.height,
+                precise.hotspotX, precise.hotspotY, precise.nonBlank ? "non-blank" : "BLANK");
+    check(precise.nonBlank,
+          "precise: §9's crosshair rasterises to visible ink -- it draws no glyph and touches "
+          "no font, so a blank one here is the procedural path itself having failed");
+
+    // The centre, and it is INK. Same claim G1b makes for every tool cursor,
+    // and it matters for the same reason: this is the shape whose entire
+    // purpose is saying where the click lands.
+    const size_t centreIdx =
+        (static_cast<size_t>(precise.hotspotY) * precise.width + precise.hotspotX) * 4;
+    check(precise.hotspotX == precise.width / 2 && precise.hotspotY == precise.height / 2 &&
+              precise.rgba[centreIdx + 3] == 255 && precise.rgba[centreIdx] == 0,
+          "precise: its hotspot is the canvas centre AND a fully opaque black pixel -- the "
+          "point where the two arms cross, which is the only placement a bare crosshair has");
+
+    // Not a tool cursor wearing a different name: it carries no glyph, so it
+    // must differ from all twenty-nine. A `rasterizePreciseCursorBitmap()`
+    // that forwarded to `rasterizeToolCursorBitmap()` would satisfy both
+    // lines above.
+    bool differsFromEveryTool = true;
+    for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
+      const Tool t = static_cast<Tool>(i);
+      if (!toolHasBitmapCursor(t)) continue;
+      if (rasterizeToolCursorBitmap(t, cursorBaseScale()).rgba == precise.rgba)
+        differsFromEveryTool = false;
+    }
+    check(differsFromEveryTool,
+          "precise: and it is not any tool's cursor -- Caps Lock shows a shape with no glyph "
+          "on it at all, which is the whole reason to reach for it");
+
+    // -- the gate, exhaustively --
+    //
+    // Four booleans' worth of input (`bitmapsEnabled`, `capsLock`,
+    // `toolRequest` present or not, `hasPreciseBitmap`), so the truth table is
+    // sixteen rows and there is no reason to sample it. The rule: TRUE in
+    // exactly one row, and `toolRequest.has_value()` is the term that keeps
+    // Caps Lock from turning the LAYERS filter box's I-beam into a crosshair.
+    bool tableCorrect = true;
+    int trueRows = 0;
+    for (int bits = 0; bits < 16; ++bits) {
+      const bool enabled = (bits & 1) != 0, caps = (bits & 2) != 0;
+      const bool overCanvas = (bits & 4) != 0, hasBitmap = (bits & 8) != 0;
+      const std::optional<Tool> req =
+          overCanvas ? std::optional<Tool>(Tool::Brush) : std::nullopt;
+      const bool got = shouldUsePreciseCursor(enabled, caps, req, hasBitmap);
+      const bool want = enabled && caps && overCanvas && hasBitmap;
+      if (got != want) tableCorrect = false;
+      if (got) ++trueRows;
+    }
+    check(tableCorrect && trueRows == 1,
+          "precise: the gate's whole 16-row truth table is right, and exactly ONE row is true "
+          "-- a term dropped from the conjunction shows up here as two true rows, not as a "
+          "single case somebody forgot to sample");
+
+    // The one term worth naming on its own, because it is the one a reader
+    // would most plausibly consider redundant: over a panel there is no tool
+    // request, and Caps Lock must do nothing there.
+    check(!shouldUsePreciseCursor(true, true, std::nullopt, true),
+          "precise: Caps Lock over a PANEL is not a crosshair -- §9 is a canvas override, and "
+          "dropping this term would put a crosshair over the layer list and the menus");
+  }
+
   std::printf("[selftest] tool cursor %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

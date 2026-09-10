@@ -497,7 +497,7 @@ class TransformSession {
   // **`layerIndex_` can stop meaning what it meant in the SAME document.** An
   // index does not survive the list moving under it, and the list can move
   // while a gizmo is up: `Layer > Delete Layer` is reachable from the menu
-  // bar, which a live transform does not gate (docs/testing-issues.md T28).
+  // bar, which a live transform does not gate (docs/testing-issues.md T29).
   //
   // Measured before this member existed, on a four-layer document with the
   // session begun on the layer named `L0` sitting at index 1: deleting layer 0

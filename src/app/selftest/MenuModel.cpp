@@ -199,12 +199,25 @@ bool runMenuModelTest() {
   // the paragraph above demands, rather than by adding two to 90.
   // 92 -> 93: `Pigment` (Window > Pigment), the check item that turns
   // `ControlsSection::Pigment`'s Hidden-by-default placement on -- counted
-  // the same way, off `MenuAction`'s enumerators (94 including `Count`).
-  check(kMenuActionCount == 93,
-        "ids: exactly 93 actions -- the original 41-item extraction plus D1/D2's "
+  // the same way, off `MenuAction`'s enumerators (100 including `Count`).
+  //
+  // **94 -> 98 at this merge, and neither side of it was right.** `main` had
+  // reached 94 via `Batch` (File > Batch..., automation step 7); the phase 8
+  // and 9 branch had reached 97 via four of its own -- `Inpaint`,
+  // `RemoveLightingGradient`, `Offset` and `TilePreview`. Both figures were
+  // green on their own tree and each under-counted the other by exactly what
+  // the other added, so a merge that kept either literal would have left this
+  // tripwire passing while the vocabulary it guards was four or one short.
+  //
+  // This is the fourth consecutive edition of this comment to say the same
+  // thing, which is itself the finding: **count the enumerators in the merged
+  // header. Never add your delta to the number you found here.**
+  check(kMenuActionCount == 98,
+        "ids: exactly 98 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
-        "dialog, Brush Settings, the crop pair and Pigment, so an item lost in a "
+        "dialog, Brush Settings, the crop pair, Pigment, Batch, Inpaint, D8's "
+        "make-tileable pair and the 3x3 repeat preview, so an item lost in a "
         "later edit fails here");
 
   {
@@ -525,7 +538,7 @@ bool runMenuModelTest() {
 
   std::printf("  -- E2. which menu actions END a live transform --\n");
   {
-    // docs/testing-issues.md T28. The tool palette is GREYED while a gizmo is
+    // docs/testing-issues.md T29. The tool palette is GREYED while a gizmo is
     // up; the menu bar deliberately is not, because greying it would take
     // Undo, Save and Quit with it. It resolves the transform instead.
     //

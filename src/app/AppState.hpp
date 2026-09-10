@@ -13,9 +13,12 @@
 #include "app/BrushLibraryFile.hpp"
 #include "app/CloseDecision.hpp"
 #include "app/CropTool.hpp"
+#include "app/ActionsPanel.hpp"
+#include "app/BatchDialog.hpp"
 #include "app/PanelLayout.hpp"
 #include "app/PenTool.hpp"
 #include "app/TextTool.hpp"
+#include "app/TilePreview.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/DocumentPresets.hpp"
 #include "app/GradientTool.hpp"
@@ -26,6 +29,7 @@
 #include "app/StrokeBake.hpp"
 #include "app/TransformSession.hpp"
 #include "app/UserBrushLibrary.hpp"
+#include "app/VectorStyle.hpp"
 #include "core/Clipboard.hpp"
 #include "flats/FlatsLayer.hpp"
 #include "flats/Model.hpp"
@@ -66,7 +70,12 @@ namespace np {
 // app/StrokeSession.hpp §1's Eraser rows). **`CloneStamp` has left it too**,
 // and routes to StrokeRoute::CloneStamp on a writable RGB layer -- with its
 // source anchor living on this struct rather than on the session, for the
-// reason `CloneSourceState` below spells out. Each earns real
+// reason `CloneSourceState` below spells out. **`Heal` never sat in that list
+// at all**: it is the one value in this enum added after the palette was
+// drawn, and it arrived already routed -- StrokeRoute::Heal on a writable RGB
+// layer, brush/Heal, PRD D6 -- reading the SAME `CloneSourceState` its flyout
+// sibling does (that member's own comment argues why one anchor serves both).
+// Each earns real
 // behaviour on its own PRD id and phase, per docs/ui.md section 4's table --
 // which is also where MEASURE and SLICE's earlier "Dropped" disposition is
 // reversed: the palette keeps them for now, and per the user's own words,
@@ -111,6 +120,20 @@ enum class Tool {
   Measure,
   Frame,
   CloneStamp,
+  // PRD D6, PLAN.md Phase 8. A flyout sibling of `CloneStamp` and a `Tool`
+  // value of its own for `EllipseMarquee`'s stated reason: docs/shortcuts.md
+  // section 1 reserves `J` for it, docs/ui.md section 2b puts it in slot 7
+  // beside the clone, and **a flyout member IS a `Tool` value** in
+  // ui/AtelierChrome's `kToolGroups` -- a mode flag on `CloneStamp` would need
+  // its own parallel routing everywhere `Tool` is switched on, for no gain.
+  //
+  // It is inserted HERE, immediately after the tool it varies, rather than
+  // appended at the end. The run below the divider is the wireframe's palette
+  // order, and this enum's order is load-bearing rather than historical
+  // (`kToolMeta` is one row per value in it) -- so a new value goes where the
+  // palette says it belongs, which is the same instinct that put Water and
+  // DryBrush beside Brush.
+  Heal,
   Eraser,
   PaintBucket,
   Gradient,
@@ -123,6 +146,22 @@ enum class Tool {
   Text,
   Shape,
   Slice,
+  // PLAN/docs/path-editing-plan.md section 3.1. **Appended here rather than
+  // inserted beside `Pen`**, which is where it belongs on screen: ui/
+  // AtelierChrome's `kToolMeta` is one row per value in THIS order with a
+  // static_assert on the count, so a tool's slot in the enum is load-bearing
+  // and its slot in the PALETTE is `kToolGroups`' business. This is the rule
+  // Eraser, Lasso, PaintBucket and the rest already follow -- "a tool
+  // shipping moves its comment, never its slot" -- read the other way round:
+  // a tool ARRIVING takes the next slot, wherever it is displayed.
+  //
+  // It joins `Pen` and `Curve` in their flyout group, which holds four, so
+  // this adds no palette CELL -- docs/ui.md section 2's 28-cell count is
+  // untouched. That mattered: the SHAPE/COMPONENT mode segment exists
+  // precisely because a black-arrow/white-arrow pair would have added two
+  // cells the UI spec does not have. One flyout sibling is not two cells,
+  // so the segment survives and becomes this tool's own options row.
+  PathSelect,
   Count
 };
 
@@ -728,7 +767,7 @@ enum class FlatsTool {
   BridgeEraser,  // drag        -> FlatBridgeStroke{erase}
   Group,         // lasso       -> FlatGroup
   ShapeFill,     // lasso       -> FlatShapeFill
-  SelectEdits,   // click       -> remove the nearest recorded edit
+  SelectEdits,   // click/box   -> select recorded edits; Delete removes them
 };
 
 // One row of the FLATS TOOLS palette. `shortcut` is the chord ADR-0009's
@@ -740,32 +779,45 @@ struct FlatsToolRow {
   const char* label;
   const char* shortcut;
   const char* tip;
+  // **The Lucide icon, so the palette draws like the tool palette.** The
+  // name is carried beside the codepoint for the same reason `kToolMeta`
+  // carries both: app/selftest/AtelierChrome checks every name against
+  // `third_party/lucide/codepoints.json`, so a mistyped codepoint is a red
+  // line rather than a blank cell. Every one of these was read out of that
+  // file, none guessed.
+  //
+  // `UNBRIDGE` deliberately shares `eraser` with `Tool::Eraser`: it IS an
+  // eraser, and `toolIconCodepoints()` deduplicates, so the shared glyph
+  // costs the font merge nothing.
+  const char* iconName;
+  uint32_t codepoint;
 };
 inline constexpr size_t kFlatsToolCount = 9;
 inline constexpr FlatsToolRow kFlatsTools[kFlatsToolCount] = {
     {FlatsTool::DeleteFill, "DELETE", "K",
      "Click a fill to delete it. Recorded as a mark at that point, so the fill stays deleted "
-     "when the line art changes and the drawing re-flats."},
-    {FlatsTool::MergePair, "MERGE", "M",
+     "when the line art changes and the drawing re-flats.", "square-minus", 57713u},
+    {FlatsTool::MergePair, "MERGE", "U",
      "Click one fill, then another: the second merges into the first. Recorded as the two "
-     "points, never as the two region ids they resolved to."},
+     "points, never as the two region ids they resolved to.", "combine", 58444u},
     {FlatsTool::Carve, "CARVE", "â¥G",
-     "Click inside a leaked area to cut a new fill out of it, using GAP as the ball radius."},
+     "Click inside a leaked area to cut a new fill out of it, using GAP as the ball radius.", "scissors", 57678u},
     {FlatsTool::DrawMerge, "DRAW MERGE", "â§U",
      "Drag from one fill across others: everything the stroke crosses merges into the fill it "
-     "started in."},
+     "started in.", "git-merge", 57572u},
     {FlatsTool::BridgePen, "BRIDGE", "B",
      "Draw an invisible barrier across a broken line so the fill stops there. Never rendered "
-     "and never exported -- it only closes the gap."},
-    {FlatsTool::BridgeEraser, "UNBRIDGE", "E", "Rub out a bridge you drew."},
+     "and never exported -- it only closes the gap.", "pen-line", 57648u},
+    {FlatsTool::BridgeEraser, "UNBRIDGE", "E", "Rub out a bridge you drew.", "eraser", 57999u},
     {FlatsTool::Group, "GROUP", "â§K",
      "Lasso round some fills to group them. Membership is recomputed from the lasso path on "
-     "every re-flat, so it survives edits to the line art."},
+     "every re-flat, so it survives edits to the line art.", "group", 58468u},
     {FlatsTool::ShapeFill, "SHAPE", "Y",
      "Lasso a fill by hand. It is stamped after segmentation and wins over whatever the "
-     "segmenter put there, because you drew it on purpose."},
-    {FlatsTool::SelectEdits, "UNDO EDIT", "â§V",
-     "Click near a repair you recorded to remove just that one, leaving the rest."},
+     "segmenter put there, because you drew it on purpose.", "lasso-select", 57807u},
+    {FlatsTool::SelectEdits, "SELECT EDITS", "â§V",
+     "Click a recorded repair to select it, Shift-click to add, or drag a box round several. "
+     "Delete removes the selection; Esc clears it.", "undo-dot", 58449u},
 };
 
 // A per-session override of the three physical constants that otherwise
@@ -817,6 +869,12 @@ struct AppState {
   // questions about a tool history it has none of.
   ToolSwitchState tools;
   CanvasView view;
+  // PRD D8 / PLAN.md Phase 9: the 3x3 repeat preview. Beside `view` rather
+  // than inside it, because every field of `CanvasView` is an input to
+  // `app/ViewTransform`'s matrix and none of these are -- this changes how
+  // many times that one transform is applied, never what it is
+  // (app/TilePreview.hpp).
+  TilePreviewState tilePreview;
   SimParams sim;
 
   // PRD **Q10** (P0): "Eyedropper picks into the foreground colour, with
@@ -957,6 +1015,39 @@ struct AppState {
   // state, not document state -- what the document keeps is the recorded edit
   // the release produces.
   FlatPolyline flatsStroke;
+
+  // **The flats lasso's own in-progress flag.** GROUP and SHAPE accumulate a
+  // path exactly as `Tool::Lasso` does, but they must not borrow
+  // `marqueeDragging` to say so. That flag already has several writers, and
+  // the selection block's `else` arm clears it every frame the block does not
+  // run -- which is every frame a flats tool owns the canvas. A gesture whose
+  // live flag a sibling wipes is the defect `marqueeDragging` produced once
+  // already (the gradient tool never committed a single drag), so this is a
+  // separate bool with exactly one writer.
+  bool flatsLassoActive = false;
+
+  // **The recorded repairs the user has SELECTED**, as `flatEditKey()` values.
+  //
+  // A flatting edit is a persistent object in the layer, not a command that
+  // ran once -- so it needs the vocabulary every other persistent object
+  // has: you can see it, click it, Shift-click to add, drag a box round
+  // several, and press Delete. That is what SELECT EDITS is; it replaced a
+  // click that removed the nearest repair outright, which gave the user no
+  // way to see what they were about to lose.
+  //
+  // Session state, and deliberately transient: a key means nothing except
+  // against one layer's edit list, so `app/ToolSwitch` clears this on every
+  // tool change and the canvas clears it when the active layer changes.
+  // Removal itself goes through `flatRemoveEdits()` in ONE call, so a
+  // multi-edit delete is one undo step.
+  std::vector<uint64_t> flatsEditSelection;
+  // The box-select drag in progress, [x0,y0,x1,y1] in texel space; the first
+  // two are the anchor and do not move. Empty when no drag is in flight.
+  std::optional<std::array<float, 4>> flatsEditBox;
+  // Whether the box-select drag that is in flight ADDS to the selection --
+  // latched at mouse-down for `marqueeCombine`'s own documented reason: Shift
+  // is read once, at the start, not from a hand that moved during the drag.
+  bool flatsEditBoxAdditive = false;
   // The active layer's kind on the previous frame, so ui/MacPaintUI can
   // reveal the FLATS TOOLS flyout on the TRANSITION into a Flats layer
   // rather than every frame one is selected. Level-triggering it would
@@ -1050,6 +1141,27 @@ struct AppState {
   TextStyle textStyle;
   TextAlign textAlign = TextAlign::Left;
 
+  // **The style the NEXT pen-drawn shape gets, and what the options bar's
+  // STROKE/FILL controls edit when nothing is selected.** `textStyle` above
+  // is the exact precedent and the argument for both is the same one, so it
+  // is not restated here; `app/VectorStyle.hpp` carries the rest, including
+  // why the defaults are stroke-ON / fill-OFF (a pen is a line, and filling
+  // an open path means implicitly closing it, which draws an edge the user
+  // never made).
+  //
+  // The difference from `textStyle` is section 3 of that header: these
+  // controls are **selection-first**. With shapes selected they edit those
+  // shapes and record a document edit; only with nothing selected do they
+  // write here. That is why the row shows the SELECTION's width and colour
+  // rather than this struct's whenever a selection exists.
+  //
+  // `stroke.rgba` is overwritten by `foregroundLinearRgba()` on the way into
+  // a newly placed shape (`ui/MacPaintUI.hpp`'s `penVectorStyle()`), for the
+  // reason `textStyle`'s own comment gives for having no `fill`: a third
+  // colour store beside the foreground and the shape would be a colour the
+  // user set that nothing painted with.
+  VectorStyle vectorStyle;
+
   // `--text-demo frame`'s pin, `pathEditDemo` above's exact twin and for the
   // identical reason: the paragraph-frame rubber band exists ONLY while the
   // pointer is down, and a screenshot run has no pointer down.
@@ -1085,7 +1197,25 @@ struct AppState {
   // obvious one says so in the band, in the same voice.
   std::string lastPickReport;
 
-  // --- the Clone Stamp's source (brush/CloneStamp) ------------------------
+  // --- the source shared by the Clone Stamp and the Heal tool -------------
+  //     (brush/CloneStamp, brush/Heal)
+  //
+  // **One anchor for both tools, not one each.** They are flyout siblings in
+  // palette slot 7 and they answer the same question -- "copy from *there*" --
+  // differing only in what they do to the texels on the way (`brush/Heal` §0).
+  // A painter who Option-clicks a clean patch of skin and then switches from
+  // Clone to Heal on the same blemish means the same source; two anchors would
+  // make that switch silently forget it, and would make an Option-click with
+  // the wrong one of the two tools selected look like it had done nothing. It
+  // would also duplicate every rule below -- the discard-on-reanchor, the
+  // aligned latch, the not-persisted lifetime -- in a second struct that could
+  // then drift from this one.
+  //
+  // The cost, stated: setting a source for one tool moves it for the other.
+  // That is visible (the source marker is drawn under both) and it is the
+  // behaviour a shared gesture should have; Photoshop keeps them separate, and
+  // when someone wants that it is a second member here plus a selector, not a
+  // change to any rule below.
   //
   // **Where this lives was the tool's first design question, and `AppState` is
   // the answer rather than `StrokeSession`.** Both were candidates; the
@@ -1200,6 +1330,36 @@ struct AppState {
   // views photograph, and the only way to reach those panels' populated state
   // from a launch flag (they are blank unless a Flats layer is active).
   bool flatsDemo = false;
+  // `--flats-demo edits`: the same fixture, plus one recorded repair of every
+  // kind and a selection over two of them, with SELECT EDITS picked. The
+  // artifacts are drawn on the CANVAS, so no panel crop can reach them and no
+  // arrangement of panels can produce them.
+  bool flatsDemoEdits = false;
+  // `--actions-demo`: the ACTIONS panel docked in the right dock, expanded,
+  // holding a recorded action -- the fixture the two ACTIONS golden views
+  // photograph. `--actions-demo recording` leaves the take LIVE instead, with
+  // a refusal in it, which is the panel's other state and the one no
+  // arrangement of panels can reach (it needs a recorder that is armed and a
+  // step that was refused).
+  bool actionsDemo = false;
+  bool actionsDemoRecording = false;
+
+  // T?: the ACTIONS panel's own state -- the take being edited, the selected
+  // row and the last sentence it has to say (app/ActionsPanel.hpp).
+  //
+  // Session state and deliberately not persisted, for the reason that header
+  // gives: an action that matters is a file in the library, and restoring a
+  // half-finished take from three launches ago would present it as the thing
+  // the user was doing.
+  ActionsPanelState actionsPanel;
+
+  // The BATCH dialog's model (docs/automation-plan.md step 7,
+  // app/BatchDialog.hpp). Here rather than `static` inside the drawer for the
+  // reason the ACTIONS panel's state is: `--open-batch` has to be able to fill
+  // it in before the first frame so a golden view can photograph a known
+  // state, and function-local statics are reachable only from inside the
+  // function that owns them.
+  BatchDialogState batchDialog;
 
   // --- Selection and clipboard commands, consumed in ui/MacPaintUI ---------
   //
@@ -1428,6 +1588,10 @@ struct AppState {
   // Comps / Layers To Files... modal open, so a `--screenshot` can photograph
   // it. `openLayerMenu`'s justification exactly -- a modal is opened by a
   // click and the screenshot path has no input.
+  bool openBatchDialog = false;
+  // `--open-batch report` also fills `batchDialog.report` with a synthetic one,
+  // so the report half can be photographed without a run. See main.cpp.
+
   bool openExportStatesDialog = false;
   // --open-export-states <FOLDER>: prefills that dialog's output folder, so a
   // `--screenshot` can photograph the plan table -- the list of exact

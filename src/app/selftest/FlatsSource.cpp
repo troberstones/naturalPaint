@@ -2,8 +2,10 @@
 
 #include "app/DocumentLifecycle.hpp"
 #include "app/LayerEditor.hpp"
+#include "core/DirtyTiles.hpp"
 #include "core/LayerOps.hpp"
 #include "flats/FlatsLayer.hpp"
+#include "flats/Tool.hpp"
 
 namespace np {
 
@@ -162,6 +164,153 @@ bool runFlatsSourceTest() {
           "is transparent with the flag on and opaque white with it off");
   }
 
+  // --- Part B3: an EDIT invalidates the cached evaluation ----------------
+  //
+  // The gap between two things that are each already tested. `flats/`'s own
+  // suite proves a recorded edit replays -- "K records a delete mark", "which
+  // merges the two fills on evaluation" -- but it calls `flatEvaluate()`
+  // directly. `flatsEvaluateLayer()` is the CACHED front door the UI actually
+  // uses, and its key is the half this task rewrote: it used to be
+  // `contentHash + beneathSignature` and is now `contentHash +
+  // sourceSignature`. Nothing asserted that an edit still moves that key.
+  //
+  // A failure here is exactly the symptom to fear: every flatting tool
+  // records its edit, every undo step lands, and the picture never changes,
+  // because the cache keeps handing back the evaluation from before the edit.
+  {
+    Document doc = Document::createBlank(48, 32, WorkingSpace{});
+    for (int y = 0; y < 32; ++y)
+      for (int x = 0; x < 48; ++x) {
+        const PixelCoord at{x, y};
+        doc.layers[0].rgbTiles->getOrCreate(tileCoordAt(at)).writePixel(tileLocalOffset(at),
+                                                                        {1.f, 1.f, 1.f, 1.f});
+      }
+    auto box = [&](int x0, int y0, int x1, int y1) {
+      for (int x = x0; x <= x1; ++x) { paint(doc, 0, x, y0); paint(doc, 0, x, y1); }
+      for (int y = y0; y <= y1; ++y) { paint(doc, 0, x0, y); paint(doc, 0, x1, y); }
+    };
+    box(4, 4, 18, 27);
+    box(26, 4, 42, 27);
+    addLayer(doc, 1, makeFlatsLayer("Flats"));
+
+    std::shared_ptr<const FlatEvaluation> before = flatsEvaluateLayer(doc, 1);
+    auto liveFills = [](const std::shared_ptr<const FlatEvaluation>& e) {
+      size_t n = 0;
+      if (e)
+        for (const int r : e->roots()) {
+          const FlatFill& f = e->fills[static_cast<size_t>(r)];
+          if (!f.isBg && !f.deleted) ++n;
+        }
+      return n;
+    };
+    check(before && liveFills(before) == 2,
+          "flats cache: the fixture evaluates to exactly two fills before any edit");
+
+    // The delete the DELETE tool records, through the same function the
+    // canvas route calls.
+    const bool marked = flatsDeleteFill(doc.layers[1], *before, 11, 15);
+    check(marked, "flats cache: flatsDeleteFill records a mark on the fill under (11,15)");
+
+    std::shared_ptr<const FlatEvaluation> after = flatsEvaluateLayer(doc, 1);
+    check(after && after != before,
+          "flats cache: **an edit invalidates the cached evaluation** -- a second call returns a "
+          "NEW evaluation, not the pointer from before the edit");
+    check(liveFills(after) == 1,
+          "flats cache: ...and the re-evaluation actually reflects the delete, so the picture the "
+          "compositor rasterises changes");
+
+    // The tiles the compositor draws follow the evaluation, not a stale copy
+    // of their own: `flatsLayerTiles()` keeps its own cache entry beside the
+    // evaluation and rebuilds when the evaluation pointer moves.
+    std::shared_ptr<const TileStore> tiles = flatsLayerTiles(doc, 1);
+    check(tiles != nullptr,
+          "flats cache: and the layer rasterises through flatsLayerTiles() after the edit");
+  }
+
+  // --- Part B4: a flats edit reaches the SCREEN --------------------------
+  //
+  // The half Part B3 does not cover, and the one that was actually broken.
+  // B3 proves the model re-evaluates and the tiles rebuild; this proves the
+  // compositor is ever ASKED to. `core/DirtyTiles`' pass 1 is a whitelist --
+  // kind, ops, mask presence, tile-store presence -- and a Flats layer holds
+  // none of those, so every flatting edit compared EQUAL and
+  // ui/DocumentTexture took its "the revision moved and nothing the
+  // compositor reads did" branch. The edit landed, the evaluation refreshed,
+  // the tiles rebuilt correctly, and the screen never changed until something
+  // unrelated dirtied the canvas -- **toggling the layer's eye off and on
+  // was how the user had to see their own edits.**
+  //
+  // `LayerKind::Vector` and `LayerKind::Text` each hit this exact bug before
+  // and each carries an enumerator and a test for it. Flats is the third
+  // parametric kind and was missed, so this is the third copy of the same
+  // argument, deliberately.
+  {
+    Document before = Document::createBlank(32, 32, WorkingSpace{});
+    addLayer(before, 1, makeFlatsLayer("Flats"));
+
+    // Every kind of recorded repair, one at a time, plus a parameter. Named
+    // per mutation so a miss says which one stopped reaching the screen --
+    // the Text section's own idiom, for its reason: a hash covering the
+    // delete marks and nothing else would pass a single assertion and fail
+    // the moment a user drew a bridge.
+    struct Mutation {
+      const char* what;
+      void (*apply)(FlatsContent&);
+    };
+    static const Mutation kMutations[] = {
+        {"a deleted fill", [](FlatsContent& c) { c.edits.deleteMarks.push_back({1, 5.f, 6.f}); }},
+        {"a merge pair",
+         [](FlatsContent& c) { c.edits.mergePairs.push_back({1, 1.f, 2.f, 3.f, 4.f}); }},
+        {"a carve", [](FlatsContent& c) { c.edits.carves.push_back({1, 7.f, 8.f}); }},
+        {"a bridge stroke",
+         [](FlatsContent& c) {
+           FlatBridgeStroke b;
+           b.id = 1;
+           b.pts = {1.f, 1.f, 9.f, 9.f};
+           c.edits.bridges.push_back(b);
+         }},
+        {"a hand-drawn shape fill",
+         [](FlatsContent& c) {
+           FlatShapeFill f;
+           f.id = 1;
+           f.pts = {0.f, 0.f, 8.f, 0.f, 8.f, 8.f};
+           c.edits.shapeFills.push_back(f);
+         }},
+        {"a group",
+         [](FlatsContent& c) {
+           FlatGroup g;
+           g.id = 1;
+           g.name = "hair";
+           g.path = {0.f, 0.f, 4.f, 0.f, 4.f, 4.f};
+           c.edits.groups.push_back(g);
+         }},
+        {"the SHEET parameter", [](FlatsContent& c) { c.params.sheet = 12.0f; }},
+        {"the GAP parameter", [](FlatsContent& c) { c.params.gapSize = 9; }},
+        {"the PALETTE size", [](FlatsContent& c) { c.params.paletteSize = 7; }},
+    };
+    for (const Mutation& m : kMutations) {
+      Document after = before;
+      m.apply(after.layers[1].flats);
+      const DocumentDirtyTiles d = documentDirtyTiles(before, after);
+      const std::string label =
+          std::string("flats screen: ") + m.what +
+          " forces a recomposite -- without this the edit lands in the model and never appears";
+      check(d.reason == FullRecompositeReason::FlatsContentChanged, label.c_str());
+      check(d.everything || !d.tiles.empty(),
+            "flats screen: ...and the dirty set is non-empty, which is what ui/DocumentTexture "
+            "tests before deciding the texture is already correct");
+    }
+
+    // The mirror image: an untouched Flats layer must NOT force a full
+    // recomposite, or "detect a change" has become "always redraw" and every
+    // assertion above passes for the wrong reason -- at ~215 ms per
+    // evaluation, on every frame.
+    Document same = before;
+    check(documentDirtyTiles(before, same).reason != FullRecompositeReason::FlatsContentChanged,
+          "flats screen: an untouched Flats layer does NOT force a recomposite -- at a fifth of "
+          "a second per evaluation, 'always redraw' would be a worse bug than the one this fixes");
+  }
+
   // --- Part C: the bake's three source modes -----------------------------
   //
   // `ExcludeTarget` is the default because the old behaviour was a defect:
@@ -218,6 +367,7 @@ bool runFlatsSourceTest() {
     check(layerCommandAvailable(od.document, LayerCommand::ToggleFlatsReference, 0),
           "flats reference: the command is offered on an ordinary layer");
   }
+
 
   std::printf("[selftest] flats source %s\n", ok ? "PASS" : "FAIL");
   return ok;

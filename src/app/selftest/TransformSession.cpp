@@ -735,7 +735,7 @@ bool runTransformSessionTest() {
   // Section 14's defect, one level down, and it was reachable with one menu
   // item. `layerIndex_` is an index into the ACTIVE document's layer list, and
   // an index does not survive that list moving -- `Layer > Delete Layer` is
-  // live from the menu bar while a gizmo is up (docs/testing-issues.md T28).
+  // live from the menu bar while a gizmo is up (docs/testing-issues.md T29).
   //
   // Driven against the old code first, on the fixture below: the commit was
   // NOT refused. It resampled `L1`, a layer the user had never transformed,

@@ -19,9 +19,11 @@ namespace {
 constexpr ControlsSection kAllSections[] = {
     ControlsSection::Tools,        ControlsSection::Options,   ControlsSection::Color,
     ControlsSection::Layers,       ControlsSection::History,   ControlsSection::Comps,
+    ControlsSection::Actions,
     ControlsSection::FlatsSegmentation,
     ControlsSection::Grade,        ControlsSection::Histogram, ControlsSection::BrushLibrary,
     ControlsSection::Brush,        ControlsSection::FlatsTools,
+    ControlsSection::Paths,
     ControlsSection::Pigment,      ControlsSection::Medium,
     ControlsSection::BoardTilt,    ControlsSection::Grid,      ControlsSection::Solver,
 };
@@ -110,8 +112,17 @@ bool runPanelLayoutTest() {
       // starts on the rail rather than spending a grip of a dock that does
       // not scroll. app/PanelLayout's `defaultPlacementFor()` carries the
       // argument in full.
+      //
+      // ACTIONS is the fourth exception and the first `Document`-rolled one:
+      // recording is a deliberate act begun a few times a session, and a
+      // permanent grip in the right dock comes straight out of the LAYERS
+      // list. Same argument as FLATS TOOLS, same place it is written down
+      // (docs/automation-plan.md step 7). PATHS is the fifth, and it is FLATS
+      // TOOLS' argument again one layer kind later -- app/PanelLayout.cpp's
+      // `defaultPlacementFor()` says so in those words.
       if (e.section == ControlsSection::Tools || e.section == ControlsSection::Options ||
-          e.section == ControlsSection::FlatsTools)
+          e.section == ControlsSection::FlatsTools || e.section == ControlsSection::Actions ||
+          e.section == ControlsSection::Paths)
         continue;
       // PIGMENT is Simulation-rolled but starts Hidden, not Flyout -- see
       // `defaultPlacementFor()`'s own comment (app/PanelLayout.cpp) and
@@ -137,10 +148,24 @@ bool runPanelLayoutTest() {
     // recorded here because a count assertion is exactly where a merge
     // resolved by picking a side goes green while describing a rail nobody
     // has.
-    check(layout.sectionsIn(PanelPlacement::Flyout).size() == 7,
-          "panel layout: which is seven panels on the rail -- the four remaining View/Simulation "
-          "sections, GRADE, HISTOGRAM and FLATS TOOLS -- and the rail is not empty on a first "
-          "run, which is the mode the revamp was asked for by name");
+    //
+    // **Nine now, and neither branch that made it nine could see the other.**
+    // `automation` added ACTIONS and said eight; `main` added PATHS and said
+    // eight; both were right alone and both are wrong here. This assertion was
+    // written with the sentence "this is exactly the assertion a merge that
+    // picked a side would leave green while describing a rail nobody has" --
+    // and picking a side would in fact have left it RED, which is better than
+    // green and is why it counts rather than describes. 7 + ACTIONS + PATHS.
+    check(layout.sectionsIn(PanelPlacement::Flyout).size() == 9,
+          "panel layout: which is nine panels on the rail -- the four remaining "
+          "View/Simulation sections, GRADE, HISTOGRAM, FLATS TOOLS, ACTIONS and PATHS -- and "
+          "the rail is not empty on a first run, which is the mode the revamp was asked for "
+          "by name");
+    check(layout.placementOf(ControlsSection::Actions) == PanelPlacement::Flyout,
+          "panel layout: ACTIONS specifically -- on the rail, not in the right dock its "
+          "Document role would otherwise give it");
+    check(layout.placementOf(ControlsSection::Paths) == PanelPlacement::Flyout,
+          "panel layout: and PATHS specifically -- the same exception, one layer kind later");
 
     // Whatever is in the right dock is in `controlsSections()`'s own order --
     // i.e. the outgoing column's order with the flyout sections lifted out.
@@ -477,7 +502,7 @@ bool runPanelLayoutTest() {
         "naturalPaint-panel-layout 2\n"
         "panel layers right 1.000 0\n");
     check(exactlyOnceEach(missing),
-          "panel layout: a file naming one section still yields all seventeen");
+          "panel layout: a file naming one section still yields all eighteen");
     check(missing.placementOf(ControlsSection::Tools) == PanelPlacement::Left &&
               missing.placementOf(ControlsSection::Options) == PanelPlacement::Top,
           "panel layout: **an appended section arrives at its default placement**, not swept "

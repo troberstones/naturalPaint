@@ -26,6 +26,7 @@
 #include "io/OpSerial.hpp"
 #include "io/PathSerial.hpp"
 #include "io/FlatsSerial.hpp"
+#include "io/StrokesSerial.hpp"
 #include "io/TextSerial.hpp"
 
 // io/OiioBackend is the only translation unit that may include an
@@ -112,6 +113,12 @@ constexpr const char* kAttrText = "np:text";
 // `npflats1:` hex string (io/FlatsSerial). One attribute rather than the
 // migration doc's three, for the reason that header gives.
 constexpr const char* kAttrFlats = "np:flats";
+// A Strokes layer's whole content -- every dab record and the id allocator --
+// as one `npdabs1:` hex string (io/StrokesSerial). The deferral this
+// module's own header reserved by name; that header's entry and
+// io/StrokesSerial's say why it is a string and not the format table's
+// `<blob>`.
+constexpr const char* kAttrStrokes = "np:dabs";
 // The colour label and the link group (PLAN.md Phase 5 step 11; PRD C15).
 //
 // **Scalars, and deliberately not a third string carrier.**
@@ -296,7 +303,7 @@ bool isLayerAttributeRecognised(const std::string& name) {
          name == kAttrClipped || name == kAttrLabel || name == kAttrLink ||
          name == kAttrGroupId || name == kAttrAlphaLocked || name == kAttrFlatsRef ||
          name == kAttrVector ||
-         name == kAttrText || name == kAttrFlats;
+         name == kAttrText || name == kAttrFlats || name == kAttrStrokes;
 }
 
 NpaintAttribute stringAttr(const char* name, std::string value) {
@@ -762,6 +769,16 @@ NpaintRawPart buildTextLayerPart(const Layer& layer, const std::string& partName
 // derived on open -- io/FlatsSerial explains why the label field is not
 // written), and EXR needs the one channel to open the file at all.
 NpaintRawPart buildFlatsLayerPart(const Layer& layer, const std::string& partName) {
+  return buildAdjustmentLayerPart(layer, partName);
+}
+
+// A Strokes layer's part (PLAN.md phase 8). Adjustment's shape a fifth time,
+// and for the identical two reasons: the layer holds no pixels (its content
+// is `np:dabs`, and its rasterised marks are DERIVED -- from the records and
+// from the composite beneath the layer, which is why writing them would defeat
+// PRD D6 on the next open), and a zero-channel `ImageSpec` makes this
+// OpenEXR plugin refuse the WHOLE FILE at `open()`.
+NpaintRawPart buildStrokesLayerPart(const Layer& layer, const std::string& partName) {
   return buildAdjustmentLayerPart(layer, partName);
 }
 
@@ -1528,16 +1545,15 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     if (layer.kind != LayerKind::RGB && layer.kind != LayerKind::Pigment &&
         layer.kind != LayerKind::Adjustment && layer.kind != LayerKind::Group &&
         layer.kind != LayerKind::Vector && layer.kind != LayerKind::Text &&
-        layer.kind != LayerKind::Flats) {
+        layer.kind != LayerKind::Flats && layer.kind != LayerKind::Strokes) {
       return fail("save refused: layer " + std::to_string(i) + " (\"" + layer.name +
                   "\") is a " + layerKindName(layer.kind) +
                   " layer, and this build has no on-disk representation for that kind -- "
                   "docs/document-format.md stores Media layers as `pig.*`/`res.*` latent "
-                  "channels plus an `np:simParams` blob and Strokes layers as an `np:dabs` "
-                  "blob, and core::Layer has neither per-medium simulation state nor a dab "
-                  "list. Saving would drop the layer entirely, so nothing was written. Remove "
-                  "the layer, or convert it to an RGB or Pigment layer, to save this "
-                  "document.");
+                  "channels plus an `np:simParams` blob, and core::Layer has no per-medium "
+                  "simulation state to put in one. Saving would drop the layer entirely, so "
+                  "nothing was written. Remove the layer, or convert it to an RGB or Pigment "
+                  "layer, to save this document.");
     }
     if (layer.kind == LayerKind::Group &&
         (layer.rgbTiles.has_value() || layer.pigmentTiles.has_value())) {
@@ -1931,6 +1947,7 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
       case LayerKind::Vector: part = buildVectorLayerPart(layer, layerNames[i]); break;
       case LayerKind::Text: part = buildTextLayerPart(layer, layerNames[i]); break;
       case LayerKind::Flats: part = buildFlatsLayerPart(layer, layerNames[i]); break;
+      case LayerKind::Strokes: part = buildStrokesLayerPart(layer, layerNames[i]); break;
       default: part = buildLayerPart(layer, layerNames[i]); break;
     }
     part.attributes.push_back(stringAttr(kAttrKind, layerKindName(layer.kind)));
@@ -1993,6 +2010,15 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     const bool writesOwnFlats = layer.kind == LayerKind::Flats;
     if (writesOwnFlats)
       part.attributes.push_back(stringAttr(kAttrFlats, serializeFlatsContent(layer.flats)));
+    // **Strokes parts, unconditionally, for `np:text`'s and `np:flats`'
+    // reason**: a Strokes layer with no dab records yet is the state a layer
+    // made from the NEW popup is in, `nextDabId` is real content even when
+    // the list is empty, and no build before this one could save the kind at
+    // all -- the refusal above named it -- so there are no earlier bytes for
+    // a `!empty()` guard to protect.
+    const bool writesOwnStrokes = layer.kind == LayerKind::Strokes;
+    if (writesOwnStrokes)
+      part.attributes.push_back(stringAttr(kAttrStrokes, serializeStrokesContent(layer.strokes)));
     // **Written only when the layer is actually clipped** (PLAN.md Phase 5
     // step 9), for the reason `np:ops` and `np:mask` each state in their own
     // way: a document with no clipped layer has to keep producing the bytes
@@ -2042,7 +2068,8 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
             // not a Text layer. Two `np:text` attributes on one part would
             // leave OpenImageIO's last-write-wins to pick between them.
             !(a.name == kAttrText && !writesOwnText) &&
-            !(a.name == kAttrFlats && !writesOwnFlats))
+            !(a.name == kAttrFlats && !writesOwnFlats) &&
+            !(a.name == kAttrStrokes && !writesOwnStrokes))
           continue;
         part.attributes.push_back(a);
       }
@@ -2439,6 +2466,13 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     const bool isFlatsLayer = isLayerPartName(part.name) && namedKind &&
                               kind->stringValue == layerKindName(LayerKind::Flats) &&
                               adjustmentChannels && tileAligned;
+    // A Strokes part: the same one-channel shape under a sixth `np:kind`.
+    // `buildStrokesLayerPart()` is a fifth thin wrapper over
+    // `buildAdjustmentLayerPart()`, so the reader's test is again the
+    // identical `adjustmentChannels` predicate.
+    const bool isStrokesLayer = isLayerPartName(part.name) && namedKind &&
+                                kind->stringValue == layerKindName(LayerKind::Strokes) &&
+                                adjustmentChannels && tileAligned;
     // An alpha channel part (PRD E11, E13): `S####`, `np:kind = "selection"`,
     // and exactly one HALF channel named `coverage`. Matched by name like every
     // other channel here even though there is only one of them -- a part whose
@@ -2513,7 +2547,7 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     }
 
     if (!isRgbLayer && !isPigmentLayer && !isAdjustmentLayer && !isGroupLayer &&
-        !isVectorLayer && !isTextLayer && !isFlatsLayer) {
+        !isVectorLayer && !isTextLayer && !isFlatsLayer && !isStrokesLayer) {
       std::string reason;
       if (isChannelPartName(part.name)) {
         // An `S####` part that failed the test above. Worth its own sentence
@@ -2533,10 +2567,12 @@ NpaintLoadResult loadNpaint(const std::string& path) {
                  kind->stringValue != layerKindName(LayerKind::Adjustment) &&
                  kind->stringValue != layerKindName(LayerKind::Group) &&
                  kind->stringValue != layerKindName(LayerKind::Vector) &&
-                 kind->stringValue != layerKindName(LayerKind::Text)) {
+                 kind->stringValue != layerKindName(LayerKind::Text) &&
+                 kind->stringValue != layerKindName(LayerKind::Flats) &&
+                 kind->stringValue != layerKindName(LayerKind::Strokes)) {
         reason = "its np:kind is \"" + kind->stringValue +
-                 "\", and this build can only hold RGB, Pigment, Adjustment, group, Vector "
-                 "and Text layers (see io/NpaintFile.hpp's deferrals)";
+                 "\", and this build can only hold RGB, Pigment, Adjustment, group, Vector, "
+                 "Text, Flats and Strokes layers (see io/NpaintFile.hpp's deferrals)";
       } else if (kind->stringValue == layerKindName(LayerKind::Adjustment)) {
         reason = "it declares np:kind \"Adjustment\" but its channels are not exactly one "
                  "named mask, in half -- an Adjustment layer holds no pixels, so its part "
@@ -2551,6 +2587,11 @@ NpaintLoadResult loadNpaint(const std::string& path) {
                  "mask, in half -- a Text layer holds no pixels either, so its part carries "
                  "only the one channel EXR requires it to have (buildTextLayerPart() shares "
                  "Adjustment's shape), and its text lives in np:text";
+      } else if (kind->stringValue == layerKindName(LayerKind::Strokes)) {
+        reason = "it declares np:kind \"Strokes\" but its channels are not exactly one named "
+                 "mask, in half -- a Strokes layer holds no pixels either, so its part carries "
+                 "only the one channel EXR requires it to have (buildStrokesLayerPart() shares "
+                 "Adjustment's shape), and its dab records live in np:dabs";
       } else if (kind->stringValue == layerKindName(LayerKind::Group)) {
         reason = "it declares np:kind \"group\" but its channels are not exactly one named "
                  "mask, in half -- a Group holds no pixels, so its part carries only the one "
@@ -2613,6 +2654,7 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     bool vectorCarried = false;
     bool textCarried = false;
     bool flatsCarried = false;
+    bool strokesCarried = false;
     if (isAdjustmentLayer) {
       layer.kind = LayerKind::Adjustment;
       // No tile storage of any kind is engaged: that is the kind's definition,
@@ -2740,6 +2782,38 @@ NpaintLoadResult loadNpaint(const std::string& path) {
             "part '" + part.name +
             "' declares np:kind \"Flats\" but carries no np:flats attribute, so there are no "
             "parameters or repairs to read. The layer opened with defaults.");
+      }
+    } else if (isStrokesLayer) {
+      layer.kind = LayerKind::Strokes;
+      const NpaintAttribute* hasMask = findAttr(part.attributes, kAttrMask);
+      if (hasMask != nullptr && hasMask->type == NpaintAttribute::Type::Int &&
+          hasMask->intValue != 0) {
+        maskIdx = 0;
+        hasMaskChannel = true;
+      }
+      // `np:flats`' rules exactly: a future `npdabs2:` or a corrupt payload
+      // is not guessed at, the layer opens with no dabs, and the attribute
+      // stays in the carry so saving writes it back verbatim (PRD I10). A
+      // missing attribute is warned about, since this build always writes one.
+      if (const NpaintAttribute* d = findAttr(part.attributes, kAttrStrokes);
+          d != nullptr && d->type == NpaintAttribute::Type::String) {
+        std::string why;
+        if (!deserializeStrokesContent(d->stringValue, &layer.strokes, &why)) {
+          strokesCarried = true;
+          result.warnings.push_back("part '" + part.name + "': " + why);
+        }
+      } else if (d != nullptr) {
+        strokesCarried = true;
+        result.warnings.push_back(
+            "part '" + part.name +
+            "' has an np:dabs attribute that is not a string; this build's carrier is a hex "
+            "`string` (io/StrokesSerial), so the value could not be decoded. The layer opened "
+            "with no dab records and the attribute is written back unchanged (PRD I10).");
+      } else {
+        result.warnings.push_back(
+            "part '" + part.name +
+            "' declares np:kind \"Strokes\" but carries no np:dabs attribute, so there are no "
+            "dab records to read. The layer opened empty.");
       }
     } else if (isGroupLayer) {
       layer.kind = LayerKind::Group;
@@ -2875,7 +2949,8 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     for (const NpaintAttribute& a : part.attributes) {
       if (isLayerAttributeRecognised(a.name) && !(opsCarried && a.name == kAttrOps) &&
           !(vectorCarried && a.name == kAttrVector) && !(textCarried && a.name == kAttrText) &&
-          !(flatsCarried && a.name == kAttrFlats))
+          !(flatsCarried && a.name == kAttrFlats) &&
+          !(strokesCarried && a.name == kAttrStrokes))
         continue;
       unknown.push_back(a);
     }

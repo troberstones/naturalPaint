@@ -62,7 +62,13 @@ bool runLayerEditorTest() {
   // range is well defined to cast.
   {
     const std::vector<LayerCommand>& all = allLayerCommands();
-    check(all.size() == 23, "the menu walks all 23 commands");
+    // **24, not 23, as of PLAN.md phase 8**: `LayerCommand::NewStrokesLayer`
+    // joined the enum when `LayerKind::Strokes` gained a content member, so
+    // the New group is seven kinds rather than six. The number is the
+    // enumerator count and nothing else -- the scan below is what actually
+    // proves coverage; this line only stops the scan from silently agreeing
+    // with a shorter list.
+    check(all.size() == 24, "the menu walks all 24 commands");
     bool everyValueListed = true;
     size_t named = 0;
     for (int v = 0; v < 64; ++v) {

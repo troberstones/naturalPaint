@@ -354,14 +354,28 @@ bool runAtelierChromeTest() {
     }
     check(namesOk, "every tool has a distinct non-empty name");
     // The tripwire that makes the walk above complete rather than merely long,
-    // the same shape app/selftest/Fonts.cpp uses for LayerKind. 28 now, from
-    // 27, from an original 7: the palette rebuild added twenty slot-only
-    // cells, and PRD E3's elliptical marquee then added one more. It is a
-    // separate Tool value rather than a mode on Marquee because
-    // docs/shortcuts.md reserves `M` for "rectangle | ellipse" and a flyout
-    // member IS a Tool value (ui/AtelierChrome's kToolGroups).
-    check(std::string(toolName(static_cast<Tool>(28))) == "?",
-          "Tool still has exactly 28 values, so the walk above covers all of them");
+    // the same shape app/selftest/Fonts.cpp uses for LayerKind. 29 now, from
+    // 28, from 27, from an original 7: the palette rebuild added twenty
+    // slot-only cells, PRD E3's elliptical marquee added one, and this merge
+    // brought TWO more from two branches at once: `Tool::PathSelect`
+    // (docs/path-editing-plan.md §3.1) and PRD D6's `Tool::Heal` (PLAN.md
+    // Phase 8). Each is a separate Tool value rather than a mode on a sibling
+    // because a flyout member IS a Tool value (ui/AtelierChrome's
+    // kToolGroups) and docs/shortcuts.md reserves a letter row for each
+    // (`M` for "rectangle | ellipse", `J` for Heal).
+    //
+    // **30 values, still 28 palette CELLS.** PathSelect joined Pen and
+    // Curve's flyout slot and Heal joined Clone Stamp's, so docs/ui.md
+    // section 2's cell count is untouched by either -- the count this line
+    // guards is the enum's, not the palette's.
+    //
+    // **This literal did not conflict at the merge, and was wrong anyway.**
+    // Both branches moved it from 28 to 29 independently, so git took one 29
+    // and reported no conflict, leaving an assertion that Tool(29) is out of
+    // range on an enum where Tool(29) had become the thirtieth tool. Counted
+    // off the merged enum, not carried over from either side.
+    check(std::string(toolName(static_cast<Tool>(30))) == "?",
+          "Tool still has exactly 30 values, so the walk above covers all of them");
   }
 
   // --- Part F: the tool palette's icons ------------------------------------
@@ -442,11 +456,12 @@ bool runAtelierChromeTest() {
                                       Tool::Eraser,      Tool::PaintBucket,
                                       Tool::Gradient,    Tool::Pencil,
                                       Tool::Dodge,       Tool::Burn,
-                                      Tool::CloneStamp,  Tool::Smudge,
-                                      Tool::Hand,        Tool::Zoom,
-                                      Tool::Move,        Tool::Crop,
-                                      Tool::Pen,         Tool::Curve,
-                                      Tool::Text};
+                                      Tool::CloneStamp,  Tool::Heal,
+                                      Tool::Smudge,      Tool::Hand,
+                                      Tool::Zoom,        Tool::Move,
+                                      Tool::Crop,        Tool::Pen,
+                                      Tool::Curve,       Tool::Text,
+                                      Tool::PathSelect};
     bool implementedOk = true;
     for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
       const Tool t = static_cast<Tool>(i);
@@ -456,7 +471,7 @@ bool runAtelierChromeTest() {
       if (toolImplemented(t) != shouldBe) implementedOk = false;
     }
     check(implementedOk,
-          "toolImplemented() is true for exactly the twenty-five tools with real behaviour");
+          "toolImplemented() is true for exactly the twenty-seven tools with real behaviour");
 
     // Every tool has an icon, and toolIconCodepoints() is the deduplicated,
     // sorted union of all of them plus the "More" cell's own ellipsis --
@@ -474,6 +489,17 @@ bool runAtelierChromeTest() {
     }
     check(everyIconListed && std::find(merged.begin(), merged.end(), kMoreIconCodepoint) != merged.end(),
           "every tool's icon codepoint, plus the More cell's, is in toolIconCodepoints()");
+
+    // The FLATS TOOLS palette draws Lucide cells the same way, so its nine
+    // icons need the same merge -- and a missing one is the quietest possible
+    // failure: `drawToolGlyph()` returns false, the cell falls back to two
+    // letters, and nothing else in the build notices.
+    bool everyFlatsIconListed = true;
+    for (const FlatsToolRow& r : kFlatsTools)
+      if (r.codepoint == 0u || std::find(merged.begin(), merged.end(), r.codepoint) == merged.end())
+        everyFlatsIconListed = false;
+    check(everyFlatsIconListed,
+          "every FLATS TOOLS icon codepoint is in toolIconCodepoints() too");
 
     // "Every name you use MUST exist in codepoints.json -- verify each one
     // programmatically, do not guess" -- this is that verification, run
@@ -524,6 +550,21 @@ bool runAtelierChromeTest() {
       if (moreWant < 0 || static_cast<uint32_t>(moreWant) != kMoreIconCodepoint) codepointsMatch = false;
       check(codepointsMatch,
             "every icon name's codepoint matches third_party/lucide/codepoints.json exactly");
+
+      // The same verification for the flats palette, against the same file.
+      // "Do not guess" applies identically to nine names added later than the
+      // rule was written.
+      bool flatsCodepointsMatch = true;
+      for (const FlatsToolRow& r : kFlatsTools) {
+        const long want = lookup(r.iconName);
+        if (want < 0 || static_cast<uint32_t>(want) != r.codepoint) {
+          flatsCodepointsMatch = false;
+          std::printf("    %-20s codepoints.json says %ld, kFlatsTools says %u\n", r.iconName,
+                      want, r.codepoint);
+        }
+      }
+      check(flatsCodepointsMatch,
+            "every FLATS TOOLS icon name matches third_party/lucide/codepoints.json exactly");
     }
   }
 

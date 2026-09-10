@@ -248,18 +248,57 @@ bool enterTransformTool(AppState& st) noexcept;
 // Greying the menu would trap a user behind a box; greying these does not.
 const char* transformModalRefusal(const AppState& st) noexcept;
 
-// Pick a flatting tool (or `FlatsTool::None` to leave flatting mode), and
-// install the host tool ADR-0009's table gives it. The single writer of
-// `AppState::flatsTool`, for the reason this header gives about
-// `brush.tool`: two writers of "what does a click mean" is how a gesture
-// ends up meaning two things at once.
+// Drops the selected recorded edits (and any box-select drag in flight).
+// Called by both tool writers above: a `flatEditKey()` is only meaningful
+// against the edit list it was picked from.
+void clearFlatsEditSelection(AppState& st) noexcept;
+
+// Pick a flatting tool, or `FlatsTool::None` to leave flatting mode. The
+// single writer of `AppState::flatsTool`, for the reason this header gives
+// about `brush.tool`: two writers of "what does a click mean" is how a
+// gesture ends up meaning two things at once.
 //
-// Refused, changing nothing, under §5's live gizmo -- and it needs its own
-// check rather than inheriting `setActiveTool()`'s, because the switch
-// statement at the bottom of it writes `brush.tool` DIRECTLY (that function
-// would clear the very `flatsTool` this one is setting). Two writers of
-// `brush.tool` in this file means two places the gizmo has to be asked about.
+// (It no longer installs a host tool from ADR-0009's table. The two palettes
+// are independent now -- see the function's own comment for why that reversal
+// was safe, and what it would have broken before the flats canvas route owned
+// the lasso.)
+//
+// **Returns false, changing nothing, under §5's live gizmo**, and it needs
+// its own check rather than inheriting `setActiveTool()`'s: it does not route
+// through that function at all. `st.flatsTool` is a second answer to what a
+// click means and `flatsToolIsActive()` below makes that answer EXCLUSIVE, so
+// a flatting gesture armed under a gizmo hands the canvas away exactly as an
+// ordinary tool change would.
 bool setFlatsTool(AppState& st, FlatsTool next) noexcept;
+
+// **Is the flatting tool the active tool right now?**
+//
+// The tool state is EXCLUSIVE: at any instant either a regular tool is
+// active or a flatting tool is, never both. This is the predicate that
+// decides which, and it exists because the two palettes each draw a
+// selection and a user reading two lit cells cannot tell what a click will
+// do.
+//
+// The two directions are not symmetrical, and neither is arbitrary:
+//
+//   * Picking a regular tool clears `flatsTool` outright (`setActiveTool()`
+//     above). A deliberate pick is unambiguous, so flatting mode ends.
+//   * Picking a flatting tool leaves `brush.tool` alone -- it is REMEMBERED,
+//     not cleared -- and this predicate is what makes it stop counting as
+//     active. So leaving flatting mode gives back the tool the user had
+//     instead of dropping them on something they never chose, which is
+//     exactly what clearing it would cost. `enum class Tool` also has no
+//     "none" value to clear it TO, and inventing one would reach every
+//     switch, table and count assertion over `Tool` in the build for a state
+//     only this feature wants.
+//
+// Gated on the flatting tool actually being able to act -- a Flats layer
+// selected and unlocked -- and not merely on one being picked. With the
+// wrong layer selected the FLATS TOOLS palette already greys itself out and
+// the flats canvas route stands down, so the regular tool genuinely IS the
+// active one and must look like it. That keeps "exactly one palette lit"
+// true in both directions rather than producing a moment with neither.
+bool flatsToolIsActive(const AppState& st);
 
 // Whether any tool switch has happened yet this session. False at launch, and
 // `previousTool()` means nothing until it is true.

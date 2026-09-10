@@ -1,5 +1,7 @@
 #include "app/selftest/Support.hpp"
 
+#include <set>
+
 namespace np {
 
 // ---------------------------------------------------------------------------
@@ -590,6 +592,54 @@ bool runLayerStackTest() {
           "drop: the lower half of the bottom row lands at index 0, the bottom itself");
     check(layerDropTargetIndex(0, true, 1) == 0,
           "drop: a single-layer document has nowhere else for a drop to land");
+
+    // **A collapsed group's rows are not drawn, so its interior is not a slot
+    // the user can choose.** `layerDropTargetIndex()` is pure arithmetic on the
+    // hovered row and has to stay that way, so the snap is a second function
+    // over the document -- and without it, dropping on the row just under a
+    // collapsed group lands among members that are off screen and
+    // `core::moveLayer()` correctly makes the layer a member of a group the
+    // user cannot see inside.
+    {
+      Document doc = Document::createBlank(4, 4, WorkingSpace{});
+      doc.layers[0].name = "Below";
+      for (const char* n : {"M1", "M2"}) addLayer(doc, doc.layers.size(), makeRgbLayer(n));
+      Layer g = makeGroupLayer(doc, "G");
+      g.name = "G";
+      const std::string tag = g.groupTag;
+      addLayer(doc, 3, g);
+      addLayer(doc, 4, makeRgbLayer("Above"));
+      doc.layers[1].parent = tag;
+      doc.layers[2].parent = tag;
+      // [Below, M1, M2, G, Above]: the group's block is [1, 3].
+      std::set<std::string> collapsed;
+      std::set<std::string> none;
+      collapsed.insert(tag);
+
+      check(layerDropOutOfCollapsedGroups(doc, 4, 2, none) == 2,
+            "drop snap: with nothing collapsed the target is left exactly as the arithmetic "
+            "produced it -- this must not become a second opinion about where drops land");
+      check(layerDropOutOfCollapsedGroups(doc, 4, 2, collapsed) == 1,
+            "drop snap: a target in the LOWER half of a collapsed block snaps below the whole "
+            "block, to a slot the user can actually see");
+      check(layerDropOutOfCollapsedGroups(doc, 4, 3, collapsed) == 4,
+            "drop snap: ...and one in the upper half snaps above the group's own row");
+      check(layerDropOutOfCollapsedGroups(doc, 4, 1, collapsed) == 1 &&
+                layerDropOutOfCollapsedGroups(doc, 4, 4, collapsed) == 4,
+            "drop snap: the two slots that are already outside -- below the block and above "
+            "its row -- are untouched");
+      check(layerDropOutOfCollapsedGroups(doc, 3, 2, collapsed) == 2,
+            "drop snap: dragging the collapsed group ITSELF is never snapped out of its own "
+            "block, or a group could not be reordered while collapsed");
+
+      // The end of it: the snapped target really does leave the layer out.
+      Document moved = doc;
+      const size_t to = layerDropOutOfCollapsedGroups(moved, 4, 2, collapsed);
+      check(moveLayer(moved, 4, to).ok && moved.layers[1].name == "Above" &&
+                moved.layers[1].parent.empty(),
+            "drop snap: and the move that follows leaves the dragged layer OUTSIDE the "
+            "collapsed group -- the snap is only worth anything end to end");
+    }
 
     Layer row;
     row.kind = LayerKind::RGB;

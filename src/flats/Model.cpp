@@ -695,31 +695,73 @@ std::vector<FlatMergePair> flatClusterSmall(const FlatEvaluation& e, int maxArea
   return out;
 }
 
+std::vector<FlatEditItem> flatEditList(const FlatEdits& edits) {
+  std::vector<FlatEditItem> out;
+  out.reserve(edits.bridges.size() + edits.mergeStrokes.size() + edits.mergePairs.size() +
+              edits.deleteMarks.size() + edits.shapeFills.size() + edits.groups.size() +
+              edits.carves.size());
+  // The kind numbers are `FlatEditRef`'s, documented in the header; the order
+  // here is that numbering, so a reader can check the two against each other.
+  for (const auto& b : edits.bridges)
+    out.push_back({{1, b.id}, b.pts, false, b.erase ? "unbridge" : "bridge"});
+  for (const auto& m : edits.mergeStrokes) out.push_back({{2, m.id}, m.pts, false, "draw merge"});
+  // A two-click merge has no stroke; the segment between the two points is
+  // the honest picture of what it did, and is also what you click to pick it.
+  for (const auto& m : edits.mergePairs)
+    out.push_back({{3, m.id}, FlatPolyline{m.ax, m.ay, m.bx, m.by}, false, "merge"});
+  for (const auto& d : edits.deleteMarks)
+    out.push_back({{4, d.id}, FlatPolyline{d.x, d.y}, false, "deleted fill"});
+  for (const auto& f : edits.shapeFills) out.push_back({{5, f.id}, f.pts, true, "shape"});
+  for (const auto& g : edits.groups) out.push_back({{6, g.id}, g.path, true, "group"});
+  for (const auto& c : edits.carves)
+    out.push_back({{7, c.id}, FlatPolyline{c.x, c.y}, false, "carve"});
+  return out;
+}
+
 FlatEditRef flatEditAt(const FlatEdits& edits, float x, float y, float reach) {
   FlatEditRef best;
   float bd = reach;
-  auto polyDist = [&](const FlatPolyline& p, bool closed) {
-    float d = std::numeric_limits<float>::infinity();
-    if (p.size() == 2) return std::hypot(p[0] - x, p[1] - y);
-    for (size_t i = 0; i + 3 < p.size(); i += 2) d = std::min(d, flatDistToSeg(x, y, p[i], p[i + 1], p[i + 2], p[i + 3]));
-    if (closed && p.size() >= 6) {
-      d = std::min(d, flatDistToSeg(x, y, p[p.size() - 2], p[p.size() - 1], p[0], p[1]));
-      // A group's interior counts as a hit but scores just worse than any line.
-      if (d > reach && flatPointInPoly(x, y, p)) d = reach * 0.99f;
+  for (const FlatEditItem& h : flatEditList(edits)) {
+    const FlatPolyline& p = h.pts;
+    if (p.size() < 2) continue;
+    float d;
+    if (p.size() == 2) {
+      d = std::hypot(p[0] - x, p[1] - y);
+    } else {
+      d = std::numeric_limits<float>::infinity();
+      for (size_t i = 0; i + 3 < p.size(); i += 2)
+        d = std::min(d, flatDistToSeg(x, y, p[i], p[i + 1], p[i + 2], p[i + 3]));
+      if (h.closed && p.size() >= 6) {
+        d = std::min(d, flatDistToSeg(x, y, p[p.size() - 2], p[p.size() - 1], p[0], p[1]));
+        // A lassoed path's interior counts as a hit but scores just worse
+        // than any actual line, so a merge stroke drawn inside a group is
+        // still the thing you pick when you click it.
+        if (d > reach && flatPointInPoly(x, y, p)) d = reach * 0.99f;
+      }
     }
-    return d;
-  };
-  auto consider = [&](float d, int kind, uint32_t id) {
-    if (d < bd) { bd = d; best = {kind, id}; }
-  };
-  for (const auto& b : edits.bridges) consider(polyDist(b.pts, false), 1, b.id);
-  for (const auto& m : edits.mergeStrokes) consider(polyDist(m.pts, false), 2, m.id);
-  for (const auto& m : edits.mergePairs) consider(flatDistToSeg(x, y, m.ax, m.ay, m.bx, m.by), 3, m.id);
-  for (const auto& d : edits.deleteMarks) consider(std::hypot(d.x - x, d.y - y), 4, d.id);
-  for (const auto& s : edits.shapeFills) consider(polyDist(s.pts, true), 5, s.id);
-  for (const auto& g : edits.groups) consider(polyDist(g.path, true), 6, g.id);
-  for (const auto& c : edits.carves) consider(std::hypot(c.x - x, c.y - y), 7, c.id);
+    if (d < bd) { bd = d; best = h.ref; }
+  }
   return best;
+}
+
+std::vector<FlatEditRef> flatEditsInBox(const FlatEdits& edits, float x0, float y0, float x1,
+                                        float y1) {
+  if (x1 < x0) std::swap(x0, x1);
+  if (y1 < y0) std::swap(y0, y1);
+  std::vector<FlatEditRef> out;
+  // A VERTEX inside the box, not the whole edit and not its bounding box: a
+  // long bridge drawn across the page would otherwise be caught by a box
+  // that touches nothing you can see, and requiring containment would make a
+  // group lasso round the whole drawing unselectable.
+  for (const FlatEditItem& h : flatEditList(edits)) {
+    for (size_t i = 0; i + 1 < h.pts.size(); i += 2) {
+      if (h.pts[i] >= x0 && h.pts[i] <= x1 && h.pts[i + 1] >= y0 && h.pts[i + 1] <= y1) {
+        out.push_back(h.ref);
+        break;
+      }
+    }
+  }
+  return out;
 }
 
 bool flatRemoveEdit(FlatEdits& edits, FlatEditRef ref) {
@@ -738,6 +780,13 @@ bool flatRemoveEdit(FlatEdits& edits, FlatEditRef ref) {
     case 7: return erase(edits.carves);
     default: return false;
   }
+}
+
+size_t flatRemoveEdits(FlatEdits& edits, const std::vector<FlatEditRef>& refs) {
+  size_t n = 0;
+  for (FlatEditRef r : refs)
+    if (flatRemoveEdit(edits, r)) n++;
+  return n;
 }
 
 void flatRenderRgba8(const FlatEvaluation& e, uint8_t* out) {

@@ -1,5 +1,6 @@
 #include "core/Merge.hpp"
 
+#include "brush/StrokesLayer.hpp"
 #include "flats/FlatsLayer.hpp"
 
 #include <algorithm>
@@ -956,6 +957,39 @@ LayerOpResult rasteriseLayer(Document& doc, size_t index, std::vector<std::strin
     return layerOpSucceed(flatsLabel, index);
   }
 
+  // **A Strokes layer rasterises to the tiles it already composites as**,
+  // exactly as a Flats layer does and with the same thing lost. Its dabs may
+  // sample the composite BENEATH the layer (core/StrokesContent §2), so its
+  // marks track a regrade underneath -- PRD D6, the property PLAN.md phase 8
+  // exists for. Rasterising freezes them into pixels that no longer track
+  // anything, and it deletes the records the eraser deletes (PRD F11), so the
+  // warning says both.
+  if (layer.kind == LayerKind::Strokes) {
+    const std::shared_ptr<const TileStore> tiles = strokesLayerTiles(doc, index);
+    const size_t dabCount = layer.strokes.dabs.size();
+    bool sampledBelow = false;
+    for (const DabRecord& d : layer.strokes.dabs)
+      // Both below-sampling policies -- a recorded clone and a recorded heal
+      // (core/StrokesContent) -- because the warning is about what stops
+      // tracking a regrade, and both of them do.
+      if (d.source != DabColorSource::Ink) sampledBelow = true;
+    Layer raster = layer;
+    raster.kind = LayerKind::RGB;
+    raster.rgbTiles = tiles ? *tiles : TileStore{};
+    raster.strokes = StrokesContent{};
+    append(warningsOut,
+           "rasterise layer baked " + std::to_string(dabCount) +
+               " dab record(s) into pixels; the eraser deleted records on this layer before "
+               "and now takes alpha out of it instead (PRD F11)" +
+               (sampledBelow ? ", and the dabs that reproduced the composite beneath it stop "
+                               "tracking a regrade under them (PRD D6)"
+                             : "") +
+               ". Undo restores them.");
+    const std::string strokesLabel = "rasterise " + layerOpDescribe(doc, index);
+    doc.layers[index] = std::move(raster);
+    return layerOpSucceed(strokesLabel, index);
+  }
+
   if (layerRastersToTiles(layer.kind)) {
     const std::vector<VectorShape> shapes = layer.kind == LayerKind::Text
                                                 ? textContentToShapes(layer.text)
@@ -981,9 +1015,9 @@ LayerOpResult rasteriseLayer(Document& doc, size_t index, std::vector<std::strin
         "rasterise layer refused: " + layerOpDescribe(doc, index) + " is a " +
         layerKindName(layer.kind) +
         " layer. PRD C11 rasterises a *parametric* layer, and of the kinds this build "
-        "has, Adjustment, Vector, Text and Flats are the four that qualify -- a Strokes layer "
-        "here has no dabs because the kind has no parameter member yet, and Media needs the "
-        "fluid solver's per-medium state (core/Layer.hpp). "
+        "has, Adjustment, Vector, Text, Flats and Strokes are the five that qualify -- Media "
+        "is the one left out, because it needs the fluid solver's per-medium state and "
+        "core::Layer has no member for it (core/Layer.hpp). "
         "An RGB or Pigment layer is already pixels and has nothing to rasterise.");
 
   if (layer.ops.size() == 0)

@@ -180,6 +180,294 @@ bool runLayerGroupTest() {
   }
 
   // ==========================================================================
+  // Part B2: a Group REORDERS with its members
+  // ==========================================================================
+  //
+  // Reported from the app: expand a Flats layer to layers, then drag the
+  // resulting group below the line art -- the group row moved and its children
+  // stayed where they were. `core::moveLayer()` rotated exactly one element,
+  // and nothing else in the reorder path knew what a Group was.
+  //
+  // The failure is quiet in the worst way: the children keep a `parent` that
+  // still names the group, so nothing is corrupt and nothing warns --
+  // `groupMemberSpan()` simply stops finding them contiguous, and the user has
+  // an empty group in the new place and loose layers in the old one.
+  //
+  // Every assertion below starts from Part B's own [B,D,A,C,E,Group 1]: the
+  // group sits at index 5 with members at 2, 3, 4, so its block is [2,5] and
+  // n is 4. `to` still names where the DRAGGED ROW lands, in both directions.
+  {
+    auto grouped = [&]() {
+      Document doc = makeFive();
+      applyLayerSetOp(doc, LayerSetCommand::GroupLayers, sel({0, 2, 4}));
+      return doc;
+    };
+    // The state every case below starts from, asserted rather than assumed --
+    // Part B proves it for its own document, and a silent change to
+    // GroupLayers would otherwise make this whole section test something else.
+    check(names(grouped()) == "B,D,A,C,E,Group 1" && grouped().layers[5].kind == LayerKind::Group,
+          "group move: the fixture is [B,D,A,C,E,Group 1] with the Group at index 5");
+
+    // The member run, by NAME and in order. "three layers carry the tag" would
+    // pass for a group that had picked up three different layers on the way.
+    auto memberNames = [&](const Document& doc, size_t groupIndex) {
+      const std::pair<size_t, size_t> sp = groupMemberSpan(doc, groupIndex);
+      std::string out;
+      if (sp.first > sp.second) return out;
+      for (size_t i = sp.first; i <= sp.second; ++i) {
+        if (!out.empty()) out += ",";
+        out += doc.layers[i].name;
+      }
+      return out;
+    };
+    check(memberNames(grouped(), 5) == "A,C,E",
+          "group move: ...and its members are A,C,E, directly below it");
+
+    // --- down, one step ---
+    {
+      Document doc = grouped();
+      const LayerOpResult r = moveLayer(doc, 5, 4);
+      check(r.ok && names(doc) == "B,A,C,E,Group 1,D",
+            "group move down one: the whole block moves -- D crosses the group AND its three "
+            "members, rather than the group row alone stepping over D");
+      check(memberNames(doc, 4) == "A,C,E",
+            "group move down one: ...and A,C,E are still the group's members, in order -- the "
+            "defect this fixes left them behind with a parent tag nothing could see");
+      check(r.index == 4, "group move down one: the result names where the group's ROW landed");
+
+      // ...and straight back, which is the property a user actually leans on.
+      const LayerOpResult back = moveLayer(doc, 4, 5);
+      check(back.ok && names(doc) == "B,D,A,C,E,Group 1",
+            "group move: down one and up one is the identity");
+    }
+
+    // --- all the way down, where `to` cannot be honoured literally ---
+    //
+    // Dropping the group on the bottom row asks for `to == 0`, and its own row
+    // cannot go to index 0 because three members have to fit below it. The
+    // block lands on the bottom and the row lands at n - 1.
+    {
+      Document doc = grouped();
+      const LayerOpResult r = moveLayer(doc, 5, 0);
+      check(r.ok && names(doc) == "A,C,E,Group 1,B,D",
+            "group move to the bottom: the block occupies the bottom four slots -- \"below "
+            "everything\" is what the drop means, and refusing it or dropping the members "
+            "would both be worse than clamping");
+      check(memberNames(doc, 3) == "A,C,E", "group move to the bottom: members intact");
+      check(r.index == 3,
+            "group move to the bottom: the result reports 3, the row's REAL landing -- a panel "
+            "that followed the requested 0 would select the wrong layer");
+    }
+
+    // --- an empty group is a block of one, and moves like any other layer ---
+    {
+      Document doc = Document::createBlank(8, 8, WorkingSpace{});
+      doc.layers[0].name = "A";
+      addLayer(doc, 1, makeRgbLayer("B"));
+      Layer g = makeGroupLayer(doc, "Empty");
+      g.name = "Empty";
+      addLayer(doc, 2, g);
+      const LayerOpResult r = moveLayer(doc, 2, 0);
+      check(r.ok && names(doc) == "Empty,A,B" && r.index == 0,
+            "group move: a group with NO members is a block of one and reaches index 0 -- the "
+            "clamp is `n - 1`, so it must not cost an empty group the bottom slot");
+    }
+
+    // --- an ordinary layer is untouched by any of this ---
+    //
+    // The n == 1 path is the old single-layer rotate, and this is the
+    // regression guard for it: `moveLayer(0, 2)` on [A,B,C,D,E] is the exact
+    // case core/LayerOps.hpp's own contract sentence names.
+    {
+      Document doc = makeFive();
+      const LayerOpResult r = moveLayer(doc, 0, 2);
+      check(r.ok && names(doc) == "B,C,A,D,E" && r.index == 2,
+            "layer move: an ordinary layer still moves alone, exactly as the header's own "
+            "worked example says");
+      Document down = makeFive();
+      check(moveLayer(down, 4, 1).ok && names(down) == "A,E,B,C,D",
+            "layer move: ...in both directions");
+    }
+
+    // --- the clipped-at-index-0 refusal follows the BLOCK ---
+    //
+    // What may not land at index 0 is the block's first element, not the row
+    // the user dragged. Testing the dragged row would let a group whose bottom
+    // member is clipped slide to the bottom unchallenged.
+    {
+      Document doc = grouped();
+      doc.layers[2].clipped = true;  // A, the block's first element
+      const LayerOpResult r = moveLayer(doc, 5, 0);
+      check(!r.ok && contains(r.error, "clipped") && names(doc) == "B,D,A,C,E,Group 1",
+            "group move: refused when the block's FIRST layer is clipped and the block would "
+            "land at 0 -- and nothing was changed");
+      Document ok2 = grouped();
+      ok2.layers[4].clipped = true;  // E, which lands at index 2, not 0
+      check(moveLayer(ok2, 5, 0).ok,
+            "group move: ...but a clipped member that does NOT land at index 0 is no reason to "
+            "refuse -- it keeps a layer below it to clip to");
+    }
+  }
+
+  // ==========================================================================
+  // Part B3: `parent` follows POSITION -- dropping into and out of a group
+  // ==========================================================================
+  //
+  // The mirror of Part B2. A layer dropped into the middle of a group's run
+  // used to splice itself in and orphan every member below it: the group
+  // silently lost layers, with nothing on screen to say so, because
+  // `groupMemberSpan()` is a contiguity scan and the interloper stops it. And
+  // a member dragged OUT kept its old tag, so the panel -- whose
+  // `layerGroupDepth()` reads `parent`, not contiguity -- went on drawing it
+  // indented under a group it had left.
+  //
+  // `core::layerGroupTagForSlot()` is the rule and carries its own argument,
+  // including the slot it deliberately makes unreachable.
+  {
+    auto grouped = [&]() {
+      Document doc = makeFive();
+      applyLayerSetOp(doc, LayerSetCommand::GroupLayers, sel({0, 2, 4}));
+      return doc;
+    };
+    // [B,D,A,C,E,Group 1]: group at 5, members A,C,E at 2,3,4. B(0) and D(1)
+    // are ungrouped.
+    auto tagOf = [&](const Document& doc, size_t i) { return doc.layers[i].parent; };
+
+    // --- INTO the group, between two members ---
+    {
+      Document doc = grouped();
+      const std::string tag = doc.layers[5].groupTag;
+      const LayerOpResult r = moveLayer(doc, 1, 3);  // D, in among the members
+      check(r.ok && names(doc) == "B,A,C,D,E,Group 1",
+            "drop into group: D lands at index 3, between C and E");
+      check(tagOf(doc, 3) == tag,
+            "drop into group: **D JOINS the group** -- before this it spliced into the run and "
+            "silently orphaned every member below it");
+      check(groupMemberSpan(doc, 5).first == 1 && groupMemberSpan(doc, 5).second == 4,
+            "drop into group: ...and the group's run is the four contiguous layers below it, "
+            "which is the invariant the splice used to break");
+    }
+
+    // --- INTO the group, directly under its own row ---
+    //
+    // That slot has exactly one meaning, so it joins on the strength of the
+    // row above alone.
+    {
+      Document doc = grouped();
+      const std::string tag = doc.layers[5].groupTag;
+      check(moveLayer(doc, 1, 4).ok && names(doc) == "B,A,C,E,D,Group 1" && tagOf(doc, 4) == tag,
+            "drop into group: the slot directly under the Group's own row joins it -- one "
+            "meaning, and the only way to give an empty group its first member");
+    }
+
+    // --- OUT of the group ---
+    {
+      Document doc = grouped();
+      const LayerOpResult r = moveLayer(doc, 3, 0);  // C, to the bottom
+      check(r.ok && names(doc) == "C,B,D,A,E,Group 1",
+            "drop out of group: C moves to the bottom of the stack");
+      check(tagOf(doc, 0).empty(),
+            "drop out of group: **and C stops naming the group** -- a stale tag drew it "
+            "indented under a group it had left, because the panel reads `parent`");
+      check(groupMemberSpan(doc, 5).first == 3 && groupMemberSpan(doc, 5).second == 4,
+            "drop out of group: ...and A,E are what is left of the run");
+    }
+
+    // --- PAST the group: under its lowest member, with something below ---
+    //
+    // The both-neighbours half of the rule. This is the case that makes "drop
+    // it below the group" expressible at all.
+    {
+      Document doc = grouped();
+      // B to index 1: directly under A, the group's LOWEST member, with
+      // ungrouped D still below. Index 2 would be in among the members and
+      // would (correctly) join -- which is what the first draft of this
+      // assertion tested while claiming to test this, and what the `names`
+      // check caught.
+      check(moveLayer(doc, 0, 1).ok && names(doc) == "D,B,A,C,E,Group 1" &&
+                tagOf(doc, 1).empty(),
+            "drop past group: landing under the group's lowest member with an ungrouped layer "
+            "below is a drop PAST the group, not into it");
+    }
+
+    // --- a group INTO a group nests, rather than dissolving ---
+    {
+      Document doc = grouped();
+      const std::string outer = doc.layers[5].groupTag;
+      Layer inner = makeGroupLayer(doc, "Inner");
+      inner.name = "Inner";
+      addLayer(doc, 0, inner);  // an empty group at the bottom
+      // [Inner,B,D,A,C,E,Group 1] -- move Inner between A and C.
+      const LayerOpResult r = moveLayer(doc, 0, 4);
+      check(r.ok && doc.layers[4].name == "Inner" && doc.layers[4].parent == outer,
+            "group into group: the inner group's OWN row takes the outer group's tag");
+      check(doc.layers[4].groupTag != outer && !doc.layers[4].groupTag.empty(),
+            "group into group: ...and it keeps its own tag, so its own members still find it -- "
+            "this is what makes nesting nest rather than dissolve");
+    }
+
+    // --- moving a member WITHIN its own group keeps it there ---
+    {
+      Document doc = grouped();
+      const std::string tag = doc.layers[5].groupTag;
+      check(moveLayer(doc, 2, 4).ok && names(doc) == "B,D,C,E,A,Group 1" &&
+                tagOf(doc, 2) == tag && tagOf(doc, 3) == tag && tagOf(doc, 4) == tag,
+            "reorder within group: shuffling members among themselves leaves all three in the "
+            "group -- the rule must not evict a layer for moving inside its own run");
+    }
+
+    // --- a Group block carries its members' tags untouched ---
+    {
+      Document doc = grouped();
+      const std::string tag = doc.layers[5].groupTag;
+      moveLayer(doc, 5, 0);  // the whole block to the bottom
+      check(doc.layers[0].parent == tag && doc.layers[1].parent == tag &&
+                doc.layers[2].parent == tag && doc.layers[3].parent.empty(),
+            "group move: the members' tags are untouched by the block move, and only the "
+            "group's own row is re-parented -- rewriting the members would dissolve the group "
+            "every time it was dragged");
+    }
+  }
+
+  // --- the multi-selection raise/lower, which drives moveLayer() in a LOOP ---
+  //
+  // `MoveLayersUp`/`Down` call `moveLayer(i, i +/- 1)` once per selected layer
+  // and then compute the new selection as `i +/- 1`. That arithmetic assumed a
+  // single-element move; a Group now shifts a whole block, so the assumption is
+  // worth checking rather than asserting from the armchair. It holds -- the
+  // group's own ROW still lands at `i +/- 1`, which is exactly what those two
+  // cases predict -- and this is the assertion that keeps it holding.
+  {
+    auto grouped = [&]() {
+      Document doc = makeFive();
+      applyLayerSetOp(doc, LayerSetCommand::GroupLayers, sel({0, 2, 4}));
+      return doc;  // [B,D,A,C,E,Group 1]
+    };
+    Document down = grouped();
+    const LayerSetOpResult r = applyLayerSetOp(down, LayerSetCommand::MoveLayersDown, sel({5}));
+    check(r.ok && names(down) == "B,A,C,E,Group 1,D" && r.selection == sel({4}),
+          "move layers down: a Group in a multi-selection lowers as a BLOCK, and the "
+          "selection it reports still names the group's own row");
+
+    // Two selected, one of them the group, so the loop really does run twice
+    // over a moving list. D lands at the bottom and the block steps down past
+    // B, which is what "each moves down one" means when one of them is four
+    // layers thick.
+    Document both = grouped();
+    const LayerSetOpResult r2 =
+        applyLayerSetOp(both, LayerSetCommand::MoveLayersDown, sel({1, 5}));
+    check(r2.ok && names(both) == "D,A,C,E,Group 1,B" && r2.selection == sel({0, 4}),
+          "move layers down: two selected with a Group among them -- both descend one step "
+          "and both reported indices are right, which the block move could easily have broken");
+
+    Document up = grouped();
+    check(!applyLayerSetOp(up, LayerSetCommand::MoveLayersUp, sel({5})).ok &&
+              names(up) == "B,D,A,C,E,Group 1",
+          "move layers up: the Group is already the top row, so it is refused by name and "
+          "nothing is changed -- the block move must not turn that into a silent no-op");
+  }
+
+  // ==========================================================================
   // Part C: UngroupLayers -- the order-preservation proof
   // ==========================================================================
   {

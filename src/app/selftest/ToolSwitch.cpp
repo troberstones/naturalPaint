@@ -5,6 +5,7 @@
 #include "app/MeasureLine.hpp"
 #include "app/ToolSwitch.hpp"
 #include "app/TransformSession.hpp"
+#include "core/LayerOps.hpp"
 
 namespace np {
 
@@ -333,38 +334,166 @@ bool runToolSwitchTest() {
           "toolswitch: ...including re-picking the tool already held, which is ahead of the "
           "no-op early return rather than behind it");
 
-    // The host tools are ADR-0009's table. Getting one wrong is not cosmetic:
-    // the cursor, the options row and the canvas's drag handling all follow
-    // `brush.tool`, so a BRIDGE that left the Marquee installed would draw a
-    // rubber-band rectangle over a gesture that is a freehand stroke.
-    struct HostRow { FlatsTool tool; Tool host; };
-    const HostRow kHosts[] = {
-        {FlatsTool::BridgePen, Tool::Pencil},   {FlatsTool::BridgeEraser, Tool::Eraser},
-        {FlatsTool::Group, Tool::Lasso},        {FlatsTool::ShapeFill, Tool::Lasso},
-        {FlatsTool::Carve, Tool::PaintBucket},
-    };
-    bool hostsOk = true;
-    for (const HostRow& r : kHosts) {
-      AppState h;
-      setFlatsTool(h, r.tool);
-      if (h.brush.tool != r.host || h.flatsTool != r.tool) hostsOk = false;
+    // **NO flatting tool touches the regular toolbox. Every one of the nine.**
+    //
+    // This assertion is the reverse of the one it replaces. `setFlatsTool()`
+    // used to install a host tool from ADR-0009's table -- BRIDGE set the
+    // Pencil, GROUP set the Lasso -- and the test pinned that table. In use
+    // it was wrong and the user said so: one click lit a cell in each of two
+    // palettes, and leaving flatting mode then handed back a tool nobody had
+    // chosen.
+    //
+    // Asserted over the WHOLE enum rather than the five that used to have
+    // hosts, and from several different starting tools, because "leaves it
+    // alone" is only worth anything if it holds for the tool the user
+    // actually had. A regression here is silent: the flats gesture still
+    // works, the palette merely lies about what else it did.
+    bool independent = true;
+    for (const Tool start : {Tool::Move, Tool::Brush, Tool::Lasso, Tool::PaintBucket}) {
+      for (int v = 0; v < static_cast<int>(FlatsTool::SelectEdits) + 1; ++v) {
+        AppState h;
+        setActiveTool(h, start);
+        const Tool before = h.brush.tool;
+        setFlatsTool(h, static_cast<FlatsTool>(v));
+        if (h.brush.tool != before) independent = false;
+        if (h.flatsTool != static_cast<FlatsTool>(v)) independent = false;
+      }
     }
-    check(hostsOk, "toolswitch: each lasso/stroke/bucket flatting tool installs the host tool "
-                   "ADR-0009's table gives it, and stays picked itself");
+    check(independent,
+          "toolswitch: **picking a flatting tool never overwrites `brush.tool`** -- the regular "
+          "tool is REMEMBERED (it stops being active, see the exclusivity block below, but it is "
+          "not destroyed), over every FlatsTool and from four different starting tools");
 
-    // The four with no host must leave `brush.tool` ALONE -- the flats route
-    // takes their events before any tool sees them, so the tool the user had
-    // is still theirs when they leave flatting mode.
-    bool keptOk = true;
-    for (const FlatsTool t : {FlatsTool::DeleteFill, FlatsTool::MergePair, FlatsTool::DrawMerge,
-                              FlatsTool::SelectEdits}) {
-      AppState k;
-      setActiveTool(k, Tool::Move);
-      setFlatsTool(k, t);
-      if (k.brush.tool != Tool::Move) keptOk = false;
+    // **A recorded-edit selection dies with the tool that made it, from BOTH
+    // writers.** A `flatEditKey()` means nothing except against the edit list
+    // it was picked from, and the canvas overlay brightens whatever is in
+    // this set -- so a selection left standing while a different tool is
+    // armed is a highlight that says "Delete will remove these" when Delete
+    // no longer will. Asserted over every FlatsTool, including re-picking
+    // SELECT EDITS itself, because "clears on a change" is not the rule:
+    // clears on a PICK is.
+    bool selectionDies = true;
+    for (int v = 0; v <= static_cast<int>(FlatsTool::SelectEdits); ++v) {
+      AppState h;
+      setFlatsTool(h, FlatsTool::SelectEdits);
+      h.flatsEditSelection = {flatEditKey(FlatEditRef{4, 1}), flatEditKey(FlatEditRef{6, 2})};
+      h.flatsEditBox = std::array<float, 4>{1, 2, 3, 4};
+      h.flatsEditBoxAdditive = true;
+      setFlatsTool(h, static_cast<FlatsTool>(v));
+      if (!h.flatsEditSelection.empty() || h.flatsEditBox.has_value() || h.flatsEditBoxAdditive)
+        selectionDies = false;
+
+      AppState o;
+      setFlatsTool(o, FlatsTool::SelectEdits);
+      o.flatsEditSelection = {flatEditKey(FlatEditRef{4, 1})};
+      o.flatsEditBox = std::array<float, 4>{1, 2, 3, 4};
+      setActiveTool(o, Tool::Brush);
+      if (!o.flatsEditSelection.empty() || o.flatsEditBox.has_value()) selectionDies = false;
     }
-    check(keptOk, "toolswitch: a flatting tool with no host in that table leaves the active "
-                  "tool untouched, so leaving flatting mode gives it back");
+    check(selectionDies,
+          "toolswitch: **picking any tool drops the selected recorded edits** -- through "
+          "setFlatsTool for every FlatsTool including SELECT EDITS itself, and through "
+          "setActiveTool; a key outlives the list it indexes and the overlay would go on "
+          "promising a Delete that no longer reaches them");
+
+    // The other half of the same rule, and the reason the above is SAFE.
+    // GROUP and SHAPE used to reach their gesture through `Tool::Lasso`:
+    // `flatsLassoCommit()` was an interception inside `case Tool::Lasso:` and
+    // ran only while that tool was active, so installing it was load-bearing.
+    // The flats canvas route owns the lasso path now
+    // (`ui/MacPaintUI.cpp`'s `flatsToolOwnsCanvasNow()`), which is why
+    // dropping the host tool does not silently kill those two. Nothing
+    // headless can reach an ImGui frame to prove that, so what is pinned here
+    // is the invariant it rests on: the two lasso tools are ordinary members
+    // of the enum with no tool requirement of their own.
+    AppState g;
+    setActiveTool(g, Tool::Brush);
+    setFlatsTool(g, FlatsTool::Group);
+    check(g.flatsTool == FlatsTool::Group && g.brush.tool == Tool::Brush,
+          "toolswitch: GROUP is picked with the Brush still active -- its gesture no longer "
+          "depends on the Lasso being installed behind the user's back");
+
+    // ---- the tool state is EXCLUSIVE ------------------------------------
+    //
+    // The user's words, twice: "the tool state should be exclusive." Two
+    // palettes each draw a selection, and `flatsToolIsActive()` is what both
+    // read to decide who is lit, so it is asserted here -- nothing headless
+    // can see an ImGui cell, but the predicate the cell's `selected` is
+    // ANDed with is ordinary testable state.
+    //
+    // **This assertion was inverted once, and the first version was wrong in
+    // a way worth keeping written down.** It used to require a Flats layer to
+    // be selected before the flatting tool counted as active, on the
+    // reasoning that a tool which cannot act should not claim to be. That
+    // produced two live tools rather than none: with DELETE picked and an
+    // ordinary layer selected, TOOLS re-lit its cell, the flats palette went
+    // on showing DELETE accented, and the brush really did still paint. It is
+    // also why DELETE looked broken -- the flats route stood down whenever
+    // the layer was wrong, so a click on a fill went nowhere.
+    //
+    // So the PICK decides. Whether it can act on this layer is a separate
+    // question, answered on the click with a refusal.
+    {
+      AppState e;
+      OpenDocument od;
+      od.document = Document::createBlank(8, 8, WorkingSpace{});
+      addLayer(od.document, 1, makeFlatsLayer("Flats"));
+      od.activeLayer = 1;
+      e.documents.add(std::move(od));
+
+      setActiveTool(e, Tool::Brush);
+      check(!flatsToolIsActive(e),
+            "toolswitch: with no flatting tool picked the REGULAR tool is the active one");
+
+      setFlatsTool(e, FlatsTool::DeleteFill);
+      check(flatsToolIsActive(e) && e.brush.tool == Tool::Brush,
+            "toolswitch: **picking a flatting tool makes it the active tool and the regular "
+            "palette draws nothing selected** -- while `brush.tool` is still remembered, not "
+            "cleared, so leaving flatting mode gives it back");
+
+      // The layer does NOT decide. Every one of these used to flip the answer
+      // back to the regular tool, which is the defect above.
+      e.documents.active()->activeLayer = 0;  // an ordinary layer
+      check(flatsToolIsActive(e),
+            "toolswitch: **selecting a non-Flats layer does NOT re-activate the regular tool** -- "
+            "the flatting tool stays active and the click is refused with a sentence, rather than "
+            "the canvas being handed back to a tool the user did not pick");
+
+      e.documents.active()->activeLayer = 1;
+      e.documents.active()->document.layers[1].locked = true;
+      check(flatsToolIsActive(e),
+            "toolswitch: ...and a LOCKED Flats layer is the same -- still active, still refused "
+            "on the click");
+      e.documents.active()->document.layers[1].locked = false;
+
+      // One deliberate pick, one active tool: the only way out of flatting
+      // mode is choosing a tool, which is what makes the state unambiguous.
+      setActiveTool(e, Tool::Lasso);
+      check(!flatsToolIsActive(e) && e.flatsTool == FlatsTool::None && e.brush.tool == Tool::Lasso,
+            "toolswitch: picking a regular tool clears the flats tool outright, so the two can "
+            "never both consider themselves active");
+
+      // The whole point, stated as one assertion over the whole enum: for
+      // every flatting tool, exactly one of the two is active -- never both,
+      // never neither.
+      bool exactlyOne = true;
+      for (int v = 1; v <= static_cast<int>(FlatsTool::SelectEdits); ++v) {
+        AppState x;
+        OpenDocument xd;
+        xd.document = Document::createBlank(8, 8, WorkingSpace{});
+        x.documents.add(std::move(xd));
+        setActiveTool(x, Tool::Brush);
+        if (flatsToolIsActive(x)) exactlyOne = false;          // regular active
+        setFlatsTool(x, static_cast<FlatsTool>(v));
+        if (!flatsToolIsActive(x)) exactlyOne = false;          // flats active
+        setActiveTool(x, Tool::Brush);
+        if (flatsToolIsActive(x) || x.flatsTool != FlatsTool::None) exactlyOne = false;
+      }
+      check(exactlyOne,
+            "toolswitch: for EVERY flatting tool, exactly one of the two palettes is active at a "
+            "time -- and it holds with no Flats layer in the document at all, which is the case "
+            "the layer-gated version got wrong");
+    }
 
     // A half-finished two-click merge belongs to the gesture being abandoned.
     AppState m;

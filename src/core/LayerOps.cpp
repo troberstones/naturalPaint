@@ -126,6 +126,18 @@ Layer makeFlatsLayer(std::string name) {
   return layer;
 }
 
+Layer makeStrokesLayer(std::string name) {
+  Layer layer;
+  layer.kind = LayerKind::Strokes;
+  // `strokes` keeps its own defaults -- no dab records and `nextDabId == 1`.
+  // Nothing else to set: the kind's content is that member, and an empty dab
+  // list is complete as constructed. A fresh Strokes layer therefore draws
+  // nothing, exactly as a fresh Vector or Text layer does and for the same
+  // reason -- the emptiness is the kind's definition, not an omission.
+  layer.name = std::move(name);
+  return layer;
+}
+
 std::string defaultNewGroupName(const Document& doc) {
   // `defaultNewLayerName()`'s own scan, restricted to Group-kind layers so a
   // document with "Layer 3" and "Group 3" both on screen is not a collision --
@@ -204,15 +216,72 @@ LayerOpResult removeLayer(Document& doc, size_t index) {
   return layerOpSucceed(label, index);
 }
 
+std::pair<size_t, size_t> groupMemberSpan(const Document& doc, size_t groupIndex) {
+  if (groupIndex >= doc.layers.size()) return {groupIndex + 1, groupIndex};
+  const std::string& tag = doc.layers[groupIndex].groupTag;
+  // An empty tag would match every ungrouped layer below, which is how a
+  // Group with no tag yet would swallow the whole stack.
+  if (tag.empty()) return {groupIndex + 1, groupIndex};
+  size_t first = groupIndex;
+  while (first > 0 && doc.layers[first - 1].parent == tag) --first;
+  if (first == groupIndex) return {groupIndex + 1, groupIndex};  // no members
+  return {first, groupIndex - 1};
+}
+
+std::string layerGroupTagForSlot(const Document& doc, size_t aboveIndex, size_t belowIndex) {
+  if (aboveIndex >= doc.layers.size()) return {};  // nothing above: top of the stack
+  const Layer& above = doc.layers[aboveIndex];
+  // Directly under a Group's own row. One meaning only, and the only route to
+  // a first member for an empty group.
+  if (above.kind == LayerKind::Group && !above.groupTag.empty()) return above.groupTag;
+  if (above.parent.empty()) return {};
+  if (belowIndex >= doc.layers.size()) return {};  // nothing below: bottom of the stack
+  return doc.layers[belowIndex].parent == above.parent ? above.parent : std::string{};
+}
+
 LayerOpResult moveLayer(Document& doc, size_t from, size_t to) {
   LayerOpResult refusal;
   if (!layerOpInRange(doc, from, "move layer", &refusal)) return refusal;
   if (!layerOpInRange(doc, to, "move layer", &refusal)) return refusal;
   if (!layerOpNotLocked(doc, from, "move layer", kLockedLayerFrozen, &refusal)) return refusal;
+
+  // **The block this move actually moves.** A Group layer sits at the TOP of
+  // its own contiguous run (core/LayerSetOps section 5's placement rule), so
+  // its block is `[memberFirst, from]` and the dragged row is its last
+  // element. Everything else is a block of one, and the arithmetic below is
+  // written so that n == 1 reduces exactly to the old single-layer rotate.
+  //
+  // Without this a group reordered alone leaves its children behind: their
+  // `parent` still names it, `groupMemberSpan()` no longer finds them
+  // contiguous, and the user gets an empty group in the new place and loose
+  // layers in the old one. Reported from the app, moving an expanded Flats
+  // group below the line art.
+  size_t blockFirst = from;
+  if (doc.layers[from].kind == LayerKind::Group) {
+    const std::pair<size_t, size_t> members = groupMemberSpan(doc, from);
+    if (members.first <= members.second) blockFirst = members.first;
+  }
+  const size_t blockLast = from;
+  const size_t n = blockLast - blockFirst + 1;
+
+  // Where the DRAGGED row lands, in the list as it stands after the move --
+  // which for a same-length list is also `to`'s own frame of reference. Raised
+  // to `n - 1` because the block's other members have to fit below it: a
+  // three-layer group dropped on the bottom row puts its own row at index 2,
+  // not at 0. See the header.
+  const size_t landing = std::max(to, n - 1);
+  const size_t blockDest = landing - n + 1;  // where the block's FIRST element lands
+
   // Dragging a clipped layer *to* the bottom is refused: `setLayerClipped()`
   // refuses to put a clip there, and a drag that did it anyway would make that
   // refusal decorative. See core/LayerOps.hpp on why this is a refusal rather
   // than a silent un-clip.
+  //
+  // **The layer tested is the one that would actually LAND at index 0**, which
+  // for a block is its first element -- not the row the user dragged. Testing
+  // the dragged row would let a group whose bottom member is clipped slide to
+  // the bottom unchallenged, and would refuse a move that puts an unclipped
+  // member there.
   //
   // **This is not the only reorder that can reach a baseless clip, and it is
   // deliberately not made so.** Moving a *base* out from under its run --
@@ -226,37 +295,50 @@ LayerOpResult moveLayer(Document& doc, size_t from, size_t to) {
   // unclipped, and warns by name. `--selftest` asserts that orphaning path
   // directly, so "allowed, and degrades loudly" is a checked claim and not an
   // oversight.
-  if (to == 0 && from != 0 && doc.layers[from].clipped) {
+  if (blockDest == 0 && blockFirst != 0 && doc.layers[blockFirst].clipped) {
     return layerOpFail(
-        "move layer refused: " + layerOpDescribe(doc, from) +
+        "move layer refused: " + layerOpDescribe(doc, blockFirst) +
         " is clipped, and index 0 is the bottom of a " + std::to_string(doc.layers.size()) +
         "-layer stack. PRD C9 clips a layer by \"the alpha of the layer below it\", and "
         "at index 0 there is no layer below. Un-clip it first, or move it to index 1 or "
         "above. Nothing was changed -- clearing the clip for you would make a drag "
         "change a layer's properties as a side effect.");
   }
+
   const std::string label =
-      "move " + layerOpDescribe(doc, from) + " to index " + std::to_string(to);
-  if (from == to) return layerOpSucceed(label, to);
+      "move " + layerOpDescribe(doc, from) + " to index " + std::to_string(landing);
+  // A no-op reorder is not an error, and reports the index the row is at --
+  // which for a clamped block drop is `landing`, not the `to` the caller
+  // asked for, so a panel that follows the selection follows it correctly.
+  if (blockDest == blockFirst) return layerOpSucceed(label, landing);
 
   // Rotate rather than erase-then-insert: a rotate never destroys and rebuilds
-  // the moved element, and it is the operation this actually is -- everything
-  // between `from` and `to` shifts by one and the moved layer lands on the far
-  // side. `core/OpStack::reorder()` is erase-and-insert and documents that
-  // references into it are invalidated by a reorder; the same is true here, and
-  // ui/MacPaintUI's panel takes the same "stop iterating this frame" precaution
-  // drawGradeSection() already takes for that reason.
+  // the moved elements, and it is the operation this actually is -- everything
+  // between the block and its destination shifts by `n` and the block lands on
+  // the far side. `core/OpStack::reorder()` is erase-and-insert and documents
+  // that references into it are invalidated by a reorder; the same is true
+  // here, and ui/MacPaintUI's panel takes the same "stop iterating this frame"
+  // precaution drawGradeSection() already takes for that reason.
   const auto begin = doc.layers.begin();
-  if (from < to) {
-    std::rotate(begin + static_cast<std::ptrdiff_t>(from),
-                begin + static_cast<std::ptrdiff_t>(from) + 1,
-                begin + static_cast<std::ptrdiff_t>(to) + 1);
+  const auto at = [&](size_t i) { return begin + static_cast<std::ptrdiff_t>(i); };
+  if (blockDest > blockFirst) {
+    // Up: [blockFirst, landing] rotates left by n, block ends up at the top.
+    std::rotate(at(blockFirst), at(blockLast) + 1, at(landing) + 1);
   } else {
-    std::rotate(begin + static_cast<std::ptrdiff_t>(to),
-                begin + static_cast<std::ptrdiff_t>(from),
-                begin + static_cast<std::ptrdiff_t>(from) + 1);
+    // Down: [blockDest, blockLast] rotates so the block leads it.
+    std::rotate(at(blockDest), at(blockFirst), at(blockLast) + 1);
   }
-  return layerOpSucceed(label, to);
+
+  // **`parent` follows position** -- see `layerGroupTagForSlot()` for the rule
+  // and what it costs. Written on the block's HEAD only: for a Group block
+  // that is the group's own row, and its members go on naming their own group,
+  // which is what makes dragging a group into another group nest it rather
+  // than dissolve it. A cycle is structurally impossible here because the
+  // block moved whole: everything that could name this group is inside
+  // [blockDest, landing], and the two neighbours consulted are outside it.
+  doc.layers[landing].parent =
+      layerGroupTagForSlot(doc, landing + 1, blockDest == 0 ? doc.layers.size() : blockDest - 1);
+  return layerOpSucceed(label, landing);
 }
 
 LayerOpResult duplicateLayer(Document& doc, size_t index) {

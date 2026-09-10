@@ -668,8 +668,15 @@ bool runMergeFamilyTest() {
     bool everyKindNamed = true;
     // `Flats` left this list at PLAN.md phase 16 for the same reason Text and
     // Vector did: it rasterises now (to its cached evaluation's tiles).
-    for (const LayerKind kind : {LayerKind::Strokes, LayerKind::Media,
-                                 LayerKind::RGB, LayerKind::Pigment}) {
+    // **`Strokes` left it at PLAN.md phase 8**, for that reason exactly: the
+    // kind has a parameter member now (`Layer::strokes`, a list of dab
+    // records) and core/Merge bakes its evaluation into tiles. Leaving it
+    // here would pin the refusal as correct behaviour -- which is how a suite
+    // ends up asserting that a shipped feature does not work, in this block's
+    // own words two comments up. Media is the only kind left, so this loop is
+    // down to one genuinely-unrasterisable row plus the two that are already
+    // pixels.
+    for (const LayerKind kind : {LayerKind::Media, LayerKind::RGB, LayerKind::Pigment}) {
       Document one = kinds;
       Layer layer;
       layer.kind = kind;

@@ -491,7 +491,7 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
   // `documentId_` above stops a commit landing in the wrong document;
   // `layerIndex_` is an index into THIS document's layer list and does not
   // survive that list moving. `Layer > Delete Layer` is reachable from the menu
-  // bar while a gizmo is up (docs/testing-issues.md T28), and deleting a layer
+  // bar while a gizmo is up (docs/testing-issues.md T29), and deleting a layer
   // BELOW the transformed one shifts every index above it down by one --
   // measured on a four-layer document, a session begun on the layer named `L0`
   // at index 1 committed onto `L1` and reported success.

@@ -6,6 +6,15 @@ add_executable(naturalPaint
   app/BrushSheet.cpp
   app/BrushRowIcon.cpp
   app/CloseDecision.cpp
+  app/Action.cpp
+  app/Batch.cpp
+  app/BatchDialog.cpp
+  app/Command.cpp
+  app/CommandCoverage.cpp
+  app/CommandsImage.cpp
+  app/CommandsLayers.cpp
+  app/CommandsOpStack.cpp
+  app/CommandsPatterns.cpp
   app/CompPanel.cpp
   app/PanelLayout.cpp
   app/ControlsLayout.cpp
@@ -17,7 +26,10 @@ add_executable(naturalPaint
   app/HistoryPanel.cpp
   app/Keymap.cpp
   app/PenAxes.cpp
+  app/PathOps.cpp
+  app/PathsPanel.cpp
   app/PenTool.cpp
+  app/VectorStyle.cpp
   app/TextTool.cpp
   app/PsdReport.cpp
   app/SvgReport.cpp
@@ -36,6 +48,9 @@ add_executable(naturalPaint
   app/Memory.cpp
   app/MunsellSelection.cpp
   app/NoDocumentCanvas.cpp
+  app/Recorder.cpp
+  app/Replay.cpp
+  app/ActionsPanel.cpp
   # One translation unit per --selftest section, plus Driver.cpp for the three
   # drivers and Support.cpp for what they share (src/app/selftest/Support.hpp).
   # These were one 20 815-line app/SelfTest.cpp until every parallel branch
@@ -71,6 +86,7 @@ add_executable(naturalPaint
   app/selftest/PsPatterns.cpp
   app/selftest/GimpBrush.cpp
   app/selftest/Variance.cpp
+  app/selftest/CommandsPatterns.cpp
   app/selftest/CoverageBlend.cpp
   app/selftest/PaperTexture.cpp
   app/selftest/DabLibrary.cpp
@@ -116,6 +132,7 @@ add_executable(naturalPaint
   app/selftest/Descriptor.cpp
   app/selftest/Document.cpp
   app/selftest/DocumentLifecycle.cpp
+  app/selftest/DialogModule.cpp
   app/selftest/DocumentPresets.cpp
   app/selftest/DocumentResidency.cpp
   app/selftest/DocumentTexture.cpp
@@ -145,6 +162,7 @@ add_executable(naturalPaint
   app/selftest/Gradient.cpp
   app/selftest/GuidesGridSnap.cpp
   app/selftest/Half.cpp
+  app/selftest/Heal.cpp
   app/selftest/Histogram.cpp
   app/selftest/History.cpp
   app/selftest/HistoryPanel.cpp
@@ -152,11 +170,25 @@ add_executable(naturalPaint
   app/selftest/ImageDecode.cpp
   app/selftest/ImageIO.cpp
   app/selftest/IncrementalComposite.cpp
+  app/selftest/ActionFile.cpp
+  app/selftest/Command.cpp
+  app/selftest/CommandsLayers.cpp
+  app/selftest/Recorder.cpp
+  app/selftest/Replay.cpp
+  app/selftest/Batch.cpp
+  app/selftest/BatchDialog.cpp
+  app/selftest/ActionsPanel.cpp
+  app/selftest/CommandsOpStack.cpp
+  app/selftest/CommandsImage.cpp
+  app/selftest/CommandCallsites.cpp
+  app/selftest/Json.cpp
+  app/selftest/Inpaint.cpp
   app/selftest/Keymap.cpp
   app/selftest/LayerComp.cpp
   app/selftest/LayerEditor.cpp
   app/selftest/LayerGroup.cpp
   app/selftest/LayerGroupPanel.cpp
+  app/selftest/LayerListHeight.cpp
   app/selftest/LayerMask.cpp
   app/selftest/LayerMultiSelect.cpp
   app/selftest/LayerPanel2a.cpp
@@ -223,8 +255,11 @@ add_executable(naturalPaint
   app/selftest/ExportDialog.cpp
   app/selftest/FlatsExpand.cpp
   app/selftest/FlatsSource.cpp
+  app/selftest/StrokesLayer.cpp
   app/selftest/ToolSwitch.cpp
+  app/selftest/ToolHotkeys.cpp
   app/selftest/SpringEyedropper.cpp
+  app/selftest/TilePreview.cpp
   app/selftest/TonalBrush.cpp
   app/selftest/ToolOptionsBlend.cpp
   app/selftest/TouchGesture.cpp
@@ -241,8 +276,11 @@ add_executable(naturalPaint
   app/selftest/CropTool.cpp
   app/selftest/PathRaster.cpp
   app/selftest/SvgImport.cpp
+  app/selftest/PathOps.cpp
+  app/selftest/PathsPanel.cpp
   app/selftest/PenTool.cpp
   app/selftest/PenDraw.cpp
+  app/selftest/VectorStyle.cpp
   app/selftest/TextTool.cpp
   app/selftest/TextShaper.cpp
   app/selftest/SvgPath.cpp
@@ -256,6 +294,7 @@ add_executable(naturalPaint
   app/selftest/TextSerial.cpp
   app/selftest/PathConsumers.cpp
   app/selftest/TextKeyCapture.cpp
+  app/selftest/Tileable.cpp
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
   app/LayerThumbnail.cpp
@@ -270,6 +309,7 @@ add_executable(naturalPaint
   app/StrokePreview.cpp
   app/StrokeSession.cpp
   app/DocumentPresets.cpp
+  app/TilePreview.cpp
   app/TouchGesture.cpp
   app/TouchGestureSession.cpp
   app/UserBrushLibrary.cpp
@@ -280,6 +320,7 @@ add_executable(naturalPaint
   brush/BrushModelIo.cpp
   brush/BrushModelDiff.cpp
   brush/CloneStamp.cpp
+  brush/Heal.cpp
   brush/CoverageBlend.cpp
   brush/Deposit.cpp
   brush/Dynamics.cpp
@@ -292,6 +333,7 @@ add_executable(naturalPaint
   brush/RgbErase.cpp
   brush/Smudge.cpp
   brush/StrokePath.cpp
+  brush/StrokesLayer.cpp
   brush/TonalBrush.cpp
   brush/ToolOptionsBlend.cpp
   brush/Variance.cpp
@@ -321,6 +363,7 @@ add_executable(naturalPaint
   core/VectorRaster.cpp
   core/VectorShape.cpp
   core/TextContent.cpp
+  core/StrokesContent.cpp
   core/Pigment.cpp
   core/PigmentBake.cpp
   core/Probe.cpp
@@ -346,6 +389,8 @@ add_executable(naturalPaint
   io/ImageDecode.cpp
   io/SourceGamut.cpp
   io/ImageIO.cpp
+  io/ActionFile.cpp
+  io/Json.cpp
   io/NpaintFile.cpp
   io/OpSerial.cpp
   io/PackBits.cpp
@@ -357,6 +402,7 @@ add_executable(naturalPaint
   io/SvgStyle.cpp
   io/TileResidency.cpp
   io/TextSerial.cpp
+  io/StrokesSerial.cpp
   ops/AutoLevels.cpp
   ops/Blur.cpp
   ops/ColorOps.cpp
@@ -365,9 +411,13 @@ add_executable(naturalPaint
   ops/Filters.cpp
   ops/FloodFill.cpp
   ops/Gradient.cpp
+  ops/Inpaint.cpp
+  ops/Lens.cpp
   ops/MonoOps.cpp
+  ops/Pattern.cpp
   ops/PointOpTiles.cpp
   ops/PointOps.cpp
+  ops/Poisson.cpp
   ops/Resample.cpp
   ops/Roi.cpp
   ops/ToneOps.cpp
@@ -375,6 +425,7 @@ add_executable(naturalPaint
   paint/Palette.cpp
   sim/PaintSim.cpp
   ui/DocumentTexture.cpp
+  ui/Dialog.cpp
   ui/LabelledControl.cpp
   ui/DynamicsMatrixPanel.cpp
   ui/MacPaintUI.cpp
@@ -588,6 +639,10 @@ target_compile_definitions(naturalPaint PRIVATE
   # since this is a developer/CI-time test asset, never staged for a shipped
   # build.
   NP_SVG_TEST_DIR="${CMAKE_SOURCE_DIR}/tests/svg"
+  # app/selftest/DialogModule.cpp scans the src/ui this binary was built from
+  # for a bare BeginPopupModal() outside ui/Dialog.cpp (ADR-0010). A source
+  # rule the compiler cannot check, so the suite reads the source.
+  NP_UI_SOURCE_DIR="${CMAKE_SOURCE_DIR}/src/ui"
 )
 
 # Stages tier 2 of core/ResourcePaths.hpp's search order: a copy of the same

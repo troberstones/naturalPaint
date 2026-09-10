@@ -50,8 +50,6 @@ const std::vector<ControlsSectionSpec>& controlsSections() {
        true},
       {ControlsSection::BrushLibrary, R::Tool, "BRUSH LIBRARY", false},
       {ControlsSection::Brush, R::Tool, "BRUSH EDITOR", false},
-      // Last of the `Tool` roles, which is what keeps the role sequence
-      // non-decreasing (app/selftest/ControlsLayout.cpp asserts it).
       {ControlsSection::FlatsTools, R::Tool, "FLATS TOOLS", false,
        "The flatting gestures of a Flats layer, as tools rather than as keys. Each one is\n"
        "STICKY: pick DELETE and every click deletes a fill until you pick something else,\n"
@@ -60,9 +58,46 @@ const std::vector<ControlsSectionSpec>& controlsSections() {
        "replays against the fresh regions (ADR-0009).\n\n"
        "The buttons grey out when the active layer is not a Flats layer. The panel stays\n"
        "where you docked it rather than vanishing, so its place on screen is yours to keep."},
+      // Last of the `Tool` roles, which is what keeps the role sequence
+      // non-decreasing (app/selftest/ControlsLayout.cpp asserts it).
+      {ControlsSection::Paths, R::Tool, "PATHS", false,
+       "What you can do to a path once it exists: close it, open it, join two of them at\n"
+       "their end points, reverse the direction it runs in, gather several into one\n"
+       "compound path or release one back into its parts -- and, with anchors selected,\n"
+       "smooth or corner or break a knot, insert one in the middle of a segment, or delete\n"
+       "the ones you picked.\n\n"
+       "EVERY BUTTON IS A LIVE READOUT. A verb is lit exactly when it would run against\n"
+       "what is selected right now, so a lit button cannot refuse and a greyed one says\n"
+       "why underneath. Anchor verbs need COMPONENT mode on the OPTIONS band; the shape\n"
+       "verbs need SHAPE mode.\n\n"
+       "MAKE turns the path into something else: a selection, a filled area, or a stroke\n"
+       "laid down with the current brush. Those three paint into the nearest layer BELOW\n"
+       "the path, because the path's own layer is the source.\n\n"
+       "The buttons grey out when the active layer is not a Vector layer. The panel stays\n"
+       "where you docked it rather than vanishing, so its place on screen is yours to keep."},
       {ControlsSection::Layers, R::Document, "LAYERS", true},
       {ControlsSection::History, R::Document, "HISTORY", true},
       {ControlsSection::Comps, R::Document, "COMPS", true},
+      // docs/automation-plan.md step 7 / PRD P1, P5. A `Document` role beside
+      // the three above it, and starting CLOSED for the same budget reason
+      // they mostly do -- but note that its default PLACEMENT is the flyout
+      // rail, not the right dock (app/PanelLayout.cpp's
+      // `defaultPlacementFor()` carries that exception and its argument).
+      {ControlsSection::Actions, R::Document, "ACTIONS", false,
+       "Record what you do to a document as a list of COMMANDS, not of clicks -- so the\n"
+       "same list replays on a different document whose layers differ in order and count.\n"
+       "RECORD, do the work by hand, STOP; PLAY runs the list back as ONE history entry,\n"
+       "so undo takes the whole action out in one stroke.\n\n"
+       "A step is keyed by a stable command id and targets layers BY NAME, which is what\n"
+       "makes an action outlive a menu rewording and a reordered layer stack.\n\n"
+       "SAVE greys out while a take carries a REFUSAL. A recording with a hole in it is\n"
+       "not a shorter recording: it replays confidently and does the wrong thing partway\n"
+       "through. Every refusal names the command, the reason and the fix, and they are\n"
+       "listed under the steps for as long as SAVE is grey.\n\n"
+       "The recording stops itself if you close the document, switch to another one, or\n"
+       "put this panel away -- a take that spans two documents is a sequence that never\n"
+       "happened on either, and a recording nobody is looking at goes on collecting every\n"
+       "command in the session."},
       // Last of the `Document` roles, for the same ordering reason.
       {ControlsSection::FlatsSegmentation, R::Document, "SEGMENTATION", false,
        "How the line art beneath a Flats layer is cut into fills. A Flats layer stores no\n"

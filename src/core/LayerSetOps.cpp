@@ -255,24 +255,9 @@ const char* labelForCommand(LayerSetCommand command) noexcept {
 
 // --- Grouping (section 5) ---------------------------------------------------
 
-// The contiguous run of layers directly below `groupIndex` whose `parent`
-// names that group -- section 5's invariant, read back rather than assumed.
-// A downward scan, so a same-tag layer that is NOT contiguous with the group
-// (a state this file's own operations never produce, but a hand-built
-// `Document` might) is simply not included, which is the same "absent means
-// neutral" answer core/Mask.hpp gives a missing tile: it does not crash and
-// it does not guess.
-//
-// Returns `[groupIndex + 1, groupIndex]` (an empty, well-formed range with
-// `first > second`) for a group with no members -- callers check `first <=
-// second` before iterating rather than special-casing size 0.
-std::pair<size_t, size_t> groupMemberSpan(const Document& doc, size_t groupIndex) {
-  const std::string& tag = doc.layers[groupIndex].groupTag;
-  size_t first = groupIndex;
-  while (first > 0 && doc.layers[first - 1].parent == tag) --first;
-  if (first == groupIndex) return {groupIndex + 1, groupIndex};  // no members
-  return {first, groupIndex - 1};
-}
+// `groupMemberSpan()` now lives in core/LayerOps -- `moveLayer()` needs it, so
+// a Group reorders with its members. It was file-local here, which is why that
+// defect could exist: every operation in THIS file already moves spans.
 
 // One contiguous block of layers, moved as a unit by `GroupLayers`. An
 // ordinary selected layer is a span of one; a selected Group layer is itself

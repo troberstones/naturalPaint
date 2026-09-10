@@ -378,7 +378,7 @@ bool runToolSurfaceTest() {
   // CANCELS a transform rather than being blocked by it, because greying it
   // would take Undo, Save and Quit with it. The Layer menu is the exception,
   // and the exception is about what these commands are: the
-  // delete/reorder/merge/group family is `docs/testing-issues.md` T28's own
+  // delete/reorder/merge/group family is `docs/testing-issues.md` T29's own
   // measured corruption, and it is the LAYERS panel's buttons wearing a
   // different hat. That panel is refused outright, so offering the same acts
   // one menu over -- at the price of the transform -- would be two surfaces
@@ -425,7 +425,7 @@ bool runToolSurfaceTest() {
           "assertion against a list that was empty either way would prove nothing");
     check(enabledHeld == 0,
           "layer menu: REQUIRED -- with a gizmo live NOT ONE Layer command is enabled. This "
-          "is the delete/reorder/merge family T28 measured, and the LAYERS panel is already "
+          "is the delete/reorder/merge family T29 measured, and the LAYERS panel is already "
           "refused; the menu must not be the way round it");
 
     size_t enabledSetFree = 0;

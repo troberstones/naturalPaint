@@ -9,6 +9,7 @@
 #include "core/Parallel.hpp"
 #include "core/Premultiply.hpp"
 #include "ops/Resample.hpp"
+#include <cctype>
 
 namespace np {
 namespace {
@@ -569,6 +570,39 @@ float resampleKernelWeight(ResampleKernel kernel, float t) noexcept {
   return 0.0f;
 }
 
+const std::vector<CanvasAnchor>& allCanvasAnchors() {
+  static const std::vector<CanvasAnchor> kAll = {
+      CanvasAnchor::TopLeft,    CanvasAnchor::TopCenter,    CanvasAnchor::TopRight,
+      CanvasAnchor::CenterLeft, CanvasAnchor::Center,       CanvasAnchor::CenterRight,
+      CanvasAnchor::BottomLeft, CanvasAnchor::BottomCenter, CanvasAnchor::BottomRight,
+  };
+  return kAll;
+}
+
+const char* canvasAnchorName(CanvasAnchor anchor) noexcept {
+  switch (anchor) {
+    case CanvasAnchor::TopLeft: return "top_left";
+    case CanvasAnchor::TopCenter: return "top_center";
+    case CanvasAnchor::TopRight: return "top_right";
+    case CanvasAnchor::CenterLeft: return "center_left";
+    case CanvasAnchor::Center: return "center";
+    case CanvasAnchor::CenterRight: return "center_right";
+    case CanvasAnchor::BottomLeft: return "bottom_left";
+    case CanvasAnchor::BottomCenter: return "bottom_center";
+    case CanvasAnchor::BottomRight: return "bottom_right";
+  }
+  return "unknown";
+}
+
+std::optional<CanvasAnchor> canvasAnchorFromName(std::string_view name) noexcept {
+  // Over `allCanvasAnchors()` rather than a second list of nine literals, so
+  // `canvasAnchorName()` above is the one place a name is spelled and a tenth
+  // anchor cannot be added to the forward direction alone.
+  for (const CanvasAnchor a : allCanvasAnchors())
+    if (name == canvasAnchorName(a)) return a;
+  return std::nullopt;
+}
+
 const char* resampleKernelName(ResampleKernel kernel) noexcept {
   switch (kernel) {
     case ResampleKernel::Nearest: return "nearest";
@@ -578,6 +612,28 @@ const char* resampleKernelName(ResampleKernel kernel) noexcept {
     case ResampleKernel::Lanczos3: return "Lanczos3";
   }
   return "unknown";
+}
+
+std::optional<ResampleKernel> resampleKernelFromName(std::string_view name) noexcept {
+  // Case-insensitive over the exact strings resampleKernelName() produces, so
+  // a file that stores "Catmull-Rom" and one a human typed as "catmull-rom"
+  // both read back as the same kernel. ASCII only, which every name here is.
+  auto equals = [&](const char* other) {
+    size_t n = 0;
+    while (other[n] != '\0') ++n;
+    if (name.size() != n) return false;
+    for (size_t i = 0; i < n; ++i) {
+      const auto a = static_cast<unsigned char>(name[i]);
+      const auto b = static_cast<unsigned char>(other[i]);
+      if (std::tolower(a) != std::tolower(b)) return false;
+    }
+    return true;
+  };
+  for (const ResampleKernel k : {ResampleKernel::Nearest, ResampleKernel::Bilinear,
+                                 ResampleKernel::CatmullRom, ResampleKernel::Mitchell,
+                                 ResampleKernel::Lanczos3})
+    if (equals(resampleKernelName(k))) return k;
+  return std::nullopt;
 }
 
 // ==========================================================================

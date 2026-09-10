@@ -8,6 +8,7 @@
 #include <sstream>
 
 #include "core/Layer.hpp"
+#include "io/Json.hpp"
 #include "core/ResourcePaths.hpp"
 
 namespace np {
@@ -15,110 +16,13 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// A tiny hand-rolled reader for exactly the JSON subset the keymap schema
-// uses: one object of string/string-array fields, containing an array of
-// binding objects. Not a general JSON parser -- there is no JSON library
-// vendored anywhere in this project (checked third_party/ and
-// cmake/Dependencies.cmake before writing this), and the schema below is
-// small and fixed enough that hand-rolling it beats taking a dependency for
-// it, matching the codebase's existing preference (see e.g. how
-// gfx/ShaderLoader.cpp hand-rolls its own tiny `//#include` preprocessor
-// rather than reaching for one).
-class JsonReader {
- public:
-  JsonReader(std::string_view text, std::string_view sourceLabel)
-      : s_(text), label_(sourceLabel) {}
-
-  bool ok() const { return !failed_; }
-
-  void skipWs() {
-    while (i_ < s_.size() &&
-           (s_[i_] == ' ' || s_[i_] == '\t' || s_[i_] == '\n' || s_[i_] == '\r'))
-      ++i_;
-  }
-
-  // Peeks the next non-whitespace char without consuming it; '\0' at EOF.
-  char peek() {
-    skipWs();
-    return i_ < s_.size() ? s_[i_] : '\0';
-  }
-
-  bool expect(char c) {
-    skipWs();
-    if (i_ >= s_.size() || s_[i_] != c) {
-      fail(std::string("expected '") + c + "'");
-      return false;
-    }
-    ++i_;
-    return true;
-  }
-
-  std::optional<std::string> parseString() {
-    skipWs();
-    if (i_ >= s_.size() || s_[i_] != '"') {
-      fail("expected a string");
-      return std::nullopt;
-    }
-    ++i_;
-    std::string out;
-    while (i_ < s_.size() && s_[i_] != '"') {
-      char c = s_[i_++];
-      if (c == '\\' && i_ < s_.size()) {
-        char e = s_[i_++];
-        switch (e) {
-          case '"': out += '"'; break;
-          case '\\': out += '\\'; break;
-          case '/': out += '/'; break;
-          case 'n': out += '\n'; break;
-          case 't': out += '\t'; break;
-          default: out += e; break;  // sufficient for key/action/scope names
-        }
-      } else {
-        out += c;
-      }
-    }
-    if (i_ >= s_.size()) {
-      fail("unterminated string");
-      return std::nullopt;
-    }
-    ++i_;  // closing quote
-    return out;
-  }
-
-  // Parses a JSON array of strings into `out`. The opening '[' has not yet
-  // been consumed.
-  bool parseStringArray(std::vector<std::string>& out) {
-    if (!expect('[')) return false;
-    if (peek() == ']') {
-      expect(']');
-      return true;
-    }
-    while (true) {
-      auto v = parseString();
-      if (!v) return false;
-      out.push_back(*v);
-      if (peek() == ',') {
-        expect(',');
-        continue;
-      }
-      break;
-    }
-    return expect(']');
-  }
-
-  void fail(const std::string& why) {
-    if (failed_) return;
-    failed_ = true;
-    std::fprintf(stderr, "[keymap] %.*s: %s (near offset %zu)\n",
-                 static_cast<int>(label_.size()), label_.data(), why.c_str(), i_);
-  }
-
- private:
-  std::string_view s_;
-  std::string_view label_;
-  size_t i_ = 0;
-  bool failed_ = false;
-};
+// The JSON reader this file used to carry privately now lives in
+// io/Json.hpp, which merged it with io/ExportAs.cpp's copy: that file had
+// already written down the rule that a *third* consumer promotes the pair to
+// a shared header, and io/ActionFile (docs/automation-plan.md) is the third.
+// The merged reader stores its first error instead of printing it, so the
+// `[keymap]` stderr line this file has always written is emitted by
+// `Keymap::parse()` below rather than from inside the reader.
 
 // Parses one `{ "key": ..., "mods": [...], "action": ..., "scope": ... }`
 // binding object. `key` and `action` are required; `mods` and `scope`
@@ -132,29 +36,29 @@ bool parseBindingObject(JsonReader& r, KeyBinding& out) {
 
   if (r.peek() != '}') {
     while (true) {
-      auto field = r.parseString();
-      if (!field) return false;
+      std::string field;
+      if (!r.parseString(&field)) return false;
       if (!r.expect(':')) return false;
 
-      if (*field == "key") {
-        auto v = r.parseString();
-        if (!v) return false;
-        keyName = *v;
+      if (field == "key") {
+        std::string v;
+        if (!r.parseString(&v)) return false;
+        keyName = v;
         haveKey = true;
-      } else if (*field == "action") {
-        auto v = r.parseString();
-        if (!v) return false;
-        action = *v;
+      } else if (field == "action") {
+        std::string v;
+        if (!r.parseString(&v)) return false;
+        action = v;
         haveAction = true;
-      } else if (*field == "scope") {
-        auto v = r.parseString();
-        if (!v) return false;
-        scopeName = *v;
+      } else if (field == "scope") {
+        std::string v;
+        if (!r.parseString(&v)) return false;
+        scopeName = v;
         haveScope = true;
-      } else if (*field == "mods") {
-        if (!r.parseStringArray(modNames)) return false;
+      } else if (field == "mods") {
+        if (!r.parseStringArray(&modNames)) return false;
       } else {
-        r.fail("unknown binding field \"" + *field + "\"");
+        r.fail("unknown binding field \"" + field + "\"");
         return false;
       }
 
@@ -256,56 +160,66 @@ bool Keymap::loadFromString(std::string_view json, std::string_view sourceLabel)
 
 bool Keymap::parse(std::string_view json, std::string_view sourceLabel) {
   JsonReader r(json, sourceLabel);
-  if (!r.expect('{')) return false;
+  // io/Json's reader STORES its first error rather than printing it, so the
+  // one `[keymap]` stderr line this loader has always written is emitted here
+  // instead -- once, at the single point every `return false` below funnels
+  // through. That is what the lambda is for: it gives a body with a dozen
+  // early exits one place to report from, without rewriting any of them.
+  const bool ok = [&]() -> bool {
+    if (!r.expect('{')) return false;
 
-  bool sawBindings = false;
-  if (r.peek() != '}') {
-    while (true) {
-      auto key = r.parseString();
-      if (!key) return false;
-      if (!r.expect(':')) return false;
+    bool sawBindings = false;
+    if (r.peek() != '}') {
+      while (true) {
+        std::string key;
+        if (!r.parseString(&key)) return false;
+        if (!r.expect(':')) return false;
 
-      if (*key == "name") {
-        auto v = r.parseString();
-        if (!v) return false;
-        name_ = *v;
-      } else if (*key == "bindings") {
-        if (!r.expect('[')) return false;
-        sawBindings = true;
-        if (r.peek() != ']') {
-          while (true) {
-            KeyBinding b;
-            if (!parseBindingObject(r, b)) return false;
-            bindings_.push_back(std::move(b));
-            if (r.peek() == ',') {
-              r.expect(',');
-              continue;
+        if (key == "name") {
+          std::string v;
+          if (!r.parseString(&v)) return false;
+          name_ = v;
+        } else if (key == "bindings") {
+          if (!r.expect('[')) return false;
+          sawBindings = true;
+          if (r.peek() != ']') {
+            while (true) {
+              KeyBinding b;
+              if (!parseBindingObject(r, b)) return false;
+              bindings_.push_back(std::move(b));
+              if (r.peek() == ',') {
+                r.expect(',');
+                continue;
+              }
+              break;
             }
-            break;
           }
+          if (!r.expect(']')) return false;
+        } else {
+          r.fail("unknown top-level key \"" + key + "\"");
+          return false;
         }
-        if (!r.expect(']')) return false;
-      } else {
-        r.fail("unknown top-level key \"" + *key + "\"");
-        return false;
-      }
 
-      if (r.peek() == ',') {
-        r.expect(',');
-        continue;
+        if (r.peek() == ',') {
+          r.expect(',');
+          continue;
+        }
+        break;
       }
-      break;
     }
-  }
-  if (!r.expect('}')) return false;
-  if (!r.ok()) return false;
+    if (!r.expect('}')) return false;
+    if (!r.ok()) return false;
 
-  if (!sawBindings) {
-    std::fprintf(stderr, "[keymap] %.*s: missing \"bindings\" array\n",
-                 static_cast<int>(sourceLabel.size()), sourceLabel.data());
-    return false;
-  }
-  return true;
+    if (!sawBindings) {
+      std::fprintf(stderr, "[keymap] %.*s: missing \"bindings\" array\n",
+                   static_cast<int>(sourceLabel.size()), sourceLabel.data());
+      return false;
+    }
+    return true;
+  }();
+  if (!ok && !r.error().empty())
+    std::fprintf(stderr, "[keymap] %s\n", r.error().c_str());
+  return ok;
 }
 
 // Two bindings sharing an identical chord are a real conflict exactly when

@@ -1,5 +1,6 @@
 #include "app/LayerPanel.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -7,6 +8,7 @@
 #include <utility>
 
 #include "core/Blend.hpp"
+#include "core/LayerOps.hpp"
 
 namespace np {
 
@@ -82,15 +84,22 @@ const std::vector<NewLayerKindEntry>& newLayerKindMenu() {
   // Design 2a's popup order, which is not the enum's: Pigment first because
   // it is the default kind (PRD principle 3) and the design draws it in the
   // highlighted slot, then RGB, then the five parametric kinds, then Vector
-  // (which the design predates). The three with no maker function are listed
-  // with `buildable == false` -- see the header for why they are listed at
+  // (which the design predates). The one with no maker function -- Media -- is
+  // listed with `buildable == false`; see the header for why it is listed at
   // all.
   static const std::vector<NewLayerKindEntry> kMenu = {
       {LayerKind::Pigment, true, LayerCommand::NewPigmentLayer},
       {LayerKind::RGB, true, LayerCommand::NewRgbLayer},
       {LayerKind::Media, false, {}},
       {LayerKind::Adjustment, true, LayerCommand::NewAdjustmentLayer},
-      {LayerKind::Strokes, false, {}},
+      // Buildable as of PLAN.md phase 8: the kind has a content member at last
+      // (`Layer::strokes`, a list of dab RECORDS), so an empty Strokes layer
+      // is a real, saveable, erasable thing. Flipped IN PLACE rather than
+      // appended, for Text's and Flats' stated reason -- Strokes is one of
+      // design 2a's own seven kinds and has held this slot since the list
+      // existed, so moving it is what would break the ordering a --selftest
+      // pins.
+      {LayerKind::Strokes, true, LayerCommand::NewStrokesLayer},
       // Buildable as of PLAN.md phase 14. Flipped IN PLACE rather than
       // appended the way Vector was: Text is one of design 2a's own seven
       // kinds and has been in this list since it existed, so its slot is
@@ -121,13 +130,14 @@ const char* layerKindUnbuildableReason(LayerKind kind) noexcept {
     case LayerKind::Vector:
     case LayerKind::Text:
     case LayerKind::Flats:
+    // PLAN.md phase 8 paid off this kind's reason -- `Layer::strokes` is the
+    // parameter member the sentence below used to say was missing -- so the
+    // arm moves up here rather than keeping a greyed excuse for a live row.
+    case LayerKind::Strokes:
       return nullptr;
     case LayerKind::Media:
       return "Not built yet. A Media layer needs the fluid solver's own per-medium state on "
              "top of the pigment tiles, and nothing on Layer holds it.";
-    case LayerKind::Strokes:
-      return "Not built yet. A Strokes layer here has no dabs: the kind has no parameter "
-             "member to hold them.";
     case LayerKind::Group:
       // Not "unbuildable" in the sense the other four are -- a Group is real
       // and fully built. It simply is not one of `newLayerKindMenu()`'s seven
@@ -433,6 +443,45 @@ bool layerHiddenByCollapsedGroup(const Document& doc, size_t layerIndex,
   for (const std::string& tag : layerGroupAncestry(doc, layerIndex))
     if (collapsedGroupTags.count(tag) != 0) return true;
   return false;
+}
+
+
+size_t layerDropOutOfCollapsedGroups(const Document& doc, size_t from, size_t to,
+                                     const std::set<std::string>& collapsedGroupTags) noexcept {
+  const size_t count = doc.layers.size();
+  if (count == 0 || collapsedGroupTags.empty() || from >= count) return to;
+  if (to >= count) to = count - 1;
+
+  // Bounded by the layer count for the reason `layerGroupAncestry()` bounds
+  // its own walk: a hand-built or foreign document is not bound by what this
+  // build's operations produce, and a pass that cannot terminate is worse than
+  // one that stops early with the target where it found it.
+  for (size_t pass = 0; pass < count; ++pass) {
+    bool moved = false;
+    for (size_t g = 0; g < count; ++g) {
+      const Layer& group = doc.layers[g];
+      if (group.kind != LayerKind::Group) continue;
+      if (collapsedGroupTags.count(group.groupTag) == 0) continue;
+      // The block, the same shape core::moveLayer() moves.
+      const std::pair<size_t, size_t> members = groupMemberSpan(doc, g);
+      if (members.first > members.second) continue;  // nothing hidden
+      const size_t first = members.first;
+      if (from >= first && from <= g) continue;  // dragging this group itself
+      // Strictly inside: `first` is "below the whole block" and `g + 1` is
+      // "above its row", both of which are slots the user CAN see.
+      if (to <= first || to > g) continue;
+      const size_t midpoint = first + (g - first) / 2;
+      const size_t out = to > midpoint ? std::min(g + 1, count - 1) : first;
+      if (out != to) {
+        to = out;
+        moved = true;
+      } else {
+        break;
+      }
+    }
+    if (!moved) break;
+  }
+  return to;
 }
 
 }  // namespace np

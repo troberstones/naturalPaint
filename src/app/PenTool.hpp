@@ -69,6 +69,24 @@ enum class Tool;
 
 bool toolEditsPath(Tool t) noexcept;
 
+// Which of the three AUTHORS geometry. `Tool::Pen` and `Tool::Curve` place
+// anchors; `Tool::PathSelect` never creates one.
+//
+// **This is the split that lets the Pen stop being the manipulator.** Before
+// it, `pathEditBeginPen()` forwarded every press that was not on empty canvas
+// to `pathEditBegin()`, so the Pen ran the gnomon, the marquee, anchor drags
+// and tangent drags -- it was the selection tool as well as the drawing tool.
+// The canvas block routes on this predicate: true means placement
+// (`pathEditBeginPen()`), false means the editing gestures
+// (`pathEditBegin()`), and neither tool does the other's job.
+//
+// It is also what keeps `toolEditsPath()`'s widening honest. A predicate that
+// went true for a third tool WITHOUT a routing split would have handed the
+// Pen's placement to Path Select and Path Select's manipulator to the Pen --
+// which is the shape of the defect app/selftest/Eyedropper.cpp's tripwire
+// exists to catch, arriving from the opposite direction.
+bool pathToolPlacesAnchors(Tool t) noexcept;
+
 // ==========================================================================
 // 3. SELECTION -- two modes, one modifier grammar
 // ==========================================================================
@@ -92,6 +110,12 @@ enum class PathSelectMode { Shape, Component };
 // points *together*, so that function looks at which ANCHORS are referenced
 // by a selection (de-duplicating `Point`/`InHandle`/`OutHandle` entries for
 // the same anchor down to one), not which `part` any one entry named.
+// The paint a newly placed shape is stamped with. Declared, not included:
+// `app/VectorStyle.hpp` includes THIS header (its selection rule is written
+// over `PathSelection`), and section 1's "no AppState, no ui/" rule is worth
+// more here than the convenience of a complete type in a signature.
+struct VectorStyle;
+
 enum class AnchorPart { Point, InHandle, OutHandle };
 
 // One selected component: a specific anchor, or one of its handles, on a
@@ -474,6 +498,50 @@ void pathEditRefreshPivot(PathEditState* state, const std::vector<VectorShape>& 
 void pathEditSetSelectMode(PathEditState* state, PathSelectMode mode,
                            const std::vector<VectorShape>& shapes);
 
+// Drop everything the selection and the open placement session name that
+// `shapes` no longer contains -- the transition the PATHS panel runs after
+// every `runPathOp()` (docs/path-editing-plan.md sections 1.4 and 4).
+//
+// **Against the surviving geometry, not against a list of erased ids.**
+// `PathOpResult::erasedShapes` is the id-shaped half of the hazard and it is
+// the half app/PathOps.hpp calls out, but a DELETE that leaves a shape
+// standing with fewer subpaths, or a subpath standing with fewer anchors,
+// dangles a component-mode `ComponentRef` by INDEX with no id having
+// disappeared at all. One rule -- "does this reference still resolve?" --
+// covers both, and cannot be the half the caller forgot to pass in.
+//
+// The open placement session goes through `pathEditEndOpenPath()` rather than
+// having its three fields cleared here, so there stays exactly one place that
+// knows what ending placement means.
+//
+// A live drag is cancelled whenever anything was pruned. That cannot happen
+// from a panel button -- the docks draw before the canvas
+// hit-test, so a click on a button is never also a click dragging an anchor
+// -- but a keyboard route to these verbs is docs/path-editing-plan.md track
+// C1's, and a verb run mid-drag would leave `shapesAtDragStart` describing
+// geometry that no longer exists.
+//
+// Idempotent, and a no-op when everything already resolves: the panel calls
+// it unconditionally after a verb rather than only when `erasedShapes` is
+// non-empty, so there is no second predicate to get wrong.
+void pathEditPruneSelection(PathEditState* state, const std::vector<VectorShape>& shapes);
+
+// Install `ids` as the SHAPE-mode selection -- the PATHS panel's shape-list
+// row click, and how the caller of `runPathOp(ReleaseCompound)` selects the
+// shapes that verb minted (app/PathOps.hpp section 3: the verbs never touch
+// the selection, so the caller re-selects, and it does so through here rather
+// than by assigning the field).
+//
+// Switches `mode` to `Shape`: a list of whole shapes is what it is handed,
+// and leaving the selection in Component mode would draw an anchor scatter
+// for shapes the user picked as objects.
+//
+// Ids not present in `shapes` are dropped rather than stored. A writer that
+// can install a dangle would make `pathEditPruneSelection()` above something
+// every caller has to remember instead of an invariant.
+void pathEditSelectShapes(PathEditState* state, const std::vector<uint64_t>& ids,
+                          SelectionCombine how, const std::vector<VectorShape>& shapes);
+
 // ==========================================================================
 // 9. PLACEMENT -- Pen/Curve laying down new anchors
 // ==========================================================================
@@ -495,17 +563,30 @@ void pathEditSetSelectMode(PathEditState* state, PathSelectMode mode,
 // `recordEdit()` -- immediately, not from a later `pathEditUpdate()`.
 
 // What one `pathEditBeginPen()` press did.
+//
+// **`Editing` and `Selecting` are gone**, and their absence is this track's
+// whole point. They meant "this press was forwarded to `pathEditBegin()`" --
+// the gnomon, the marquee, anchor drags, tangent drags -- which made the Pen
+// the manipulator as well as the drawing tool. `Tool::PathSelect` owns those
+// gestures now, and the Pen's press has exactly four outcomes, every one of
+// them about placing points.
 enum class PenPressResult {
-  Editing,    // existing geometry, not the open path's own first anchor --
-              // `pathEditBegin()`'s ordinary gestures took over (bullet 2:
-              // "presses on existing geometry keep today's gestures").
-  Selecting,  // as `Editing`, but no geometry changed (a selection-only
-              // click) -- `pathEditBegin()` returned false.
+  Inert,      // the press landed on geometry the Pen has nothing to say
+              // about. Nothing changed, nothing was selected. Any open
+              // placement ended -- docs/vector-editing.md section 8's
+              // "clicking away".
   Placed,     // a new anchor went down. `*shapes` already changed --
               // `recordEdit()` now.
   Closed,     // the press landed on the open subpath's own first anchor:
               // closed, and placement ended. `*shapes` already changed --
               // `recordEdit()` now.
+  Resumed,    // the press landed on the loose end of some OTHER open subpath,
+              // which is now the open placement session. No geometry changed
+              // (that end was already the subpath's last anchor), so there is
+              // nothing to record.
+  ResumedReversed,  // as `Resumed`, but the subpath had to be reversed to put
+                    // the pressed end at the back. `*shapes` already changed
+                    // -- `recordEdit()` now.
 };
 
 // Pen/Curve's press. Hit-tests `at` exactly as `hitTestPath()` does (so a
@@ -531,15 +612,32 @@ enum class PenPressResult {
 // the newly placed anchor AND its predecessor on every press, and again
 // across the seam when a press closes the subpath).
 //
+// `style` is the paint the new shape is stamped with, and it is a PARAMETER
+// rather than a default because a default is exactly how this shipped broken:
+// the shape was built as `VectorShape s;`, whose `fill.on` and `stroke.on` are
+// both false, so every path the Pen has ever drawn rasterised to nothing (see
+// app/VectorStyle.hpp section 1). Making the caller say what it paints with is
+// the cheapest way for that to be impossible to forget again. `app/VectorStyle`
+// rather than `AppState` for the type, so this file still includes no
+// `AppState` -- section 1's rule.
+//
 // `*nextShapeId` is the layer's own `Layer::nextShapeId` counter, advanced
 // here exactly as the LAYERS panel's NEW > Vector insertion advances it
 // (`core/LayerOps.cpp`'s `makeVectorLayer()`), so a placed shape's id is
 // never reused within its layer.
+// **Four parameters lighter than it was, and each one dropped says
+// something.** `gnomonSuppressed` and `gnomonReachPx` are gone because the
+// Pen draws no gnomon and therefore must not HIT-TEST one: a target that is
+// hit but not drawn is the same lie as a target drawn at a size it is not hit
+// at, which this file's own `gnomonReachPx` comment was written about. It
+// passes `gnomonSuppressed = true` internally, unconditionally. `how` is gone
+// because a Pen press does not combine selections -- it selects exactly the
+// anchor it just placed or resumed from, always Replace. Anyone wanting
+// Shift-click set semantics wants `Tool::PathSelect`.
 PenPressResult pathEditBeginPen(PathEditState* state, std::vector<VectorShape>* shapes,
                                 uint64_t* nextShapeId, PathPoint at, float pickRadiusPx,
-                                bool gnomonSuppressed, SelectionCombine how,
                                 uint64_t documentId, bool curveMode,
-                                float gnomonReachPx = kDefaultGnomonReachPx);
+                                const VectorStyle& style);
 
 // Whether a placement session is open -- `ui/`'s overlay uses this to decide
 // whether to draw the rubber-band segment from the last anchor to the

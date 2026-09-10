@@ -329,6 +329,41 @@ enum class FullRecompositeReason {
   // tiles nor ops nor shapes, so pass 1's whitelist compares EQUAL on every
   // field for a layer whose entire string just changed.
   TextContentChanged,
+  // PLAN.md phase 16 / ADR-0009. A `LayerKind::Flats` layer's parameters or
+  // recorded repairs moved.
+  //
+  // **The third parametric kind, and it was missed -- with exactly the
+  // consequence the two comments above predict.** A Flats layer holds no
+  // tiles, no ops, no shapes and no text: its content is `flats` (the
+  // `FlatParams` and the recorded edits), so pass 1's whitelist compared
+  // EQUAL on every field for a layer whose entire segmentation had just
+  // changed. Every flatting edit -- a deleted fill, a bridge, a hand-drawn
+  // shape -- and every parameter change landed in the model, invalidated the
+  // evaluation cache, rebuilt the layer's tiles correctly, and then was
+  // never composited, so nothing appeared on screen until something
+  // unrelated dirtied the canvas. **Toggling the layer's eye icon off and
+  // back on was the reliable way to see your own edit**, which is how this
+  // was reported.
+  //
+  // Its own enumerator rather than sharing one, for the reason
+  // `TextContentChanged` gives: `fullRecompositeExplanation()` exists so a
+  // slow frame can say what the user did, and "vector layer geometry
+  // changed" pointed at a re-flat would send a reader hunting a path edit
+  // that never happened.
+  FlatsContentChanged,
+  // PLAN.md phase 8. A `LayerKind::Strokes` layer's dab records moved -- one
+  // recorded, one deleted by the eraser (PRD F11), one edited.
+  //
+  // **Added WITH the kind's content member, not after the same bug was
+  // reported a fourth time.** Every word of `FlatsContentChanged`'s comment
+  // above applies here unchanged: this pass is a whitelist, a Strokes layer
+  // holds no tiles, no ops, no shapes and no text, and a kind whose content
+  // no arm of the whitelist compares reads as "nothing changed" for an edit
+  // that changed everything about it. `strokesContentHash()` covers every
+  // field of every dab and is the same hash brush/StrokesLayer keys its
+  // evaluation cache on, so the two cannot disagree about what "changed"
+  // means.
+  StrokesContentChanged,
 };
 
 const char* fullRecompositeReasonName(FullRecompositeReason reason) noexcept;

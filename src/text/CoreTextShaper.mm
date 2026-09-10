@@ -322,28 +322,88 @@ std::vector<std::string> availableFontFamilies() {
   return result;
 }
 
-// `CTFontManagerCopyAvailableFontFamilyNames()` is a lookup against the
-// already-built ATS/CoreText font registry -- not a filesystem scan and not
-// per-glyph work -- and answers in well under a millisecond even with the
-// few hundred families a typical Mac has installed (measured while writing
-// this function). That is cheap enough that rebuilding and linearly
-// scanning the list on every call, below, is the right answer rather than a
-// cache: fonts can be installed or removed while the app is running, and a
-// cache would need an invalidation story (a filesystem watch, or a
-// CTFontManager change notification) that nothing in this codebase asks for
-// yet and that `--selftest` -- a process that starts, shapes a handful of
-// strings, and exits -- has no way to exercise anyway.
+// **This used to enumerate every installed family and scan the list, on the
+// strength of a measurement that is no longer true.** The comment that stood
+// here said `CTFontManagerCopyAvailableFontFamilyNames()` "answers in well
+// under a millisecond ... cheap enough that rebuilding and linearly scanning
+// the list on every call is the right answer rather than a cache", and
+// argued -- correctly, and the argument is kept below -- that a cache would
+// need an invalidation story nothing here asks for.
+//
+// Re-measured on this machine (macOS 15, 321 installed families): that one
+// call costs **17-35 ms**, not "well under a millisecond". CoreText does no
+// internal memoisation of it. The cost never showed up in the application,
+// where nothing calls this in a loop, but app/selftest/TextShaper.cpp part 9
+// asks it once per installed family to prove the two agree -- 321 calls,
+// **4.7 s, 22% of the entire --selftest run**, spent re-deriving the same
+// list 321 times.
+//
+// The fix keeps the no-cache property rather than trading it away: ask
+// CoreText the question actually being asked -- "does a font with this
+// FAMILY name exist" -- as a single registry lookup, instead of deriving it
+// from a list of all the answers. Every call is still fresh, so a font
+// installed or removed while the app runs is still seen immediately, and
+// there is still no invalidation story to get wrong. 321 lookups: **1.8 ms**.
+//
+// Two behaviours of the old implementation are preserved deliberately, and
+// both were checked against it rather than assumed:
+//
+//   * **The leading-'.' filter.** `availableFontFamilies()` above hides
+//     CoreText's internal families ("`.SF NS`", "`.LastResort`"), so the old
+//     scan-the-list implementation answered false for them. A bare
+//     descriptor match answers TRUE for ".SF NS" -- it is a real registered
+//     family -- which would let a hidden system font through a picker that
+//     asks this before accepting a name. The filter is therefore applied
+//     here explicitly, and is the one place the two implementations diverge.
+//   * **Case-insensitivity.** The old one lower-cased both sides;
+//     CTFontDescriptor matching is itself case-insensitive on the family
+//     attribute ("helvetica" and "HELVETICA" both match "Helvetica",
+//     measured), which is what part 9's two case-flip assertions pin.
+//
+// And the strictness that matters is unchanged, also measured rather than
+// assumed: a PostScript name ("TimesNewRomanPSMT", "ArialMT"), a face name
+// ("Helvetica-Bold"), a prefix ("Hel"), a whitespace-padded name and the
+// empty string all still answer false, because `kCTFontFamilyNameAttribute`
+// is passed as the MANDATORY attribute -- without that set, the matcher
+// falls back to returning a descriptor for something else entirely and this
+// function would answer true for very nearly anything.
 bool fontFamilyAvailable(std::string_view family) {
-  auto toLower = [](std::string_view s) {
-    std::string out(s);
-    std::transform(out.begin(), out.end(), out.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return out;
-  };
-  const std::string target = toLower(family);
-  for (const std::string& candidate : availableFontFamilies())
-    if (toLower(candidate) == target) return true;
-  return false;
+  // Same two rejections `availableFontFamilies()` applies to its own output,
+  // so that "is in the list" and "is available" keep answering alike.
+  if (family.empty() || family.front() == '.') return false;
+
+  const std::string name(family);
+  CFStringRef cfName =
+      CFStringCreateWithCString(kCFAllocatorDefault, name.c_str(), kCFStringEncodingUTF8);
+  if (!cfName) return false;
+
+  CFStringRef keys[1] = {kCTFontFamilyNameAttribute};
+  CFTypeRef values[1] = {cfName};
+  CFDictionaryRef attrs =
+      CFDictionaryCreate(kCFAllocatorDefault, reinterpret_cast<const void**>(keys),
+                         reinterpret_cast<const void**>(values), 1,
+                         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+  bool found = false;
+  if (attrs) {
+    CTFontDescriptorRef query = CTFontDescriptorCreateWithAttributes(attrs);
+    if (query) {
+      // The mandatory-attribute set is what makes this a test rather than a
+      // fallback; see the comment above.
+      CFSetRef mandatory =
+          CFSetCreate(kCFAllocatorDefault, reinterpret_cast<const void**>(keys), 1,
+                      &kCFTypeSetCallBacks);
+      if (mandatory) {
+        CTFontDescriptorRef match = CTFontDescriptorCreateMatchingFontDescriptor(query, mandatory);
+        found = (match != nullptr);
+        if (match) CFRelease(match);
+        CFRelease(mandatory);
+      }
+      CFRelease(query);
+    }
+    CFRelease(attrs);
+  }
+  CFRelease(cfName);
+  return found;
 }
 
 ShapedText shapeText(std::string_view utf8, const TextStyle& style,

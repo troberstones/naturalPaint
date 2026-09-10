@@ -7,7 +7,9 @@
 #include <vector>
 
 #include "app/AppState.hpp"
+#include "app/Command.hpp"
 #include "app/GradientTool.hpp"
+#include "app/LayerEditor.hpp"
 #include "core/LayerSetOps.hpp"
 #include "gfx/Context.hpp"
 #include "sim/PaintSim.hpp"
@@ -101,6 +103,20 @@ std::optional<Tool> canvasCursorToolRequest();
 // *and* collapses the multi-selection onto it, which `setActiveLayer()` alone
 // does not do. Clamped, so an index past the end is not an error here.
 void setLayersPanelSelection(OpenDocument& doc, size_t layerIndex);
+
+// The height of the LAYERS panel's `##layerrows` scroll box, exposed for
+// app/selftest/LayerListHeight.cpp. `rowCount` is an input this function is
+// required to ignore -- see the definition in ui/MacPaintUI.cpp for why the
+// count is passed at all, and what moved around the panel when it was not
+// ignored.
+float layerRowsChildHeight(float availY, float reserveBelowY, float rowH, float windowPaddingY,
+                           std::size_t rowCount) noexcept;
+
+// The blank height above the first row, which is what puts the layer stack on
+// the BOTTOM of its box: layer 0 rests on the floor and additions grow upward.
+// Exposed for app/selftest/LayerListHeight.cpp; see the definition for why
+// top-aligning it moved rows a user was aiming at.
+float layerRowsTopSpacer(float innerAvailY, std::size_t rowCount, float rowH) noexcept;
 
 // The whole multi-selection (PLAN.md Phase 5 step 11), for the one caller
 // `setLayersPanelSelection()` exists for: main.cpp's `--ui-multiselect-demo`,
@@ -259,7 +275,7 @@ std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen,
 // **the Layer menu is the one menu that is GREYED by a gizmo rather than
 // cancelling it** (`ui/MenuModel.hpp`'s `menuActionEndsTransform()` states the
 // general rule and this is its exception). These commands are the
-// delete/reorder/merge/group family -- `docs/testing-issues.md` T28's own
+// delete/reorder/merge/group family -- `docs/testing-issues.md` T29's own
 // measured corruption, and the LAYERS panel's buttons wearing a different hat.
 // That panel is refused outright, so offering the same acts one menu over, at
 // the price of the transform, would be two surfaces disagreeing about one
@@ -339,6 +355,21 @@ std::array<float, 4> foregroundLinearRgba(int pigmentIndex);
 // is the one every call site in the running application wants. Collapsing them
 // into one would have made the palette test un-writable without a BrushState.
 std::array<float, 4> foregroundLinearRgba(const BrushState& brush);
+
+// The paint a newly placed Pen/Curve shape gets: `st.vectorStyle` with
+// `stroke.rgba` (and `fill.rgba`) taken from the FOREGROUND, the way the Text
+// tool's frame-drag end takes `made.fill.rgba` from `foregroundLinearRgba()`.
+// app/AppState.hpp's rule -- one foreground colour for the whole build --
+// applied to the one tool that had no colour at all.
+//
+// **A named function rather than four lines at the call site, so `--selftest`
+// can reach it.** The defect this whole change exists to fix was a call site
+// that stamped nothing; a call site that stamps the wrong colour is the same
+// class of defect and is equally invisible on screen (the stroke would be
+// roughly twice as dark, which is a thing you notice only if you already
+// suspect it). Neither is checkable while the answer is computed inline in a
+// canvas gesture block.
+VectorStyle penVectorStyle(const AppState& st);
 
 // The exact `ImGuiColorEditFlags` the COLOR panel's RGB picker is drawn with.
 //
@@ -457,6 +488,77 @@ struct EyedropperPick {
 // pick, and "I clicked on empty canvas" is not an instruction to paint in
 // black.
 EyedropperPick applyEyedropperPick(AppState& st, PixelCoord at);
+
+// ---------------------------------------------------------------------------
+// The three UI -> command-layer boundaries (docs/automation-plan.md step 2)
+// ---------------------------------------------------------------------------
+//
+// **A command layer the UI does not use cannot record what the user did.**
+// `app::applyCommand()` is where `RecorderTap` sits, so every route that
+// reaches an applier around it is a user action that silently fails to record
+// -- which is the whole of step 2's argument, and the reason these three
+// functions exist rather than each dialog calling `applyCommand()` inline.
+//
+// They are also the only shape of this wiring `--selftest` can drive. The
+// dialogs around them cannot run headless -- there is no window and nothing
+// for `ImGui::BeginPopupModal()` to draw into -- exactly as the Select menu's
+// six functions below say of theirs, so the boundary is drawn in the same
+// place for the same reason: every confirm button, every panel control and
+// every layer gesture calls exactly one of these and nothing else, so a test
+// that calls one the way the button does is testing the real wiring rather
+// than a re-implementation of it. **That is the assertion that catches a
+// missed site**: arm a `Recorder`, call one of these, and a step is recorded;
+// reach an applier around it and none is.
+
+// What a Filter / Image > Adjustments confirm button does with a result. The
+// three-way outcome those seventeen dialogs already shared (refused / changed
+// nothing / done), now sourced from a `CommandResult` instead of a
+// `FilterOpResult`.
+struct PixelCommandOutcome {
+  // True when the popup should close: a success, whether or not it moved a
+  // texel. A refusal leaves the dialog open with its reason on screen.
+  bool closeDialog = false;
+  // What to show in the dialog's red line, or empty when there is nothing to
+  // say. On a refusal this is `CommandResult::status` verbatim.
+  std::string status;
+};
+
+// Runs one pixel command on `od` through `app::applyCommand()`.
+// `nothingChangedText` is the dialog's own sentence for a success that moved
+// no texels -- each dialog's is worded for its own parameters ("radius 0, or
+// no selected texels"), which is why it is an argument and not a constant.
+PixelCommandOutcome runPixelCommand(OpenDocument& od, const Command& command,
+                                    const char* nothingChangedText);
+
+// A layer gesture or a layer value setter, through the same door. Both report
+// the same three things, because `g_layers`' message band shows the same three
+// things for both.
+//
+// **The caller must NOT adopt an active layer of its own afterwards.**
+// `fromLayerEdit()` (app/CommandSupport.hpp) already assigns
+// `LayerEditResult::selected` through `setActiveLayer()`, so a call site that
+// assigned it as well would be fighting the helper -- and would be the second
+// answer to "where did the selection land" that app/CommandSupport.hpp exists
+// to prevent. Read `OpenDocument::activeLayer` after the call instead.
+struct LayerCommandOutcome {
+  bool ok = false;
+  // Empty when `ok`. `CommandResult::status` verbatim otherwise.
+  std::string error;
+  std::vector<std::string> warnings;
+};
+
+// `LayerCommand` -> its registered id -> `applyCommand()`. Acts on the active
+// layer, which is the layer every UI route for these gestures already acts on.
+LayerCommandOutcome runLayerGesture(OpenDocument& od, LayerCommand command);
+
+// One `core/LayerOps` value setter, on the ACTIVE layer, through
+// `applyCommand()`. The command carries no `"layer"` key: `resolveTarget()`
+// falls back to the active layer, which is both what these call sites mean and
+// the only target they could name safely -- layer names are explicitly not
+// unique (core/LayerOps.hpp), so a name would be ambiguous where an index was
+// not.
+LayerCommandOutcome runActiveLayerSetter(OpenDocument& od, const Command& command);
+
 // ---------------------------------------------------------------------------
 // The Select menu (docs/reachability-audit.md C5; PRD E4/E8/E9) -- exposed
 // for --selftest for the identical reason `commitDrawnSelection()` above is.

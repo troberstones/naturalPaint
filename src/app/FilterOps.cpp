@@ -135,6 +135,50 @@ FilterOpResult applyMotionBlur(OpenDocument& doc, const MotionBlurParams& params
   return applyPixelFilter(doc, motionBlurTiles, params, "motion blur");
 }
 
+namespace {
+
+// **The one expression in this build that fills in `InpaintParams::hole`.**
+// app/FilterOps.hpp's inpaint section says why it is one and not two: the
+// engine's hole and `compositeFilterResult()`'s selection have to be the same
+// object, and the only way to guarantee that is for nothing outside this file
+// to be able to name either.
+//
+// `doc.selection` is `std::optional<Selection>`, and `nullptr` here is the
+// no-selection case -- which `inpaintParamsValid()` refuses, rather than
+// reading it as core/SelectionMask.hpp's usual "no restriction". That
+// inversion is ops/Inpaint.hpp's entire first section and the reason this
+// conversion is written out rather than inlined at two call sites.
+InpaintParams inpaintParamsFor(const OpenDocument& doc, int32_t radius) {
+  InpaintParams params;
+  params.hole = doc.selection.has_value() ? &*doc.selection : nullptr;
+  params.radius = radius;
+  return params;
+}
+
+}  // namespace
+
+PixelOpRefusal inpaintRefusal(const OpenDocument& doc) {
+  // Layer first: a locked layer with no selection refuses for the lock. See
+  // app/FilterOps.hpp on why that ordering, and not the other one.
+  const PixelOpRefusal layer = pixelOpRefusalFor(activeLayerOf(doc));
+  if (layer != PixelOpRefusal::None) return layer;
+  // Only the *hole* half of `inpaintParamsValid()` is a `NoSelection`: a
+  // radius outside `[1, kInpaintMaxRadius]` is a caller bug, not something a
+  // user can fix by selecting differently, and it is already refused by the
+  // engine (which returns false, which the bridge reports as a zero-texel
+  // no-op) exactly as an invalid sigma is.
+  const Selection* hole = doc.selection.has_value() ? &*doc.selection : nullptr;
+  if (hole == nullptr || selectionSelectsNothing(*hole)) return PixelOpRefusal::NoSelection;
+  return PixelOpRefusal::None;
+}
+
+FilterOpResult applyInpaint(OpenDocument& doc, int32_t radius) {
+  FilterOpResult result;
+  result.refusal = inpaintRefusal(doc);
+  if (result.refusal != PixelOpRefusal::None) return result;
+  return applyPixelFilter(doc, inpaintTiles, inpaintParamsFor(doc, radius), "inpaint");
+}
+
 // See this header's own comment on `previewX()`: each one below is
 // `applyX()`'s params-building preamble, feeding `computePixelFilter()`
 // instead of `applyPixelFilter()` -- same engine, same params construction,
@@ -175,6 +219,101 @@ FilterOpResult previewMedian(const OpenDocument& doc, const MedianParams& params
 FilterOpResult previewMotionBlur(const OpenDocument& doc, const MotionBlurParams& params,
                                  TileStore* previewOut) {
   return computePixelFilter(doc, motionBlurTiles, params, previewOut);
+}
+
+FilterOpResult previewInpaint(const OpenDocument& doc, int32_t radius, TileStore* previewOut) {
+  // The same refusal preamble `applyInpaint()` runs, then the same engine
+  // with the same params built by the same function -- which is what makes
+  // "the preview and the commit computed different answers" a thing that
+  // would have to be introduced on purpose.
+  FilterOpResult result;
+  result.refusal = inpaintRefusal(doc);
+  if (result.refusal != PixelOpRefusal::None) return result;
+  return computePixelFilter(doc, inpaintTiles, inpaintParamsFor(doc, radius), previewOut);
+}
+
+// --------------------------------------------------------------------------
+// PRD D8: the two make-tileable ops
+// --------------------------------------------------------------------------
+
+namespace {
+
+// The canvas, which is what both of D8's ops need and neither engine can
+// infer -- `ops/Filters.hpp` section 4's wrap modulus and section 10's
+// statistics population. One function so the two ops cannot come to disagree
+// about what "the document" means.
+PixelRect canvasRectOf(const OpenDocument& doc) noexcept {
+  return PixelRect{0, 0, doc.document.width, doc.document.height};
+}
+
+// Built once and used by both the preview and the commit of each op, for the
+// reason app/FilterOps.hpp's `previewX()` section gives: a second copy of the
+// params construction is how the two end up filtering with different numbers.
+LightingGradientParams lightingGradientParamsFor(const OpenDocument& doc, float sigma) {
+  LightingGradientParams params;
+  params.sigma = sigma;
+  params.statsRect = canvasRectOf(doc);
+  return params;
+}
+
+OffsetParams offsetParamsFor(const OpenDocument& doc, const OffsetRequest& request) {
+  OffsetParams params;
+  params.dx = request.dx;
+  params.dy = request.dy;
+  params.edge = request.edge;
+  params.wrapRect = canvasRectOf(doc);
+  return params;
+}
+
+}  // namespace
+
+FilterOpResult applyRemoveLightingGradient(OpenDocument& doc, float sigma) {
+  return applyPixelFilter(doc, removeLightingGradientTiles,
+                          lightingGradientParamsFor(doc, sigma), "remove lighting gradient");
+}
+
+FilterOpResult previewRemoveLightingGradient(const OpenDocument& doc, float sigma,
+                                             TileStore* previewOut) {
+  return computePixelFilter(doc, removeLightingGradientTiles,
+                            lightingGradientParamsFor(doc, sigma), previewOut);
+}
+
+PixelCoord offsetByHalf(const OpenDocument& doc) noexcept {
+  // `/ 2` on a non-negative extent, which is floor -- and the extent is
+  // unsigned in the document, so there is no negative case for C's
+  // round-toward-zero to differ on. Whole texels, because the op is an
+  // addressing change: see this function's header comment.
+  return PixelCoord{static_cast<int32_t>(doc.document.width / 2),
+                    static_cast<int32_t>(doc.document.height / 2)};
+}
+
+PixelOpRefusal offsetRefusalFor(const OpenDocument& doc) noexcept {
+  // The layer-shaped question first, the same one `computePixelFilter()` will
+  // ask again on the way in -- asked here so the selection answer below can
+  // never pre-empt "there is no layer at all", which has no fix a deselect
+  // would help with.
+  const PixelOpRefusal layer = pixelOpRefusalFor(activeLayerOf(doc));
+  if (layer != PixelOpRefusal::None) return layer;
+  if (doc.selection.has_value()) return PixelOpRefusal::SelectionActive;
+  return PixelOpRefusal::None;
+}
+
+FilterOpResult applyOffset(OpenDocument& doc, const OffsetRequest& request) {
+  FilterOpResult result;
+  result.refusal = offsetRefusalFor(doc);
+  if (result.refusal != PixelOpRefusal::None) return result;
+  return applyPixelFilter(doc, offsetTiles, offsetParamsFor(doc, request), "offset");
+}
+
+FilterOpResult previewOffset(const OpenDocument& doc, const OffsetRequest& request,
+                             TileStore* previewOut) {
+  // The preview refuses on exactly the same question the commit does, rather
+  // than quietly showing a torn document the button would then decline to
+  // produce.
+  FilterOpResult result;
+  result.refusal = offsetRefusalFor(doc);
+  if (result.refusal != PixelOpRefusal::None) return result;
+  return computePixelFilter(doc, offsetTiles, offsetParamsFor(doc, request), previewOut);
 }
 
 DocumentOpOutcome applyImageSize(OpenDocument& doc, uint32_t width, uint32_t height,

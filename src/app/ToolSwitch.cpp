@@ -1,6 +1,7 @@
 #include "app/ToolSwitch.hpp"
 
 #include "app/CropTool.hpp"
+#include "app/DocumentLifecycle.hpp"  // activeLayerOf()
 #include "app/MeasureLine.hpp"
 
 namespace np {
@@ -47,6 +48,7 @@ void installTool(AppState& st, Tool next) noexcept {
   // Not conditional on `next == outgoing`: re-picking the tool you already
   // have is exactly how a user says "stop doing the other thing".
   st.flatsTool = FlatsTool::None;
+  clearFlatsEditSelection(st);
 
   // Picking the tool that is already selected is not a switch. The palette
   // cell, the flyout row and the menu item can all deliver one, and treating
@@ -187,9 +189,20 @@ bool springEyedropperEligible(Tool t, BucketFill fill) noexcept {
     case Tool::Measure:
     case Tool::Frame:
     case Tool::CloneStamp:
+    // Heal is here for the clone's reason, asked rather than inherited: it
+    // reads the same `CloneSourceState` through the same Option+click
+    // (`toolUsesCloneSource()`), so a bare Alt is already spent. Lending it to
+    // the eyedropper would take the source gesture away from the one tool that
+    // cannot paint at all without it -- a heal with no source refuses out loud.
+    case Tool::Heal:
     case Tool::Gradient:
     case Tool::Pen:
     case Tool::Curve:
+    // Alt is spent: `hitTestPath()`'s `gnomonSuppressed` is Alt held, which
+    // is docs/vector-editing.md section 3's escape hatch for a handle sitting
+    // underneath the gnomon -- and PathSelect is the tool that HAS a gnomon,
+    // so it is the one that needs it most.
+    case Tool::PathSelect:
     case Tool::Text:
     case Tool::Shape:
     case Tool::Slice:
@@ -242,49 +255,82 @@ float transformSeedAngleDeg(const AppState& st, uint64_t activeDocumentId) noexc
   return measureReadout(st.measure).angleDeg;
 }
 
+void clearFlatsEditSelection(AppState& st) noexcept {
+  st.flatsEditSelection.clear();
+  st.flatsEditBox.reset();
+  st.flatsEditBoxAdditive = false;
+}
+
 bool setFlatsTool(AppState& st, FlatsTool next) noexcept {
-  // Its own check rather than `setActiveTool()`'s, because the switch at the
-  // bottom of this function writes `brush.tool` directly -- ToolSwitch.hpp
-  // section 5's second paragraph on this function says why it has to.
+  // **Its own check, still, even though this no longer writes `brush.tool`.**
+  // It used to install a host tool per ADR-0009's table, and the merge that
+  // brought the two-independent-palettes change in removed that switch -- so
+  // the reason this needs a gate of its own changed with it. It is no longer
+  // "there is a second writer of `brush.tool` in this file"; it is that
+  // `st.flatsTool` is a second answer to *what does a click mean*, and
+  // `flatsToolIsActive()` below makes that answer EXCLUSIVE. Arming a flatting
+  // gesture under a live gizmo hands the canvas to the flats route, which is
+  // the same hole ToolSwitch.hpp section 5 closes for the ordinary tools --
+  // and this function does not route through `setActiveTool()`, so it cannot
+  // inherit that one's check.
   if (transformModalRefusal(st) != nullptr) return false;
   st.flatsTool = next;
+  // **Any tool change drops the selection**, including picking SELECT EDITS
+  // again. A selection is a set of `flatEditKey()` values, which mean nothing
+  // except against the edit list they were picked from -- and a highlight
+  // still burning on the canvas while a different tool is armed reads as
+  // "Delete will remove these", which by then is no longer true.
+  clearFlatsEditSelection(st);
   // Picking a flatting tool cancels a half-finished two-click merge: the
   // armed point belongs to the gesture being abandoned, and carrying it into
   // the next one would merge two fills the user never paired.
   st.flatsMergeFirst.reset();
   if (next == FlatsTool::None) return true;
 
-  // **The host tool, per ADR-0009's table.** The flatting gestures are the
-  // existing tools scoped to a layer kind, not a parallel set: a bridge IS
-  // the Pencil, a group IS the Lasso. Setting the host here is what keeps
-  // the cursor, the options row and the canvas's own drag handling agreeing
-  // with the palette -- picking BRIDGE and then finding the Marquee's
-  // rubber-band on screen would be the palette lying about what it did.
+  // **The regular toolbox is deliberately left alone.**
   //
-  // Written straight to `brush.tool` rather than through `setActiveTool()`,
-  // and that is deliberate: `setActiveTool()` clears `flatsTool` (above), so
-  // routing through it here would undo the line before it. The ledger is not
-  // touched for the same reason -- the user picked a flatting tool, not the
-  // Pencil, and "previous tool" should take them back to whatever they were
-  // using before flatting.
-  switch (next) {
-    case FlatsTool::BridgePen:    st.brush.tool = Tool::Pencil; break;
-    case FlatsTool::BridgeEraser: st.brush.tool = Tool::Eraser; break;
-    case FlatsTool::Group:
-    case FlatsTool::ShapeFill:    st.brush.tool = Tool::Lasso; break;
-    case FlatsTool::Carve:        st.brush.tool = Tool::PaintBucket; break;
-    // DeleteFill, MergePair, DrawMerge and SelectEdits have no host in
-    // ADR-0009's table -- they are bare canvas clicks and drags, and the
-    // flats route below takes the event before any tool sees it. Leaving
-    // `brush.tool` alone means the tool the user had is still theirs when
-    // they leave flatting mode.
-    case FlatsTool::DeleteFill:
-    case FlatsTool::MergePair:
-    case FlatsTool::DrawMerge:
-    case FlatsTool::SelectEdits:
-    case FlatsTool::None:         break;
-  }
+  // This used to install a host tool per ADR-0009's table -- BRIDGE set the
+  // Pencil, GROUP set the Lasso -- on the reasoning that the flatting
+  // gestures ARE those tools scoped to a layer kind, so the cursor and the
+  // options row should agree with the palette. In use that reasoning is
+  // wrong, and the user named it: picking a flats tool visibly moved the
+  // selection in the tool palette, so one click lit a cell in each of two
+  // palettes and put the app in a state neither of them described on its
+  // own. Worse, leaving flatting mode then dropped the user on a tool they
+  // never chose.
+  //
+  // The two palettes are now independent, which is only safe because the
+  // flats canvas route owns every one of these gestures itself --
+  // ui/MacPaintUI's route takes the pointer before the ordinary tools get
+  // it, including the lasso path GROUP and SHAPE need. Before that route
+  // owned the lasso, removing the host tool here would have silently killed
+  // those two: their commit lived inside `case Tool::Lasso:` and ran only
+  // while the Lasso was the active tool.
+  //
+  // So there is nothing left to do here but set the mode.
   return true;
+}
+
+bool flatsToolIsActive(const AppState& st) {
+  // **The PICK decides, not the selected layer.**
+  //
+  // This was gated on a Flats layer being selected and unlocked, on the
+  // reasoning that a tool which cannot act should not claim to be active.
+  // That reasoning produced the exact defect it was meant to avoid, and the
+  // user found it twice: with a flatting tool picked and an ordinary layer
+  // selected, `flatsToolIsActive()` was false, so TOOLS re-lit its cell while
+  // the FLATS TOOLS palette went on showing its own picked cell accented --
+  // two tools active at once -- and the ordinary tool really did still paint.
+  // The same ambiguity is why DELETE appeared to do nothing: the flats route
+  // stood down whenever the layer was wrong, so a click on a fill went
+  // nowhere while the palette insisted DELETE was armed.
+  //
+  // So a flatting tool is active from the moment it is picked until something
+  // else is picked, exactly as a brush is. Whether it can ACT on the current
+  // layer is a separate question, answered on the click with a refusal that
+  // names what to do -- not by silently handing the canvas back to a tool the
+  // user did not choose.
+  return st.flatsTool != FlatsTool::None;
 }
 
 }  // namespace np

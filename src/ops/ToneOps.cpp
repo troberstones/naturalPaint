@@ -52,6 +52,22 @@ std::array<float, 3> applyGainOffsetGamma(const std::array<float, 3>& rgb,
           applyGainOffsetGammaChannel(rgb[2], p)};
 }
 
+const char* invertDomainName(InvertParams::Domain domain) noexcept {
+  switch (domain) {
+    case InvertParams::Domain::Linear: return "linear";
+    case InvertParams::Domain::Display: return "display";
+  }
+  return "unknown";
+}
+
+std::optional<InvertParams::Domain> invertDomainFromName(std::string_view name) noexcept {
+  // A loop over the enum's own values, so `invertDomainName()` above is the one
+  // place a name is spelled -- see ops/Blur.hpp's `blurKindFromName()`.
+  for (const InvertParams::Domain d : {InvertParams::Domain::Linear, InvertParams::Domain::Display})
+    if (name == invertDomainName(d)) return d;
+  return std::nullopt;
+}
+
 std::array<float, 3> applyInvert(const std::array<float, 3>& rgb, const InvertParams& p) noexcept {
   std::array<float, 3> inverted{};
   if (p.domain == InvertParams::Domain::Linear) {
