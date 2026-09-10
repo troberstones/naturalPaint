@@ -79,6 +79,51 @@ bool runLayerListHeightTest() {
   const float degenerate = layerRowsChildHeight(0.0f, 0.0f, rowH, padY, 0);
   check(degenerate > 0.0f, "zero available room still yields a positive height");
 
+  // --- the stack sits on the BOTTOM of the box ----------------------------
+  //
+  // The document's order is bottom-up: layer 0 is the bottom of the picture,
+  // and the panel draws highest-index-first so the screen matches. Hung from
+  // the top of the box, layer 0 sat directly under the last row drawn and slid
+  // DOWN by one row every time a layer was added above it -- a row a user was
+  // aiming at moved because of a change to a different layer. Bottom-aligned,
+  // the rows that already existed hold still.
+  //
+  // That is the assertion below, and it is about a DIFFERENCE rather than a
+  // position: for every count that still fits, one more layer must consume
+  // exactly one row-height of the spacer and nothing else, which is the same
+  // statement as "the rows below it did not move".
+  const float innerAvail = 400.0f;
+  const float bottomRowH = 40.0f;  // 10 rows fit exactly
+  bool oneRowAtATime = true;
+  for (std::size_t n = 0; n + 1 <= 10; ++n) {
+    const float here = layerRowsTopSpacer(innerAvail, n, bottomRowH);
+    const float next = layerRowsTopSpacer(innerAvail, n + 1, bottomRowH);
+    if (std::abs((here - next) - bottomRowH) > 0.001f) oneRowAtATime = false;
+  }
+  check(oneRowAtATime,
+        "each added layer eats exactly one row of the spacer, so rows hold still");
+
+  bool restsOnTheFloor = true;
+  for (std::size_t n = 0; n <= 10; ++n) {
+    const float used =
+        layerRowsTopSpacer(innerAvail, n, bottomRowH) + static_cast<float>(n) * bottomRowH;
+    if (std::abs(used - innerAvail) > 0.001f) restsOnTheFloor = false;
+  }
+  check(restsOnTheFloor, "spacer + rows fills the box exactly: layer 0 on the floor");
+
+  check(std::abs(layerRowsTopSpacer(innerAvail, 0, bottomRowH) - innerAvail) < 0.001f,
+        "an empty list is all spacer, not a box of rows at the top");
+  check(std::abs(layerRowsTopSpacer(innerAvail, 10, bottomRowH)) < 0.001f,
+        "a list that exactly fills the box gets no spacer");
+
+  // Past full the spacer must be zero and never negative: a negative one would
+  // be submitted as a `Dummy` that drags the first row up through the top of a
+  // box already too small to show every row.
+  bool neverNegative = true;
+  for (std::size_t n = 10; n <= 400; ++n)
+    if (layerRowsTopSpacer(innerAvail, n, bottomRowH) != 0.0f) neverNegative = false;
+  check(neverNegative, "an overflowing list gets exactly 0 spacer, never a negative one");
+
   std::printf("[selftest] layer list height %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

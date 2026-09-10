@@ -2802,9 +2802,19 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
     }
     return h;
   }();
+  //
+  // **The last term is `GetFrameHeight()`, not `GetFrameHeightWithSpacing()`,
+  // and the 6 px difference is the whole of what used to be left over.**
+  // Nothing is drawn inline after the "Multi-selection" header, and Dear ImGui
+  // does not count an item's trailing `ItemSpacing` in a window's content size
+  // (`ItemSize()`: `CursorMaxPos.y = ImMax(CursorMaxPos.y, CursorPos.y -
+  // ItemSpacing.y)`), so reserving for spacing after the last item reserves for
+  // room the panel will never use. Measured, not reasoned: with the spacing
+  // counted, the cursor finished at 306.00 against a content region max of
+  // 306.00 -- flush, but with the content itself ending at 300.00.
   const float reserveBelowChild = 3.0f + ImGui::GetStyle().ItemSpacing.y +
                                   ImGui::GetTextLineHeightWithSpacing() * 2.0f +
-                                  ImGui::GetFrameHeightWithSpacing() + messageReserve;
+                                  ImGui::GetFrameHeight() + messageReserve;
   const float childH =
       layerRowsChildHeight(ImGui::GetContentRegionAvail().y, reserveBelowChild, rowH,
                            ImGui::GetStyle().WindowPadding.y, visibleRows.size());
@@ -2831,6 +2841,15 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
   // rather than by ImGui's inter-item gap.
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));
   if (ImGui::BeginChild("##layerrows", ImVec2(0.0f, childH), true)) {
+    // Bottom-anchored, so layer 0 rests on the floor of the box and additions
+    // grow upward into the empty room. `GetContentRegionAvail()` is read HERE,
+    // inside the child, because the height that matters is the box's interior
+    // -- `childH` is its outer box, `WindowPadding` and border included.
+    {
+      const float topSpacer =
+          layerRowsTopSpacer(ImGui::GetContentRegionAvail().y, visibleRows.size(), rowH);
+      if (topSpacer > 0.0f) ImGui::Dummy(ImVec2(1.0f, topSpacer));
+    }
     // This child's own draw list, fetched fresh rather than reusing the outer
     // `dl` captured before this function had a child window: clipping and
     // scroll offset are both properties of the draw list a command lands in,
@@ -19200,6 +19219,23 @@ float layerRowsChildHeight(float availY, float reserveBelowY, float rowH, float 
                            std::size_t rowCount) noexcept {
   (void)rowCount;
   return std::max(rowH + 2.0f * windowPaddingY, availY - reserveBelowY);
+}
+
+// The blank height above the first row in the LAYERS list, which is what makes
+// the stack sit on the BOTTOM of its box instead of hanging from the top.
+//
+// The document's own order is bottom-up -- layer 0 is the bottom of the
+// picture -- and the panel draws it that way, highest index first. Top-aligned,
+// that meant layer 0 sat directly under the last row drawn and slid DOWN the
+// box every time a layer was added above it, so the row a user was aiming at
+// moved even though nothing about that layer had changed. Bottom-aligned, the
+// existing rows hold still and the new one appears in the empty space above,
+// which is where it belongs in the picture too.
+//
+// Zero once the rows fill the box: a negative spacer would scroll the bottom
+// rows out through the top of a list that is already too full to show them.
+float layerRowsTopSpacer(float innerAvailY, std::size_t rowCount, float rowH) noexcept {
+  return std::max(0.0f, innerAvailY - static_cast<float>(rowCount) * rowH);
 }
 
 void setLayersPanelSelection(OpenDocument& doc, size_t layerIndex) {
