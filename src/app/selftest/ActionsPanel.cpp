@@ -296,6 +296,12 @@ bool runActionsPanelTest() {
     selectARectangle(od);
     applyCommand(od, blurStep(2.0));
     actionsPanelStop(st, session);
+    // **Named, so the refusal is the ONLY thing standing between this take and
+    // SAVE.** Without this line the take was unnameable too, and "SAVE is
+    // refused" passed on the name check while the refusal check was sabotaged
+    // out entirely -- a green assertion measuring a rule other than the one it
+    // names, found by the sabotage rather than by reading.
+    st.action.name = "Holed take";
 
     check(!st.refusals.empty(),
           "hole: the take carries a refusal (a pixel step under an unnamed marquee)");
