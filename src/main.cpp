@@ -3034,6 +3034,7 @@ int main(int argc, char** argv) {
     // one PSD layer record per naturalPaint layer, asserted by round trip
     // through io/PsdImport (docs/psd-export.md tier 2). Headless and GPU-free.
     const bool psdLayerSectionOk = np::runPsdLayerSectionTest();
+    const bool psdLayerExtrasOk = np::runPsdLayerExtrasTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD M1, M3, M4, M5, M8): the
     // internal clipboard's copy/cut/paste, its copy-on-write sharing, and the
     // two different coverage-weighting rules RGB and Pigment tiles take. Also
@@ -3932,7 +3933,7 @@ int main(int argc, char** argv) {
                     gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
                     textShaperOk && vectorLayerOk && textContentOk &&
                     transformPreviewTextureOk &&
-                    transformCompositeSplitOk && packBitsOk && psdWriteOk && psdBlendKeysOk && psdExportOk && psdLayerSectionOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && inpaintOk && curveEditOk &&
+                    transformCompositeSplitOk && packBitsOk && psdWriteOk && psdBlendKeysOk && psdExportOk && psdLayerSectionOk && psdLayerExtrasOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && inpaintOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
                     multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk &&
                     userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
