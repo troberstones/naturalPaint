@@ -64,6 +64,7 @@ const std::vector<LayerCommand>& allLayerCommands() {
       LayerCommand::NewRgbLayer,    LayerCommand::NewPigmentLayer,
       LayerCommand::NewAdjustmentLayer, LayerCommand::NewVectorLayer,
       LayerCommand::NewTextLayer,   LayerCommand::NewFlatsLayer,
+      LayerCommand::NewStrokesLayer,
       LayerCommand::DuplicateLayer,
       LayerCommand::DeleteLayer,    LayerCommand::MoveLayerUp,
       LayerCommand::MoveLayerDown,  LayerCommand::AddMask,
@@ -87,6 +88,7 @@ const char* layerCommandLabel(LayerCommand command) noexcept {
     case LayerCommand::NewVectorLayer:     return "New Vector Layer";
     case LayerCommand::NewTextLayer:       return "New Text Layer";
     case LayerCommand::NewFlatsLayer:      return "New Flats Layer";
+    case LayerCommand::NewStrokesLayer:    return "New Strokes Layer";
     case LayerCommand::DuplicateLayer:     return "Duplicate Layer";
     case LayerCommand::DeleteLayer:        return "Delete Layer";
     case LayerCommand::MoveLayerUp:        return "Move Layer Up";
@@ -116,6 +118,7 @@ const char* layerCommandGlyph(LayerCommand command) noexcept {
     case LayerCommand::NewVectorLayer: return layerKindGlyph(LayerKind::Vector);
     case LayerCommand::NewTextLayer: return layerKindGlyph(LayerKind::Text);
     case LayerCommand::NewFlatsLayer: return layerKindGlyph(LayerKind::Flats);
+    case LayerCommand::NewStrokesLayer: return layerKindGlyph(LayerKind::Strokes);
     case LayerCommand::DuplicateLayer: return "\xE2\x96\xA3";  // U+25A3 square-in-square
     case LayerCommand::DeleteLayer: return "\xE2\x9C\x95";     // U+2715 multiplication x
     case LayerCommand::AddMask: return "\xE2\x97\x90";         // U+25D0 circle, left half
@@ -150,6 +153,7 @@ bool layerCommandAvailable(const Document& doc, LayerCommand command, size_t sel
     case LayerCommand::NewVectorLayer:
     case LayerCommand::NewTextLayer:
     case LayerCommand::NewFlatsLayer:
+    case LayerCommand::NewStrokesLayer:
       return true;
     case LayerCommand::DuplicateLayer:
     case LayerCommand::DeleteLayer:
@@ -253,6 +257,9 @@ LayerEditResult applyLayerCommand(OpenDocument& od, LayerCommand command, size_t
       return record(od, addLayer(doc, at, makeTextLayer(defaultNewLayerName(doc))), selected, at);
     case LayerCommand::NewFlatsLayer:
       return record(od, addLayer(doc, at, makeFlatsLayer(defaultNewLayerName(doc))), selected, at);
+    case LayerCommand::NewStrokesLayer:
+      return record(od, addLayer(doc, at, makeStrokesLayer(defaultNewLayerName(doc))), selected,
+                    at);
     case LayerCommand::DuplicateLayer:
       // The copy lands directly above the source (core/LayerOps.hpp), and the
       // selection follows it there -- duplicating and then immediately editing

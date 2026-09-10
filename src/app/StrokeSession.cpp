@@ -5,6 +5,7 @@
 
 #include "brush/ToolOptionsBlend.hpp"
 #include "color/Space.hpp"
+#include "core/StrokesContent.hpp"
 
 namespace np {
 namespace {
@@ -55,6 +56,68 @@ constexpr float kHalfPi = kTwoPi * 0.25f;
 // applied once, inside the formula, so a stroke-begin base times a second
 // per-dab correction would apply it twice). There is no longer a base value
 // to correct.
+
+// PRD F11: one eraser dab on a `LayerKind::Strokes` layer.
+//
+// **The one route whose destination is not a tile store**, so it is spelled
+// here rather than in brush/ beside the seven that are: there is no
+// accumulator, no coverage buffer and no per-texel arithmetic to put in a
+// `brush/StrokesErase` -- the whole operation is `eraseDabsUnderDisc()` plus
+// the bookkeeping every route shares. A file for two lines of engine would be
+// a file whose header had nothing to argue.
+//
+// `touchedOut` gains the tiles of every texel the DELETED dabs could have
+// covered, because that is the region of the canvas whose picture just
+// changed and the region ui/DocumentTexture has to re-upload. The dabs are
+// gone by then, so the bounds come from the records the erase handed back --
+// which is exactly why `eraseDabsUnderDisc()` returns them.
+//
+// The returned `texels` is that same area, clipped to the canvas: it feeds
+// the session's per-stroke counter, which means "how much of the picture this
+// stroke changed", and on this route the honest answer is the footprint of
+// what vanished rather than the number of records (a hundred tiny dabs and
+// one enormous one are not the same edit).
+DepositCount eraseDabRecordsAt(Layer& layer, const BrushTip& tip, Vec2 centre, int32_t canvasW,
+                               int32_t canvasH, const Selection* selection,
+                               std::vector<TileCoord>* touchedOut) {
+  DepositCount out;
+  if (tip.radius <= 0.0f) return out;
+  // **The selection gates the erase at the DAB's centre, not per texel** --
+  // PRD E1 still bounds this route, but the unit of effect here is a whole
+  // record (core/StrokesContent's F11 section on why there is no partial
+  // deletion), so the only coherent question is whether the eraser is inside
+  // the selection at all. Any non-zero coverage counts: a feathered edge means
+  // "partly selected", and half-deleting a record is not a state.
+  if (selection != nullptr) {
+    const PixelCoord at{static_cast<int>(std::lround(centre.x)),
+                        static_cast<int>(std::lround(centre.y))};
+    if (selectionTileCoverage(selection->tiles.find(tileCoordAt(at)), tileLocalOffset(at)) <= 0.0f)
+      return out;
+  }
+  std::vector<DabRecord> removed;
+  if (eraseDabsUnderDisc(layer.strokes, centre.x, centre.y, tip.radius, &removed) == 0) return out;
+  for (const DabRecord& d : removed) {
+    const DabBounds b = dabRecordBounds(d);
+    const int x0 = std::max(b.x0, 0), y0 = std::max(b.y0, 0);
+    const int x1 = std::min(b.x1, static_cast<int>(canvasW));
+    const int y1 = std::min(b.y1, static_cast<int>(canvasH));
+    if (x1 <= x0 || y1 <= y0) continue;
+    out.texels += static_cast<size_t>(x1 - x0) * static_cast<size_t>(y1 - y0);
+    if (touchedOut == nullptr) continue;
+    for (int y = y0; y < y1; y += kTileSize)
+      for (int x = x0; x < x1; x += kTileSize)
+        touchedOut->push_back(tileCoordAt(PixelCoord{x, y}));
+    // The far edge of the bounds may not be tile-aligned, so the loop above
+    // can miss the last column and row of tiles. Added explicitly rather than
+    // by rounding the loop bounds up, which reads as arithmetic and hides
+    // which case it is fixing. `sortUniqueTiles()` at the end of the frame
+    // removes the duplicates this produces for an aligned rectangle.
+    touchedOut->push_back(tileCoordAt(PixelCoord{x1 - 1, y1 - 1}));
+    touchedOut->push_back(tileCoordAt(PixelCoord{x0, y1 - 1}));
+    touchedOut->push_back(tileCoordAt(PixelCoord{x1 - 1, y0}));
+  }
+  return out;
+}
 
 }  // namespace
 
@@ -131,6 +194,11 @@ const char* strokeRouteName(StrokeRoute route) noexcept {
     // label, so "Brush -> mask-paint" says the one thing a user needs when a
     // brush stroke is not appearing where they expected it to.
     case StrokeRoute::MaskPaint: return "mask-paint";
+    // Named for what it writes, like every other row: "Eraser -> strokes-erase"
+    // is the one thing a user needs when an eraser drag makes whole marks
+    // disappear at once instead of thinning them (PRD F11, and that is the
+    // feature rather than a fault).
+    case StrokeRoute::StrokesErase: return "strokes-erase";
   }
   return "?";
 }
@@ -425,9 +493,31 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
     return erasing ? StrokeRoute::RgbErase : StrokeRoute::RgbDeposit;
   }
 
+  // **A Strokes layer takes the eraser and nothing else** -- PRD F11, and
+  // core/StrokesContent's F11 section is the arithmetic. The eraser here does
+  // not remove alpha from a store: it DELETES the dab records whose centres
+  // the disc covers, which is the behaviour that makes the kind worth having
+  // and the reason this row exists at all.
+  //
+  // **Every other tool answers `None` on this row, deliberately, and that is
+  // a deferral with a stated condition rather than an oversight.** A brush
+  // that painted here would have to decide what a recorded dab's colour, tip
+  // and source policy are -- the whole of a recording UI -- and there is no
+  // half of that decision that is safe to guess: a stroke recorded with the
+  // wrong `source` reproduces a picture nobody authored (io/StrokesSerial
+  // makes the same argument about an unknown source byte). The row opens when
+  // a tool exists that knows what it is recording; until then a brush on a
+  // Strokes layer refuses by name rather than painting nothing in silence.
+  //
+  // Checked after the two raster kinds and before the fallthrough, so a
+  // LOCKED Strokes layer still refuses for being locked -- the ordering every
+  // row in this table shares.
+  if (target->kind == LayerKind::Strokes)
+    return erasing ? StrokeRoute::StrokesErase : StrokeRoute::None;
+
   // Everything left is a real target that cannot take a stroke: an Adjustment
-  // layer (no tiles by construction), a Media/Strokes/Text/Flats layer (no
-  // storage built yet), or a Pigment/RGB layer whose store was never allocated.
+  // layer (no tiles by construction), a Media/Text/Flats layer (no storage
+  // built yet), or a Pigment/RGB layer whose store was never allocated.
   // **`None`, not `PaintSim`** -- see §1. Falling through to the solver here is
   // what made "select an RGB layer and paint" put colour on the canvas texture
   // instead of on the layer, invisibly, one line below the locked row that
@@ -1692,7 +1782,18 @@ void StrokeSession::depositPending() {
           // guaranteed by the re-validation above, which re-asks
           // `strokeRouteFor()` with `editTarget_` and stops the stroke if the
           // answer moved (a mask removed mid-drag is exactly that).
-          route_ == StrokeRoute::MaskPaint
+          // **The Strokes erase is first**, ahead of the mask route, for the
+          // mask route's own stated reason turned up one notch: it names no
+          // content STORE at all -- not `*layer.rgbTiles`, not
+          // `*layer.pigmentTiles`, not `*layer.mask` -- because what it writes
+          // is `layer.strokes`, a vector of records (PRD F11). Placed where a
+          // reader looking for "which store does this route write" finds the
+          // answer "none of them" before reading eight ternaries that each
+          // name one.
+          route_ == StrokeRoute::StrokesErase
+              ? eraseDabRecordsAt(layer, dabTip, centre, doc.width, doc.height, selection,
+                                  &frameTiles_)
+          : route_ == StrokeRoute::MaskPaint
               ? maskPaint_.paintDab(*layer.mask, dabTip, centre, doc.width, doc.height, selection,
                                     &frameTiles_)
           : route_ == StrokeRoute::TonalBrush

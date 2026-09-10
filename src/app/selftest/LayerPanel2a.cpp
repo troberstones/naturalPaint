@@ -89,7 +89,7 @@ bool runLayerPanel2aTest() {
           "colour of the row it marks is not drawn at all");
   }
 
-  std::printf("  -- B. the NEW popup: eight kinds, five of them buildable --\n");
+  std::printf("  -- B. the NEW popup: eight kinds, seven of them buildable --\n");
 
   // 2a's second change: "the three `New` buttons collapse into one `NEW` with a
   // kind popup carrying all seven kinds and their rails". All seven, so the
@@ -107,9 +107,16 @@ bool runLayerPanel2aTest() {
     bool correctSet = true;
     bool reasonsMatch = true;
     for (const NewLayerKindEntry& e : menu) {
+      // **Strokes joined this set at PLAN.md phase 8**, when the kind gained a
+      // content member (`Layer::strokes`) and `core/LayerOps` gained a
+      // `makeStrokesLayer()`. Its ROW did not move -- Strokes is one of design
+      // 2a's own seven kinds and has held its slot since this list existed --
+      // so the ordering assertions below are untouched; only the buildable
+      // flag flipped, which is exactly the shape Text and Flats each took.
       const bool expected = e.kind == LayerKind::Pigment || e.kind == LayerKind::RGB ||
                             e.kind == LayerKind::Adjustment || e.kind == LayerKind::Vector ||
-                            e.kind == LayerKind::Text || e.kind == LayerKind::Flats;
+                            e.kind == LayerKind::Text || e.kind == LayerKind::Flats ||
+                            e.kind == LayerKind::Strokes;
       if (e.buildable != expected) correctSet = false;
       if (e.buildable) ++buildable;
       // A disabled entry must SAY why, and a live one must not carry an excuse
@@ -117,9 +124,10 @@ bool runLayerPanel2aTest() {
       const char* reason = layerKindUnbuildableReason(e.kind);
       if (e.buildable != (reason == nullptr)) reasonsMatch = false;
     }
-    check(buildable == 6 && correctSet,
-          "new: exactly Pigment, RGB, Adjustment, Vector, Text and Flats are buildable -- core/LayerOps "
-          "has six maker functions and Media/Strokes hold no content at all");
+    check(buildable == 7 && correctSet,
+          "new: exactly Pigment, RGB, Adjustment, Vector, Text, Flats and Strokes are "
+          "buildable -- core/LayerOps has seven maker functions and Media alone holds no "
+          "content at all");
     check(reasonsMatch,
           "new: every disabled kind carries a reason and every live one carries none -- a "
           "greyed row that cannot say why is indistinguishable from a broken button");

@@ -504,6 +504,18 @@ bool runFlatsExpandTest();
 // what the staleness signature covers, and the bake's three source modes.
 bool runFlatsSourceTest();
 
+// core/StrokesContent + brush/StrokesLayer + io/StrokesSerial -- the
+// `LayerKind::Strokes` substrate (PLAN.md phase 8). The dab record and its
+// bounds, the spatial index over those bounds (asserted as a GRID rather
+// than only as a correct answer -- a degenerate one-bucket index answers
+// every query right and is a linear scan wearing the name), the
+// samples-only-from-below rule and PRD D6's regrade tracking, the checkpoint
+// replay of section 2 (asserted through the mechanism, since checkpointed
+// and from-scratch replays produce identical pixels by construction), the
+// `np:dabs` round trip, PRD C11's rasterise and PRD F11's record deletion.
+// Headless and GPU-free.
+bool runStrokesLayerTest();
+
 bool runToolSwitchTest();
 
 // app/ToolSwitch -- the spring-loaded Eyedropper: Alt/Option held over a

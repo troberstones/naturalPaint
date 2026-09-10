@@ -583,6 +583,17 @@ enum class StrokeRoute {
                  // "erase" are two directions of one lerp there rather than two
                  // arithmetics, so a flag would have to select a different
                  // value type and a different store as well as a sign
+  StrokesErase,  // core/StrokesContent's `eraseDabsUnderDisc()`, DELETING the
+                 // dab records the eraser covers on a `LayerKind::Strokes`
+                 // layer -- PRD F11, and the first route in this table that
+                 // writes no texel at all. It is a route rather than a mode of
+                 // `RgbErase` because the two do not merely differ in
+                 // arithmetic: this one's destination is a `std::vector` of
+                 // records, its unit of effect is a whole dab rather than a
+                 // fraction of a texel, and there is no accumulator to latch a
+                 // per-stroke floor into because a record is deleted or it is
+                 // not (core/StrokesContent's F11 section on why there is no
+                 // partial deletion)
 };
 
 // Which of a layer's two writable stores a stroke is aimed at.
@@ -692,7 +703,7 @@ inline bool strokeRouteWritesLayer(StrokeRoute route) noexcept {
          route == StrokeRoute::RgbErase || route == StrokeRoute::PigmentErase ||
          route == StrokeRoute::PencilDeposit || route == StrokeRoute::TonalBrush ||
          route == StrokeRoute::CloneStamp || route == StrokeRoute::Smudge ||
-         route == StrokeRoute::MaskPaint;
+         route == StrokeRoute::MaskPaint || route == StrokeRoute::StrokesErase;
 }
 
 // Reachability audit B2: `BrushState::wetness` (the WET slider, drawn in both
@@ -741,8 +752,19 @@ inline bool wetnessReachesSolver(StrokeRoute route) noexcept {
 // The solver route is the real exclusion and keeps the group honest: it has
 // no CPU coverage for grain to modify at all (brush/BrushModel.hpp on the
 // editor-versus-solver divergence generally).
+// **And that fifth route's question got a different answer, which is what
+// this predicate being a separate name has been waiting for.**
+// `StrokeRoute::StrokesErase` (PRD F11) writes a layer -- it deletes dab
+// records from one -- and computes NO CPU coverage at all: it tests whether
+// the eraser disc contains a dab's centre, a yes/no about a point, with no
+// per-texel falloff for paper tooth to modulate. `grainCoverageAt()` is not
+// called on that route and could not be; delegating unconditionally would
+// have lit the whole PAPER GRAIN group over a route that ignores every
+// control in it, which is this comment's own opening defect with the sign
+// flipped. So the delegation gains its first exception rather than its first
+// silent lie.
 inline bool grainReachesRoute(StrokeRoute route) noexcept {
-  return strokeRouteWritesLayer(route);
+  return strokeRouteWritesLayer(route) && route != StrokeRoute::StrokesErase;
 }
 
 const char* strokeRouteName(StrokeRoute route) noexcept;

@@ -10,6 +10,7 @@
 #include "core/Composite.hpp"
 #include "core/Mask.hpp"
 #include "core/Pigment.hpp"
+#include "core/StrokesContent.hpp"
 #include "core/TextContent.hpp"
 #include "flats/Model.hpp"
 #include "core/TileStore.hpp"
@@ -169,6 +170,7 @@ const char* fullRecompositeReasonName(FullRecompositeReason reason) noexcept {
     case FullRecompositeReason::VectorGeometryChanged: return "vector layer geometry changed";
     case FullRecompositeReason::TextContentChanged: return "text layer content changed";
     case FullRecompositeReason::FlatsContentChanged: return "flats layer content changed";
+    case FullRecompositeReason::StrokesContentChanged: return "strokes layer dab records changed";
   }
   return "?";
 }
@@ -189,6 +191,7 @@ std::string fullRecompositeExplanation(FullRecompositeReason reason, size_t laye
     case FullRecompositeReason::VectorGeometryChanged:
     case FullRecompositeReason::TextContentChanged:
     case FullRecompositeReason::FlatsContentChanged:
+    case FullRecompositeReason::StrokesContentChanged:
       s += " on layer " + std::to_string(layerIndex);
       break;
     default: break;
@@ -281,6 +284,15 @@ DocumentDirtyTiles documentDirtyTiles(const Document& before, const Document& af
     if (a.kind == LayerKind::Flats && b.kind == LayerKind::Flats &&
         flatsContentHash(a.flats) != flatsContentHash(b.flats))
       return whole(FullRecompositeReason::FlatsContentChanged, i);
+    // A Strokes layer's content is `strokes`, which no comparison above
+    // reaches either, and it is the Flats case exactly: no tiles to fall back
+    // on and DERIVED pixels, so a correct re-evaluation reaches the screen
+    // only if this function says the canvas is dirty. Written with the kind's
+    // content member rather than after the symptom was reported again --
+    // see the enumerator's own comment.
+    if (a.kind == LayerKind::Strokes && b.kind == LayerKind::Strokes &&
+        strokesContentHash(a.strokes) != strokesContentHash(b.strokes))
+      return whole(FullRecompositeReason::StrokesContentChanged, i);
   }
 
   // --- Pass 2: which layers changed visible/opacity/blend/clipped ----------
