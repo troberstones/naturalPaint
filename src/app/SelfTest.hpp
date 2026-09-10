@@ -1538,6 +1538,15 @@ bool runPackBitsTest();
 // Kyle Webster brush packs and real Photoshop files, so agreeing with it is a
 // stronger claim than agreeing with this project's own reading of the spec.
 bool runPsdWriteTest();
+
+// io/PsdLayerExtras -- the two things a PSD layer record carries that are not
+// the layer itself: a raster mask (the 20-byte extra-data block plus channel
+// `-2`, sized by the MASK rect and defaulting to 255/reveal outside it) and a
+// group (the `lsct` divider/header pair, divider FIRST because PSD's records
+// run bottom-first). Headless and GPU-free. Its depth-2 nesting case is a
+// hand-written fixture and says so in its own assertion text: every group in
+// every real Photoshop file this project has examined is depth 0.
+bool runPsdLayerExtrasTest();
 bool runTransformCompositeSplitTest();
 bool runTransformPreviewTextureTest();
 
