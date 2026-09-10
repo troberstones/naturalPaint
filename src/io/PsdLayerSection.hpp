@@ -125,23 +125,24 @@
 // parameter, so there is no 16-bit path to get wrong and no `65535` constant
 // for a later landing to have to find.
 //
-// --- What this landing deliberately does not do ---------------------------
+// --- Masks, groups and blend keys: written elsewhere, wired in here -------
 //
-// **No masks.** `Layer::mask` is not written: the mask block in every
-// record's extra data is `u32 0` and no `-2` channel is emitted. **No
-// groups.** A `LayerKind::Group` layer is skipped with a warning saying
-// group structure is not carried, and no `lsct` block is written.
+// This module landed alongside two others and deliberately did not
+// anticipate either one's shape. All three are now wired together:
 //
-// Both are being built as standalone free functions in `io/PsdLayerExtras`
-// and wired in here by hand rather than by this module anticipating their
-// shape. The two seams that wiring uses are `PsdLayerRecord::maskBlock` and
-// `PsdLayerRecord::extraBlocks` below -- both plain pre-serialised byte
-// buffers, so neither this module nor that one has to compile against the
-// other's types.
+// **Masks and groups** are `io/PsdLayerExtras`' free functions --
+// `psdMaskRect()`, `writePsdMaskBlock()`, `encodePsdMaskChannel()`,
+// `planPsdRecords()`, `writePsdLsctBlock()`. They reach a record through
+// two seams that are plain pre-serialised byte buffers, so neither module
+// compiles against the other's types: `PsdLayerRecord::maskBlock` (the
+// 20-byte mask record, or empty for `u32 0`) and
+// `PsdLayerRecord::extraBlocks` (already-framed `8BIM` blocks, which is
+// where an `lsct` divider or header arrives).
 //
-// **No blend-mode table.** `psdBlendKeyFor()` below covers three keys and
-// says so; the 30-entry reverse lookup being promoted out of
-// io/PsdImport.cpp replaces it at one call site.
+// **Blend keys** are `io/PsdBlendKeys`' shared table -- the same 26 rows
+// io/PsdImport reads on the way in. A three-row stub stood here while that
+// table was being promoted out of io/PsdImport.cpp's anonymous namespace;
+// it is gone.
 //
 // **No `curv`, no `levl`, ever.** PLAN.md:640: this codebase's curves live in
 // the shaper log domain, and a `curv` block would be read by Photoshop as a
@@ -212,16 +213,17 @@ struct PsdLayerRecord {
   std::vector<uint8_t> extraBlocks;
 };
 
-// The blend key for a `core::BlendMode`.
+// The blend key for a `core::BlendMode`, as a convenience over
+// io/PsdBlendKeys' shared table.
 //
-// **This is a deliberate three-row stub, not a table.** The real reverse
-// lookup is the 30-entry `kBlendKeyMap` currently file-local in
-// io/PsdImport.cpp:238, being promoted to a shared header; when it lands,
-// this function's body is replaced by one call to it and the three rows
-// here go away. Everything outside `norm`/`mul `/`scrn` returns `"norm"`
-// and sets `exactMatch` false, which is what makes the caller warn -- the
-// same "say what was dropped rather than approximate it" discipline
-// io/PsdImport.cpp's own `mapBlendKey()` holds on the way in.
+// **This was a three-row stub while the table was being promoted out of
+// io/PsdImport.cpp's anonymous namespace; it is now wired to the real
+// thing** -- the same 26 rows the importer reads on the way in, so a file
+// this build writes and reads back cannot disagree with itself. The only
+// thing this adds over `np::psdBlendKeyFor(mode)` is turning that
+// function's `nullptr` (a mode with no Photoshop key at all, today exactly
+// `BlendMode::Mix`) into `"norm"` plus an `exactMatch` of false, which is
+// the shape this module's caller already warns on.
 const char* psdBlendKeyFor(BlendMode mode, bool& exactMatch);
 
 // Resolves one `Layer` into a serialisable record.

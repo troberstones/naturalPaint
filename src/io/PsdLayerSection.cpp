@@ -1,5 +1,7 @@
 #include "io/PsdLayerSection.hpp"
 
+#include "io/PsdBlendKeys.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -212,20 +214,20 @@ const char* lostContentFor(LayerKind kind) {
 }  // namespace
 
 const char* psdBlendKeyFor(BlendMode mode, bool& exactMatch) {
-  // Three rows, deliberately -- io/PsdLayerSection.hpp says why, and what
-  // replaces them.
-  exactMatch = true;
-  switch (mode) {
-    case BlendMode::Normal: return "norm";
-    // The trailing SPACE is real. Photoshop pads a three-character key with
-    // a space and never with a NUL, and io/PsdImport.cpp's `fourccEquals()`
-    // compares all four bytes.
-    case BlendMode::Multiply: return "mul ";
-    case BlendMode::Screen: return "scrn";
-    default: break;
-  }
-  exactMatch = false;
-  return "norm";
+  // Wired at gather to io/PsdBlendKeys' shared table -- the same 26 rows
+  // io/PsdImport reads on the way IN, so a file this build writes and reads
+  // back cannot disagree with itself about what a mode is called. The
+  // three-row stub this replaced is gone; see io/PsdBlendKeys.hpp for why
+  // one table read in both directions is the point.
+  //
+  // `nullptr` from that table means this build has no Photoshop key for the
+  // mode at all -- today exactly `BlendMode::Mix`, the Kubelka-Munk latent
+  // lerp Photoshop has no concept of. That becomes `"norm"` here with
+  // `exactMatch` false, which is what makes the caller name the layer in a
+  // warning rather than substituting silently.
+  const char* key = np::psdBlendKeyFor(mode);
+  exactMatch = key != nullptr;
+  return exactMatch ? key : "norm";
 }
 
 bool buildPsdLayerRecord(const Layer& layer, const Document& doc, PsdLayerRecord& out,

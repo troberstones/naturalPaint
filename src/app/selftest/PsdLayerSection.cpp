@@ -525,6 +525,40 @@ bool runPsdLayerSectionTest() {
     check(blendWarned, "layers: an unmappable blend mode is warned by name");
   }
 
+  {
+    // **Added at gather, and it exists because nothing else here could
+    // see the wiring.** This module shipped with a deliberate three-row
+    // blend stub (`norm`/`mul `/`scrn`) while io/PsdBlendKeys was being
+    // promoted out of io/PsdImport.cpp's anonymous namespace in a parallel
+    // track. Repointing the stub at that table is a one-line change --
+    // and every assertion in this file stayed green across it, because the
+    // only unmapped-mode test above uses a blend NAME core/Blend does not
+    // know, which never reaches the key lookup at all.
+    //
+    // So the wiring could have been a silent no-op. Overlay is the proof:
+    // under the stub it fell back to `norm` with a warning, and under the
+    // real table it is `over` and round-trips as Overlay with no warning at
+    // all. Losing the wiring reddens this and nothing else.
+    Document doc;
+    doc.width = 16;
+    doc.height = 16;
+    Layer lit = makeRasterLayer("Stage two");
+    lit.blend = "overlay";
+    fillRect(lit, 0, 0, 16, 16, 0.5f, 0.5f, 0.5f, 1.0f);
+    doc.layers.push_back(std::move(lit));
+
+    const RoundTrip rt = roundTrip(doc);
+    check(rt.ok && rt.document.layers.size() == 1 &&
+              rt.document.layers[0].blend == "overlay",
+          "layers: Overlay survives as Overlay -- the shared key table is wired in");
+    bool warnedAnyway = false;
+    for (const std::string& warning : rt.warnings)
+      if (warning.find("Stage two") != std::string::npos &&
+          warning.find("overlay") != std::string::npos)
+        warnedAnyway = true;
+    check(!warnedAnyway, "layers: a mode the table DOES carry is not warned about");
+  }
+
   // --- H. The external-oracle dump ---------------------------------------
   //
   // Env-gated and off by default. The round trip above cannot see the
