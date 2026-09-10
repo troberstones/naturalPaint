@@ -3672,6 +3672,10 @@ int main(int argc, char** argv) {
     // this task added so the binary can leave the machine that built it.
     // Headless and GPU-free -- pure filesystem, no PaintSim involvement.
     const bool resourcePathsOk = np::runResourcePathsTest();
+    // ADR-0010: no bare BeginPopupModal() in src/ui outside ui/Dialog.cpp.
+    // A source scan, because the rule is invisible to the compiler and to
+    // every runtime assertion in this suite. Headless and GPU-free.
+    const bool dialogModuleOk = np::runDialogModuleTest();
     // core/Composite.cpp's opaque-floor early exit: a layer, clip base, or
     // Mix pair whose own effective alpha is exactly 1.0 everywhere in a
     // tile makes everything strictly below it in that tile provably
@@ -3752,7 +3756,7 @@ int main(int argc, char** argv) {
                     angleConventionOk && wheelInputOk && touchGestureOk && touchGestureSessionOk && pressureFeelOk
                     && transferDynamicsOk && toolOptionsBlendOk &&
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
-                    clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
+                    clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk && dialogModuleOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
                     penToolOk && pathOpsOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk;

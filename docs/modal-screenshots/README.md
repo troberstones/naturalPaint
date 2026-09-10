@@ -33,6 +33,9 @@ Contents:
 
 ## 0. Status: the standard, built
 
+[ADR-0010](../adr/0010-every-modal-dialog-goes-through-ui-dialog.md) records the
+decision and `app/selftest/DialogModule.cpp` asserts it -- a bare
+`BeginPopupModal()` in `src/ui` outside the module fails the suite by file name.
 `src/ui/Dialog.hpp` is S1–S9 as one module: `beginDialog()` / `endDialog()`
 around `BeginPopupModal`, a family of column-laid-out controls
 (`dialogSlider()`, `dialogCombo()`, `dialogInputText()`, …), `dialogSection()`

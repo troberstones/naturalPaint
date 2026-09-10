@@ -119,6 +119,7 @@ add_executable(naturalPaint
   app/selftest/Descriptor.cpp
   app/selftest/Document.cpp
   app/selftest/DocumentLifecycle.cpp
+  app/selftest/DialogModule.cpp
   app/selftest/DocumentPresets.cpp
   app/selftest/DocumentResidency.cpp
   app/selftest/DocumentTexture.cpp
@@ -596,6 +597,10 @@ target_compile_definitions(naturalPaint PRIVATE
   # since this is a developer/CI-time test asset, never staged for a shipped
   # build.
   NP_SVG_TEST_DIR="${CMAKE_SOURCE_DIR}/tests/svg"
+  # app/selftest/DialogModule.cpp scans the src/ui this binary was built from
+  # for a bare BeginPopupModal() outside ui/Dialog.cpp (ADR-0010). A source
+  # rule the compiler cannot check, so the suite reads the source.
+  NP_UI_SOURCE_DIR="${CMAKE_SOURCE_DIR}/src/ui"
 )
 
 # Stages tier 2 of core/ResourcePaths.hpp's search order: a copy of the same

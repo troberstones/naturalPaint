@@ -991,8 +991,10 @@ multi-year part of a text engine, and none of them serve annotation.
 
 ## 5a. Modal dialogs
 
-**`src/ui/Dialog.hpp` is the spec**, and every modal dialog in the application
-is written against it. §1's tokens, §2's layout and §4a's palette rules stop at
+**`src/ui/Dialog.hpp` is the spec**, every modal dialog in the application is
+written against it, and [ADR-0010](adr/0010-every-modal-dialog-goes-through-ui-dialog.md)
+makes that a rule the suite asserts: a bare `BeginPopupModal()` anywhere in
+`src/ui` but `ui/Dialog.cpp` fails `--selftest` by file name. §1's tokens, §2's layout and §4a's palette rules stop at
 the chrome; the thirty-five dialogs behind the File, Edit, Image, Filter, Select
 and View menus were built one at a time against no shared rule, and
 [modal-screenshots/README.md](modal-screenshots/README.md) photographed what

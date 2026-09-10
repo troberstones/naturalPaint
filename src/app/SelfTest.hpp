@@ -5341,6 +5341,16 @@ bool runResamplePerfTest();
 // app/selftest/ResourcePaths.cpp.
 bool runResourcePathsTest();
 
+// ADR-0010: every modal dialog goes through ui/Dialog. A source scan of the
+// src/ui this binary was built from (NP_UI_SOURCE_DIR): `BeginPopupModal(`
+// appears in code -- comments stripped -- exactly once, in ui/Dialog.cpp, and
+// the two colour literals the module retired do not reappear. The exception
+// table (kAllowedBareModals) is asserted empty so growing it is a visible
+// act. A rule the compiler cannot see and the golden harness only sees per
+// view, so the suite reads the source. Headless, GPU-free, filesystem only.
+// See app/selftest/DialogModule.cpp.
+bool runDialogModuleTest();
+
 // core/Composite.cpp's opaque-floor early exit: a layer whose own effective
 // premultiplied source alpha is exactly 1.0 everywhere in a tile, and whose
 // blend mode is `Normal` (an ordinary layer, a clip base via its folded
