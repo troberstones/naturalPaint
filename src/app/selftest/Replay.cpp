@@ -1,5 +1,7 @@
 #include "app/selftest/Support.hpp"
 
+#include <vector>
+
 #include "app/Command.hpp"
 #include "app/CommandsOpStack.hpp"
 #include "app/LayerEditor.hpp"
@@ -83,6 +85,19 @@ uint64_t documentDigest(const OpenDocument& od) {
   return h;
 }
 
+// This section's OWN name lookup, deliberately not `layerIndexNamed()`.
+//
+// **A sabotage caught this.** Section A used the production lookup to find the
+// layer it then inspected, so breaking that lookup moved the code and the
+// test's oracle together and the gate assertion stayed green while targeting
+// was completely wrong. A test must not ask the function under test where to
+// look.
+size_t indexOfLayer(const Document& doc, const char* name) {
+  for (size_t i = 0; i < doc.layers.size(); ++i)
+    if (doc.layers[i].name == name) return i;
+  return doc.layers.size();
+}
+
 Command step(const char* id) {
   return Command{id, JsonValue::object()};
 }
@@ -128,8 +143,16 @@ bool runReplayTest() {
   std::printf("  -- A. the gate: recorded on A, replayed on B --\n");
   {
     // A: Base then Detail. B: Spare, Base, Detail -- a different layer count
-    // and a different index for "Base", which is the whole point. If replay
-    // targeted by index instead of by name, B's blur would land on "Spare".
+    // and a different index for "Base", which is the whole point.
+    //
+    // **Every layer is filled with a different value and every layer's digest
+    // is taken before and after.** An earlier version of this section only
+    // compared A's "Base" with B's "Base", and a sabotage that targeted the
+    // LAST layer instead of the named one passed it: both documents end in a
+    // "Detail" filled to the same value, so blurring the wrong layer in both
+    // still produced matching digests. Comparing the two documents to each
+    // other cannot detect a mistake they both make. Asserting which layer
+    // moved, and that no other one did, can.
     OpenDocument a = makeBlankOpenDocument(64, 64, WorkingSpace{}, "A");
     a.document.layers[0].name = "Base";
     fillLayer(*a.document.layers[0].rgbTiles, 0.25f);
@@ -139,26 +162,52 @@ bool runReplayTest() {
     b.document.layers[0].name = "Spare";
     fillLayer(*b.document.layers[0].rgbTiles, 0.10f);
     addFilledLayer(b, "Base", 0.25f);
-    addFilledLayer(b, "Detail", 0.75f);
+    addFilledLayer(b, "Detail", 0.60f);
 
-    const uint64_t spareBefore = layerDigest(b.document.layers[0]);
+    auto digests = [](const OpenDocument& od) {
+      std::vector<uint64_t> out;
+      for (const Layer& layer : od.document.layers) out.push_back(layerDigest(layer));
+      return out;
+    };
+    const std::vector<uint64_t> aBefore = digests(a);
+    const std::vector<uint64_t> bBefore = digests(b);
+
+    const size_t aBase = indexOfLayer(a.document, "Base");
+    const size_t bBase = indexOfLayer(b.document, "Base");
+    check(aBase == 0 && bBase == 1 && a.document.layers.size() == 2 &&
+              b.document.layers.size() == 3,
+          "gate: \"Base\" is at a different index, in documents of different size");
 
     const ReplayResult ra = replayAction(a, action);
     const ReplayResult rb = replayAction(b, action);
     check(ra.ok && rb.ok, "gate: the action runs on both documents");
     check(ra.steps.size() == 3 && rb.steps.size() == 3, "gate: three steps attempted on each");
 
-    const size_t aBase = layerIndexNamed(a.document, "Base");
-    const size_t bBase = layerIndexNamed(b.document, "Base");
-    check(aBase == 0 && bBase == 1, "gate: \"Base\" really is at a different index in each");
-    check(aBase < a.document.layers.size() && bBase < b.document.layers.size() &&
-              layerDigest(a.document.layers[aBase]) == layerDigest(b.document.layers[bBase]),
-          "gate: B's \"Base\" holds exactly the pixels A's does");
-    check(layerDigest(b.document.layers[0]) == spareBefore,
-          "gate: and B's extra layer was not touched");
-    check(bBase < b.document.layers.size() &&
-              b.document.layers[bBase].blend == blendModeName(BlendMode::Multiply),
-          "gate: the setter step landed on the named layer too");
+    // Exactly one layer moved in each document, and it is the named one.
+    const std::vector<uint64_t> aAfter = digests(a);
+    const std::vector<uint64_t> bAfter = digests(b);
+    auto onlyOneMoved = [](const std::vector<uint64_t>& before,
+                           const std::vector<uint64_t>& after, size_t which) {
+      if (before.size() != after.size() || which >= after.size()) return false;
+      for (size_t i = 0; i < after.size(); ++i) {
+        const bool moved = before[i] != after[i];
+        if (moved != (i == which)) return false;
+      }
+      return true;
+    };
+    check(onlyOneMoved(aBefore, aAfter, aBase),
+          "gate: in A, \"Base\" changed and no other layer did");
+    check(onlyOneMoved(bBefore, bAfter, bBase),
+          "gate: in B, \"Base\" changed and no other layer did");
+    check(aAfter[aBase] == bAfter[bBase], "gate: B's \"Base\" holds exactly the pixels A's does");
+
+    // And the setter step, checked the same way: on the named layer, and not
+    // on any other.
+    size_t multiplied = 0;
+    for (const Layer& layer : b.document.layers)
+      if (layer.blend == blendModeName(BlendMode::Multiply)) ++multiplied;
+    check(multiplied == 1 && b.document.layers[bBase].blend == blendModeName(BlendMode::Multiply),
+          "gate: the setter landed on \"Base\" and on nothing else");
   }
 
   std::printf("  -- B. a missing layer refuses, having changed nothing --\n");
@@ -180,6 +229,34 @@ bool runReplayTest() {
           "missing layer: and no history entry or revision was spent");
     check(r.steps.size() == 1,
           "missing layer: exactly one step was attempted, not all three");
+  }
+  {
+    // **The case above cannot catch a partial commit, and a sabotage proved
+    // it.** Its action refuses at step 1, when the scratch document is still
+    // identical to the caller's -- so committing the failed run changes
+    // nothing observable and "the document is unchanged" passes either way.
+    //
+    // This is the same claim asked in a form that can fail: two steps that
+    // succeed and really do move pixels, then a third that refuses. A replay
+    // that committed a partial run would leave a blurred "Base" behind.
+    OpenDocument od = makeBlankOpenDocument(64, 64, WorkingSpace{}, "partial");
+    od.document.layers[0].name = "Base";
+    fillLayer(*od.document.layers[0].rgbTiles, 0.4f);
+    const uint64_t before = documentDigest(od);
+    const size_t historyBefore = od.history.entries().size();
+
+    Action stopsLate;
+    stopsLate.name = "Stops late";
+    stopsLate.steps = {selectLayer("Base"), blur(2.0), selectLayer("Not Here")};
+
+    const ReplayResult r = replayAction(od, stopsLate);
+    check(!r.ok && r.steps.size() == 3, "partial: it got to step 3 and refused there");
+    check(r.steps[1].ok && r.steps[1].texelsChanged > 0,
+          "partial: and step 2 really had moved pixels in the scratch document");
+    check(documentDigest(od) == before,
+          "partial: none of it reached the document -- not even the blur that worked");
+    check(od.history.entries().size() == historyBefore,
+          "partial: and no history entry was spent");
   }
 
   std::printf("  -- C. the whole replay is one history entry --\n");
