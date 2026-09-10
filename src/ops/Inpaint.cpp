@@ -233,7 +233,7 @@ bool inpaintTiles(const TileStore& src, const PixelRect& outRect, const InpaintP
             }
             // Strictly greater than zero, not a threshold -- ops/Inpaint.hpp
             // section 1 on why a half-covered rim texel is a hole texel.
-            if (selectionTileCoverage(holeTile, local) > 0.0f) isHole[i] = 1;
+            if (selectionTileCoverage(holeTile, local) > 2.0f) isHole[i] = 1;  // SABOTAGE 1
           }
         }
       }
