@@ -8,6 +8,7 @@
 #include "ops/Blur.hpp"
 #include "ops/DocumentTransform.hpp"
 #include "ops/Filters.hpp"
+#include "ops/Inpaint.hpp"
 
 // app/FilterOps -- the wiring bridge for the Filter and Image menus
 // (docs/reachability-audit.md C1: "~93 entry points... no UI path to any of
@@ -205,6 +206,70 @@ FilterOpResult applyMedian(OpenDocument& doc, const MedianParams& params);
 FilterOpResult applyMotionBlur(OpenDocument& doc, const MotionBlurParams& params);
 
 // ==========================================================================
+// Inpaint, and the one place this header's own selection rule is inverted
+// ==========================================================================
+//
+// PLAN.md phase 8 / PRD D7's first half: ops/Inpaint's diffusion fill for
+// scratches and dust. It runs through the identical `applyPixelFilter()`
+// machinery as the ten ops above -- same `PixelOpRefusal` vocabulary, same
+// whole-canvas rectangle, same `compositeFilterResult()` blend, same
+// one-history-entry-only-when-something-changed rule -- because
+// `inpaintTiles()` shares the engine signature app/PixelOpBridge.hpp is
+// written against, and an op that shares that shape has no business getting a
+// second, hand-copied wiring function.
+//
+// **What is different is upstream of all of that.** This header's section
+// "why the selection is honoured by COMPOSITING" says the selection is a
+// *bound*: the engine runs everywhere, and the blend decides where the result
+// lands. Inpaint reads the same selection as the **hole to fill** -- the
+// texels whose data is wrong and must not be read, filled from data outside
+// them. ops/Inpaint.hpp section 1 is the full argument; the wiring
+// consequence is that the engine and the composite must be told about the
+// SAME selection. If those two ever disagree, the part of the hole the
+// composite covers and the part the engine filled stop lining up, and the
+// result reads as a weak filter rather than as broken wiring.
+//
+// **That is why these two take a radius and nothing else.** Every other
+// `applyX()` here takes the engine's own params struct precisely so that the
+// dialog's struct and the engine's are one object; this pair does the
+// opposite and keeps `InpaintParams` out of the caller's hands, because the
+// field that could drift is not a number a user typed -- it is
+// `doc.selection`, which these functions already hold and which a caller has
+// no reason to be trusted to supply. There is exactly one expression in this
+// build that fills in `InpaintParams::hole`, and it is inside the same
+// function that hands `doc` to `applyPixelFilter()`.
+//
+// **The empty-selection refusal is real, and it is not `texelsChanged == 0`.**
+// For every other op an absent selection means "no restriction" and the
+// filter covers the whole layer; for inpaint it would mean "the whole layer
+// is damage". So it refuses by name -- `PixelOpRefusal::NoSelection`, which
+// app/StrokeSession.hpp declares beside the three layer-shaped reasons -- and
+// not with a success that changed nothing, which no dialog can tell apart
+// from an identity request.
+//
+// The layer refusals are consulted **first**, so a locked layer with no
+// selection refuses for the lock. That is `pixelOpRefusalFor()`'s own
+// ordering argument applied one step further out: name the problem the user
+// can act on most directly, and a lock is a switch in LAYERS where "no
+// selection" is a whole gesture on the canvas.
+//
+// `radius` is Telea's `eps` in texels and goes straight to
+// `InpaintParams::radius`; an out-of-range value is refused by
+// `inpaintParamsValid()` before the engine does anything, exactly as
+// `blurParamsValid()` refuses a negative sigma.
+FilterOpResult applyInpaint(OpenDocument& doc, int32_t radius);
+
+// Why an inpaint would refuse, without running one -- the three layer-shaped
+// reasons and `NoSelection`, in the order `applyInpaint()` applies them.
+// `PixelOpRefusal::None` means it would run.
+//
+// Exposed rather than left inside `applyInpaint()` so the chrome can say why
+// the item is unavailable without computing a fill to find out, and so
+// `--selftest` can assert the ordering directly instead of inferring it from
+// two separate results.
+PixelOpRefusal inpaintRefusal(const OpenDocument& doc);
+
+// ==========================================================================
 // Live preview (docs/testing-issues.md T15)
 // ==========================================================================
 //
@@ -252,6 +317,16 @@ FilterOpResult previewMedian(const OpenDocument& doc, const MedianParams& params
                              TileStore* previewOut);
 FilterOpResult previewMotionBlur(const OpenDocument& doc, const MotionBlurParams& params,
                                  TileStore* previewOut);
+
+// Inpaint's preview, and the reason it matters more here than for the ten
+// above: a diffusion fill has no dial a user can predict the result of. A
+// sigma of 8 is legibly twice a sigma of 4, whereas "radius 5" says nothing
+// at all about whether a scratch will disappear -- the only useful answer is
+// the picture. So this is the same `previewX()` shape and, exactly like its
+// siblings, shares its engine call and its composite step with `applyInpaint()`
+// through `computePixelFilter()`, so the preview and the commit cannot pick
+// different holes.
+FilterOpResult previewInpaint(const OpenDocument& doc, int32_t radius, TileStore* previewOut);
 
 // What one Image-menu document op did. `error` is `ops/DocumentTransform`'s
 // own message (naming the extent or the layer count that refused it) and is

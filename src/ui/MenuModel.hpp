@@ -277,6 +277,19 @@ enum class MenuAction : uint16_t {
   Median,
   MotionBlur,
 
+  // PLAN.md phase 8 / PRD D7's first half: ops/Inpaint's diffusion fill,
+  // through app/FilterOps.hpp's `applyInpaint()`/`previewInpaint()`.
+  //
+  // **The only Filter item whose enable predicate is not just
+  // `filterLayerUsable`.** Every other one runs on whatever the selection
+  // happens to be, including none; this one reads the selection as the hole
+  // to repair, so with no selection there is nothing for it to do and the
+  // item is disabled rather than clickable-and-inert. `MenuContext`'s
+  // existing `hasEngagedSelection` already answers that question for the
+  // Select menu's refine commands, which need an engaged selection for the
+  // same structural reason, so this needs no new context field.
+  Inpaint,
+
   // --- Image ------------------------------------------------------------
   //
   // ops/DocumentTransform, Photoshop-style: geometry that changes the

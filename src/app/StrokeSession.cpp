@@ -886,6 +886,18 @@ std::string pixelOpRefusalMessage(PixelOpRefusal reason, const Layer* target,
       return "\"" + name + "\" is " +
              (target != nullptr ? layerKindName(target->kind) : "?") +
              " and has no RGB pixels for the " + op + ". Pick an RGB layer in LAYERS.";
+    case PixelOpRefusal::NoSelection:
+      // The one refusal that names no layer, because the layer is not what is
+      // wrong: the op needs a selection and there is none. It says *why* it
+      // needs one rather than just that it does, because "select something
+      // first" invites the user to select the good pixels they want to keep
+      // -- which is the exact inverse of what an inpaint wants, and the
+      // inversion ops/Inpaint.hpp's first section exists to make impossible
+      // to get wrong in code. It should be equally hard to get wrong in the
+      // sentence.
+      return "no selection: the " + op +
+             " fills the SELECTED texels from what surrounds them, so it needs a marquee "
+             "over the damage. Select the scratch on the canvas.";
   }
   return {};
 }

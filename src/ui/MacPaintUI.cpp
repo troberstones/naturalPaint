@@ -8415,6 +8415,7 @@ enum class FilterPreviewOwner {
   Emboss,
   Median,
   MotionBlur,
+  Inpaint,
   // Image > Adjustments' four dialogs (app/AdjustmentOps). They share this
   // enum with the Filter menu's seven rather than getting a parallel one,
   // because they share the machinery it identifies: one preview at a time,
@@ -8654,6 +8655,7 @@ bool g_addNoiseRequested = false;
 bool g_embossRequested = false;
 bool g_medianRequested = false;
 bool g_motionBlurRequested = false;
+bool g_inpaintRequested = false;
 
 void drawGaussianBlurDialog(AppState& st) {
   static float sigma = 8.0f;  // texels; ops/Blur.hpp's own worked examples use this
@@ -9132,6 +9134,78 @@ void drawMotionBlurDialog(AppState& st) {
       status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "motion blur");
     } else if (r.texelsChanged == 0) {
       status = "Nothing changed (distance 0, or no selected texels).";
+      ImGui::CloseCurrentPopup();
+    } else {
+      status.clear();
+      ImGui::CloseCurrentPopup();
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  if (!status.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    ImGui::TextWrapped("%s", status.c_str());
+    ImGui::PopStyleColor();
+  }
+  ImGui::EndPopup();
+}
+
+// PLAN.md phase 8 / PRD D7: ops/Inpaint, through app/FilterOps.hpp's
+// `applyInpaint()`/`previewInpaint()`. The same shape as the seven dialogs
+// above, with one difference that is in the wording rather than the code:
+// every other dialog here describes what the filter does TO the selection,
+// and this one has to say that the selection is what disappears. Getting that
+// backwards in a sentence is the same mistake ops/Inpaint.hpp spends its
+// first section making impossible to get wrong in code.
+void drawInpaintDialog(AppState& st) {
+  static int radius = 5;  // Telea's eps; `InpaintParams::radius`'s own default
+  static std::string status;
+  static bool wasOpen = false;
+
+  if (g_inpaintRequested) {
+    g_inpaintRequested = false;
+    status.clear();
+    ImGui::OpenPopup("Inpaint");
+  }
+  if (!ImGui::BeginPopupModal("Inpaint", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::Inpaint);
+    return;
+  }
+
+  OpenDocument* od = st.documents.active();
+
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SliderInt("Radius", &radius, 1, kInpaintMaxRadius, "%d texels");
+  const bool radiusSettled = ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::TextDisabled(
+      "The SELECTED texels are replaced by a smooth continuation of what surrounds them.\n"
+      "Radius is how far from each filled texel its sources may lie -- larger is smoother\n"
+      "and slower. Diffusion, so a hole with real texture in it comes back smooth.");
+
+  // Shown before the button rather than after it: "there is no selection" is
+  // a thing the user can act on without pressing anything first, unlike a
+  // locked layer, which is what the post-press `status` line below is for.
+  if (od != nullptr) {
+    const PixelOpRefusal reason = inpaintRefusal(*od);
+    if (reason != PixelOpRefusal::None) {
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+      ImGui::TextWrapped("%s",
+                         pixelOpRefusalMessage(reason, activeLayerOf(*od), "inpaint").c_str());
+      ImGui::PopStyleColor();
+    }
+  }
+
+  if (radiusSettled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::Inpaint, previewInpaint, radius);
+  wasOpen = true;
+
+  if (ImGui::Button("Inpaint") && od != nullptr) {
+    const FilterOpResult r = applyInpaint(*od, radius);
+    if (r.refusal != PixelOpRefusal::None) {
+      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "inpaint");
+    } else if (r.texelsChanged == 0) {
+      status = "Nothing changed -- the fill matched what was already there.";
       ImGui::CloseCurrentPopup();
     } else {
       status.clear();
@@ -11275,6 +11349,7 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     case MenuAction::Emboss:       g_embossRequested = true;       break;
     case MenuAction::Median:       g_medianRequested = true;       break;
     case MenuAction::MotionBlur:   g_motionBlurRequested = true;   break;
+    case MenuAction::Inpaint:      g_inpaintRequested = true;      break;
 
     // --- Image ----------------------------------------------------------
     case MenuAction::ImageSize:  g_imageSizeRequested = true;  break;
@@ -13682,6 +13757,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   drawEmbossDialog(st);
   drawMedianDialog(st);
   drawMotionBlurDialog(st);
+  drawInpaintDialog(st);
   drawAdjustmentDialogs(st);
   drawImageSizeDialog(st);
   drawCanvasSizeDialog(st);

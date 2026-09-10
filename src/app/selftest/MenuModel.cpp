@@ -198,12 +198,20 @@ bool runMenuModelTest() {
   // 92 -> 93: `Pigment` (Window > Pigment), the check item that turns
   // `ControlsSection::Pigment`'s Hidden-by-default placement on -- counted
   // the same way, off `MenuAction`'s enumerators (94 including `Count`).
-  check(kMenuActionCount == 93,
-        "ids: exactly 93 actions -- the original 41-item extraction plus D1/D2's "
+  // 93 -> 94: `Inpaint` (Filter > Inpaint...), PLAN.md phase 8 / PRD D7's
+  // diffusion half, wired through app/FilterOps.hpp's `applyInpaint()` like
+  // every other Filter item. Counted the way this comment's own rule demands
+  // -- off `MenuAction`'s enumerators in the merged header (95 including
+  // `Count`) rather than by adding one to 93 -- because this literal moved
+  // twice from two independent tracks once already, and a merge that keeps
+  // either side's figure leaves the tripwire green while under-counting the
+  // other's.
+  check(kMenuActionCount == 94,
+        "ids: exactly 94 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
-        "dialog, Brush Settings, the crop pair and Pigment, so an item lost in a "
-        "later edit fails here");
+        "dialog, Brush Settings, the crop pair, Pigment and Inpaint, so an item lost "
+        "in a later edit fails here");
 
   {
     std::set<MenuAction> seen;

@@ -1022,6 +1022,23 @@ enum class PixelOpRefusal {
   NoLayer,     // no document, or a document with no layer to have aimed at
   Locked,      // the layer is locked -- the one of the three a user can fix
   NoRgbStore,  // the kind holds no RGB tiles, or its store was never allocated
+
+  // **The one that is not about the layer.** `pixelOpRefusalFor()` cannot
+  // return this and never will: the three above answer "can this TARGET take
+  // a pixel op", which is a question about a `Layer*`, and this one answers
+  // "did the op get the argument it needs", which only the op itself knows.
+  //
+  // It exists for ops/Inpaint (app/FilterOps.hpp's `applyInpaint()`), the one
+  // op in this build for which the selection is the **hole to fill** rather
+  // than a bound on where the result lands. For every other filter an absent
+  // selection means "no restriction" and the op runs over everything; for
+  // inpaint it means there is nothing to repair, and running over everything
+  // would be erasing the layer. So it is a refusal, and it is spelled in this
+  // vocabulary rather than a second one for the reason app/FilterOps.hpp's
+  // header gives for reusing `PixelOpRefusal` at all: a menu command with its
+  // own private refusal type is a menu command whose failure message drifts
+  // away from every other one.
+  NoSelection,
 };
 
 // Whether `tool` is one of the pixel-writing ops this section covers -- the
@@ -1144,12 +1161,15 @@ bool toolPansView(Tool tool) noexcept;
 // same thing. Passed in rather than switched on a `Tool` here because
 // `toolName()` is `ui/AtelierChrome`'s and `app/` does not include `ui/`.
 //
-// **The three reasons produce three visibly different sentences**, which is a
+// **The four reasons produce four visibly different sentences**, which is a
 // requirement and not a nicety. "Locked" and "no RGB store" both present to a
 // user as "the bucket did nothing", and only the first has a switch in LAYERS
 // that fixes it; telling someone to clear a lock they never set is worse than
 // telling them nothing at all. `--selftest` asserts the two are distinguishable
 // rather than merely non-empty.
+//
+// `NoSelection` is the fourth and the only one whose fix is on the canvas
+// rather than in LAYERS, so its sentence points there instead.
 //
 // Empty for `PixelOpRefusal::None` -- there is nothing to say when it worked.
 std::string pixelOpRefusalMessage(PixelOpRefusal reason, const Layer* target,

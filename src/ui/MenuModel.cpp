@@ -212,6 +212,9 @@ const MenuItemSpec* specTable() {
     set(MenuAction::Emboss, "Emboss...", "");
     set(MenuAction::Median, "Median...", "");
     set(MenuAction::MotionBlur, "Motion Blur...", "");
+    // No key equivalent: `docs/shortcuts.md` assigns none, and claiming a
+    // chord from a native menu consumes it before SDL sees it.
+    set(MenuAction::Inpaint, "Inpaint...", "");
 
     // --- Image ----------------------------------------------------------
     set(MenuAction::ImageSize, "Image Size...", "");
@@ -464,6 +467,7 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::Emboss: return "Emboss";
     case MenuAction::Median: return "Median";
     case MenuAction::MotionBlur: return "MotionBlur";
+    case MenuAction::Inpaint: return "Inpaint";
     case MenuAction::ImageSize: return "ImageSize";
     case MenuAction::CanvasSize: return "CanvasSize";
     case MenuAction::CropToSelection: return "CropToSelection";
@@ -541,6 +545,7 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     case MenuAction::Emboss:
     case MenuAction::Median:
     case MenuAction::MotionBlur:
+    case MenuAction::Inpaint:
     case MenuAction::ImageSize:
     case MenuAction::CanvasSize:
     // Image > Adjustments' four dialogs, for the identical reason: opening one
@@ -910,12 +915,14 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
 
   // ---------------------------------------------------------------- Filter
   //
-  // ops/Blur + ops/Filters, through app/FilterOps.hpp (PRD D4/D5;
-  // docs/reachability-audit.md C1). All seven items share one enable
-  // predicate and one refusal sentence -- `ctx.filterLayerUsable` /
+  // ops/Blur + ops/Filters + ops/Inpaint, through app/FilterOps.hpp (PRD
+  // D4/D5/D7; docs/reachability-audit.md C1). The first seven items share one
+  // enable predicate and one refusal sentence -- `ctx.filterLayerUsable` /
   // `ctx.filterRefusalNote` -- because all seven ask the identical question
   // of the active layer ("can it take a pixel op"), the same one the paint
-  // bucket and the gradient already ask via `PixelOpRefusal`.
+  // bucket and the gradient already ask via `PixelOpRefusal`. Inpaint, below
+  // the last separator, asks that question and one more; its own block says
+  // why.
   //
   // Grouped as `ops/Filters.hpp` itself groups them: the blur-based
   // sharpening pair together; Add Noise and Median (its rough opposite --
@@ -942,6 +949,24 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     flt.push_back(separator());
     flt.push_back(filterItem(MenuAction::Emboss));
     flt.push_back(filterItem(MenuAction::MotionBlur));
+    // Set apart, and the separator is the point: the eight above are filters
+    // BOUNDED by the selection, and this one FILLS it (ops/Inpaint.hpp
+    // section 1). It is also the only one whose enable predicate asks a
+    // second question -- an inpaint with no hole has nothing to do, so the
+    // item goes grey with the reason in its tooltip rather than staying
+    // clickable and refusing afterwards.
+    flt.push_back(separator());
+    {
+      const bool usable = ctx.filterLayerUsable && ctx.hasEngagedSelection;
+      MenuNode n = item(MenuAction::Inpaint, usable);
+      if (!ctx.filterLayerUsable) {
+        n.tooltip = ctx.filterRefusalNote;
+      } else if (!ctx.hasEngagedSelection) {
+        n.tooltip = "Inpaint fills the SELECTED texels from what surrounds them. Select the "
+                    "scratch or speck first.";
+      }
+      flt.push_back(std::move(n));
+    }
     bar.push_back(std::move(filter));
   }
 
