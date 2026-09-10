@@ -43,6 +43,20 @@ DepositCount PencilStroke::drawDab(TileStore& store, const BrushTip& tip, Vec2 c
   // one must not silently switch the tool off.
   if (!(opacity_ > 0.0f)) return count;
 
+  // Track B / B1: a LOCAL copy with `edgePx` zeroed, not `tip` itself. §0/§1
+  // of this file's own header is the whole argument for why a pencil is
+  // aliased on purpose -- `BrushTip::edgePx`'s entire job is to un-alias a
+  // hard tip's rim (brush/Deposit.hpp §2), which is exactly the softening
+  // this route exists to refuse. Zeroing it here, once, keeps every read of
+  // the tip below -- `dabPixelBounds()`, `dabCoverage()`, `grain` -- seeing
+  // the identical footprint and coverage this route computed before
+  // `edgePx` existed, while every OTHER dab consumer (`brush/Deposit.cpp`,
+  // `brush/RgbDeposit`, ...) still gets the antialiased edge.
+  // `app/selftest/PencilDeposit.cpp`'s existing assertions pass unchanged,
+  // which is the property this copy exists to preserve.
+  BrushTip aliasedTip = tip;
+  aliasedTip.edgePx = 0.0f;
+
   // `dabPixelBounds()` and `dabCoverage()` unchanged from all three sibling
   // routes -- the shape of a dab is not a property of what the dab does with
   // it, and this module modifies the *result* of the falloff rather than
@@ -50,7 +64,7 @@ DepositCount PencilStroke::drawDab(TileStore& store, const BrushTip& tip, Vec2 c
   // painter alternates pencil and brush over one edge, and a pencil whose disc
   // was one texel wider than the brush's would show as a rim of the wrong
   // colour rather than as a hard edge.
-  const PixelBounds b = dabPixelBounds(tip, centre, canvasW, canvasH);
+  const PixelBounds b = dabPixelBounds(aliasedTip, centre, canvasW, canvasH);
   if (b.empty()) return count;
 
   const TileCoord first = tileCoordAt(PixelCoord{b.x0, b.y0});
@@ -112,14 +126,15 @@ DepositCount PencilStroke::drawDab(TileStore& store, const BrushTip& tip, Vec2 c
           const float dx = (static_cast<float>(x) + 0.5f) - centre.x;
           const PixelCoord local = tileLocalOffset(PixelCoord{x, y});
 
-          const float rawCov = dabCoverage(tip, dx, dy);
+          const float rawCov = dabCoverage(aliasedTip, dx, dy);
           if (!(rawCov > 0.0f)) continue;
 
           // Paper tooth, at this texel's ABSOLUTE canvas position -- `x`/`y`,
           // not `dx`/`dy`, which is why it cannot live inside `dabCoverage()`.
           // Identical line and identical reasoning to the three sibling
-          // routes' (brush/Deposit.cpp §2e).
-          const float grained = grainCoverageAt(tip.grain, rawCov, x, y);
+          // routes' (brush/Deposit.cpp §2e). `aliasedTip.grain` is bit-
+          // identical to `tip.grain` -- the copy above changes only `edgePx`.
+          const float grained = grainCoverageAt(aliasedTip.grain, rawCov, x, y);
 
           // §1. The threshold is the LAST thing that happens to a coverage,
           // after the tip's own profile and after the paper -- which is what

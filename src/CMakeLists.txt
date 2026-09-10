@@ -295,6 +295,7 @@ add_executable(naturalPaint
   app/selftest/PathConsumers.cpp
   app/selftest/TextKeyCapture.cpp
   app/selftest/Tileable.cpp
+  app/selftest/TipEdge.cpp
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
   app/LayerThumbnail.cpp
@@ -323,6 +324,7 @@ add_executable(naturalPaint
   brush/Heal.cpp
   brush/CoverageBlend.cpp
   brush/Deposit.cpp
+  brush/TipMips.cpp
   brush/Dynamics.cpp
   brush/Grain.cpp
   brush/Library.cpp

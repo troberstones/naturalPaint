@@ -33,6 +33,17 @@
 // own answer, transplanted here unexamined, would have produced a module whose
 // distinguishing feature was a `hardness` the brush panel can already set.
 //
+// **`BrushTip::edgePx` (Track B / B1, `brush/Deposit.hpp` §2) is the one
+// later addition that would have quietly reopened this question.** It adds
+// a minimum-pixel-wide smoothstep skirt to the SHARED procedural profile --
+// so `hardness == 1` alone no longer guarantees `d <= h` covers the whole
+// disc at `d < 1`, the fact §0's second paragraph rests on. `drawDab()`
+// below zeroes it on a local copy of the tip before ever calling
+// `dabCoverage()`, which is what keeps this section's claim true rather than
+// merely historically true: a pencil is aliased because it asks
+// `dabCoverage()` for an aliased profile, on purpose, not because every
+// caller of that shared function happens to be.
+//
 // The real difference is one step further out, and it is the difference
 // between an aliased **dab** and an aliased **mark**:
 //

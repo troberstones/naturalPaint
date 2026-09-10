@@ -6327,4 +6327,11 @@ bool runTextKeyCaptureTest();
 // Headless, GPU-free, writes no files. See app/selftest/CommandCallsites.cpp.
 bool runCommandCallsitesTest();
 
+// Track B / B1+B2 (brush/Deposit.hpp §2, §2c): `BrushTip::edgePx`'s minimum
+// pixel-wide smoothstep skirt on the procedural falloff, and
+// `BrushTipBitmap::mips`' box-filter chain for a sampled bitmap tip.
+// Headless, GPU-free, writes no files. See app/selftest/TipEdge.cpp for the
+// six sections and what each proves.
+bool runTipEdgeTest();
+
 }  // namespace np
