@@ -442,11 +442,11 @@ bool runAtelierChromeTest() {
                                       Tool::Eraser,      Tool::PaintBucket,
                                       Tool::Gradient,    Tool::Pencil,
                                       Tool::Dodge,       Tool::Burn,
-                                      Tool::CloneStamp,  Tool::Smudge,
-                                      Tool::Hand,        Tool::Zoom,
-                                      Tool::Move,        Tool::Crop,
-                                      Tool::Pen,         Tool::Curve,
-                                      Tool::Text};
+                                      Tool::CloneStamp,  Tool::Heal,
+                                      Tool::Smudge,      Tool::Hand,
+                                      Tool::Zoom,        Tool::Move,
+                                      Tool::Crop,        Tool::Pen,
+                                      Tool::Curve,       Tool::Text};
     bool implementedOk = true;
     for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
       const Tool t = static_cast<Tool>(i);
@@ -456,7 +456,7 @@ bool runAtelierChromeTest() {
       if (toolImplemented(t) != shouldBe) implementedOk = false;
     }
     check(implementedOk,
-          "toolImplemented() is true for exactly the twenty-five tools with real behaviour");
+          "toolImplemented() is true for exactly the twenty-six tools with real behaviour");
 
     // Every tool has an icon, and toolIconCodepoints() is the deduplicated,
     // sorted union of all of them plus the "More" cell's own ellipsis --

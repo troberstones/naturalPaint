@@ -251,6 +251,7 @@ what the file actually says).
 | Measure | `ruler` | close | Photoshop itself calls this the Ruler tool; no dedicated "measure" icon exists or is needed. |
 | Frame / Artboard | `frame` | exact | — |
 | Clone Stamp | `stamp` | substitution | no clone-stamp icon exists; a rubber stamp is the closest available glyph for "copies a source elsewhere." |
+| Heal | `bandage` | substitution | no healing-brush icon exists; a sticking plaster is Photoshop's own metaphor for the tool, not an invented one. |
 | Eraser | `eraser` | exact | — |
 | Paint Bucket | `paint-bucket` | exact | — |
 | Gradient | `blend` | substitution | no gradient icon exists in Lucide; `blend` is its closest existing glyph for a gradual colour transition. |
@@ -270,11 +271,11 @@ what the file actually says).
 | Zoom | `zoom-in` | close | Lucide has `zoom-in`/`zoom-out` but no neutral "zoom" glyph; `zoom-in` matches the tool's own default cursor. |
 | More ("…") | `ellipsis` | exact | Not a `Tool` — the overflow cell at the foot of the palette; see §4a. |
 
-15 of these 28 are exact Lucide matches; 4 are close-enough renamings that need no
-substitution note (Rectangle Marquee, Measure, Curve, Zoom); 9 are genuine substitutions
-with no matching Lucide concept at all (Polygon Lasso, Magic Wand, Clone Stamp, Gradient,
-Water, Dry Brush, Smudge, Dodge, Burn). Sun/moon for Dodge/Burn is Photoshop's own
-lighten/darken metaphor, not an invented one.
+15 of these 29 are exact Lucide matches; 4 are close-enough renamings that need no
+substitution note (Rectangle Marquee, Measure, Curve, Zoom); 10 are genuine substitutions
+with no matching Lucide concept at all (Polygon Lasso, Magic Wand, Clone Stamp, Heal,
+Gradient, Water, Dry Brush, Smudge, Dodge, Burn). Sun/moon for Dodge/Burn and the plaster
+for Heal are Photoshop's own metaphors, not invented ones.
 
 ### 2b. Flyout groups: what each cell shows by default
 
@@ -297,7 +298,7 @@ this reason (§4a), and the rest of the table follows the same instinct.
 | 4 | Magic Wand | Magic Wand |
 | 5 | Crop, Slice | Crop |
 | 6 | Eyedropper, Measure | Eyedropper — implemented |
-| 7 | Clone Stamp | Clone Stamp |
+| 7 | Clone Stamp, Heal | Clone Stamp |
 | 8 | Eraser | Eraser |
 | 9 | Gradient, Paint Bucket | Gradient |
 | 10 | Brush, Pencil, Water, Dry Brush | Brush — implemented |
@@ -311,12 +312,19 @@ this reason (§4a), and the rest of the table follows the same instinct.
 
 Then the "…" More cell, unchanged — 17 groups + 1 = 18 palette cells, down from 28.
 
-Groups of one member today (Magic Wand, Clone Stamp, Eraser, Smudge, Text, Shape, Hand,
-Zoom) still get their own slot rather than folding into a neighbour — per the user's own
-instruction, "keep the pairings even where a group currently has one member," because
-these are exactly where this build's not-yet-built variants will land as later phases add
-them (a second selection-brush tool beside Magic Wand, for instance), without another
-palette rebuild to make room.
+Groups of one member today (Magic Wand, Eraser, Smudge, Text, Shape, Hand, Zoom) still
+get their own slot rather than folding into a neighbour — per the user's own instruction,
+"keep the pairings even where a group currently has one member," because these are exactly
+where this build's not-yet-built variants will land as later phases add them (a second
+selection-brush tool beside Magic Wand, for instance), without another palette rebuild to
+make room.
+
+**Slot 7 is the first one to cash that promise.** It was `Clone Stamp` alone for the whole
+life of this table; **Heal** (PRD D6, Phase 8) landed straight into it as a flyout sibling
+— no palette rebuild, no re-numbering of the ten slots below it, and the cell still shows
+Clone Stamp by default because `toolGroupDefaultMember()` takes the group's first
+implemented member and Clone Stamp is listed first. The only visible change is the corner
+triangle that marks a slot with more than one member.
 
 ---
 

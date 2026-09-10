@@ -5528,8 +5528,13 @@ void drawBrushPaintGroup(AppState& st) {
     // reach" (brush/CloneStamp §1's accumulator is brush/RgbDeposit §2's). Left
     // out of `honoured`, this control would have been dimmed over a sentence
     // saying it did nothing while it in fact set how opaque the copy came out.
-    const bool honoured =
-        erasing || toning || route == StrokeRoute::RgbDeposit || route == StrokeRoute::CloneStamp;
+    // And the heal reads it as its per-stroke ceiling too, for the identical
+    // reason: `brush/Heal` hands `cloneStampTexel()` the same accumulator and
+    // the same cap, so this slider decides how opaque the repair comes out. A
+    // route left out of this list is a live control dimmed over a sentence
+    // saying it does nothing.
+    const bool honoured = erasing || toning || route == StrokeRoute::RgbDeposit ||
+                          route == StrokeRoute::CloneStamp || route == StrokeRoute::Heal;
     ImGui::BeginDisabled(!honoured);
     ctlSlider("Opacity", &st.brush.opacity, 0.0f, 1.0f);
     ImGui::EndDisabled();
@@ -16906,7 +16911,17 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // frame that set the source would also start a stroke *from* it -- one
     // dab of a perfect self-copy, an undo entry for a click that was meant to
     // change nothing, and a source the user cannot reset without painting.
-    const bool cloneTool = st.brush.tool == Tool::CloneStamp && !transformActive;
+    //
+    // **`toolUsesCloneSource()`, and not `== Tool::CloneStamp`.** This
+    // expression is read three times in this function -- the anchoring gate
+    // just below, the offset latch beside it, and the source marker two
+    // thousand lines further down -- so a second tool sharing the anchor (Heal,
+    // PRD D6, app/StrokeSession §1c) is exactly the change where a hand-written
+    // test gets updated in two of the three places and the third becomes a
+    // gesture that half works: a heal you can set a source for and cannot see,
+    // or one that shows a marker it never reads. `app/StrokeSession` owns the
+    // answer and this asks it, the same move `strokeTool` below already makes.
+    const bool cloneTool = toolUsesCloneSource(st.brush.tool) && !transformActive;
     const bool cloneAnchoring = cloneTool && ImGui::GetIO().KeyAlt && !sizingHeld;
     // **The smudge is a stroke tool and never a SOLVER stroke either**, and it
     // is a third flag for the eraser's reason rather than a fourth line in
@@ -18485,7 +18500,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // so it is covered by `tools/golden/run_golden.sh`'s `clone_anchor` and
     // `clone_source` views instead, and by nothing else.
     //
-    // **Drawn only while the Clone Stamp is the selected tool**, the same rule
+    // **Drawn for the Heal tool too, through `cloneTool`'s
+    // `toolUsesCloneSource()`** -- not by a second copy of this block. The two
+    // tools share one anchor (`AppState::CloneSourceState`), so they share the
+    // marks that show where it is; a heal that could set a source it could not
+    // see would be the half-working gesture that predicate was extracted to
+    // prevent.
+    //
+    // **Drawn only while one of those tools is the selected tool**, the same rule
     // `toolMeasuresCanvas()` gives the ruler directly above and the same rule
     // every other tool-owned mark on this canvas follows. The alternative --
     // always showing it, on the grounds that the source survives a tool switch
