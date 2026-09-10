@@ -49,6 +49,12 @@
 // layer underneath therefore changes what the dab reproduces on the next
 // evaluation, without the dab record itself changing at all.
 //
+// `DabColorSource::BelowHealed` is the other half of that same sentence --
+// "clone AND HEAL" -- and it samples from below TWICE: once at the offset for
+// the texture, and once straight down for the illumination the texture is
+// corrected to. Both reads move under a regrade, so a recorded heal tracks
+// one for the same reason a recorded clone tracks one.
+//
 // **Below, not "the whole document".** Sampling the full composite would
 // include the Strokes layer's own output, so a dab would read its own result
 // and every evaluation would be a feedback loop with no fixed point. Below is
@@ -83,9 +89,29 @@ enum class DabColorSource : uint8_t {
   // The record's own `rgba`. A recorded paint stroke.
   Ink,
   // The composite BENEATH this layer, at `(x + sourceDx, y + sourceDy)`. A
-  // recorded clone or heal -- the thing PRD D6 asks to stay correct under a
-  // regrade.
+  // recorded CLONE -- the thing PRD D6 asks to stay correct under a regrade.
   Below,
+  // The same sample, CORRECTED so that it carries the illumination of the
+  // composite beneath this layer at the dab's OWN place: `ops/Poisson`'s
+  // `healPatch()` over the dab's bounding box, with the source patch read at
+  // the offset and the Dirichlet rim read straight down. A recorded HEAL.
+  //
+  // **A third enumerator rather than a `bool healed` beside `source`.** The
+  // two are not independent bits: `rgba` is read for `Ink` and neither
+  // offset field is, `sourceDx`/`sourceDy` are read for both of the others,
+  // and a `healed` flag set on an `Ink` dab would name a solve with no source
+  // to solve from. One field whose value selects which of the other fields
+  // mean anything is the shape this record already has; a second field would
+  // make three legal states and one nonsense one, and `io/StrokesSerial`
+  // would have to decide what the nonsense one deserialises to.
+  //
+  // **And it is a stored SOURCE POLICY, not a stored correction.** Baking the
+  // solved patch into `rgba` would be storing pixels, which is the one thing
+  // core/StrokesContent exists to avoid -- the correction is a function of
+  // what lies beneath, so it has to be recomputed when what lies beneath
+  // changes or PRD D6 holds once and never again. `brush/StrokesLayer` §1b
+  // carries the evaluation and the two decisions it makes.
+  BelowHealed,
 };
 
 // One stored dab.

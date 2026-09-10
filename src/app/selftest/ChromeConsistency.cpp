@@ -246,6 +246,18 @@ bool runChromeConsistencyTest() {
     // layer-writing route -- and a copy-paste that pointed the grain block at
     // `wetnessReachesSolver()` would be invisible in the panel until someone
     // noticed grain worked only with the Water tool.
+    //
+    // **The list is written out rather than swept over the enum, because two
+    // routes are stated exceptions and one is an implicit one.** `None` is the
+    // implicit one and is excluded in the loop body. `StrokeRoute::StrokesErase`
+    // and `StrokeRoute::StrokesRecord` are the stated ones: both write a layer
+    // and neither computes a per-texel coverage for paper tooth to modify
+    // (`grainReachesRoute()` carries both arguments), so both answer FALSE to
+    // both predicates and would trip a claim that is about the other twelve
+    // rows. Naming them here is what keeps their absence from reading as an
+    // accident -- a route added to neither this list nor
+    // `grainReachesRoute()`'s exceptions is the drift this assertion exists
+    // to catch.
     bool everDisagree = false;
     for (const StrokeRoute r : {StrokeRoute::None, StrokeRoute::PaintSim,
                                 StrokeRoute::CpuDeposit, StrokeRoute::RgbDeposit,

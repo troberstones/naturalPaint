@@ -969,7 +969,10 @@ LayerOpResult rasteriseLayer(Document& doc, size_t index, std::vector<std::strin
     const size_t dabCount = layer.strokes.dabs.size();
     bool sampledBelow = false;
     for (const DabRecord& d : layer.strokes.dabs)
-      if (d.source == DabColorSource::Below) sampledBelow = true;
+      // Both below-sampling policies -- a recorded clone and a recorded heal
+      // (core/StrokesContent) -- because the warning is about what stops
+      // tracking a regrade, and both of them do.
+      if (d.source != DabColorSource::Ink) sampledBelow = true;
     Layer raster = layer;
     raster.kind = LayerKind::RGB;
     raster.rgbTiles = tiles ? *tiles : TileStore{};

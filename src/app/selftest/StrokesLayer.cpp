@@ -545,9 +545,11 @@ bool runStrokesLayerTest() {
     check(strokeRouteFor(Tool::Eraser, &target) == StrokeRoute::StrokesErase,
           "F11: the eraser on a Strokes layer routes to strokes-erase");
     check(strokeRouteFor(Tool::Brush, &target) == StrokeRoute::None &&
-              strokeRouteFor(Tool::CloneStamp, &target) == StrokeRoute::None,
-          "F11: every other tool refuses the kind by name rather than painting nothing in "
-          "silence -- there is no recording tool yet to say what a dab would BE");
+              strokeRouteFor(Tool::Pencil, &target) == StrokeRoute::None &&
+              strokeRouteFor(Tool::Smudge, &target) == StrokeRoute::None &&
+              strokeRouteFor(Tool::Dodge, &target) == StrokeRoute::None,
+          "F11: a tool that would have to GUESS what it was recording still refuses the "
+          "kind by name rather than painting nothing in silence");
     Layer locked = target;
     locked.locked = true;
     check(strokeRouteFor(Tool::Eraser, &locked) == StrokeRoute::None,
@@ -671,6 +673,338 @@ bool runStrokesLayerTest() {
               !made.pigmentTiles.has_value() && !made.mask.has_value(),
           "menu: `makeStrokesLayer()` gives the same shape of emptiness the other "
           "parametric makers do -- no tiles, no mask, no ops, no dabs");
+  }
+
+  std::printf("  -- J. PRD D6 class C: clone and heal RECORD instead of painting --\n");
+  {
+    // ======================================================================
+    // The hole this section closes: `Layer > New Strokes Layer` made a real,
+    // saveable layer that NOTHING in the build could put a mark in.
+    // `strokeRouteFor()` answered `StrokesErase` for the eraser and `None` for
+    // every other tool, and `grep -rn StrokesDab src` found no production code
+    // constructing a `DabRecord` at all -- so PRD F11's erase worked correctly
+    // on records nothing could make. This is `docs/operations.md`'s class C
+    // ("a recorded op on the Strokes layer, re-evaluated on demand") and PRD
+    // D6's non-destructive half.
+    //
+    // Every assertion below is silent when it breaks, in one of two ways:
+    //
+    //   * A route that recorded NOTHING leaves a Strokes layer with no store
+    //     to write and therefore no pixels either -- a stroke that looks
+    //     exactly like the refusal it replaced, with no message anywhere.
+    //   * A route that BAKED the sampled colour into the record's own `rgba`
+    //     produces a picture that is correct on the first evaluation and
+    //     never again. That is the failure D6 exists to name, it is invisible
+    //     until someone regrades a layer underneath, and it is what the
+    //     regrade assertion below is for rather than the reproduction one.
+    // ======================================================================
+
+    // --- J1. the routing table -----------------------------------------
+    Layer strokes = makeStrokesLayer("dabs");
+    check(strokeRouteFor(Tool::CloneStamp, &strokes) == StrokeRoute::StrokesRecord &&
+              strokeRouteFor(Tool::Heal, &strokes) == StrokeRoute::StrokesRecord,
+          "D6: both repair tools on a Strokes layer route to strokes-record -- ONE route "
+          "for the two, because what it appends is one record either way");
+    check(strokeRouteFor(Tool::Brush, &strokes) == StrokeRoute::None &&
+              strokeRouteFor(Tool::Pencil, &strokes) == StrokeRoute::None,
+          "D6: and the ordinary brush still refuses by name -- a recorded PAINT stroke "
+          "needs decisions this phase has not made (StrokeSession section 1d)");
+    Layer lockedStrokes = strokes;
+    lockedStrokes.locked = true;
+    check(strokeRouteFor(Tool::CloneStamp, &lockedStrokes) == StrokeRoute::None &&
+              strokeRouteFor(Tool::Heal, &lockedStrokes) == StrokeRoute::None,
+          "D6: a LOCKED Strokes layer refuses both, the ordering every row in the table "
+          "shares -- locked before kind");
+    check(strokeRouteWritesLayer(StrokeRoute::StrokesRecord) &&
+              !grainReachesRoute(StrokeRoute::StrokesRecord) &&
+              !wetnessReachesSolver(StrokeRoute::StrokesRecord) &&
+              std::string(strokeRouteName(StrokeRoute::StrokesRecord)) == "strokes-record",
+          "D6: it WRITES a layer, PAPER GRAIN does not reach it (there is no per-texel "
+          "coverage at record time for tooth to modify), and it is named for what it "
+          "writes rather than for either tool that reaches it");
+
+    // **The destructive rows are untouched, and this is the regression
+    // surface the whole route was built under.** A `kind == Strokes` test that
+    // was accidentally written as a fallthrough would silently redirect every
+    // clone and every heal in the application into a dab list.
+    Layer rgb = makeRgbLayer("rgb");
+    Layer pigment = makePigmentLayer("pig");
+    check(strokeRouteFor(Tool::CloneStamp, &rgb) == StrokeRoute::CloneStamp &&
+              strokeRouteFor(Tool::Heal, &rgb) == StrokeRoute::Heal,
+          "D6: an RGB layer still takes the DESTRUCTIVE clone and heal, unchanged -- the "
+          "recording row must not be reachable from the kind File > New makes marks on");
+    check(strokeRouteFor(Tool::CloneStamp, &pigment) == StrokeRoute::None &&
+              strokeRouteFor(Tool::Heal, &pigment) == StrokeRoute::None &&
+              strokeRouteFor(Tool::CloneStamp, nullptr) == StrokeRoute::None,
+          "D6: and a Pigment layer and a null target still refuse both, for section 1b's "
+          "and 1c's own reasons");
+
+    // --- J2. no source anchor is still a refusal, in begin() ------------
+    {
+      OpenDocument od;
+      od.document = baseDocument({0.1f, 0.1f, 0.1f, 1.0f});
+      StrokeSession s;
+      BrushTip tip;
+      tip.radius = 8.0f;
+      std::string err;
+      AppState::CloneSourceState noAnchor{};
+      check(!s.begin(od, 1, tip, Tool::CloneStamp, &err, nullptr, DynamicInputs{}, &noAnchor) &&
+                contains(err, "Option-click"),
+            "D6: with no source set the recording stroke REFUSES out loud -- at offset "
+            "(0,0) every record would reproduce exactly what is already beneath it, which "
+            "is invisible in the picture and permanent in the document");
+      check(od.document.layers[1].strokes.dabs.empty(),
+            "D6: and the refusal recorded nothing, so a refused stroke leaves no entry the "
+            "eraser could later find");
+    }
+
+    // --- J3. THE HEADLINE ASSERTION ------------------------------------
+    //
+    // A clone onto a Strokes layer appends a record; that record reproduces
+    // the repair when composited; and changing a layer BENEATH it changes what
+    // the repair reproduces.
+    {
+      OpenDocument od;
+      od.document = baseDocument({0.1f, 0.1f, 0.1f, 1.0f});
+      // A bright red SOURCE patch in the corner of the layer beneath, well
+      // away from where the stroke will land.
+      for (int y = 16; y < 48; ++y)
+        for (int x = 16; x < 48; ++x) {
+          const PixelCoord at{x, y};
+          od.document.layers[0].rgbTiles->getOrCreate(tileCoordAt(at))
+              .writePixel(tileLocalOffset(at), {1.0f, 0.0f, 0.0f, 1.0f});
+        }
+
+      AppState::CloneSourceState clone{};
+      setCloneAnchor(clone, Vec2{32.0f, 32.0f});
+      check(latchCloneOffset(clone, Vec2{150.0f, 150.0f}) && clone.offset.x == -118.0f,
+            "D6: the shared anchor gesture latches the same offset it latches for the "
+            "destructive route -- one Option-click means one thing for both");
+
+      StrokeSession s;
+      BrushTip tip;
+      tip.radius = 8.0f;
+      tip.hardness = 1.0f;
+      tip.flow = 1.0f;
+      std::string err;
+      const bool began =
+          s.begin(od, 1, tip, Tool::CloneStamp, &err, nullptr, DynamicInputs{}, &clone);
+      check(began, "D6: a clone stroke BEGINS on a Strokes layer");
+      if (!began) std::printf("      refusal: %s\n", err.c_str());
+      if (began) {
+        s.addPoint(150.0f, 150.0f);
+        s.addPoint(158.0f, 150.0f);
+        s.end();
+      }
+
+      const StrokesContent& c = od.document.layers[1].strokes;
+      check(!c.dabs.empty(),
+            "D6: the stroke APPENDED dab records -- this is the whole reachability hole: "
+            "before it, no production code in the build constructed a DabRecord at all");
+      check(!od.document.layers[1].rgbTiles.has_value() &&
+                !od.document.layers[1].pigmentTiles.has_value(),
+            "D6: and it wrote no pixels anywhere, which is the 'instead of' half of the "
+            "sentence");
+      bool wellFormed = !c.dabs.empty();
+      bool idsUnique = true;
+      const uint64_t strokeId = c.dabs.empty() ? 0 : c.dabs.front().strokeId;
+      for (size_t i = 0; i < c.dabs.size(); ++i) {
+        const DabRecord& d = c.dabs[i];
+        wellFormed &= d.source == DabColorSource::Below && d.sourceDx == -118.0f &&
+                      d.sourceDy == -118.0f && d.radius == 8.0f && d.id != 0 &&
+                      d.strokeId == strokeId && strokeId != 0;
+        for (size_t j = 0; j < i; ++j)
+          if (c.dabs[j].id == d.id) idsUnique = false;
+      }
+      check(wellFormed,
+            "D6: every record carries source=Below, the INTEGER offset the gesture set, "
+            "the tip's own radius and one shared non-zero stroke id -- a record whose "
+            "source policy was wrong reproduces a picture nobody authored");
+      check(idsUnique && c.nextDabId > c.dabs.size(),
+            "D6: ids are unique and come off the layer's own allocator, so a reopened "
+            "layer cannot mint an id a live undo entry still names");
+      check(od.history.entries().size() == 1 && od.history.entries()[0].label == "clone stamp" &&
+                od.revision > 0,
+            "D6: and the stroke left ONE history entry, labelled for the tool that made it "
+            "-- a recorded repair is one undo step like any other stroke, not one per dab");
+
+      // The repair REPRODUCES. Red under the source patch, red in the mark.
+      strokesForgetAll();
+      std::shared_ptr<const TileStore> t = strokesLayerTiles(od.document, 1);
+      const uint64_t contentBefore = strokesContentHash(c);
+      check(t != nullptr && nearly(texelOf(*t, 150, 150)[0], 1.0f) &&
+                texelOf(*t, 150, 150)[1] < 0.1f && nearly(texelOf(*t, 150, 150)[3], 1.0f),
+            "D6: the record REPRODUCES the repair when composited -- the mark at (150,150) "
+            "carries the red standing at (32,32), which is what makes it a clone");
+
+      // **The sentence PRD D6 actually asks for.** An Adjustment layer slipped
+      // in BENEATH -- "layers beneath them are regraded" -- and the mark must
+      // come back inverted on the next evaluation with no record edited. This
+      // is the assertion that goes red, and the only one that does, if the
+      // route baked the sampled colour into the record instead of recording a
+      // policy: a baked record reproduces red for ever.
+      Document regraded = od.document;
+      Layer adj = makeAdjustmentLayer("invert");
+      adj.id = 5;
+      Op inv;
+      inv.pointKind = PointOpKind::Invert;
+      inv.invert.domain = InvertParams::Domain::Display;
+      inv.invert.amount = 1.0f;
+      adj.ops.add(inv);
+      regraded.layers.insert(regraded.layers.begin() + 1, std::move(adj));
+      t = strokesLayerTiles(regraded, 2);
+      check(t != nullptr && texelOf(*t, 150, 150)[0] < 0.1f &&
+                nearly(texelOf(*t, 150, 150)[1], 1.0f) && nearly(texelOf(*t, 150, 150)[2], 1.0f),
+            "D6: and a layer added BENEATH changes what the repair reproduces -- red became "
+            "cyan, which is the exact thing the DESTRUCTIVE clone route cannot do because "
+            "its output is texels");
+      check(strokesContentHash(regraded.layers[2].strokes) == contentBefore,
+            "D6: with no record edited -- had the evaluation or the recording baked pixels "
+            "into them, D6 would hold once and never again");
+
+      // --- J4. PRD F11's round trip: the two halves are ONE list ---------
+      const size_t recorded = od.document.layers[1].strokes.dabs.size();
+      StrokeSession rub;
+      BrushTip wide;
+      wide.radius = 24.0f;
+      std::string err2;
+      const bool rubbing = rub.begin(od, 1, wide, Tool::Eraser, &err2);
+      check(rubbing, "D6: an eraser stroke begins on the layer the clone just recorded into");
+      if (rubbing) {
+        rub.addPoint(150.0f, 150.0f);
+        rub.addPoint(158.0f, 150.0f);
+        rub.end();
+      }
+      check(recorded > 0 && od.document.layers[1].strokes.dabs.size() < recorded,
+            "D6: and PRD F11's eraser DELETES the records this route appended -- the round "
+            "trip is the proof the recording half and the erasing half are the same list");
+    }
+
+    // --- J5. a recorded HEAL is not a recorded clone wearing its name ---
+    //
+    // Same record, same offset, one field different. Over a source that is
+    // BRIGHTER than the destination beneath, a clone reproduces the source's
+    // own value and a heal reproduces the source's TEXTURE under the
+    // destination's ILLUMINATION -- and with a flat source over a flat
+    // destination the rim is constant, which `ops/Poisson` section 1 solves
+    // exactly, so the healed value is the destination's.
+    //
+    // Without this assertion a `BelowHealed` record that fell through to the
+    // clone's arm in `applyDab()` would be invisible: every count, every id,
+    // every offset and the whole regrade property would still be right.
+    {
+      // 0.05 under, 0.9 in the source region. The dark value is chosen so the
+      // display-domain Invert below moves it a long way (0.05 linear is 0.24
+      // in display, which inverts to 0.76 and comes back as 0.53) -- a
+      // regrade assertion whose two values differ by a rounding error asserts
+      // nothing.
+      Document lit = baseDocument({0.05f, 0.05f, 0.05f, 1.0f});
+      for (int y = 0; y < kH; ++y)
+        for (int x = 0; x < 100; ++x) {
+          const PixelCoord at{x, y};
+          lit.layers[0].rgbTiles->getOrCreate(tileCoordAt(at))
+              .writePixel(tileLocalOffset(at), {0.9f, 0.9f, 0.9f, 1.0f});
+        }
+      DabRecord cloned = belowDab(150.0f, 150.0f, 8.0f, -118.0f, -118.0f);
+      DabRecord healedRec = cloned;
+      healedRec.source = DabColorSource::BelowHealed;
+
+      Document asClone = lit;
+      asClone.layers[1].strokes.dabs.push_back(cloned);
+      strokesForgetAll();
+      std::shared_ptr<const TileStore> tc = strokesLayerTiles(asClone, 1);
+
+      Document asHeal = lit;
+      asHeal.layers[1].strokes.dabs.push_back(healedRec);
+      strokesForgetAll();
+      std::shared_ptr<const TileStore> th = strokesLayerTiles(asHeal, 1);
+
+      check(tc != nullptr && nearly(texelOf(*tc, 150, 150)[0], 0.9f),
+            "heal: the CLONE record reproduces the source's own value, 0.9 over a 0.2 "
+            "ground -- a bright disc with a seam all round it");
+      check(th != nullptr && nearly(texelOf(*th, 150, 150)[0], 0.05f) &&
+                nearly(texelOf(*th, 150, 150)[3], 1.0f),
+            "heal: the HEAL record reproduces the same texture under the DESTINATION's "
+            "illumination -- 0.05, seamless, and a gradient-domain solve is the only "
+            "thing that gives that answer");
+
+      // And it tracks a regrade too, which is the property the whole kind is
+      // for: the heal's SOURCE and its BOUNDARY are both reads of what lies
+      // beneath, so both move.
+      Document regraded = asHeal;
+      Layer adj = makeAdjustmentLayer("invert");
+      adj.id = 5;
+      Op inv;
+      inv.pointKind = PointOpKind::Invert;
+      inv.invert.domain = InvertParams::Domain::Display;
+      inv.invert.amount = 1.0f;
+      adj.ops.add(inv);
+      regraded.layers.insert(regraded.layers.begin() + 1, std::move(adj));
+      std::shared_ptr<const TileStore> tr = strokesLayerTiles(regraded, 2);
+      check(tr != nullptr && texelOf(*tr, 150, 150)[0] > 0.4f,
+            "heal: and a recorded heal tracks a regrade beneath as a recorded clone does -- "
+            "its boundary is a read of what lies below, not a stored number");
+    }
+
+    // --- J6. the heal's source policy survives the file -----------------
+    {
+      StrokesContent c;
+      c.dabs.push_back(belowDab(10.0f, 10.0f, 4.0f, 3.0f, -3.0f));
+      c.dabs.back().source = DabColorSource::BelowHealed;
+      StrokesContent back;
+      std::string err;
+      check(deserializeStrokesContent(serializeStrokesContent(c), &back, &err) &&
+                back.dabs.size() == 1 &&
+                back.dabs[0].source == DabColorSource::BelowHealed,
+            "heal: `np:dabs` round-trips the healed source policy -- a reader that mapped "
+            "it to Ink would reopen every recorded heal as a black painted dab");
+    }
+
+    // --- J7. the end-to-end heal stroke records the healed policy -------
+    {
+      OpenDocument od;
+      od.document = baseDocument({0.2f, 0.2f, 0.2f, 1.0f});
+      AppState::CloneSourceState clone{};
+      setCloneAnchor(clone, Vec2{32.0f, 32.0f});
+      latchCloneOffset(clone, Vec2{150.0f, 150.0f});
+      StrokeSession s;
+      BrushTip tip;
+      tip.radius = 6.0f;
+      std::string err;
+      if (s.begin(od, 1, tip, Tool::Heal, &err, nullptr, DynamicInputs{}, &clone)) {
+        s.addPoint(150.0f, 150.0f);
+        s.end();
+      }
+      const StrokesContent& c = od.document.layers[1].strokes;
+      bool allHealed = !c.dabs.empty();
+      for (const DabRecord& d : c.dabs) allHealed &= d.source == DabColorSource::BelowHealed;
+      check(allHealed,
+            "heal: a HEAL stroke records source=BelowHealed and a CLONE stroke records "
+            "source=Below -- one route, and the tool is latched into the record rather "
+            "than re-read, so a tool switched mid-drag cannot split a stroke's meaning");
+    }
+
+    // --- J8. PRD E1 still bounds the stroke, at dab granularity ---------
+    {
+      OpenDocument od;
+      od.document = baseDocument({0.2f, 0.2f, 0.2f, 1.0f});
+      od.selection = selectRectangle(0.0f, 0.0f, 64.0f, 64.0f);
+      AppState::CloneSourceState clone{};
+      setCloneAnchor(clone, Vec2{32.0f, 32.0f});
+      latchCloneOffset(clone, Vec2{150.0f, 150.0f});
+      StrokeSession s;
+      BrushTip tip;
+      tip.radius = 6.0f;
+      std::string err;
+      if (s.begin(od, 1, tip, Tool::CloneStamp, &err, nullptr, DynamicInputs{}, &clone)) {
+        s.addPoint(150.0f, 150.0f);
+        s.end();
+      }
+      check(od.document.layers[1].strokes.dabs.empty(),
+            "E1: a dab whose centre is outside the selection records NOTHING -- the unit of "
+            "effect is a whole record, so the ants bound this route at dab granularity, "
+            "which is stated rather than discovered (StrokeSession section 1d)");
+    }
   }
 
   strokesForgetAll();
