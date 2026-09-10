@@ -318,6 +318,25 @@ bool runTipEdgeTest() {
           "level-0-only bilinear sample would produce at this minification (four native texels "
           "out of thousands, landing inside a single checker cell) is gone");
 
+    // A DETERMINISTIC probe, not a probabilistic one: `dx = dy = 0.0625` maps
+    // to `bx = by = 32.5` exactly (`32 + 8 * 0.0625`), a NATIVE texel centre
+    // -- `sampleBitmapCoverage()`'s own texel-centre convention makes a
+    // level-0 sample there return `checkerAlpha(32, 32) / 255` with ZERO
+    // blend, i.e. exactly `1.0f` (`32 + 32` is even). The correct level (3,
+    // the 8x8 mip) is uniform 128/255 everywhere including here, so this one
+    // point alone tells level 0 and the correct level apart with no
+    // dependence on where a grid of sample offsets happens to land -- unlike
+    // `noneSaturated` above, which is real but only catches a level-0
+    // sabotage at whichever grid offsets happen to straddle a texel exactly.
+    check(checkerAlpha(32, 32) == 255,
+          "level select: probe premise -- texel (32,32) of the checkerboard is fully "
+          "covered, so a level-0 sample exactly there would read 1.0, not the mip's 0.5-ish "
+          "uniform value");
+    check(dabCoverage(minified, 0.0625f, 0.0625f) == kUniform,
+          "level select: and AT that exact native texel centre, the minified tip still reads "
+          "the coarse level's uniform value, not the native texel's own 1.0 -- the one sample "
+          "point that pins down WHICH level was actually used, deterministically");
+
     BrushTip native;
     native.bitmap = std::make_shared<const BrushTipBitmap>(bmp);
     native.radius = 32.0f;  // scale = 32 / 32 = 1.0 -- level 0, bit-identical to pre-mip code
