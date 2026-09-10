@@ -40,10 +40,18 @@
 // 2. Point text and paragraph text, told apart by one number
 // ==========================================================================
 //
-// `frame.width == 0` is point text: one line, no wrapping, and -- per
-// text/Shaper.hpp's own rule -- no alignment, because there is nothing to
-// align against. Any positive width is paragraph text: CoreText wraps to it
-// and `align` means something.
+// `frame.width == 0` is point text: **no wrapping, but hard breaks still
+// break** -- Return in a point block starts a new line, the lines are spaced
+// by whatever CoreText spaces paragraph lines by at the same size, and only
+// the width is left to the text. Per text/Shaper.hpp's own rule there is
+// still no alignment, because a line has nothing to align against when the
+// box is not the user's. Any positive width is paragraph text: CoreText
+// wraps to it as well, and `align` means something.
+//
+// "No wrapping" and "no line breaks" were the same thing here until the
+// shaper stopped using `CTLineCreateWithAttributedString`, which does not
+// break lines at all: a point block holding "Hi\nYo" drew "HiYo", so Return
+// in point text inserted a character that could never become visible.
 //
 // A separate `bool paragraph` was considered and rejected: it would be a
 // second copy of a fact `frame.width` already carries, and the two could

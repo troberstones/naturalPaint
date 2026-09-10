@@ -613,7 +613,8 @@ void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
                  static_cast<double>(onSegment.x), static_cast<double>(onSegment.y));
 }
 
-// --text-demo [paragraph|frame] (PLAN.md Phase 14; PRD K1-K3): puts a
+// --text-demo [paragraph|newline|pointbreak|rotated|frame] (PLAN.md Phase 14;
+// PRD K1-K3): puts a
 // `LayerKind::Text` layer on the session's document, selects `Tool::Text`, and
 // drives `app/TextTool`'s real session transitions so the on-canvas text
 // chrome and the Text options row can be photographed.
@@ -657,6 +658,15 @@ void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
 //                 all three of which were computed axis-aligned before the
 //                 transform existed, and any one of them left that way is a
 //                 bug no headless assertion can see.
+//   pointbreak    POINT text carrying a real line break, caret at the end --
+//                 the state right after typing a word, pressing Return, and
+//                 typing another. Point text used to draw every line on one
+//                 (`CTLineCreateWithAttributedString` does not break lines at
+//                 all), so this picture is the whole claim: two lines of type
+//                 with no frame around them, and a caret on the second. The
+//                 `newline` view above cannot stand in for it -- that one has
+//                 a frame, and a frame is exactly what this is proving is not
+//                 required.
 //   frame         A paragraph-frame drag held open mid-gesture: pen-down on
 //                 empty canvas and a move, with no pen-up. Unphotographable
 //                 any other way, and pinned by `st.textEditDemo` for a reason
@@ -690,6 +700,7 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
   np::TextContent text = np::makeTextContent(
       mode == 1   ? "Paragraph text wraps inside the frame it was dragged out."
       : mode == 4 ? "Return was just pressed\n"
+      : mode == 5 ? "Point text\nbreaks here"
                   : "Handgloves",
       np::PathPoint{200.0f, 300.0f});
   text.style.sizePx = 48.0f;
@@ -698,12 +709,16 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
   // mis-registered box indistinguishable from a correctly registered one.
   text.fill.rgba = {0.10f, 0.14f, 0.22f, 1.0f};
   if (mode == 4) {
-    // Paragraph text, because that is where a newline means anything: point
-    // text draws every line on one (core/TextContent.hpp section 2). Wide
-    // enough that the string does NOT wrap, so the second line in the picture
-    // is unambiguously the newline's doing and not the wrap's.
+    // A FRAME, so that this stays the paragraph camera and `pointbreak` below
+    // stays the point-text one -- the two states are drawn by the same code
+    // and photographed separately on purpose. Wide enough that the string
+    // does NOT wrap, so the second line in the picture is unambiguously the
+    // newline's doing and not the wrap's.
     text.frame.width = 640.0f;
   }
+  // mode 5 sets no frame width at all: `frame.width == 0` IS point text
+  // (core/TextContent.hpp section 2), and leaving it alone is the whole
+  // fixture. A width here would silently photograph the paragraph path again.
   if (mode == 1) {
     // A frame NARROWER than the string needs, so the picture shows real
     // wrapping rather than one line that happens to fit -- a frame wide
@@ -715,6 +730,7 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
 
   np::Layer layer = np::makeTextLayer(mode == 1   ? "Paragraph demo"
                                       : mode == 4 ? "Newline demo"
+                                      : mode == 5 ? "Point break demo"
                                                   : "Point text demo");
   layer.text = text;
 
@@ -739,11 +755,12 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
   // the end of the string sits just past the last glyph, which is also where a
   // caret computed from entirely the wrong glyph would land if the string were
   // measured instead of shaped.
-  if (mode == 4) {
+  if (mode == 4 || mode == 5) {
     // The caret at the END, which is where Return leaves it -- the whole
-    // point of this fixture. `textCaretEnd()` rather than a click, because a
-    // click cannot express "past the last character on a line that has no
-    // characters".
+    // point of these two fixtures. `textCaretEnd()` rather than a click,
+    // because a click cannot express "past the last character on a line that
+    // has no characters", and for `pointbreak` it puts the caret on the
+    // SECOND line, which is the half a bounds check cannot see.
     np::textCaretEnd(placed, &st.textEdit, /*extend=*/false);
   } else {
     const np::PathPoint clickAt{
@@ -1547,7 +1564,7 @@ int main(int argc, char** argv) {
   bool vectorDemo = false;
   int vectorDemoMode = 0;  // 0 = shape, 1 = components, 2 = marquee, 3 = pendraw
 
-  // --text-demo [paragraph|frame]: see runTextDemo().
+  // --text-demo [paragraph|newline|pointbreak|rotated|frame]: see runTextDemo().
   bool textDemo = false;
   int textDemoMode = 0;  // 0 = point text, 1 = paragraph, 2 = held-open frame drag
   bool overRangeDemo = false;
@@ -1976,6 +1993,9 @@ int main(int argc, char** argv) {
           ++i;
         } else if (arg == "newline") {
           textDemoMode = 4;
+          ++i;
+        } else if (arg == "pointbreak") {
+          textDemoMode = 5;
           ++i;
         }
       }

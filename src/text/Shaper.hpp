@@ -79,9 +79,11 @@ struct TextStyle {
 };
 
 // A paragraph's box. Point text (`width == 0`) has no wrapping and no
-// alignment -- there is only one line, so `TextAlign` has nothing to align
-// against, matching what every vector tool calls "point text" vs "area
-// text". `height == 0` under paragraph text means "as tall as the shaped
+// alignment -- its box is measured from the text rather than set by the
+// user, so `TextAlign` has nothing to align against, matching what every
+// vector tool calls "point text" vs "area text". It DOES break on the hard
+// breaks the string carries (a newline, CR, CRLF, U+2028, U+2029); "no
+// wrapping" is about width, not about Return. `height == 0` under paragraph text means "as tall as the shaped
 // lines need", not "zero lines": the frame grows to fit rather than
 // clipping, because a caller that wanted clipping would have to re-shape at
 // a different height anyway to know how much text was lost.

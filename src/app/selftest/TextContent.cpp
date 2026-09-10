@@ -454,20 +454,99 @@ bool runTextContentTest() {
             "wrong in the same direction");
     }
 
-    // Point text is deliberately NOT given a phantom line. Its shaper never
-    // breaks a line at all, so a caret dropped to a second one would sit
-    // under text that is not there.
+    // --- Return in POINT text ---------------------------------------------
+    //
+    // Point text used to be excluded from all of this, because its shaper
+    // (`CTLineCreateWithAttributedString`) did not break lines at ALL: a
+    // point block holding "Hi\nYo" drew "HiYo", and a caret dropped to a
+    // second line would have stood under type that was not there. It goes
+    // through the framesetter now, so the line is real -- and these check the
+    // TYPE moved, not just the caret, because moving the caret alone is
+    // exactly the disguise the old assertion here was written to refuse.
     auto pointBlock = [&](const char* utf8) {
       TextContent t = makeTextContent(utf8, org);
       t.style.sizePx = 48.0f;   // the SAME size on both sides, or the y's differ for that reason
       return t;                 // and the comparison below would prove nothing
     };
-    const TextCaretSegment pc0 = textCaretSegment(pointBlock("Hi"), 2);
-    const TextCaretSegment pc1 = textCaretSegment(pointBlock("Hi\n"), 3);
-    check(std::fabs(pc1.bottom.y - pc0.bottom.y) < 0.01f,
-          "newline: POINT text keeps its caret on the one line it draws -- a newline there is a "
-          "separate gap (core/TextContent.hpp section 2), and moving the caret alone would "
-          "disguise it by pointing at a line with no text on it");
+
+    // The type: "Yo" is UNDER "Hi", not after it. A block that ran the two
+    // together would be as wide as both and as tall as one -- which is
+    // precisely what the bug looked like, so both halves are pinned.
+    {
+      const PathBounds broken = textContentBounds(pointBlock("HiYo"));
+      const PathBounds twoLine = textContentBounds(pointBlock("Hi\nYo"));
+      const PathBounds oneLine = textContentBounds(pointBlock("Hi"));
+      std::printf("  [measured] point text  \"HiYo\" %.2fx%.2f  \"Hi\\nYo\" %.2fx%.2f\n",
+                  broken.maxX - broken.minX, broken.maxY - broken.minY,
+                  twoLine.maxX - twoLine.minX, twoLine.maxY - twoLine.minY);
+      check(broken.valid && twoLine.valid && oneLine.valid,
+            "point newline: all three blocks shape");
+      check(twoLine.maxX < broken.maxX - 1.0f,
+            "point newline: REQUIRED -- \"Hi\\nYo\" is NARROWER than \"HiYo\". The newline used "
+            "to be a zero-width glyph on a line that never broke, so the two read the same "
+            "width; this is the assertion that fails if Return stops breaking the line");
+      check(twoLine.maxY > oneLine.maxY + 1.0f,
+            "point newline: and TALLER than one line -- the second line is drawn, not merely "
+            "counted");
+    }
+
+    // The caret, compared against the real thing rather than a number this
+    // test worked out: the caret after the newline of "Hi\n" must land where
+    // the caret before the 'Y' of "Hi\nY" lands, because they are the same
+    // insertion point with and without a character after it.
+    {
+      const TextCaretSegment afterBreak = textCaretSegment(pointBlock("Hi\n"), 3);
+      const TextCaretSegment beforeY = textCaretSegment(pointBlock("Hi\nY"), 3);
+      const TextCaretSegment endOfOne = textCaretSegment(pointBlock("Hi"), 2);
+      std::printf("  [measured] point caret  end-of-line1 y=%.2f  after \\n y=%.2f  before 'Y' y=%.2f\n",
+                  endOfOne.bottom.y, afterBreak.bottom.y, beforeY.bottom.y);
+      check(std::fabs(afterBreak.bottom.y - beforeY.bottom.y) < 0.01f &&
+                std::fabs(afterBreak.top.x - beforeY.top.x) < 0.01f,
+            "point newline: REQUIRED -- the caret after a trailing newline sits exactly where "
+            "the next character will, in x and y. CoreText lays out no line for a newline that "
+            "ENDS the text, so this is the one the shaper had to be asked for");
+      check(afterBreak.bottom.y > endOfOne.bottom.y + 1.0f,
+            "point newline: and it MOVED -- pressing Return once puts the caret one line down, "
+            "not nowhere");
+      check(std::fabs(afterBreak.top.x - org.x) < 0.01f,
+            "point newline: at the start of the new line, which for point text is the origin's "
+            "own x -- there is no frame to align within");
+    }
+
+    // Point text spaces its lines by the same rule paragraph text does. This
+    // is the "48 versus 58" fact: the line's ascent + descent + leading is
+    // NOT what CoreText spaces baselines by, and if point text stacked lines
+    // on its own arithmetic instead of asking, the two kinds would drift
+    // apart at the same size and font.
+    {
+      TextContent pt = pointBlock("Hi\nYo");
+      TextContent pa = pointBlock("Hi\nYo");
+      pa.frame.width = 600.0f;   // wide enough that it cannot wrap: the only break is the \n
+      const TextCaretSegment p0 = textCaretSegment(pt, 0);
+      const TextCaretSegment p1 = textCaretSegment(pt, 3);
+      const TextCaretSegment a0 = textCaretSegment(pa, 0);
+      const TextCaretSegment a1 = textCaretSegment(pa, 3);
+      const float pointSpacing = p1.bottom.y - p0.bottom.y;
+      const float paraSpacing = a1.bottom.y - a0.bottom.y;
+      std::printf("  [measured] line spacing  point %.3f  paragraph %.3f  (sizePx 48)\n",
+                  pointSpacing, paraSpacing);
+      check(pointSpacing > 1.0f && std::fabs(pointSpacing - paraSpacing) < 0.01f,
+            "point newline: REQUIRED -- point text's baseline spacing is the SAME as paragraph "
+            "text's at the same size. `sizePx`, or ascent+descent+leading, would each be about "
+            "10px short at 48px and only this comparison notices");
+    }
+
+    // The first baseline stays exactly on `origin` however many lines there
+    // are (core/TextContent.hpp section 2b). The block grows DOWN from it,
+    // which is what stops existing point text moving when this changed.
+    {
+      const TextCaretSegment one = textCaretSegment(pointBlock("Hi"), 0);
+      const TextCaretSegment many = textCaretSegment(pointBlock("Hi\nYo\nZa"), 0);
+      check(std::fabs(one.bottom.y - many.bottom.y) < 0.01f,
+            "point newline: REQUIRED -- adding lines BELOW does not move the first one. The "
+            "shaper reports a different block top for a multi-line block, and this is what "
+            "fails if that difference is not cancelled back out");
+    }
   }
 
   // --- the frame's resize handles -------------------------------------------

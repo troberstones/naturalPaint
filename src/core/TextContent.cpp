@@ -425,13 +425,14 @@ CaretPen caretPenFor(const TextContent& text, size_t caretByte) {
   // out every one of them except the last.
   const bool endsWithNewline = caretByte > 0 && caretByte <= text.utf8.size() &&
                                text.utf8[caretByte - 1] == '\n';
-  // Point text is excluded deliberately, and not because it has no trailing
-  // newline to handle: `CTLineCreateWithAttributedString` never breaks a line
-  // at all, so a point block draws "Hi\nYo" as one line and a caret dropped to
-  // a second one would sit under text that is not there. A newline in point
-  // text is a real gap, named in core/TextContent.hpp section 2, and moving
-  // the caret without moving the type would disguise it rather than fix it.
-  if (endsWithNewline && text.frame.width > 0.0f) {
+  // Point text reaches this too. It used to be excluded, and not for want of
+  // a trailing newline to handle: `CTLineCreateWithAttributedString` did not
+  // break lines at all, so a point block drew "Hi\nYo" on one line and a
+  // caret dropped to a second would have stood under type that was not there
+  // -- moving the caret alone would have disguised the gap rather than fixed
+  // it. Point text is shaped through the framesetter now (text/CoreTextShaper
+  // .mm says why), so the second line is real and the caret belongs on it.
+  if (endsWithNewline) {
     c.pen = PathPoint{blockAt.x + emptyLineStartX(text),
                       blockAt.y + last->y + shaped.lineHeightPx};
     return c;
