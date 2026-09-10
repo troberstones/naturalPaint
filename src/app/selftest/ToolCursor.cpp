@@ -669,9 +669,20 @@ bool runToolCursorTest() {
     // user can see.** Full alpha and black, not merely non-zero -- an
     // anti-aliased fringe at alpha 4 is transparent to a human eye, and
     // accepting it here is how fifteen of these passed for a release.
+    // **Over EVERY tool, and the count below is what says so.** A first
+    // revision of this block looped over `bitmapCursors` -- T17's five -- while
+    // its own assertion text said "every tool's hotspot". Five of twenty-nine,
+    // none of them a §10 member, and it was a sabotage that carved a nib's slit
+    // through its own hotspot which exposed it: the cursor was broken and this
+    // line stayed green. That is the same narrow-set mistake as the
+    // bounding-box claim it replaced, made while replacing it.
     bool everyHotspotOpaqueInk = true, everyHotspotIsCrosshair = true, everyGlyphInked = true;
-    for (size_t i = 0; i < std::size(bitmapCursors); ++i) {
-      const CursorBitmap& b = bitmaps[i];
+    int hotspotsChecked = 0;
+    for (int ti = 0; ti < static_cast<int>(Tool::Count); ++ti) {
+      const Tool tool = static_cast<Tool>(ti);
+      if (!toolHasBitmapCursor(tool)) continue;
+      ++hotspotsChecked;
+      const CursorBitmap b = rasterizeToolCursorBitmap(tool);
       const bool opaque = isCoreInk(b, b.hotspotX, b.hotspotY);
       // §8's layout: the crosshair's centre is design (8, 23), and these
       // bitmaps are rasterised at scale 1.0, so the pixel IS (6, 26).
@@ -679,25 +690,47 @@ bool runToolCursorTest() {
       // so it is excluded from this claim and carries its own, below. Excluded
       // by the SAME predicate the rasteriser branches on -- a test with its own
       // list of exceptions is a second place for the exception to be wrong.
-      const bool onCross = toolCursorPointsFromItsTip(bitmapCursors[i])
+      const bool onCross = toolCursorPointsFromItsTip(tool)
                                ? (b.hotspotX != 8 || b.hotspotY != 23)
                                : (b.hotspotX == 8 && b.hotspotY == 23);
-      // ...and there is still a GLYPH. The crosshair's topmost pixel is
+      // ...and there is still a PICTURE. The crosshair's topmost pixel is
       // y = 23 - 6 = 17, so any core ink above that row came from the tool's
-      // own picture. Without this line a rasteriser that lost the glyph
-      // entirely would ship twenty-nine identical crosshairs and satisfy
-      // every other check in this section.
+      // own glyph rather than from the shared crosshair. Without this line a
+      // rasteriser that lost the glyph entirely would ship twenty-nine
+      // identical crosshairs and satisfy every other check in this section.
+      // §10's shapes have no crosshair at all, and both of them reach well
+      // above row 17, so the same probe holds for them without an exception.
+      // **Any ink, not FULLY OPAQUE ink, and the difference was measured.**
+      // `Tool::Crop` and `Tool::Frame` are thin Lucide outlines: at the glyph
+      // slot's 17 design units not one of their pixels reaches alpha 255, so
+      // an `isCoreInk()` probe here calls them blank while they are drawn
+      // perfectly well. The hotspot claim above wants full opacity because it
+      // is about one pixel a human has to SEE; this claim only wants to know a
+      // picture is there, and black-at-any-alpha is what says that. The halo
+      // is white, so testing the red channel is what separates the two.
       int glyphInk = 0;
       for (int y = 0; y < 17; ++y)
-        for (int x = 0; x < b.width; ++x)
-          if (isCoreInk(b, x, y)) ++glyphInk;
+        for (int x = 0; x < b.width; ++x) {
+          const size_t idx = (static_cast<size_t>(y) * b.width + x) * 4;
+          if (b.rgba[idx + 3] != 0 && b.rgba[idx] == 0) ++glyphInk;
+        }
       if (!opaque) everyHotspotOpaqueInk = false;
       if (!onCross) everyHotspotIsCrosshair = false;
       if (glyphInk == 0) everyGlyphInked = false;
-      std::printf("    %-22s hotspot (%2d,%2d) %-10s glyph ink above the crosshair: %d px\n",
-                  toolName(bitmapCursors[i]), b.hotspotX, b.hotspotY,
-                  opaque ? "opaque ink" : "NOT INK", glyphInk);
+      // Only the failures and §10's two are printed by name: twenty-nine
+      // identical "opaque ink" rows are not a table anybody reads, and the
+      // count assertion below is what covers the silent ones.
+      if (!opaque || !onCross || glyphInk == 0 || toolCursorPointsFromItsTip(tool))
+        std::printf("    %-22s hotspot (%2d,%2d) %-10s ink above the crosshair row: %d px\n",
+                    toolName(tool), b.hotspotX, b.hotspotY, opaque ? "opaque ink" : "NOT INK",
+                    glyphInk);
     }
+    // **The coverage claim, without which the three below can narrow silently.**
+    // This is the line the first revision of this block did not have, and its
+    // absence is exactly what let five tools stand in for twenty-nine.
+    check(hotspotsChecked == static_cast<int>(Tool::Count),
+          "hotspot: all of the tools were checked, not a named handful -- the three "
+          "assertions below iterate whatever this loop covered, so the count IS their scope");
     check(everyHotspotOpaqueInk,
           "hotspot: every tool's hotspot is a FULLY OPAQUE black pixel of the cursor's own "
           "ink -- not merely inside its bounding box (G2, which fifteen hotspots satisfied "
@@ -708,21 +741,29 @@ bool runToolCursorTest() {
           "with no entry in any table -- while §10's tip-pointing tools are provably NOT "
           "there, which is what says the exception actually took effect");
     check(everyGlyphInked,
-          "hotspot: ...and every cursor still carries a tool glyph above the crosshair -- a "
-          "rasteriser that drew only the crosshair would pass both lines above while making "
-          "all twenty-nine cursors identical");
+          "hotspot: ...and every cursor still carries a tool picture above the crosshair row "
+          "-- a rasteriser that drew only the crosshair would pass both lines above while "
+          "making all twenty-nine cursors identical");
 
     // **The glyph still says WHICH tool.** §8 demotes it from "the thing that
     // points" to "the thing that identifies", so this is now the whole of its
     // job and it is worth one line: all twenty-nine bitmaps are pairwise
     // distinct. `everyGlyphInked` above proves a glyph is drawn; only this
     // proves a DIFFERENT one is drawn for each tool.
+    // Every tool again, for the reason above: five bitmaps being distinct says
+    // nothing about the twenty-four that were not compared.
+    std::vector<std::pair<Tool, std::vector<uint8_t>>> all;
+    for (int ti = 0; ti < static_cast<int>(Tool::Count); ++ti) {
+      const Tool tool = static_cast<Tool>(ti);
+      if (!toolHasBitmapCursor(tool)) continue;
+      all.emplace_back(tool, rasterizeToolCursorBitmap(tool).rgba);
+    }
     bool allDistinct = true;
-    for (size_t i = 0; i < std::size(bitmapCursors) && allDistinct; ++i)
-      for (size_t j = i + 1; j < std::size(bitmapCursors); ++j)
-        if (bitmaps[i].rgba == bitmaps[j].rgba) {
-          std::printf("    %s and %s rasterise IDENTICALLY\n", toolName(bitmapCursors[i]),
-                      toolName(bitmapCursors[j]));
+    for (size_t i = 0; i < all.size() && allDistinct; ++i)
+      for (size_t j = i + 1; j < all.size(); ++j)
+        if (all[i].second == all[j].second) {
+          std::printf("    %s and %s rasterise IDENTICALLY\n", toolName(all[i].first),
+                      toolName(all[j].first));
           allDistinct = false;
           break;
         }
