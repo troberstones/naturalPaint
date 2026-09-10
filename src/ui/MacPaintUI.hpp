@@ -102,6 +102,20 @@ std::optional<Tool> canvasCursorToolRequest();
 // does not do. Clamped, so an index past the end is not an error here.
 void setLayersPanelSelection(OpenDocument& doc, size_t layerIndex);
 
+// The height of the LAYERS panel's `##layerrows` scroll box, exposed for
+// app/selftest/LayerListHeight.cpp. `rowCount` is an input this function is
+// required to ignore -- see the definition in ui/MacPaintUI.cpp for why the
+// count is passed at all, and what moved around the panel when it was not
+// ignored.
+float layerRowsChildHeight(float availY, float reserveBelowY, float rowH, float windowPaddingY,
+                           std::size_t rowCount) noexcept;
+
+// The blank height above the first row, which is what puts the layer stack on
+// the BOTTOM of its box: layer 0 rests on the floor and additions grow upward.
+// Exposed for app/selftest/LayerListHeight.cpp; see the definition for why
+// top-aligning it moved rows a user was aiming at.
+float layerRowsTopSpacer(float innerAvailY, std::size_t rowCount, float rowH) noexcept;
+
 // The whole multi-selection (PLAN.md Phase 5 step 11), for the one caller
 // `setLayersPanelSelection()` exists for: main.cpp's `--ui-multiselect-demo`,
 // which presses the set commands directly and would otherwise leave the panel
