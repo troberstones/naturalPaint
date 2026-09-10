@@ -533,13 +533,18 @@ bool runMenuModelTest() {
     // reads it once, ahead of its own switch, so this function is where the
     // decision actually lives.
 
-    // The measured defect. `Layer > Delete Layer` under a gizmo shifted the
-    // stack under a stored index; the pair of layer families is the route.
+    // **A safety net, not the rule.** The Layer menu is GREYED under a gizmo
+    // rather than cancelling it (`app/selftest/ToolSurface.cpp` section H
+    // holds that half), so neither of these can arrive while a session is up.
+    // They stay classified as ending it because if one ever did arrive,
+    // cancelling first is the safe direction and there is no writer-level
+    // refusal underneath -- unlike `ToolItem`, which `setActiveTool()` refuses
+    // on its own.
     check(menuActionEndsTransform(MenuAction::LayerCommandItem) &&
               menuActionEndsTransform(MenuAction::LayerSetCommandItem),
-          "transform: REQUIRED -- the two LAYER command families end a live transform. This "
-          "is T28's own measured case: delete a layer below the transformed one and a stored "
-          "index came to name a different layer");
+          "transform: the two LAYER command families would end a live transform if one ever "
+          "reached the dispatch -- a safety net under the greyed menu, since nothing refuses "
+          "these at the writer the way `setActiveTool()` refuses a tool change");
 
     // The other four shapes of "this document is about to change underneath a
     // matrix aimed at it".

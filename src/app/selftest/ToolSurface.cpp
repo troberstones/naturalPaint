@@ -370,6 +370,149 @@ bool runToolSurfaceTest() {
           "unbuilt ones keep \"Not built yet.\", which outlives the session");
   }
 
+  // -----------------------------------------------------------------------
+  // H. The LAYER menu is GREYED by a live gizmo -- the one menu that is
+  // -----------------------------------------------------------------------
+  //
+  // `ui/MenuModel.hpp`'s `menuActionEndsTransform()` says the menu bar
+  // CANCELS a transform rather than being blocked by it, because greying it
+  // would take Undo, Save and Quit with it. The Layer menu is the exception,
+  // and the exception is about what these commands are: the
+  // delete/reorder/merge/group family is `docs/testing-issues.md` T28's own
+  // measured corruption, and it is the LAYERS panel's buttons wearing a
+  // different hat. That panel is refused outright, so offering the same acts
+  // one menu over -- at the price of the transform -- would be two surfaces
+  // disagreeing about a single thing.
+  {
+    // A three-layer fixture, so the reorder and merge commands have somewhere
+    // to go and `layerCommandAvailable()` answers true for a real majority of
+    // the list rather than for two entries.
+    Document doc;
+    doc.width = 32;
+    doc.height = 24;
+    for (int k = 0; k < 3; ++k) {
+      Layer L;
+      L.kind = LayerKind::RGB;
+      L.name = "L" + std::to_string(k);
+      L.rgbTiles = TileStore{};
+      doc.layers.push_back(std::move(L));
+    }
+    // **A NON-EMPTY selection**, and that is not incidental: with an empty one
+    // every `layerSetCommandAvailable()` answers false, so both lists come
+    // back with zero enabled and "the gizmo disabled them" would be true of a
+    // list that was already dead. The first version of this fixture had that
+    // bug and the `enabledSetHeld < enabledSetFree` term is what caught it.
+    const LayerSelection two = makeLayerSelection({0, 1});
+    const char* kModal = "A transform is in progress. Press Return to apply it or Escape to "
+                         "cancel it.";
+
+    const std::vector<MenuFamilyEntry> freeCmds = layerMenuFamily(doc, 1, nullptr);
+    const std::vector<MenuFamilyEntry> heldCmds = layerMenuFamily(doc, 1, kModal);
+    const std::vector<MenuFamilyEntry> freeSet = layerSetMenuFamily(doc, two, nullptr);
+    const std::vector<MenuFamilyEntry> heldSet = layerSetMenuFamily(doc, two, kModal);
+
+    check(!freeCmds.empty() && freeCmds.size() == heldCmds.size() &&
+              !freeSet.empty() && freeSet.size() == heldSet.size(),
+          "layer menu: both families still offer every command in both states -- disabled, "
+          "not hidden, the same rule the tool family follows");
+
+    size_t enabledFree = 0;
+    size_t enabledHeld = 0;
+    for (const MenuFamilyEntry& e : freeCmds) if (e.enabled) ++enabledFree;
+    for (const MenuFamilyEntry& e : heldCmds) if (e.enabled) ++enabledHeld;
+    check(enabledFree > 0,
+          "layer menu: (setup) with no gizmo the fixture really does enable commands -- an "
+          "assertion against a list that was empty either way would prove nothing");
+    check(enabledHeld == 0,
+          "layer menu: REQUIRED -- with a gizmo live NOT ONE Layer command is enabled. This "
+          "is the delete/reorder/merge family T28 measured, and the LAYERS panel is already "
+          "refused; the menu must not be the way round it");
+
+    size_t enabledSetFree = 0;
+    size_t enabledSetHeld = 0;
+    for (const MenuFamilyEntry& e : freeSet) if (e.enabled) ++enabledSetFree;
+    for (const MenuFamilyEntry& e : heldSet) if (e.enabled) ++enabledSetHeld;
+    check(enabledSetHeld == 0 && enabledSetHeld < enabledSetFree,
+          "layer menu: REQUIRED -- and neither is one entry of the Selection submenu, which "
+          "is the multi-layer form of the same commands. Stopping one list and not the other "
+          "would only move the hole one submenu over");
+
+    // The sentence reaches the greyed entry, and reaches ONLY the entries the
+    // gizmo is the sole reason for -- a command already unavailable on its own
+    // terms keeps the empty tooltip it has always had, because naming the
+    // gizmo on "Remove Mask" over a layer with no mask names the wrong
+    // obstacle.
+    size_t carrying = 0;
+    for (const MenuFamilyEntry& e : heldCmds)
+      if (e.tooltip.find("transform is in progress") != std::string::npos) ++carrying;
+    check(carrying == enabledFree,
+          "layer menu: REQUIRED -- the gizmo's sentence lands on exactly the commands it is "
+          "the SOLE reason for. Two axes, never two sentences: one that was already "
+          "unavailable keeps its own empty tooltip rather than being told to press Escape");
+  }
+
+  // -----------------------------------------------------------------------
+  // I. And the CONTEXT really asks. The wiring, not the classification.
+  // -----------------------------------------------------------------------
+  //
+  // Sections G and H drive `toolMenuFamily()` and the two layer families with
+  // a `modalWhy` handed to them, which proves what each does with one. It does
+  // NOT prove anybody fetches it. Replacing `transformModalRefusal(st)` in
+  // `menuContextFromState()` with `nullptr` produced **zero failures** across
+  // the whole suite -- three perfect classifications and no wire between them
+  // and the application, which is the "green assertion, dead probe" shape
+  // this project has been bitten by before. This section is that wire.
+  {
+    AppState st;
+    // The precondition `ui/MacPaintUI.hpp` states, and the assertion that it
+    // held: the flag is the eager recent-documents load's own guard, so
+    // setting it skips the read of the user's real preferences file.
+    st.recentDocumentsLoaded = true;
+
+    OpenDocument* od = st.documents.add(makeBlankOpenDocument(32, 24, WorkingSpace{}));
+    check(od != nullptr && !od->document.layers.empty(),
+          "menu wiring: (setup) one open document with a layer");
+    TileStore& tiles = *od->document.layers[0].rgbTiles;
+    for (int32_t y = 0; y < 6; ++y)
+      for (int32_t x = 0; x < 6; ++x)
+        tiles.getOrCreate(tileCoordAt(PixelCoord{x, y}))
+            .writePixel(tileLocalOffset(PixelCoord{x, y}), {1.0f, 0.5f, 0.25f, 1.0f});
+    od->recordEdit("ink", EditKind::Content);
+
+    const MenuContext before = menuContextFromState(st);
+    check(st.recentDocuments.entries().empty(),
+          "menu wiring: and the precondition held -- nothing was read from the user's real "
+          "recent-documents file, which is the one file this suite must never touch");
+
+    size_t toolsBefore = 0;
+    size_t layersBefore = 0;
+    for (const MenuFamilyEntry& e : before.tools) if (e.enabled) ++toolsBefore;
+    for (const MenuFamilyEntry& e : before.layerCommands) if (e.enabled) ++layersBefore;
+    check(toolsBefore > 0 && layersBefore > 0,
+          "menu wiring: (setup) with no gizmo the assembled context enables tools and layer "
+          "commands -- an assertion against two empty lists would prove nothing");
+
+    check(st.transform.beginLayer(*od, 0).ok && st.transform.active(),
+          "menu wiring: (setup) a transform session begins on that document");
+
+    const MenuContext held = menuContextFromState(st);
+    size_t toolsHeld = 0;
+    size_t layersHeld = 0;
+    size_t layerSetHeld = 0;
+    for (const MenuFamilyEntry& e : held.tools) if (e.enabled) ++toolsHeld;
+    for (const MenuFamilyEntry& e : held.layerCommands) if (e.enabled) ++layersHeld;
+    for (const MenuFamilyEntry& e : held.layerSetCommands) if (e.enabled) ++layerSetHeld;
+    check(toolsHeld == 0 && layersHeld == 0 && layerSetHeld == 0,
+          "menu wiring: REQUIRED -- with a session live on the active document, the assembled "
+          "context disables every tool AND every Layer command. This is the line that fetches "
+          "the refusal, and a sabotage of it reddens nothing else in the suite");
+
+    check(held.layerCommands.size() == before.layerCommands.size() &&
+              held.tools.size() == before.tools.size(),
+          "menu wiring: ...by disabling them, not by dropping them -- a menu that shortened "
+          "under a gizmo would move every item the user was aiming at");
+  }
+
   std::printf("[selftest] tool surface %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

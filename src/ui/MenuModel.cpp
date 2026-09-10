@@ -562,10 +562,22 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     // that silently inherited "does not end the transform" would be T28
     // arriving again through a door nobody remembered was there.
     //
-    // The four that make the case on their own: `LayerCommandItem` and
-    // `LayerSetCommandItem` are the delete/reorder/merge family T28 measured;
-    // `Undo`/`Redo` replace the whole `Document` from a snapshot; `Paste`
-    // inserts a layer; `PaintModeItem` and the two canvas items clear it.
+    // The four that make the case on their own: `Undo`/`Redo` replace the
+    // whole `Document` from a snapshot; `Paste` inserts a layer;
+    // `PaintModeItem` and the two canvas items clear it.
+    //
+    // **`LayerCommandItem` and `LayerSetCommandItem` are here as a SAFETY NET,
+    // not as the rule that governs them.** The Layer menu is the one menu
+    // GREYED by a live gizmo rather than cancelling it -- see
+    // `ui/MacPaintUI.hpp`'s `layerMenuFamily()` for why that family is the
+    // exception -- so neither of these can arrive while a session is up:
+    // `ImGui::MenuItem(..., enabled)` and `MacNativeMenu.mm`'s
+    // `setEnabled:NO` both honour the flag, and neither family carries a key
+    // equivalent. Classified `true` anyway because if one ever did arrive,
+    // cancelling first is the safe direction and there is no writer-level
+    // refusal underneath to catch it -- unlike `ToolItem` above, which
+    // `setActiveTool()` refuses on its own and is therefore classified false.
+    // The asymmetry between those two is deliberate and is that difference.
     case MenuAction::NewCanvas:
     case MenuAction::NewDocument:
     case MenuAction::Open:

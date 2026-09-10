@@ -10663,197 +10663,6 @@ MenuFamilyEntry familyEntry(std::string label, bool enabled, bool checked,
   return e;
 }
 
-// The live application, as the pure snapshot `buildMenuModel()` consumes.
-//
-// **The six families are resolved here, not there.** ui/MenuModel.hpp explains
-// why at length: a `const Document*` parked on the context would be a dangling
-// pointer the first time a user closed a document with a native menu open, and
-// the native backend genuinely does read this state after the frame that
-// produced it has ended. So availability is asked of `app/LayerEditor` and
-// `core/LayerSetOps` -- the modules that own the rule -- inside the frame, and
-// only the answers travel.
-MenuContext menuContextFromState(AppState& st) {
-  MenuContext ctx;
-
-  // **This load used to be lazy, and it cannot be any more.** It sat at the
-  // top of `drawDocumentMenuItems()` and therefore ran the first time the File
-  // menu was *opened*, on the argument (PRD A2, ADR-0001) that a file nobody
-  // asked for costs nothing.
-  //
-  // A native menu bar has no such moment. It is on screen from launch, and it
-  // is built out of band, so `Open Recent` has to know whether it has entries
-  // before the user has expressed any interest in the File menu at all. The
-  // choice was between eager on both platforms and a lazy path that exists
-  // only on one -- and a load that happens at a different time on macOS than
-  // on Linux is the kind of difference that makes a bug reproduce on one
-  // machine and not the other.
-  //
-  // The cost is one small file read on the first UI frame. It is deliberately
-  // NOT moved to startup: `--selftest` never calls drawUI(), so the idle-RSS
-  // assertion (PLAN.md 1.4 / ADR-0001 bullet 5) is still sampled on a process
-  // that has never touched this file.
-  if (!st.recentDocumentsLoaded) {
-    st.recentDocumentsLoaded = true;
-    st.recentDocuments.loadFromFile(defaultRecentDocumentsPath());
-  }
-
-  const OpenDocument* doc = st.documents.active();
-  ctx.hasDocument = doc != nullptr;
-  ctx.hasPath = ctx.hasDocument && doc->hasPath();
-
-  // --- Edit -----------------------------------------------------------------
-  //
-  // D1 + D2: mirrors the guards at the one place each of these commands is
-  // actually performed -- `moveHistoryCursor()`'s callers for undo/redo, the
-  // request-flag consumption block a few hundred lines down in this file for
-  // the clipboard nine. See ui/MenuModel.hpp's `MenuContext::canUndo` comment
-  // for why that is copied rather than shared.
-  {
-    const Layer* target = doc != nullptr ? activeLayerOf(*doc) : nullptr;
-    ctx.canUndo = doc != nullptr && doc->history.canUndo();
-    ctx.canRedo = doc != nullptr && doc->history.canRedo();
-    ctx.hasActiveLayer = target != nullptr;
-    ctx.hasEditableLayer = target != nullptr && !target->locked;
-    ctx.clipboardHasContent = !st.clipboard.empty();
-    ctx.hasSelection = doc != nullptr && doc->selection.has_value();
-    ctx.hasLastDeselected = doc != nullptr && doc->lastDeselected.has_value();
-  }
-
-  // --- Open Recent --------------------------------------------------------
-  // A missing entry is shown, greyed, with the reason in its tooltip -- never
-  // dropped behind the user's back (app/DocumentLifecycle.hpp argues why).
-  {
-    const std::vector<RecentDocument>& entries = st.recentDocuments.entries();
-    for (const RecentDocument& entry : entries) {
-      std::string why;
-      const bool missing = recentDocumentMissing(entry.path, &why);
-      ctx.recentDocuments.push_back(
-          familyEntry(entry.displayName, !missing, false, false, missing ? why : entry.path));
-    }
-  }
-
-  // --- Layer --------------------------------------------------------------
-  if (doc != nullptr) {
-    const Document& d = doc->document;
-    const size_t selected = doc->activeLayer;
-    ctx.activeLayerTitle = selected < d.layers.size()
-                               ? layerRowTitle(d.layers[selected], selected)
-                               : std::string("(no layer selected)");
-
-    for (const LayerCommand command : allLayerCommands()) {
-      // The four toggles show the selected layer's current state as a check
-      // mark, which is what makes "Toggle Visibility" honest about which way
-      // it is about to go.
-      bool checked = false;
-      if (selected < d.layers.size()) {
-        if (command == LayerCommand::ToggleVisible) checked = d.layers[selected].visible;
-        if (command == LayerCommand::ToggleLocked) checked = d.layers[selected].locked;
-        if (command == LayerCommand::ToggleClipped) checked = d.layers[selected].clipped;
-        if (command == LayerCommand::ToggleAlphaLock) checked = d.layers[selected].alphaLocked;
-        if (command == LayerCommand::ToggleFlatsReference) checked = d.layers[selected].flatsReference;
-      }
-      // Grouped as the panel groups them: creation, then the whole-layer
-      // operations, then the mask, then the flags.
-      const bool rule = command == LayerCommand::NewAdjustmentLayer ||
-                        command == LayerCommand::MoveLayerDown ||
-                        command == LayerCommand::RemoveMask ||
-                        command == LayerCommand::ToggleFlatsReference;
-      ctx.layerCommands.push_back(familyEntry(layerCommandLabel(command),
-                                              layerCommandAvailable(d, command, selected),
-                                              checked, rule));
-    }
-
-    // The LAYERS panel's "Multi-selection" section walks the identical list,
-    // so the two views cannot come to offer different sets.
-    const LayerSelection visible = restrictSelectionToFilter(d, g_layers.selection, g_layers.filter);
-    ctx.layerSelectionNote = std::to_string(g_layers.selection.size()) + " layer(s) selected" +
-                             (visible.size() != g_layers.selection.size()
-                                  ? ", some hidden by the filter"
-                                  : "");
-    for (const LayerSetCommand command : allLayerSetCommands()) {
-      const bool rule = command == LayerSetCommand::MoveLayersDown ||
-                        command == LayerSetCommand::UnclipLayers ||
-                        command == LayerSetCommand::UnlinkLayers ||
-                        command == LayerSetCommand::LabelGrey ||
-                        command == LayerSetCommand::AlignSelectionBottom ||
-                        command == LayerSetCommand::AlignCanvasBottom;
-      ctx.layerSetCommands.push_back(familyEntry(
-          layerSetCommandLabel(command), layerSetCommandAvailable(d, command, visible), false,
-          rule));
-    }
-  }
-
-  // --- Select ---------------------------------------------------------------
-  //
-  // Resolved against `*doc` here, inside the frame, for the identical reason
-  // every other predicate on this context is: a native menu backend reads
-  // this snapshot after the frame that produced it has ended, so a live
-  // `OpenDocument*` on the context would be a dangling pointer the first time
-  // a user closed a document with the menu open.
-  if (doc != nullptr) {
-    ctx.hasEngagedSelection = selectRefineEnabled(*doc);
-    ctx.hasRgbSource = selectRangeEnabled(*doc);
-    ctx.hasRefineUndo = selectUndoRefineEnabled(*doc);
-  }
-
-  // --- Medium / Goodies ---------------------------------------------------
-  for (int i = 0; i < static_cast<int>(PaintMode::Count); ++i) {
-    const PaintMode m = static_cast<PaintMode>(i);
-    ctx.paintModes.push_back(familyEntry(paintModeName(m), true, st.mode == m));
-  }
-  // A4 (reachability audit): see `toolMenuFamily()`'s own comment
-  // (ui/MacPaintUI.hpp) for the bug this replaced -- this loop used to pass
-  // `enabled = true` unconditionally, so all 27 tools were freely selectable
-  // from Goodies while `toolButton()` (AtelierChrome.cpp:456) gated the same
-  // list correctly one panel over. Factored out rather than fixed in place
-  // so `--selftest` can call the exact predicate the menu uses without
-  // needing an `AppState` or touching the recent-documents file this
-  // function's own first line reads.
-  ctx.tools = toolMenuFamily(st.brush.tool, st.documents.active() != nullptr,
-                             transformModalRefusal(st));
-  ctx.paused = st.paused;
-
-  // --- View ---------------------------------------------------------------
-  ctx.mirrorX = st.view.mirrorX;
-  ctx.mirrorY = st.view.mirrorY;
-  ctx.grayscale = st.view.grayscale;
-  ctx.showRulers = st.showRulers;
-  ctx.showNavigator = st.showNavigator;
-  ctx.showBrushSettings = st.showBrushSettings;
-  ctx.showPigmentPanel = st.panels.placementOf(ControlsSection::Pigment) != PanelPlacement::Hidden;
-  ctx.showGuides = st.showGuides;
-  ctx.showGrid = st.showGrid;
-  ctx.snappingEnabled = st.snappingEnabled;
-  ctx.hasGuides = !st.guides.empty();
-
-  // --- Window -------------------------------------------------------------
-  ctx.showDemo = st.showDemo;
-  for (size_t i = 0; i < st.documents.count(); ++i) {
-    const OpenDocument* d = st.documents.at(i);
-    ctx.openDocuments.push_back(familyEntry(documentDisplayName(*d) + (d->isDirty() ? " *" : ""),
-                                            true, i == st.documents.activeIndex(), false,
-                                            d->isDirty() ? d->unsavedWorkSummary() : std::string()));
-  }
-
-  // --- Filter / Image ------------------------------------------------
-  //
-  // The identical predicate the paint bucket and the gradient gate on
-  // (~7058 above), resolved here rather than carried as a `Layer*` -- see
-  // ui/MenuModel.hpp's own header on why the context holds no live pointer.
-  // `activeLayerOf()` on a `const OpenDocument*` is unavailable (the
-  // non-const overload only), so this reaches for the mutable one exactly
-  // as the rest of this function already has `doc` for.
-  {
-    Layer* target = doc != nullptr ? activeLayerOf(*st.documents.active()) : nullptr;
-    const PixelOpRefusal reason = pixelOpRefusalFor(target);
-    ctx.filterLayerUsable = reason == PixelOpRefusal::None;
-    if (!ctx.filterLayerUsable)
-      ctx.filterRefusalNote = pixelOpRefusalMessage(reason, target, "filter");
-  }
-
-  ctx.nativeAppMenuPresent = nativeMenuBarInstalled();
-  return ctx;
-}
 
 // Draw one level of the tree. Recursive, because the tree is.
 void drawMenuNodes(AppState& st, const std::vector<MenuNode>& nodes, uint32_t canvasW,
@@ -10930,6 +10739,195 @@ bool keyboardBelongsToTyping(const AppState& st) {
 
 }  // namespace
 
+// Declared in ui/MacPaintUI.hpp. **Moved out of the anonymous namespace**
+// 2026-09-10 for the reason `toolMenuFamily()` just below was put here:
+// `--selftest` has to be able to call it. It builds the tool and layer
+// families from `transformModalRefusal(st)`, and that fetch was the one line
+// in the modal-transform work that no assertion reached -- a sabotage of it
+// reddened nothing. It still calls this file's own `familyEntry()` and
+// `layerRowTitle()`, which is why it sits here rather than earlier.
+//
+// The header states the precondition a headless caller owes it: set
+// `st.recentDocumentsLoaded` first, or the first call reads the user's real
+// preferences file.
+// The live application, as the pure snapshot `buildMenuModel()` consumes.
+//
+// **The six families are resolved here, not there.** ui/MenuModel.hpp explains
+// why at length: a `const Document*` parked on the context would be a dangling
+// pointer the first time a user closed a document with a native menu open, and
+// the native backend genuinely does read this state after the frame that
+// produced it has ended. So availability is asked of `app/LayerEditor` and
+// `core/LayerSetOps` -- the modules that own the rule -- inside the frame, and
+// only the answers travel.
+MenuContext menuContextFromState(AppState& st) {
+  MenuContext ctx;
+
+  // **This load used to be lazy, and it cannot be any more.** It sat at the
+  // top of `drawDocumentMenuItems()` and therefore ran the first time the File
+  // menu was *opened*, on the argument (PRD A2, ADR-0001) that a file nobody
+  // asked for costs nothing.
+  //
+  // A native menu bar has no such moment. It is on screen from launch, and it
+  // is built out of band, so `Open Recent` has to know whether it has entries
+  // before the user has expressed any interest in the File menu at all. The
+  // choice was between eager on both platforms and a lazy path that exists
+  // only on one -- and a load that happens at a different time on macOS than
+  // on Linux is the kind of difference that makes a bug reproduce on one
+  // machine and not the other.
+  //
+  // The cost is one small file read on the first UI frame. It is deliberately
+  // NOT moved to startup: `--selftest` never calls drawUI(), so the idle-RSS
+  // assertion (PLAN.md 1.4 / ADR-0001 bullet 5) is still sampled on a process
+  // that has never touched this file.
+  if (!st.recentDocumentsLoaded) {
+    st.recentDocumentsLoaded = true;
+    st.recentDocuments.loadFromFile(defaultRecentDocumentsPath());
+  }
+
+  const OpenDocument* doc = st.documents.active();
+  ctx.hasDocument = doc != nullptr;
+  ctx.hasPath = ctx.hasDocument && doc->hasPath();
+
+  // --- Edit -----------------------------------------------------------------
+  //
+  // D1 + D2: mirrors the guards at the one place each of these commands is
+  // actually performed -- `moveHistoryCursor()`'s callers for undo/redo, the
+  // request-flag consumption block a few hundred lines down in this file for
+  // the clipboard nine. See ui/MenuModel.hpp's `MenuContext::canUndo` comment
+  // for why that is copied rather than shared.
+  {
+    const Layer* target = doc != nullptr ? activeLayerOf(*doc) : nullptr;
+    ctx.canUndo = doc != nullptr && doc->history.canUndo();
+    ctx.canRedo = doc != nullptr && doc->history.canRedo();
+    ctx.hasActiveLayer = target != nullptr;
+    ctx.hasEditableLayer = target != nullptr && !target->locked;
+    ctx.clipboardHasContent = !st.clipboard.empty();
+    ctx.hasSelection = doc != nullptr && doc->selection.has_value();
+    ctx.hasLastDeselected = doc != nullptr && doc->lastDeselected.has_value();
+  }
+
+  // --- Open Recent --------------------------------------------------------
+  // A missing entry is shown, greyed, with the reason in its tooltip -- never
+  // dropped behind the user's back (app/DocumentLifecycle.hpp argues why).
+  {
+    const std::vector<RecentDocument>& entries = st.recentDocuments.entries();
+    for (const RecentDocument& entry : entries) {
+      std::string why;
+      const bool missing = recentDocumentMissing(entry.path, &why);
+      ctx.recentDocuments.push_back(
+          familyEntry(entry.displayName, !missing, false, false, missing ? why : entry.path));
+    }
+  }
+
+  // --- Layer --------------------------------------------------------------
+  //
+  // **The Layer menu is GREYED under a live gizmo, not cancelled by it** --
+  // the one exception to `menuActionEndsTransform()`'s rule, and it is the
+  // exception because of what these commands ARE. Every other menu the gizmo
+  // gets out of the way for either leaves the document alone (View, Save) or
+  // is the user deliberately moving on (Undo, a filter). This one is the
+  // delete/reorder/merge/group family: `docs/testing-issues.md` T28's own
+  // measured corruption, and the LAYERS panel's buttons wearing a different
+  // hat. That panel is refused outright, so offering the same acts one menu
+  // over -- at the price of the transform -- would be two surfaces disagreeing
+  // about a single thing.
+  //
+  // The two families are built by `layerMenuFamily()` / `layerSetMenuFamily()`
+  // rather than inline, for `toolMenuFamily()`'s reason: this function cannot
+  // be reached from `--selftest` (its first call loads the user's real
+  // recent-documents file) and those two can.
+  const char* layerModalWhy = transformModalRefusal(st);
+  if (doc != nullptr) {
+    const Document& d = doc->document;
+    const size_t selected = doc->activeLayer;
+    ctx.activeLayerTitle = selected < d.layers.size()
+                               ? layerRowTitle(d.layers[selected], selected)
+                               : std::string("(no layer selected)");
+
+    ctx.layerCommands = layerMenuFamily(d, selected, layerModalWhy);
+
+    // The LAYERS panel's "Multi-selection" section walks the identical list,
+    // so the two views cannot come to offer different sets.
+    const LayerSelection visible = restrictSelectionToFilter(d, g_layers.selection, g_layers.filter);
+    ctx.layerSelectionNote = std::to_string(g_layers.selection.size()) + " layer(s) selected" +
+                             (visible.size() != g_layers.selection.size()
+                                  ? ", some hidden by the filter"
+                                  : "");
+    ctx.layerSetCommands = layerSetMenuFamily(d, visible, layerModalWhy);
+  }
+
+  // --- Select ---------------------------------------------------------------
+  //
+  // Resolved against `*doc` here, inside the frame, for the identical reason
+  // every other predicate on this context is: a native menu backend reads
+  // this snapshot after the frame that produced it has ended, so a live
+  // `OpenDocument*` on the context would be a dangling pointer the first time
+  // a user closed a document with the menu open.
+  if (doc != nullptr) {
+    ctx.hasEngagedSelection = selectRefineEnabled(*doc);
+    ctx.hasRgbSource = selectRangeEnabled(*doc);
+    ctx.hasRefineUndo = selectUndoRefineEnabled(*doc);
+  }
+
+  // --- Medium / Goodies ---------------------------------------------------
+  for (int i = 0; i < static_cast<int>(PaintMode::Count); ++i) {
+    const PaintMode m = static_cast<PaintMode>(i);
+    ctx.paintModes.push_back(familyEntry(paintModeName(m), true, st.mode == m));
+  }
+  // A4 (reachability audit): see `toolMenuFamily()`'s own comment
+  // (ui/MacPaintUI.hpp) for the bug this replaced -- this loop used to pass
+  // `enabled = true` unconditionally, so all 27 tools were freely selectable
+  // from Goodies while `toolButton()` (AtelierChrome.cpp:456) gated the same
+  // list correctly one panel over. Factored out rather than fixed in place
+  // so `--selftest` can call the exact predicate the menu uses without
+  // needing an `AppState` or touching the recent-documents file this
+  // function's own first line reads.
+  ctx.tools = toolMenuFamily(st.brush.tool, st.documents.active() != nullptr,
+                             transformModalRefusal(st));
+  ctx.paused = st.paused;
+
+  // --- View ---------------------------------------------------------------
+  ctx.mirrorX = st.view.mirrorX;
+  ctx.mirrorY = st.view.mirrorY;
+  ctx.grayscale = st.view.grayscale;
+  ctx.showRulers = st.showRulers;
+  ctx.showNavigator = st.showNavigator;
+  ctx.showBrushSettings = st.showBrushSettings;
+  ctx.showPigmentPanel = st.panels.placementOf(ControlsSection::Pigment) != PanelPlacement::Hidden;
+  ctx.showGuides = st.showGuides;
+  ctx.showGrid = st.showGrid;
+  ctx.snappingEnabled = st.snappingEnabled;
+  ctx.hasGuides = !st.guides.empty();
+
+  // --- Window -------------------------------------------------------------
+  ctx.showDemo = st.showDemo;
+  for (size_t i = 0; i < st.documents.count(); ++i) {
+    const OpenDocument* d = st.documents.at(i);
+    ctx.openDocuments.push_back(familyEntry(documentDisplayName(*d) + (d->isDirty() ? " *" : ""),
+                                            true, i == st.documents.activeIndex(), false,
+                                            d->isDirty() ? d->unsavedWorkSummary() : std::string()));
+  }
+
+  // --- Filter / Image ------------------------------------------------
+  //
+  // The identical predicate the paint bucket and the gradient gate on
+  // (~7058 above), resolved here rather than carried as a `Layer*` -- see
+  // ui/MenuModel.hpp's own header on why the context holds no live pointer.
+  // `activeLayerOf()` on a `const OpenDocument*` is unavailable (the
+  // non-const overload only), so this reaches for the mutable one exactly
+  // as the rest of this function already has `doc` for.
+  {
+    Layer* target = doc != nullptr ? activeLayerOf(*st.documents.active()) : nullptr;
+    const PixelOpRefusal reason = pixelOpRefusalFor(target);
+    ctx.filterLayerUsable = reason == PixelOpRefusal::None;
+    if (!ctx.filterLayerUsable)
+      ctx.filterRefusalNote = pixelOpRefusalMessage(reason, target, "filter");
+  }
+
+  ctx.nativeAppMenuPresent = nativeMenuBarInstalled();
+  return ctx;
+}
+
 // Declared in ui/MacPaintUI.hpp, which carries the full argument for why this
 // exists and why it is public. Defined here, after the anonymous namespace
 // closes, for the same reason `performMenuAction()` just below is: it calls
@@ -10973,6 +10971,60 @@ void moveHistoryCursor(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext&
 // external linkage `menuContextFromState()` and `app/selftest/MenuBasics.cpp`
 // both need -- the former to assign `ctx.tools`, the latter to assert the
 // A4 fix directly.
+std::vector<MenuFamilyEntry> layerMenuFamily(const Document& doc, size_t selected,
+                                            const char* modalWhy) {
+  std::vector<MenuFamilyEntry> out;
+  for (const LayerCommand command : allLayerCommands()) {
+    // The five toggles show the selected layer's current state as a check
+    // mark, which is what makes "Toggle Visibility" honest about which way it
+    // is about to go.
+    bool checked = false;
+    if (selected < doc.layers.size()) {
+      if (command == LayerCommand::ToggleVisible) checked = doc.layers[selected].visible;
+      if (command == LayerCommand::ToggleLocked) checked = doc.layers[selected].locked;
+      if (command == LayerCommand::ToggleClipped) checked = doc.layers[selected].clipped;
+      if (command == LayerCommand::ToggleAlphaLock) checked = doc.layers[selected].alphaLocked;
+      if (command == LayerCommand::ToggleFlatsReference)
+        checked = doc.layers[selected].flatsReference;
+    }
+    // Grouped as the panel groups them: creation, then the whole-layer
+    // operations, then the mask, then the flags.
+    const bool rule = command == LayerCommand::NewAdjustmentLayer ||
+                      command == LayerCommand::MoveLayerDown ||
+                      command == LayerCommand::RemoveMask ||
+                      command == LayerCommand::ToggleFlatsReference;
+    // Two axes, and still never two sentences -- the header says why only a
+    // command the gizmo is the SOLE reason for carries its wording.
+    const bool ownAvailable = layerCommandAvailable(doc, command, selected);
+    out.push_back(familyEntry(layerCommandLabel(command),
+                              ownAvailable && modalWhy == nullptr, checked, rule,
+                              ownAvailable && modalWhy != nullptr ? modalWhy : ""));
+  }
+  return out;
+}
+
+std::vector<MenuFamilyEntry> layerSetMenuFamily(const Document& doc,
+                                                const LayerSelection& visible,
+                                                const char* modalWhy) {
+  std::vector<MenuFamilyEntry> out;
+  for (const LayerSetCommand command : allLayerSetCommands()) {
+    const bool rule = command == LayerSetCommand::MoveLayersDown ||
+                      command == LayerSetCommand::UnclipLayers ||
+                      command == LayerSetCommand::UnlinkLayers ||
+                      command == LayerSetCommand::LabelGrey ||
+                      command == LayerSetCommand::AlignSelectionBottom ||
+                      command == LayerSetCommand::AlignCanvasBottom;
+    // The multi-layer form of the identical commands, on the identical two
+    // axes -- a gizmo that stopped one list and not the other would only have
+    // moved the hole one submenu over.
+    const bool ownAvailable = layerSetCommandAvailable(doc, command, visible);
+    out.push_back(familyEntry(layerSetCommandLabel(command),
+                              ownAvailable && modalWhy == nullptr, false, rule,
+                              ownAvailable && modalWhy != nullptr ? modalWhy : ""));
+  }
+  return out;
+}
+
 std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen,
                                             const char* modalWhy) {
   std::vector<MenuFamilyEntry> tools;

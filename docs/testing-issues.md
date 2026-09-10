@@ -1777,11 +1777,30 @@ clicks, eye and lock chips, a blend combo, an opacity field, a filter box, a
 rename popup, a drag reorder and eleven buttons, and a rule spread over that
 many controls is a rule the twelfth will not have.
 
-**The menu bar CANCELS instead.** Greying it would take `Edit > Undo`,
-`File > Save` and `Quit` with it, and a user who cannot save because a box is on
-screen has been trapped, not protected. The menu carries the escape hatches; a
-palette of tools and a panel of layer buttons carry none. That asymmetry is the
-whole of the decision.
+**The menu bar CANCELS instead — except the LAYER menu, which is greyed.**
+Greying the whole bar would take `Edit > Undo`, `File > Save` and `Quit` with
+it, and a user who cannot save because a box is on screen has been trapped, not
+protected. The menu carries the escape hatches; a palette of tools and a panel
+of layer buttons carry none. That asymmetry is the whole of the decision.
+
+The Layer menu is the exception, and the exception is about what those commands
+*are*: the delete/reorder/merge/group family is this entry's own measured
+corruption, and it is the LAYERS panel's buttons wearing a different hat. That
+panel is refused outright, so offering the same acts one menu over — at the
+price of the transform — would be two surfaces disagreeing about a single
+thing. `ui/MacPaintUI.hpp`'s `layerMenuFamily()` / `layerSetMenuFamily()` carry
+the greying, on the same two-axes-never-two-sentences rule the tool family uses:
+a command already unavailable on its own terms keeps its own empty tooltip,
+because naming the gizmo on "Remove Mask" over a layer with no mask names the
+wrong obstacle. Neither family has a key equivalent, and both
+`ImGui::MenuItem(..., enabled)` and `MacNativeMenu.mm`'s `setEnabled:NO` honour
+the flag, so greying closes both routes rather than only the visible one.
+
+`menuActionEndsTransform()` still classifies both layer families as ending a
+transform. That is now a **safety net under the greying**, not the rule that
+governs them: neither can arrive while a session is up, and if one ever did,
+cancelling first is the safe direction — there is no writer-level refusal
+underneath these the way `setActiveTool()` refuses a tool change.
 
 `ui/MenuModel.hpp`'s `menuActionEndsTransform()` holds the classification, as
 an exhaustive switch so a new `MenuAction` is a **compile-time** decision — the
@@ -1815,10 +1834,21 @@ menu item is.
 tabbed away from is not in this command's way, and A's work is not B's to
 discard.
 
-Eleven sabotages across the two halves. The classifier, the hook that reads it,
-its document scoping, the save exemption, the layer-family classification and
-the panel's own lock each redden their own assertion; `layers_transform` is the
-golden view for the panel. 8885 pass, golden 64/64.
+Seventeen sabotages across the three halves. The classifier, the hook that
+reads it, its document scoping, the save exemption, the panel's own lock and
+both layer families each redden their own assertion; `layers_transform` is the
+golden view for the panel. 8896 pass, golden 64/64.
+
+**One hole found by sabotage and worth recording, because it survived three
+green commits.** Every family function takes its `modalWhy` as a parameter and
+every one of them is asserted with one — but the LINE that fetches it and hands
+it over lives in `menuContextFromState()`, and replacing that line with
+`nullptr` reddened **nothing at all**. Perfect classifications, no wire. The
+fix was to move `menuContextFromState()` out of its anonymous namespace and
+assert the assembled context directly; the precondition a headless caller owes
+it (`st.recentDocumentsLoaded = true`, or the first call reads the user's real
+preferences file) is asserted alongside rather than merely written down. Both
+wiring lines — the tool family's and the layer families' — now redden.
 
 **One thing deliberately left as it is:** the gizmo still draws over whatever
 occupies the slot if a layer is deleted *from the menu* — the menu cancels the
