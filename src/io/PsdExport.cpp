@@ -108,6 +108,15 @@ bool writeMergedImageData(PsdWriter& w, const DecodedImage& flat, PsdClipReport&
 
   for (size_t i = 0, n = width * height; i < n; ++i) {
     const float* px = &flat.pixels[i * 4];
+    // Alpha is opacity, not light: quantised, never gamma-encoded, and clamped
+    // without a warning (io/PsdExport.hpp says why).
+    const uint8_t alphaByte = quantize8(px[3]);
+    planes[3][i] = alphaByte;
+    // The matte is computed against the alpha byte the file will CARRY, not
+    // against the float it came from, so a reader's un-matte -- which has only
+    // the byte -- inverts this exactly rather than to within a second rounding.
+    const float a = static_cast<float>(alphaByte) / 255.0f;
+
     for (int c = 0; c < 3; ++c) {
       const float linear = px[c];
       // srgbEncode is monotonic and fixes 1.0, so "linear > 1" and "encoded
@@ -122,11 +131,16 @@ bool writeMergedImageData(PsdWriter& w, const DecodedImage& flat, PsdClipReport&
         ++clipOut.clippedLow;
         if (linear < clipOut.mostNegativeClipped) clipOut.mostNegativeClipped = linear;
       }
-      planes[c][i] = quantize8(encoded);
+      // Clamped BEFORE the matte, not by quantize8() after it: a value above
+      // white would otherwise be matted from a number the file cannot carry
+      // and land somewhere other than 255.
+      const float display = encoded > 1.0f ? 1.0f : (encoded >= 0.0f ? encoded : 0.0f);
+      // **The merged composite is matted on white.** See io/PsdExport.hpp's
+      // "The matte nobody documents" -- the merged Image Data Section is a
+      // PREVIEW, and every reader of one un-mattes it from white. A per-LAYER
+      // channel is NOT matted; do not copy this line into one.
+      planes[c][i] = quantize8(display * a + (1.0f - a));
     }
-    // Alpha is opacity, not light: quantised, never gamma-encoded, and
-    // clamped without a warning (io/PsdExport.hpp says why).
-    planes[3][i] = quantize8(px[3]);
   }
 
   // --- PackBits, one row at a time ---------------------------------------

@@ -163,14 +163,18 @@ bool runPsdExportTest() {
   };
 
   {
-    // Nothing was painted at (0,0), so it is transparent black in all four
-    // planes -- the value core/Tile gives an untouched texel, all the way
-    // through the flatten's `a <= 0 -> {0,0,0,0}` guard.
-    check(plane(0, 0, 0) == 0 && plane(1, 0, 0) == 0 && plane(2, 0, 0) == 0 &&
+    // Nothing was painted at (0,0), so it is transparent -- and the merged
+    // composite is a PREVIEW matted on white, so the colour bytes there are
+    // 255 and not 0. That is the thing docs/psd-export.md does not mention and
+    // that a reading of our own importer could not have found (it never reads
+    // the merged section at all); io/PsdExport.hpp records the two independent
+    // readers the claim rests on. A straight-RGB writer puts 0,0,0,0 here.
+    check(plane(0, 0, 0) == 255 && plane(1, 0, 0) == 255 && plane(2, 0, 0) == 255 &&
               plane(3, 0, 0) == 0,
-          "psd export: an unpainted texel is transparent black in every plane");
+          "psd export: an unpainted texel is WHITE at alpha 0 -- the matte");
     // And the last pixel of the last row really is where it was written --
-    // the check a transposed width/height or a short row table fails.
+    // the check a transposed width/height or a short row table fails. Opaque,
+    // so the matte term is zero and this is the same byte either way.
     check(plane(0, 4, 2) == 255 && plane(1, 4, 2) == 255 && plane(2, 4, 2) == 255 &&
               plane(3, 4, 2) == 255,
           "psd export: opaque white lands at the last pixel of the last row");
@@ -198,24 +202,40 @@ bool runPsdExportTest() {
   // tile STORES the premultiplied (0.5, 0.25, 0.125, 0.5). The file must carry
   // the straight values back:
   //
-  //   R: srgbEncode(1.00) -> 255      a premultiplied writer would put 188
-  //   G: srgbEncode(0.50) -> 188      a premultiplied writer would put 137
-  //   B: srgbEncode(0.25) -> 137      a premultiplied writer would put  99
-  //   A:            0.50  -> 128
+  // Straight, then matted on white against the alpha byte the file carries
+  // (a8 = 128/255 = 0.501961), which is what the merged composite stores:
   //
-  // Every one of the three differs from its premultiplied counterpart, and the
-  // three differ from each other -- so this single texel also fails a writer
-  // that swapped two planes or emitted one plane twice.
+  //          straight  encoded  stored = e * a8 + (1 - a8)   premultiplied
+  //   R          1.00    1.000                        255             188
+  //   G          0.50    0.735                        221             137
+  //   B          0.25    0.537                        196              99
+  //   A          0.50        -                        128             128
+  //
+  // Every one of the three differs from its premultiplied counterpart AND from
+  // its unmatted one, and the three differ from each other -- so this single
+  // texel fails a premultiplying writer, an unmatted writer, and a writer that
+  // swapped two planes or emitted one plane twice.
   {
-    check(plane(0, 2, 1) == 255, "psd export: a half-transparent texel's R is straight (255)");
-    check(plane(1, 2, 1) == 188, "psd export: a half-transparent texel's G is straight (188)");
-    check(plane(2, 2, 1) == 137, "psd export: a half-transparent texel's B is straight (137)");
+    check(plane(0, 2, 1) == 255, "psd export: a half-transparent texel's R is 255");
+    check(plane(1, 2, 1) == 221, "psd export: a half-transparent texel's G is matted (221)");
+    check(plane(2, 2, 1) == 196, "psd export: a half-transparent texel's B is matted (196)");
     check(plane(3, 2, 1) == 128, "psd export: a half-transparent texel's alpha is 128");
-    // The independently-computed forms of the three, so the literals above are
-    // checkable rather than merely stated.
+    // The independently-computed forms, so the literals above are checkable
+    // rather than merely stated -- and so the premultiplied bytes this must
+    // NOT produce are spelled out in the same arithmetic.
+    const float a8 = 128.0f / 255.0f;
+    check(static_cast<int>((srgbEncode(0.5f) * a8 + 1.0f - a8) * 255.0f + 0.5f) == 221 &&
+              static_cast<int>((srgbEncode(0.25f) * a8 + 1.0f - a8) * 255.0f + 0.5f) == 196,
+          "psd export: the matte arithmetic recomputes 221 and 196 here");
     check(static_cast<int>(srgbEncode(0.25f) * 255.0f + 0.5f) == 137 &&
               static_cast<int>(srgbEncode(0.125f) * 255.0f + 0.5f) == 99,
-          "psd export: 0.25 straight is 137 and 0.125 premultiplied would be 99");
+          "psd export: premultiplied would have been 137 and 99, and is neither");
+    // And the inverse a reader actually applies, on the bytes actually
+    // written: psd-tools' `(c + a - 1) / a`. It must recover the straight
+    // encoded value to within the one rounding of `c`, which is 1/255 = 0.004.
+    const float recovered = (static_cast<float>(plane(1, 2, 1)) / 255.0f + a8 - 1.0f) / a8;
+    check(std::fabs(recovered - srgbEncode(0.5f)) < 0.005f,
+          "psd export: a reader's un-matte recovers the straight value");
   }
 
   // --- E. Refusals are total ---------------------------------------------

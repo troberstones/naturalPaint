@@ -23,6 +23,7 @@
 #include "app/AbrReport.hpp"
 #include "app/Batch.hpp"
 #include "app/ProfileToggle.hpp"
+#include "app/PsdExportCli.hpp"
 #include "app/PsdReport.hpp"
 #include "app/DabLibrary.hpp"
 #include "app/BrushSheet.hpp"
@@ -1651,6 +1652,13 @@ int main(int argc, char** argv) {
   // every hidden layer shown, a blend key quietly downgraded -- and none of
   // them is visible from a canvas.
   const char* psdReportPath = nullptr;
+  // --psd-export <out.psd> : write a synthesised document through io/PsdExport
+  // and, beside it, the SAME document as an 8-bit sRGB PNG through io/Export's
+  // existing encoder. Headless. This exists so an external reader (psd-tools)
+  // can judge the PSD against a reference this project's PSD code had no hand
+  // in -- see app/PsdExportCli.hpp for why a round trip through our own
+  // importer cannot answer that question.
+  const char* psdExportPath = nullptr;
   // --profile-toggle <file.psd> <layer-index> <iterations> : headless
   // benchmarking scaffold, see app/ProfileToggle.hpp. Temporary.
   const char* profileTogglePath = nullptr;
@@ -1710,6 +1718,8 @@ int main(int argc, char** argv) {
       if (i + 1 < argc) abrReportPath = argv[++i];
     } else if (a == "--psd-report") {
       if (i + 1 < argc) psdReportPath = argv[++i];
+    } else if (a == "--psd-export") {
+      if (i + 1 < argc) psdExportPath = argv[++i];
     } else if (a == "--profile-toggle") {
       if (i + 1 < argc) profileTogglePath = argv[++i];
       if (i + 1 < argc) profileToggleLayer = std::atoi(argv[++i]);
@@ -2376,6 +2386,7 @@ int main(int argc, char** argv) {
   // the GPU path does.
   if (abrReportPath != nullptr) return np::runAbrReport(abrReportPath);
   if (psdReportPath != nullptr) return np::runPsdReport(psdReportPath);
+  if (psdExportPath != nullptr) return np::runPsdExportDemo(psdExportPath);
   if (profileTogglePath != nullptr)
     return np::runProfileToggle(profileTogglePath, profileToggleLayer, profileToggleIterations);
   if (abrKeysPath != nullptr) return np::runAbrKeyCensus(abrKeysPath);

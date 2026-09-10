@@ -31,6 +31,7 @@ add_executable(naturalPaint
   app/PenTool.cpp
   app/VectorStyle.cpp
   app/TextTool.cpp
+  app/PsdExportCli.cpp
   app/PsdReport.cpp
   app/SvgReport.cpp
   app/ProfileToggle.cpp

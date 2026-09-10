@@ -93,17 +93,81 @@
 // **Alpha is opacity, not light: it is never gamma-encoded**, only scaled and
 // quantised. Same rule io/ImageDecode.hpp and core/Probe.hpp already hold.
 //
-// **Alpha is straight (unassociated).** This was CHECKED, not assumed:
-// `flattenDocumentToLinear()` (io/Export.cpp:150) composites in premultiplied
-// space and then calls `unpremultiply()` over every texel before returning, so
-// what it hands back is ALREADY straight -- `DecodedImage`'s stated contract.
-// This module therefore un-premultiplies nothing; a second division here would
-// straighten an already-straight image and wash out every translucent pixel.
-// The `a <= 0 -> {0,0,0,0}` guard lives in core/Premultiply.hpp, upstream of
-// here, which is where the divide-by-zero is already handled. io/Export.cpp:55
-// (`formatWantsAssociatedAlpha`) names EXR as the one format that wants the
-// premultiplied form; PSD is not it, and this module reuses that convention
-// rather than inventing a second one.
+// **Alpha is straight (unassociated), never premultiplied.** This was CHECKED,
+// not assumed: `flattenDocumentToLinear()` (io/Export.cpp:150) composites in
+// premultiplied space and then calls `unpremultiply()` over every texel before
+// returning, so what it hands back is ALREADY straight -- `DecodedImage`'s
+// stated contract. This module therefore un-premultiplies nothing; a second
+// division here would straighten an already-straight image and wash out every
+// translucent pixel. The `a <= 0 -> {0,0,0,0}` guard lives in
+// core/Premultiply.hpp, upstream of here, which is where the divide-by-zero is
+// already handled. io/Export.cpp:55 (`formatWantsAssociatedAlpha`) names EXR as
+// the one format that wants the premultiplied form; PSD is not it, and this
+// module reuses that convention rather than inventing a second one.
+//
+// --- The matte nobody documents, and which changes the RGB bytes ----------
+//
+// **docs/psd-export.md does not mention this and it is the one thing in the
+// Image Data Section that a reading of io/PsdImport.cpp could not have found**
+// -- our reader does not read the merged composite at all (a flat PSD goes to
+// the OpenImageIO fallback), so inverting the reader says nothing about it.
+//
+// The merged Image Data Section is a **preview**, not the document, and
+// Photoshop writes it **composited over white**. The alpha channel still
+// carries real, straight opacity; the three colour channels carry
+//
+//     stored = straight * a + 1 * (1 - a)
+//
+// which is why a transparent PSD opened by anything that ignores the alpha
+// channel shows WHITE where it is empty, not black. That is the behaviour
+// everyone has seen and nobody writes down.
+//
+// **The evidence, since none of this project's three real Photoshop files can
+// settle it** -- all three have a fully opaque composite (two carry only three
+// composite channels; the third is 12,795,000 opaque pixels and not one
+// partial), so the corpus is silent and the claim rests on readers instead:
+//
+//   * psd-tools 1.19.0 un-mattes unconditionally. `numpy_io._remove_background()`
+//     computes `(color + alpha - 1) / alpha` for every RGB document whose
+//     merged data has a fourth channel, under the docstring "ImageData preview
+//     is rendered on a white background". A reader that did that to a straight
+//     composite would corrupt every transparent Photoshop file it opened, and
+//     psd-tools is the tool this project already trusts as its PSD oracle.
+//   * ImageMagick exposes the same assumption as a switch, `psd:alpha-unblend`,
+//     **on by default** -- an option that exists only because un-blending from
+//     white is what its reader does unless told not to.
+//
+// Two independent readers, neither of them ours, both default to undoing a
+// white matte. So the writer applies one. Writing straight RGB here instead
+// would produce a file that opens with dark fringes on every soft edge in
+// psd-tools, in ImageMagick, and in anything sharing their assumption -- the
+// exact shape of "opens without an error and is confidently wrong" that
+// docs/psd-import-gaps.md catalogues on the reading side.
+//
+// Two details that make the inverse exact rather than approximate:
+//
+//   * The matte uses the **quantised alpha byte**, not the float it came from.
+//     A reader has only the byte; matting with `a8 = A / 255` means its
+//     `(c + a8 - 1) / a8` recovers the encoded value this writer had, to within
+//     the single rounding of `c` itself. Matting with the float would add a
+//     second, invisible one.
+//   * The matte is applied in the **encoded** (sRGB) domain, not in linear
+//     light -- which is where those readers invert it, and which is also where
+//     Photoshop composites an 8-bit document by default ("Blend RGB Colors
+//     Using Gamma 1.0" is off out of the box). A linear-light matte would be
+//     more defensible physics and would not round-trip through either reader.
+//
+// **A fully transparent texel therefore stores white**, `255,255,255,0`. Both
+// readers above guard their divide at `a > 0` and leave those bytes alone, so
+// the value is a preview colour and nothing recovers a colour from it -- the
+// same "nothing stored it and nothing can recover it" that core/Premultiply.hpp
+// already says about premultiplied alpha 0.
+//
+// **A per-LAYER channel is NOT matted.** psd-tools' `get_layer_data()` has no
+// `_remove_background()` call and never had one: layer channels are the
+// document, the merged section is the preview, and only the preview is matted.
+// `writeMergedImageData()` below is exposed for a tier 2 writer to call for the
+// preview; its matte must not be copied into a layer's channel block.
 //
 // --- Clipping is a warning with a number in it ----------------------------
 //
