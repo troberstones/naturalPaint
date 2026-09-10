@@ -213,18 +213,29 @@ bool runBatchTest() {
 
     // **The case string equality already handles is the easy one.** These
     // spell the same directory three other ways.
+    //
+    // Reported through `check()` like everything else. An earlier version
+    // printed its own "FAIL" line inside the loop and then closed with
+    // `check(true, ...)`, which prints **pass** whatever the loop found -- a
+    // reader scanning the output saw a green line above a red one, and the
+    // house `' pass$'` / `' FAIL$'` counting convention (which anchors at end
+    // of line) missed the failures entirely. It cost a wrong sabotage tally
+    // before it was noticed.
+    size_t oddRefused = 0;
+    std::string oddStillAllowed;
     for (const std::string& spelling :
          {root + "/in/.", root + "/./in", root + "/out/../in"}) {
       BatchRequest odd = r;
       odd.outputDirectory = spelling;
-      const BatchReport oddReport = planBatch(odd);
-      if (oddReport.error.empty()) {
-        std::printf("  %-58s FAIL   (%s)\n", "collision: a differently spelled output dir refuses",
-                    spelling.c_str());
-        ok = false;
+      if (planBatch(odd).error.empty()) {
+        if (oddStillAllowed.empty()) oddStillAllowed = spelling;
+      } else {
+        ++oddRefused;
       }
     }
-    check(true, "collision: '/in/.', '/./in' and '/out/../in' all refuse too");
+    if (!oddStillAllowed.empty())
+      std::printf("     (this spelling was allowed through: %s)\n", oddStillAllowed.c_str());
+    check(oddRefused == 3, "collision: '/in/.', '/./in' and '/out/../in' all refuse too");
 
     // **The case a per-item check would miss**: neither file's output is its
     // own input, so a rule that only compared item i's output against item
