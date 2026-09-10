@@ -63,6 +63,7 @@
     { "key": "W", "action": "tool_magic_wand" },
     { "key": "C", "action": "tool_crop" },
     { "key": "S", "action": "tool_clone_stamp" },
+    { "key": "J", "action": "tool_heal" },
     { "key": "E", "action": "tool_eraser" },
     { "key": "G", "action": "tool_gradient" },
     { "key": "G", "mods": ["Shift"], "action": "tool_paint_bucket" },

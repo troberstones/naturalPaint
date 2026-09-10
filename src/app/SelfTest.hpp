@@ -517,6 +517,18 @@ bool runFlatsExpandTest();
 // what the staleness signature covers, and the bake's three source modes.
 bool runFlatsSourceTest();
 
+// core/StrokesContent + brush/StrokesLayer + io/StrokesSerial -- the
+// `LayerKind::Strokes` substrate (PLAN.md phase 8). The dab record and its
+// bounds, the spatial index over those bounds (asserted as a GRID rather
+// than only as a correct answer -- a degenerate one-bucket index answers
+// every query right and is a linear scan wearing the name), the
+// samples-only-from-below rule and PRD D6's regrade tracking, the checkpoint
+// replay of section 2 (asserted through the mechanism, since checkpointed
+// and from-scratch replays produce identical pixels by construction), the
+// `np:dabs` round trip, PRD C11's rasterise and PRD F11's record deletion.
+// Headless and GPU-free.
+bool runStrokesLayerTest();
+
 bool runToolSwitchTest();
 
 // app/ToolSwitch -- the spring-loaded Eyedropper: Alt/Option held over a
@@ -994,6 +1006,78 @@ bool runFiltersTest();
 // bilinear reference at an angle that stresses the anisotropic apron formula
 // on both axes at once. Also headless and GPU-free.
 bool runFiltersExtTest();
+
+// ops/Inpaint and Filter > Inpaint (PLAN.md "Phase 8 -- Repair it"; PRD D7's
+// first half, the diffusion one). Headless and GPU-free.
+//
+// **The section exists for one inversion.** Every other pixel op here treats
+// the selection as a BOUND on where a result is blended; inpaint treats it as
+// the HOLE, reads only what is outside it, and refuses an empty one by name
+// rather than running over everything. Getting that backwards produces no
+// crash and no obviously wrong pixel -- it produces a filter that erases the
+// layer, or one that does nothing -- so the inversion is asserted from both
+// ends: a null `Selection*` is refused instead of being read as "no
+// restriction", and two documents differing ONLY inside the hole fill
+// bit-identically.
+//
+// The arithmetic is not re-derived against a second implementation of itself.
+// What is asserted are the properties it was chosen for: every filled texel
+// inside the convex hull of what it read (so the premultiplied invariant
+// survives and no clamp is hiding an overshoot), a constant field filling with
+// exactly that constant to the f16 store's own floor, and a horizontal ramp
+// filling as a monotone ramp rather than as a puddle of its rim's mean.
+bool runInpaintTest();
+// ---------------------------------------------------------------------------
+// PRD D8 / PLAN.md phase 9 ("Tile it"): the two make-tileable pixel ops
+// ---------------------------------------------------------------------------
+//
+// Lighting-gradient removal (ops/Filters.hpp section 10) and offset with wrap
+// (section 4), wired to the Filter menu through app/FilterOps.hpp's
+// `applyRemoveLightingGradient()`/`applyOffset()` and their `preview*` twins.
+//
+// **Deliberately narrow, in `runAdjustmentMenuTest()`'s sense**: the blur is
+// `runBlurTest()`'s, the offset engine's own wrap arithmetic is
+// `runFiltersTest()`'s, and the selection blend, copy-on-write discipline and
+// one-entry history rule are `runFilterMenuTest()`'s, exercised through the
+// very same app/PixelOpBridge.hpp templates. What this section owns is what is
+// new:
+//
+//  A. **The light actually comes out.** A flat texture times a strong linear
+//     lighting ramp, measured in two bands four sigma clear of the canvas
+//     edge: they differ by more than 1.5x before the op and agree within 2%
+//     after it. The ramp is asserted present first, so the second assertion
+//     cannot pass by measuring a flat input.
+//  B. **The re-centred mean**, which is the step PLAN.md:511 names and a naive
+//     implementation forgets. The canvas mean after the op is within 0.2% of
+//     the mean before it; the un-re-centred field's own mean is 1.0 regardless
+//     of the input's exposure, and far from it. Both halves, so the assertion
+//     is proved sensitive rather than merely satisfied.
+//  C. **The statistics rectangle is not the request rectangle.** A request
+//     split in two is bit-identical to the same request made whole -- the seam
+//     invariant a global mean would otherwise break -- and the same half
+//     computed against its OWN mean demonstrably differs, which is the naive
+//     implementation this parameter exists to prevent.
+//  D. **Sigma 0 is the erase, not the identity**, and is refused rather than
+//     clamped: the one filter in the menu whose neutral setting is infinity.
+//     Measured, not argued -- at a near-delta sigma every texel comes out the
+//     same colour.
+//  E. **Offset is an addressing change.** Every output texel is bit-identical
+//     to the one source texel `offsetSourceTexel()` names, and offsetting by
+//     half twice returns the layer bit-identical to the original. `offsetBy
+//     Half()` floors on an odd canvas, so the canonical gesture never asks for
+//     a half-texel shift nothing could honour without resampling.
+//  F. **Offset refuses under a selection**, with `PixelOpRefusal::Selection
+//     Active` -- both the commit and the preview, leaving no history entry and
+//     no changed texel -- and succeeds on the identical request once the
+//     marquee is dropped. A locked layer under a marquee still refuses for the
+//     lock, so the layer-shaped question keeps its place at the front.
+//  G. One history entry named for the op with an exact undo, a refused sigma
+//     recording nothing, and both menu rows present, enabled by
+//     `filterLayerUsable`, `Deferred`, and labelled with the ellipsis their
+//     dialogs promise.
+//
+// Headless and GPU-free, like every ops/ section it sits beside.
+bool runTileableTest();
 
 // core/SelectionMask (PLAN.md "Phase 7 -- Select and paste"; PRD E1, E2, M1).
 // The antialiased coverage store, its constructors, and PRD M1's
@@ -4472,6 +4556,97 @@ bool runPigmentSelectionTest();
 // Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
 // it reads no file at all. Headless and GPU-free; writes no files.
 bool runCloneStampTest();
+// **The Heal tool** (PRD D6, PLAN.md Phase 8): the gradient-domain solve
+// (`ops/Poisson`), the stroke that drives it (`brush/Heal`), the route that
+// makes it reachable (app/StrokeSession §1c), and the registration a new `Tool`
+// value has to reach.
+//
+// **This section exists because a heal that is only a clone passes almost every
+// test a clone passes.** The two tools share a source, an Option+click gesture,
+// a snapshot, a composite and a footprint; the single thing that separates them
+// is what happens to the copied values on the way. So the load-bearing
+// assertions here are *comparative*: the same fixture, the same offset and the
+// same tip run through both engines, with the clone's answer printed beside the
+// heal's, so an implementation that had quietly become a second clone stamp
+// cannot pass.
+//
+// What this section proves:
+//
+//  - **The solver is checked against analytic answers rather than a recorded
+//    fixture.** A constant rim comes back as that constant on every interior
+//    cell, bit for bit; a rim carrying a linear ramp is reproduced across the
+//    interior, because a linear function is harmonic; and over a rim that is
+//    neither, the interior comes back with a five-point Laplacian of zero --
+//    which is the equation itself. This is the standard `app/selftest/Flats.cpp`
+//    holds `flats/Membrane` to with its strip and disc.
+//  - **Two of the patch's claims are EXACT, and that is the point** (`ops/Poisson`
+//    §1). Healing from a region identical to the destination changes not one
+//    bit -- a tool that perturbed the picture by a rounding error per dab would
+//    dirty tiles and re-upload textures through a drag that changed nothing.
+//    Healing from a source that differs by a pure *constant* restores the
+//    destination bit for bit: the one property that separates this tool from
+//    the clone stamp, asserted at zero tolerance rather than within a
+//    convergence bound a cycle count could move.
+//  - **Both halves of the gradient-domain promise, separated.** Over a source
+//    with a different texture *and* a different mean, the answer carries the
+//    SOURCE's Laplacian everywhere inside (the half a clone also keeps) and
+//    sits at the DESTINATION's level (the half it does not) -- the second
+//    measured against the copy's own seam. The border ring comes back as the
+//    destination bit for bit because it is the Dirichlet condition, and a 2x2
+//    patch with no interior at all is a legitimate input rather than an error.
+//  - **What the solve may hand back is not what may be stored**: an alpha
+//    driven above 1 is clamped, negative light is clamped while light above 1
+//    is left alone (a working-space value over 1 IS a measurement), and a texel
+//    driven to zero coverage carries no colour -- premultiplied storage means
+//    leaving it behind would manufacture the malformed texel the clone's own
+//    rule refuses to launder.
+//  - **One dab over a linear ramp at a horizontal offset leaves the layer
+//    bit-identical**, because a shifted ramp differs from the original by a
+//    constant and there is nothing to repair -- with the clone stamp on the
+//    identical fixture at the identical offset moving every one of those
+//    texels, which is what makes the first claim about the solve rather than
+//    about a stroke that failed to run.
+//  - **The source is the PRE-STROKE SNAPSHOT** (`brush/Heal` §2), proven
+//    directly: the live store's source region is overwritten *after*
+//    `begin()`, and the dab is unaffected -- with the negative half asserted
+//    too, since "identical" over two untouched fixtures is no claim at all.
+//  - **The selection bounds what is WRITTEN and not what is SOLVED** (PRD E1):
+//    a texel outside the ants is bit-identical after a dab that crossed it,
+//    while one inside was healed -- the gate is a gate and not an off switch.
+//  - **Healing nothing costs nothing, and healing FROM nothing does not** --
+//    `brush/Heal` §4, the one place this tool deliberately parts company with
+//    `brush/CloneStamp` §4. Forty dabs of blank-on-blank allocate not one tile
+//    (the correction over an all-zero rim is exactly zero, so this is
+//    arithmetic and not an optimisation), but an empty source *into* paint
+//    fills the hole with that paint: an inpaint, which is the answer the
+//    equation actually gives and what a spot heal over featureless paint does.
+//  - **Opacity is a per-stroke ceiling** -- thirty scrubbed dabs stop exactly
+//    at it, asserted on the accumulator rather than on the binary16 texel it
+//    produced -- and **the paper tooth reaches this route**, asserted by
+//    running the grain rather than by reading the table that says it should.
+//  - **The routing table's Heal rows**, including the ones that are decisions:
+//    its own route rather than a flag on the clone's, a Pigment layer refusing
+//    by name while still taking the brush, no layer at all being None and not
+//    PaintSim, a locked layer refusing, an ALPHA-LOCKED one not, a mask target
+//    refusing, and a history label that is its own noun -- two tools sharing a
+//    source, a gesture and a composite must not share a row in the panel.
+//  - **The registration a new `Tool` value has to reach** (docs/spec §2):
+//    implemented *through* the canvas-handler probe with no recorded exception,
+//    carrying docs/shortcuts.md's reserved `J`, sharing palette slot 7 with the
+//    Clone Stamp as a flyout sibling whose cell still draws the Clone Stamp,
+//    the cursor derived beside the clone's rather than from a second opinion,
+//    and the Option+click gesture reaching it through `toolUsesCloneSource()`
+//    -- a predicate, not a list at the three call sites that read it.
+//  - **The gesture end to end**: a heal with no source refuses out loud and
+//    names ITSELF rather than the clone stamp it shares an anchor with, moving
+//    no texel and recording no undo step; and with a source set, the whole
+//    stroke is one entry labelled "heal", the offset is latched into the heal
+//    engine with the clone engine left holding nothing, and the snapshot is
+//    dropped at pen-up.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
+// it reads no file at all. Headless and GPU-free; writes no files.
+bool runHealTest();
 
 // PLAN.md Phase 5 step 11 ("Multi-select, align and distribute, colour labels,
 // linking, panel filtering"; PRD C12 (P0), C13 (P1), C15 (P2)).
@@ -5336,6 +5511,36 @@ bool runSaveReadbackTest();
 //    both directions asserted, since missing a field on the way IN and
 //    resetting one that should stay put on the way OUT are equally real bugs.
 bool runZoomAndSizeTest();
+
+// ---------------------------------------------------------------------------
+// PRD D8 / PLAN.md Phase 9: the 3x3 repeat preview -- `app/TilePreview` plus
+// the View-menu item and dispatch that reach it. Headless and GPU-free.
+// Covers:
+//  - `tilePreviewTiles()`: ONE copy with the preview off (so the canvas
+//    block's draw loop with it off is the single-quad path it replaced, not
+//    a second arrangement), nine with it on, each of the -1..1 grid exactly
+//    once, and the document queued LAST so no repeat can cover it.
+//  - `tilePreviewSpan()`/`tilePreviewField()`: the divisor fit-to-window
+//    uses, and the rectangle the drop shadow goes behind -- the document's
+//    own rectangle with the preview off, the centred 3x3 block with it on.
+//  - The tiling property itself, through the real `app/ViewTransform` and
+//    under zoom/rotation/mirror: adjacent copies share their edge exactly,
+//    and the nine together fill exactly the field the shadow is drawn behind.
+//    A gap here would draw a seam into a document that has none, which is
+//    the one lie this feature must not tell.
+//  - `setTilePreview()`: the view is saved on the way in and given back on
+//    the way out, mirror/rotation/grayscale flipped INSIDE the preview
+//    survive leaving it, re-entering a preview that is already on does not
+//    overwrite the saved view, and a pending Fit to Window is never swallowed.
+//  - The menu, through `performMenuAction()` itself rather than a copy of
+//    its switch: the item is a Check, appears once, ticks from
+//    `MenuContext::tilePreview` both ways, and does not write the grayscale
+//    preview's flag.
+// Not reachable from here: the canvas block that hands the nine quads to
+// `addCanvasQuad()` (F4). `runPresentTransferTest()` owns that call's transfer
+// function, and `tools/golden/run_golden.sh`'s `tile_preview` view is what
+// would notice a quad dropped past `kMaxQuads`.
+bool runTilePreviewTest();
 
 // ---------------------------------------------------------------------------
 // naturalPaint canvasdim bug fix: app/ZoomAndSize.hpp's `canvasDimensionsFor()`

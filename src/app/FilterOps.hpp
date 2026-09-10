@@ -8,6 +8,7 @@
 #include "ops/Blur.hpp"
 #include "ops/DocumentTransform.hpp"
 #include "ops/Filters.hpp"
+#include "ops/Inpaint.hpp"
 
 // app/FilterOps -- the wiring bridge for the Filter and Image menus
 // (docs/reachability-audit.md C1: "~93 entry points... no UI path to any of
@@ -205,6 +206,70 @@ FilterOpResult applyMedian(OpenDocument& doc, const MedianParams& params);
 FilterOpResult applyMotionBlur(OpenDocument& doc, const MotionBlurParams& params);
 
 // ==========================================================================
+// Inpaint, and the one place this header's own selection rule is inverted
+// ==========================================================================
+//
+// PLAN.md phase 8 / PRD D7's first half: ops/Inpaint's diffusion fill for
+// scratches and dust. It runs through the identical `applyPixelFilter()`
+// machinery as the ten ops above -- same `PixelOpRefusal` vocabulary, same
+// whole-canvas rectangle, same `compositeFilterResult()` blend, same
+// one-history-entry-only-when-something-changed rule -- because
+// `inpaintTiles()` shares the engine signature app/PixelOpBridge.hpp is
+// written against, and an op that shares that shape has no business getting a
+// second, hand-copied wiring function.
+//
+// **What is different is upstream of all of that.** This header's section
+// "why the selection is honoured by COMPOSITING" says the selection is a
+// *bound*: the engine runs everywhere, and the blend decides where the result
+// lands. Inpaint reads the same selection as the **hole to fill** -- the
+// texels whose data is wrong and must not be read, filled from data outside
+// them. ops/Inpaint.hpp section 1 is the full argument; the wiring
+// consequence is that the engine and the composite must be told about the
+// SAME selection. If those two ever disagree, the part of the hole the
+// composite covers and the part the engine filled stop lining up, and the
+// result reads as a weak filter rather than as broken wiring.
+//
+// **That is why these two take a radius and nothing else.** Every other
+// `applyX()` here takes the engine's own params struct precisely so that the
+// dialog's struct and the engine's are one object; this pair does the
+// opposite and keeps `InpaintParams` out of the caller's hands, because the
+// field that could drift is not a number a user typed -- it is
+// `doc.selection`, which these functions already hold and which a caller has
+// no reason to be trusted to supply. There is exactly one expression in this
+// build that fills in `InpaintParams::hole`, and it is inside the same
+// function that hands `doc` to `applyPixelFilter()`.
+//
+// **The empty-selection refusal is real, and it is not `texelsChanged == 0`.**
+// For every other op an absent selection means "no restriction" and the
+// filter covers the whole layer; for inpaint it would mean "the whole layer
+// is damage". So it refuses by name -- `PixelOpRefusal::NoSelection`, which
+// app/StrokeSession.hpp declares beside the three layer-shaped reasons -- and
+// not with a success that changed nothing, which no dialog can tell apart
+// from an identity request.
+//
+// The layer refusals are consulted **first**, so a locked layer with no
+// selection refuses for the lock. That is `pixelOpRefusalFor()`'s own
+// ordering argument applied one step further out: name the problem the user
+// can act on most directly, and a lock is a switch in LAYERS where "no
+// selection" is a whole gesture on the canvas.
+//
+// `radius` is Telea's `eps` in texels and goes straight to
+// `InpaintParams::radius`; an out-of-range value is refused by
+// `inpaintParamsValid()` before the engine does anything, exactly as
+// `blurParamsValid()` refuses a negative sigma.
+FilterOpResult applyInpaint(OpenDocument& doc, int32_t radius);
+
+// Why an inpaint would refuse, without running one -- the three layer-shaped
+// reasons and `NoSelection`, in the order `applyInpaint()` applies them.
+// `PixelOpRefusal::None` means it would run.
+//
+// Exposed rather than left inside `applyInpaint()` so the chrome can say why
+// the item is unavailable without computing a fill to find out, and so
+// `--selftest` can assert the ordering directly instead of inferring it from
+// two separate results.
+PixelOpRefusal inpaintRefusal(const OpenDocument& doc);
+
+// ==========================================================================
 // Live preview (docs/testing-issues.md T15)
 // ==========================================================================
 //
@@ -252,6 +317,108 @@ FilterOpResult previewMedian(const OpenDocument& doc, const MedianParams& params
                              TileStore* previewOut);
 FilterOpResult previewMotionBlur(const OpenDocument& doc, const MotionBlurParams& params,
                                  TileStore* previewOut);
+
+// Inpaint's preview, and the reason it matters more here than for the ten
+// above: a diffusion fill has no dial a user can predict the result of. A
+// sigma of 8 is legibly twice a sigma of 4, whereas "radius 5" says nothing
+// at all about whether a scratch will disappear -- the only useful answer is
+// the picture. So this is the same `previewX()` shape and, exactly like its
+// siblings, shares its engine call and its composite step with `applyInpaint()`
+// through `computePixelFilter()`, so the preview and the commit cannot pick
+// different holes.
+FilterOpResult previewInpaint(const OpenDocument& doc, int32_t radius, TileStore* previewOut);
+// ==========================================================================
+// PRD D8 / PLAN.md phase 9 -- the two make-tileable pixel ops
+// ==========================================================================
+//
+// PRD D8 asks for four pieces: "lighting-gradient removal, offset, seam heal,
+// and a 3x3 repeat preview". These are the two that are pixel ops on the
+// active layer, and they are wired through the identical
+// `applyPixelFilter()`/`computePixelFilter()` pair as everything above --
+// same refusal vocabulary, same whole-canvas-then-composite shape, same
+// preview-and-commit-share-one-implementation argument. Seam heal and the
+// repeat preview are not here and are not stubbed: `ui/MenuModel.hpp`'s own
+// rule is that an operation with no engine behind it stays out of the menu.
+//
+// **Both need a rectangle the engine cannot infer**, and it is the same
+// rectangle for a different reason each time: `ops/Filters.hpp` section 4's
+// wrap needs a modulus and section 10's re-centring needs a population. Both
+// are the canvas, and this file is where "the canvas" is known -- which is
+// exactly the knowledge `ops/` is kept free of.
+
+// PRD D8's first piece: divide by a heavily blurred copy and re-centre the
+// mean (PLAN.md:511), through `ops/Filters.hpp`'s `removeLightingGradient
+// Tiles()`. `sigma` is the dialog's own field, in document texels, and the
+// statistics rectangle is the canvas.
+//
+// **A sigma of 0 is refused by the engine, not treated as the identity** --
+// section 10 says why at length (at sigma 0 the divide flattens the layer to
+// a single colour), and this is the one op in the Filter menu where the
+// dialog's slider must not reach its own left end. `FilterOpResult` reports
+// that as a zero-texel no-op, the same as any other request the engine could
+// not honour.
+//
+// The selection bounds this op exactly as it bounds every filter above, and
+// that is meaningful here rather than merely inherited: removing the lighting
+// gradient from one marked region of a photograph is an ordinary retouching
+// request. Compare `applyOffset()` below, which refuses under a selection for
+// the opposite reason.
+FilterOpResult applyRemoveLightingGradient(OpenDocument& doc, float sigma);
+FilterOpResult previewRemoveLightingGradient(const OpenDocument& doc, float sigma,
+                                             TileStore* previewOut);
+
+// PRD D5/D8's offset, `docs/operations.md:117`'s class B, P1, "free -- an
+// addressing change, no filtering". What the dialog collects; the wrap
+// rectangle is not in here because the canvas is not the dialog's to know.
+struct OffsetRequest {
+  int32_t dx = 0;
+  int32_t dy = 0;
+  OffsetEdge edge = OffsetEdge::Wrap;
+};
+
+// The canonical make-tileable gesture: offset by half the canvas, which puts
+// the four corners in the middle where the seam can be seen and healed.
+//
+// **Exactly `floor(w/2)`, `floor(h/2)`, in whole texels**, which is the whole
+// point of the op being an addressing change: an offset that resampled -- by
+// half a texel on an odd-sized canvas, say, or through a transform's filter
+// -- would soften every texel in the document on the way to fixing a seam,
+// and would do it twice for a user who offsets back. Integer division of a
+// non-negative extent is floor, and the extent is `uint32_t` in the document,
+// so this cannot pick up C's round-toward-zero anywhere.
+PixelCoord offsetByHalf(const OpenDocument& doc) noexcept;
+
+// Why an offset cannot run, or `None`.
+//
+// **The layer-shaped refusals first**, from `pixelOpRefusalFor()`, exactly as
+// every other op here asks them -- then the one this op has that no filter
+// above does: `PixelOpRefusal::SelectionActive`.
+//
+// **The decision, stated rather than left to the composite.** Every filter
+// above is bounded by the selection because "sharpen this region" is a
+// request with an obvious meaning. "Offset this region" is not one. Run
+// through the same machinery, an offset under a selection composites the
+// wrapped picture back only inside the marquee and leaves the rest where it
+// was -- a torn document, with the seam the op exists to remove now drawn
+// around the selection instead of down the middle. The alternatives are to
+// silently ignore the selection (an op that quietly does not honour a
+// marquee the user drew, in a menu where six of its neighbours do) or to
+// wrap within the selection's own bounds (Photoshop's answer, and a fourth
+// meaning of "wrap" in one build). So it refuses, and the message says so.
+//
+// A selection that is *present* is enough; its coverage is not inspected.
+// Select All is indistinguishable from no selection in its effect and would
+// be safe to allow, but "is this selection equivalent to none" is a question
+// with a soft-edged answer, and one sentence with one fix in it ("deselect
+// first") is worth more than a rule the user has to model.
+PixelOpRefusal offsetRefusalFor(const OpenDocument& doc) noexcept;
+
+// PRD D8's second piece, through `ops/Filters.hpp`'s `offsetTiles()`, with
+// `OffsetParams::wrapRect` set to the canvas. Refuses per
+// `offsetRefusalFor()` above before the engine is asked for anything.
+FilterOpResult applyOffset(OpenDocument& doc, const OffsetRequest& request);
+FilterOpResult previewOffset(const OpenDocument& doc, const OffsetRequest& request,
+                             TileStore* previewOut);
 
 // What one Image-menu document op did. `error` is `ops/DocumentTransform`'s
 // own message (naming the extent or the layer count that refused it) and is

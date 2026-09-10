@@ -8,6 +8,7 @@
 #include "core/Mask.hpp"
 #include "core/OpStack.hpp"
 #include "core/Pigment.hpp"
+#include "core/StrokesContent.hpp"
 #include "core/TextContent.hpp"
 #include "flats/Model.hpp"
 #include "core/TileStore.hpp"
@@ -45,9 +46,19 @@
 // beneath the layer into tiles the compositor reads -- the `Text` path with a
 // segmenter where the shaper was.
 //
-// Media and Strokes are still inert placeholders: Media needs the fluid
-// solver's own per-medium state on top of the pigment tiles step 3 added, and
-// Strokes still has no parameter member to hold.
+// **`Strokes` followed at PLAN.md phase 8**, on the same shape a fifth time:
+// the `strokes` member below holds a list of DAB RECORDS -- a dab the
+// document keeps rather than spends -- and brush/StrokesLayer evaluates them
+// against the composite beneath the layer into tiles the compositor reads.
+// The `Flats` path with a dab replay where the segmenter was, and with one
+// property neither of the four before it has: a dab may sample from BELOW its
+// own layer (core/StrokesContent §2), so a regrade underneath changes what it
+// reproduces (PRD D6) -- which is the whole reason the kind cannot simply
+// hold pixels.
+//
+// Media is the last inert placeholder: it needs the fluid solver's own
+// per-medium state on top of the pigment tiles step 3 added, and nothing here
+// holds it.
 namespace np {
 
 // LayerKind lives here, not in app/Keymap.hpp where it was first sketched --
@@ -413,6 +424,25 @@ struct Layer {
   // more: a segmentation of a 2K plate is seconds of work, so it is keyed on
   // this member's hash and on what lies beneath, never redone per frame.
   FlatsContent flats;
+
+  // The content of a `LayerKind::Strokes` layer: an ordered list of dab
+  // records and the id allocator that hands out their ids --
+  // core/StrokesContent §1. Default for every other kind, and a non-Strokes
+  // layer never populates it, exactly as `text` and `flats` above.
+  //
+  // By value for `text`'s reason: a Strokes layer with no dabs yet is a real
+  // state -- the state a layer created from the NEW popup is in before
+  // anything has been recorded into it -- and io/NpaintFile always writes
+  // `np:dabs` for the kind, so the state has to be representable.
+  //
+  // **Records, not tiles, and not a rasterised cache beside them.** The
+  // evaluated pixels are DERIVED and live outside the document
+  // (brush/StrokesLayer), for `flats`' and `shapes`' stated reason and one
+  // that is stronger here than for either: a dab may reproduce the composite
+  // BENEATH this layer, so its pixels are not a function of this member alone
+  // and caching them on the layer would cache an answer to a question the
+  // layer cannot ask by itself.
+  StrokesContent strokes;
 
   // The user-facing name. Deliberately NOT unique and deliberately not used
   // to identify anything: docs/document-format.md is explicit that "layer

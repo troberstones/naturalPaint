@@ -221,6 +221,32 @@ CommandCoverage coverageFor(MenuAction action) {
     case MenuAction::ActivateDocument:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "chooses which open document is frontmost -- the session"};
+    // --- PLAN.md phases 8 and 9, merged in after step 2's migration -------
+    //
+    // All three are pixel ops on the active layer, of exactly the shape the
+    // seven `Registered` filters below have, and all three are functions of an
+    // `OpenDocument` alone -- so app/Command.hpp §1's rule puts them IN, and
+    // the only thing between them and a row is the row.
+    //
+    // They are `NotYetRegistered` rather than registered here because
+    // registering one is not one line: it is a runner that reads and validates
+    // the params (app/CommandsImage.cpp), a builder, a row in the table, and
+    // for the two that take a length, an entry in app/Batch.cpp's pixel-unit
+    // list so a recorded radius means the same thing at another resolution.
+    // Doing that inside a merge, untested, is how a step lands in an action
+    // file with a meaning nobody checked.
+    case MenuAction::Inpaint:
+      return {CommandCoverageKind::NotYetRegistered, nullptr,
+              "a document edit and genuinely recordable: PRD D7's diffusion fill, ops/Inpaint through app/PixelOpBridge. It needs a runner for its `radius` and a pixel-unit entry in app/Batch, and one policy decision the other filters do not have -- its selection is the HOLE it fills rather than a bound on the result, so a recorded step must name the selection it acted through, which is the same blocker DeleteSelection is waiting on"};
+    case MenuAction::RemoveLightingGradient:
+      return {CommandCoverageKind::NotYetRegistered, nullptr,
+              "a document edit and genuinely recordable: PRD D8's divide-by-a-blurred-copy. It needs a runner for its `sigma` and a pixel-unit entry in app/Batch -- sigma is in document texels, so a recorded value replayed at another resolution blurs a different fraction of the picture, which is exactly what that list exists to correct"};
+    case MenuAction::Offset:
+      return {CommandCoverageKind::NotYetRegistered, nullptr,
+              "a document edit and genuinely recordable: PRD D8's offset with wrap. It needs a runner for `dx`/`dy`/`edge`, and its by-half default is a FRACTION of the canvas rather than a length -- so the recorded form has to choose between the fraction and the texels it resolved to, and only the fraction survives a change of resolution"};
+    case MenuAction::TilePreview:
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "shows the document tiled 3x3 and changes not one texel of it -- a view, like Toggle Grayscale Preview and Fit Window. The session owns it"};
     case MenuAction::GaussianBlur:
       return {CommandCoverageKind::Registered, "filter_gaussian_blur", nullptr};
     case MenuAction::Sharpen:

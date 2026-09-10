@@ -355,8 +355,16 @@ bool runCommandTest() {
     // core::History and the file, so it is NotRecordable for the reason Undo
     // and Redo are. The two left are `NumericTransform` and `DeleteSelection`,
     // each of which states what it is waiting for.
-    check(notYet == 2,
-          "coverage: exactly the two known gaps, and no new one has appeared");
+    // **Raised 2 -> 5 by the phase 8/9 merge, deliberately and by hand**, which
+    // is the review this header says the number exists to force. The three new
+    // ones are Inpaint, Remove Lighting Gradient and Offset: pixel ops of the
+    // same shape as the seven registered filters, written on a branch that
+    // forked before step 2's migration existed to be written against. Each
+    // states the parameter work it needs, and two of the three state a
+    // resolution-policy question that app/Batch's pixel-unit list is where the
+    // answer goes. None of them is blocked on anything unbuilt.
+    check(notYet == 5,
+          "coverage: exactly the five known gaps, and no new one has appeared");
     check(notRecordable > registered,
           "coverage: most menu actions are session state, which is the rule doing its job");
   }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string_view>
@@ -1005,5 +1006,160 @@ RoiOp motionBlurRoiOp(const MotionBlurParams& p) noexcept;
 
 bool motionBlurTiles(const TileStore& src, const PixelRect& outRect, const MotionBlurParams& p,
                      TileStore* dst);
+
+// ==========================================================================
+// 10. Lighting-gradient removal -- highpass's multiplicative twin
+// ==========================================================================
+//
+// PLAN.md phase 9 ("Tile it") states the method in one clause: "divide by a
+// heavily blurred copy, re-centre the mean". PRD D8 says what it is for -- a
+// photographed texture "needs lighting-gradient removal *before* it can be
+// made tileable" (PRD.md:208) -- and ops/Blur.hpp has named this file's
+// section as one of its four consumers since phase 6: "make-tileable's
+// gradient removal is a blur of the image divided out of itself. One kernel,
+// four features." This is that fourth feature, and it uses that kernel.
+//
+// **Why divide and not subtract.** Section 1's highpass already removes low
+// frequencies, and for a photograph of a lit wall it removes the wrong thing.
+// Illumination is **multiplicative**: the camera records `reflectance *
+// illumination`, so a corner at half the light carries the texture at half
+// its own contrast, not the texture minus a constant. Subtracting a blur
+// re-centres the *level* everywhere and leaves the shaded corner's contrast
+// still halved; dividing by it restores both at once, because
+// `(R*L) / blur(R*L) ~ R / mean(R)` with `L` cancelling exactly to the extent
+// the blur captured it. Two ops, one blur, opposite algebra -- and the
+// difference is visible precisely where this op is meant to be used.
+//
+// **Re-centring is not cosmetic, and it is the step a naive implementation
+// forgets.** After the divide the picture's mean is 1.0 by construction --
+// every texel is "how much brighter than its neighbourhood", which is a ratio
+// field near unity, i.e. a washed-out near-white image no matter what the
+// input's exposure was. So the result is multiplied by a per-channel constant
+// that puts the mean back. **The constant is derived, not estimated**: with
+// `ratio_c(x)` the divided field, the scale that makes the output's sum equal
+// the input's own sum over the statistics rectangle is
+//
+//     k_c = sum(src_c) / sum(ratio_c)
+//
+// which is one division per channel and makes "the mean is preserved" exact
+// (to float rounding and the f16 store's own quantisation) rather than
+// approximately true. The obvious alternative -- multiply by the mean of the
+// blurred copy -- is only approximately mean-preserving, and its error grows
+// with the very gradient the op exists to remove. --selftest asserts the
+// preserved mean directly and asserts that the un-re-centred field's mean is
+// ~1.0 and demonstrably different, so the assertion is proved sensitive
+// rather than merely satisfied.
+//
+// **Re-centring needs a mean, so it needs a rectangle** -- exactly the shape
+// of argument section 4 makes for `OffsetParams::wrapRect` ("wrapping needs a
+// modulus, so it needs a rectangle"). A mean taken over `outRect` would make
+// an output texel's value depend on how the caller sliced its request, which
+// is this file's top-of-header seam invariant in statistics form: the same
+// failure add-noise avoids by being counter-based, and no apron can fix it.
+// So the mean is taken over `statsRect`, a rectangle the CALLER names -- the
+// canvas, normally -- and the result for a given document texel is then
+// identical whether it was asked for alone, as a tile, or as the whole
+// document. The cost is stated rather than hidden: a call whose `statsRect`
+// is larger than its `outRect` gathers and blurs the union of the two, so a
+// tiled evaluator pays the whole-canvas blur on every tile. That is the price
+// of a global statistic and it is why this op is a menu command over the
+// whole canvas rather than a live class-B pass -- `RoiOp` cannot express it
+// and this header does not pretend otherwise.
+//
+// **The divide is per-channel, and on STRAIGHT colour.** Per channel because
+// a lighting gradient is usually chromatic too -- daylight at one end of the
+// wall, a warm bulb at the other -- and a single luminance divisor leaves
+// that colour ramp untouched, which is the half of the defect a tiled repeat
+// shows most. Straight, i.e. `blur_rgb / blur_a`, because the store is
+// premultiplied and a premultiplied divisor falls to zero at the edge of the
+// painted region: ops/Blur.hpp's own guarantee is that RGB and alpha fall
+// *together* there, so un-premultiplying the blurred texel recovers the hue
+// and the divide stays finite where a naive premultiplied one would explode.
+// **Alpha is not touched at all** -- this op changes colour, not coverage,
+// and scaling a premultiplied RGB triple by a per-channel gain is exactly
+// scaling its straight colour by that gain.
+//
+// **Where there is nothing to divide by, nothing happens.** A texel whose
+// blurred neighbourhood has essentially no coverage (`blur_a`) or essentially
+// no light in a channel (below `kLightingGradientFloor`) is passed through
+// unchanged rather than amplified: a black or empty neighbourhood carries no
+// illumination estimate, so there is nothing there for this op to divide out,
+// and inventing a gain from a divisor at the bottom of the format's range is
+// how one texel of an empty corner becomes the brightest thing in the
+// document. Everything else is clamped to `[0, kFilterMaxLinear]` with the
+// same argument sections 5 and 6 make for their own clamps: an unbounded
+// multiplicative gain can overflow the half, and an `inf` in a tile is not a
+// local artifact -- every later blur whose apron reaches it returns `inf` for
+// a whole neighbourhood.
+//
+// **`sigma = 0` is REFUSED, not the identity, and this op is the only one in
+// the file where that is true.** Every other filter here neutralises at zero
+// -- zero radius, zero amount, zero distance -- and reading that convention
+// across to this one inverts it: at `sigma = 0` the "blurred copy" is the
+// image itself, every ratio is exactly 1, and the result is a **flat field**
+// of the re-centring constant. The neutral setting of a divide-by-a-blur is
+// `sigma = infinity`, not zero. A dialog that clamped its slider to 0
+// "harmlessly" would erase the layer, so `lightingGradientParamsValid()`
+// refuses a sigma that is not finite and positive by name, the same way
+// `blurParamsValid()` refuses a negative one rather than clamping it.
+struct LightingGradientParams {
+  // The heavily blurred copy's standard deviation, in document texels. Must
+  // be finite and **strictly positive** -- see above; zero is not the
+  // identity here, it is the erase. Large by intent: the blur has to be wide
+  // enough to hold no texture, only light, so ops/Blur.hpp's own sigma = 32
+  // and sigma = 200 rows are the regime this lives in and its apron table is
+  // the cost.
+  float sigma = 64.0f;
+
+  // The rectangle the re-centring mean is taken over. Required and non-empty:
+  // "the mean" is undefined without it, exactly as "wrap" is undefined
+  // without `OffsetParams::wrapRect`. Normally the canvas. A `statsRect` that
+  // does not contain `outRect` is legal (the mean of one region applied to
+  // another is a coherent request), and is the one case where the two
+  // rectangles' union, not `outRect` alone, drives the gather.
+  PixelRect statsRect{};
+};
+
+// False for a sigma that is not finite and positive, or an empty
+// `statsRect`. Both are refused by name rather than clamped, for
+// `blurParamsValid()`'s reason and for the erase described above.
+bool lightingGradientParamsValid(const LightingGradientParams& p) noexcept;
+
+// The blur this op runs, as a `BlurParams` -- Gaussian at `p.sigma`. Exposed
+// because a test that retyped it would be checking its own copy of the one
+// decision that connects this section to ops/Blur.
+BlurParams lightingGradientBlur(const LightingGradientParams& p) noexcept;
+
+// The apron the divide reads: exactly the blur's own dilation, since the
+// source term is the output texel itself.
+//
+// **This does NOT describe the re-centring's dependence.** `k` is a function
+// of `statsRect`, which is not a neighbourhood of anything and is not
+// expressible as a `RoiOp` -- see the header above. A caller that drives this
+// op from `RoiOp` alone gets the right pixels only because `statsRect` is
+// independent of the request, which is the whole reason it is a parameter.
+RoiOp lightingGradientRoiOp(const LightingGradientParams& p) noexcept;
+
+// The three re-centring constants, one per colour channel, computed over
+// `p.statsRect`.
+//
+// Exposed for `offsetSourceTexel()`'s reason: it is the semantic content of
+// the step the header says implementations forget, and a test that recomputed
+// it from the formula would be asserting against its own arithmetic rather
+// than against the op's. Returns `{1, 1, 1}` for an invalid request or a
+// channel whose divided field summed to nothing -- the one answer that leaves
+// the divide's own result untouched.
+std::array<float, 3> lightingGradientRecentre(const TileStore& src,
+                                              const LightingGradientParams& p);
+
+// The floor below which a channel of the blurred copy carries no usable
+// illumination estimate and the texel is passed through unchanged. Linear
+// light, and deliberately far below anything the f16 store holds as a normal
+// value (its smallest normal is 6.10e-05): the guard exists to catch "there
+// is nothing here", not to reshape values a user can see.
+inline constexpr float kLightingGradientFloor = 1.0e-06f;
+
+bool removeLightingGradientTiles(const TileStore& src, const PixelRect& outRect,
+                                 const LightingGradientParams& p, TileStore* dst);
 
 }  // namespace np

@@ -230,6 +230,12 @@ enum class MenuAction : uint16_t {
   ResetRotation,
   ResetView,
   GrayscalePreview,
+  // PRD D8 / PLAN.md Phase 9: draw the document nine times so its own edges
+  // sit next to each other and a seam becomes visible. A Check, like
+  // `GrayscalePreview` beside it and for the identical reason -- it is a
+  // display state the user leaves on while working, so the menu has to be
+  // able to say whether it is on. `app/TilePreview.hpp` owns what it means.
+  TilePreview,
   Rulers,
   Navigator,
   Guides,
@@ -277,6 +283,27 @@ enum class MenuAction : uint16_t {
   Emboss,
   Median,
   MotionBlur,
+
+  // PLAN.md phase 8 / PRD D7's first half: ops/Inpaint's diffusion fill,
+  // through app/FilterOps.hpp's `applyInpaint()`/`previewInpaint()`.
+  //
+  // **The only Filter item whose enable predicate is not just
+  // `filterLayerUsable`.** Every other one runs on whatever the selection
+  // happens to be, including none; this one reads the selection as the hole
+  // to repair, so with no selection there is nothing for it to do and the
+  // item is disabled rather than clickable-and-inert. `MenuContext`'s
+  // existing `hasEngagedSelection` already answers that question for the
+  // Select menu's refine commands, which need an engaged selection for the
+  // same structural reason, so this needs no new context field.
+  Inpaint,
+  // PRD D8 / PLAN.md phase 9 ("Tile it"): the two make-tileable pixel ops,
+  // through app/FilterOps.hpp's `applyRemoveLightingGradient`/`applyOffset`
+  // and their `preview*` twins. **Two and not four**: D8 also names seam heal
+  // and a 3x3 repeat preview, and this header's own rule above holds -- an
+  // operation with no engine behind it stays out of the menu rather than
+  // appearing and doing nothing.
+  RemoveLightingGradient,
+  Offset,
 
   // --- Image ------------------------------------------------------------
   //
@@ -658,6 +685,7 @@ struct MenuContext {
   bool mirrorX = false;
   bool mirrorY = false;
   bool grayscale = false;
+  bool tilePreview = false;         // AppState::tilePreview.active (PRD D8)
   bool showRulers = false;
   bool showNavigator = false;
   bool showGuides = false;

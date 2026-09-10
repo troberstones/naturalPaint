@@ -356,18 +356,26 @@ bool runAtelierChromeTest() {
     // The tripwire that makes the walk above complete rather than merely long,
     // the same shape app/selftest/Fonts.cpp uses for LayerKind. 29 now, from
     // 28, from 27, from an original 7: the palette rebuild added twenty
-    // slot-only cells, PRD E3's elliptical marquee added one, and
-    // `Tool::PathSelect` (docs/path-editing-plan.md section 3.1) added this
-    // one. Each is a separate Tool value rather than a mode on a sibling
+    // slot-only cells, PRD E3's elliptical marquee added one, and this merge
+    // brought TWO more from two branches at once: `Tool::PathSelect`
+    // (docs/path-editing-plan.md §3.1) and PRD D6's `Tool::Heal` (PLAN.md
+    // Phase 8). Each is a separate Tool value rather than a mode on a sibling
     // because a flyout member IS a Tool value (ui/AtelierChrome's
-    // kToolGroups) and docs/shortcuts.md reserves a chord for each.
+    // kToolGroups) and docs/shortcuts.md reserves a letter row for each
+    // (`M` for "rectangle | ellipse", `J` for Heal).
     //
-    // **29 values, still 28 palette CELLS.** PathSelect joined Pen and
-    // Curve's existing flyout slot, which holds four -- so docs/ui.md section
-    // 2's cell count is untouched, and the count this line guards is the
-    // enum's, not the palette's.
-    check(std::string(toolName(static_cast<Tool>(29))) == "?",
-          "Tool still has exactly 29 values, so the walk above covers all of them");
+    // **30 values, still 28 palette CELLS.** PathSelect joined Pen and
+    // Curve's flyout slot and Heal joined Clone Stamp's, so docs/ui.md
+    // section 2's cell count is untouched by either -- the count this line
+    // guards is the enum's, not the palette's.
+    //
+    // **This literal did not conflict at the merge, and was wrong anyway.**
+    // Both branches moved it from 28 to 29 independently, so git took one 29
+    // and reported no conflict, leaving an assertion that Tool(29) is out of
+    // range on an enum where Tool(29) had become the thirtieth tool. Counted
+    // off the merged enum, not carried over from either side.
+    check(std::string(toolName(static_cast<Tool>(30))) == "?",
+          "Tool still has exactly 30 values, so the walk above covers all of them");
   }
 
   // --- Part F: the tool palette's icons ------------------------------------
@@ -448,11 +456,12 @@ bool runAtelierChromeTest() {
                                       Tool::Eraser,      Tool::PaintBucket,
                                       Tool::Gradient,    Tool::Pencil,
                                       Tool::Dodge,       Tool::Burn,
-                                      Tool::CloneStamp,  Tool::Smudge,
-                                      Tool::Hand,        Tool::Zoom,
-                                      Tool::Move,        Tool::Crop,
-                                      Tool::Pen,         Tool::Curve,
-                                      Tool::Text,        Tool::PathSelect};
+                                      Tool::CloneStamp,  Tool::Heal,
+                                      Tool::Smudge,      Tool::Hand,
+                                      Tool::Zoom,        Tool::Move,
+                                      Tool::Crop,        Tool::Pen,
+                                      Tool::Curve,       Tool::Text,
+                                      Tool::PathSelect};
     bool implementedOk = true;
     for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
       const Tool t = static_cast<Tool>(i);
@@ -462,7 +471,7 @@ bool runAtelierChromeTest() {
       if (toolImplemented(t) != shouldBe) implementedOk = false;
     }
     check(implementedOk,
-          "toolImplemented() is true for exactly the twenty-six tools with real behaviour");
+          "toolImplemented() is true for exactly the twenty-seven tools with real behaviour");
 
     // Every tool has an icon, and toolIconCodepoints() is the deduplicated,
     // sorted union of all of them plus the "More" cell's own ellipsis --

@@ -227,6 +227,7 @@ const std::vector<LayerCommandRow>& layerCommandRows() {
       layerRow<LayerCommand::NewVectorLayer>("new_vector_layer"),
       layerRow<LayerCommand::NewTextLayer>("new_text_layer"),
       layerRow<LayerCommand::NewFlatsLayer>("new_flats_layer"),
+      layerRow<LayerCommand::NewStrokesLayer>("new_strokes_layer"),
       layerRow<LayerCommand::DuplicateLayer>("duplicate_layer"),
       layerRow<LayerCommand::DeleteLayer>("delete_layer"),
       layerRow<LayerCommand::MoveLayerUp>("move_layer_up"),

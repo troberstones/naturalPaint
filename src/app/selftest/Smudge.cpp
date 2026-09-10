@@ -618,20 +618,30 @@ bool runSmudgeTest() {
     // `toolBeginsStroke()` now, and this assertion is what keeps the set it
     // accepts a decision: a sixth stroke tool reddens it, and the author has to
     // answer for the canvas as well as for the route table.
+    //
+    // **It has now fired once, and this is what answering it looked like.**
+    // `Tool::Heal` (PRD D6, `StrokeRoute::Heal`, `brush/Heal`) is the tenth,
+    // and it is here because it satisfies the same three claims the other nine
+    // do: `strokeRouteFor()` gives it a route on a writable RGB layer,
+    // `ui/MacPaintUI.cpp`'s canvas block reaches it through this very
+    // predicate rather than through a name of its own, and its Option+click
+    // source gesture reaches it through `toolUsesCloneSource()` -- which is
+    // itself a predicate rather than a second list, for this line's reason.
     int accepting = 0;
     bool exactly = true;
     for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
       const Tool t = static_cast<Tool>(i);
       const bool want = t == Tool::Brush || t == Tool::Water || t == Tool::DryBrush ||
                         t == Tool::Eraser || t == Tool::Pencil || t == Tool::Dodge ||
-                        t == Tool::Burn || t == Tool::CloneStamp || t == Tool::Smudge;
+                        t == Tool::Burn || t == Tool::CloneStamp || t == Tool::Heal ||
+                        t == Tool::Smudge;
       if (toolBeginsStroke(t) != want) exactly = false;
       if (toolBeginsStroke(t)) ++accepting;
     }
-    check(exactly && accepting == 9,
+    check(exactly && accepting == 10,
           "routing: toolBeginsStroke() accepts EXACTLY Brush, Water, DryBrush, Eraser, Pencil, "
-          "Dodge, Burn, Clone Stamp and Smudge -- the set ui/MacPaintUI's canvas gate now reads "
-          "instead of its own list");
+          "Dodge, Burn, Clone Stamp, Heal and Smudge -- the set ui/MacPaintUI's canvas gate now "
+          "reads instead of its own list");
 
     check(toolBeginsStroke(Tool::Smudge) && toolImplemented(Tool::Smudge) &&
               toolHasCanvasHandler(Tool::Smudge) && !toolDrawsSelection(Tool::Smudge) &&

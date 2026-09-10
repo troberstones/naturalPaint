@@ -18,6 +18,7 @@
 #include "app/PanelLayout.hpp"
 #include "app/PenTool.hpp"
 #include "app/TextTool.hpp"
+#include "app/TilePreview.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/DocumentPresets.hpp"
 #include "app/GradientTool.hpp"
@@ -69,7 +70,12 @@ namespace np {
 // app/StrokeSession.hpp §1's Eraser rows). **`CloneStamp` has left it too**,
 // and routes to StrokeRoute::CloneStamp on a writable RGB layer -- with its
 // source anchor living on this struct rather than on the session, for the
-// reason `CloneSourceState` below spells out. Each earns real
+// reason `CloneSourceState` below spells out. **`Heal` never sat in that list
+// at all**: it is the one value in this enum added after the palette was
+// drawn, and it arrived already routed -- StrokeRoute::Heal on a writable RGB
+// layer, brush/Heal, PRD D6 -- reading the SAME `CloneSourceState` its flyout
+// sibling does (that member's own comment argues why one anchor serves both).
+// Each earns real
 // behaviour on its own PRD id and phase, per docs/ui.md section 4's table --
 // which is also where MEASURE and SLICE's earlier "Dropped" disposition is
 // reversed: the palette keeps them for now, and per the user's own words,
@@ -114,6 +120,20 @@ enum class Tool {
   Measure,
   Frame,
   CloneStamp,
+  // PRD D6, PLAN.md Phase 8. A flyout sibling of `CloneStamp` and a `Tool`
+  // value of its own for `EllipseMarquee`'s stated reason: docs/shortcuts.md
+  // section 1 reserves `J` for it, docs/ui.md section 2b puts it in slot 7
+  // beside the clone, and **a flyout member IS a `Tool` value** in
+  // ui/AtelierChrome's `kToolGroups` -- a mode flag on `CloneStamp` would need
+  // its own parallel routing everywhere `Tool` is switched on, for no gain.
+  //
+  // It is inserted HERE, immediately after the tool it varies, rather than
+  // appended at the end. The run below the divider is the wireframe's palette
+  // order, and this enum's order is load-bearing rather than historical
+  // (`kToolMeta` is one row per value in it) -- so a new value goes where the
+  // palette says it belongs, which is the same instinct that put Water and
+  // DryBrush beside Brush.
+  Heal,
   Eraser,
   PaintBucket,
   Gradient,
@@ -849,6 +869,12 @@ struct AppState {
   // questions about a tool history it has none of.
   ToolSwitchState tools;
   CanvasView view;
+  // PRD D8 / PLAN.md Phase 9: the 3x3 repeat preview. Beside `view` rather
+  // than inside it, because every field of `CanvasView` is an input to
+  // `app/ViewTransform`'s matrix and none of these are -- this changes how
+  // many times that one transform is applied, never what it is
+  // (app/TilePreview.hpp).
+  TilePreviewState tilePreview;
   SimParams sim;
 
   // PRD **Q10** (P0): "Eyedropper picks into the foreground colour, with
@@ -1171,7 +1197,25 @@ struct AppState {
   // obvious one says so in the band, in the same voice.
   std::string lastPickReport;
 
-  // --- the Clone Stamp's source (brush/CloneStamp) ------------------------
+  // --- the source shared by the Clone Stamp and the Heal tool -------------
+  //     (brush/CloneStamp, brush/Heal)
+  //
+  // **One anchor for both tools, not one each.** They are flyout siblings in
+  // palette slot 7 and they answer the same question -- "copy from *there*" --
+  // differing only in what they do to the texels on the way (`brush/Heal` §0).
+  // A painter who Option-clicks a clean patch of skin and then switches from
+  // Clone to Heal on the same blemish means the same source; two anchors would
+  // make that switch silently forget it, and would make an Option-click with
+  // the wrong one of the two tools selected look like it had done nothing. It
+  // would also duplicate every rule below -- the discard-on-reanchor, the
+  // aligned latch, the not-persisted lifetime -- in a second struct that could
+  // then drift from this one.
+  //
+  // The cost, stated: setting a source for one tool moves it for the other.
+  // That is visible (the source marker is drawn under both) and it is the
+  // behaviour a shared gesture should have; Photoshop keeps them separate, and
+  // when someone wants that it is a second member here plus a selector, not a
+  // change to any rule below.
   //
   // **Where this lives was the tool's first design question, and `AppState` is
   // the answer rather than `StrokeSession`.** Both were candidates; the

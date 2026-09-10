@@ -43,6 +43,7 @@
 #include "app/StrokeBake.hpp"
 #include "app/StrokeSession.hpp"
 #include "app/CropTool.hpp"
+#include "app/TilePreview.hpp"
 #include "app/ToolSwitch.hpp"
 #include "app/ZoomAndSize.hpp"
 #include "brush/Deposit.hpp"
@@ -1567,6 +1568,7 @@ int main(int argc, char** argv) {
   bool textDemo = false;
   int textDemoMode = 0;  // 0 = point text, 1 = paragraph, 2 = held-open frame drag
   bool overRangeDemo = false;
+  bool tileDemo = false;
   bool munsellDemo = false;
   int munsellDemoSteps = 9;
   float munsellDemoHue = 252.0f;
@@ -2050,6 +2052,20 @@ int main(int argc, char** argv) {
       // panel is what every other view of the app already shows, so a second
       // spelling would only photograph the status quo.
       overRangeDemo = true;
+    } else if (a == "--tile-demo") {
+      // PRD D8 / PLAN.md Phase 9. Same argument as `--munsell-demo` just
+      // below, and it is the argument that matters for this whole harness:
+      // the 3x3 repeat preview is a *state*, not a document and not a tool.
+      // No demo document and no stroke puts the canvas into it, so without
+      // this flag the entire branch is unreachable from the command line and
+      // therefore invisible to `--screenshot` and to tools/golden -- which is
+      // the golden harness's one structural blind spot (states no launch flag
+      // can reach) and costs three lines to not have here.
+      //
+      // No sub-word: the preview has exactly one state worth a picture. Its
+      // interesting variations (mirrored, rotated) are `--demo-document`
+      // plus the existing view toggles, not a second spelling of this one.
+      tileDemo = true;
     } else if (a == "--munsell-demo") {
       // docs/munsell-picker.md. The COLOR panel's third mode is a *state*, not
       // a document or a tool: nothing about a demo document or a stroke puts
@@ -2661,6 +2677,9 @@ int main(int argc, char** argv) {
     // Headless and GPU-free.
     const bool flatsExpandOk = np::runFlatsExpandTest();
     const bool flatsSourceOk = np::runFlatsSourceTest();
+    // PLAN.md phase 8's substrate -- see `runStrokesLayerTest()`'s own comment
+    // in app/SelfTest.hpp for the list. Headless and GPU-free.
+    const bool strokesLayerOk = np::runStrokesLayerTest();
     const bool toolSwitchOk = np::runToolSwitchTest();
     // app/ToolSwitch: the spring-loaded Eyedropper (Alt/Option), the Hand's
     // borrow-and-give-back shape applied to a second tool -- eligibility
@@ -2771,6 +2790,12 @@ int main(int argc, char** argv) {
     // runFiltersExtTest() for the shape of the argument. Also headless and
     // GPU-free.
     const bool filtersExtOk = np::runFiltersExtTest();
+    // PLAN.md "Phase 8 -- Repair it" (PRD D7, first half): ops/Inpaint's
+    // diffusion fill and the Filter > Inpaint command. The one op here whose
+    // selection is the HOLE rather than a bound on the result -- see
+    // app/SelfTest.hpp's comment on runInpaintTest() for why that inversion is
+    // asserted from both ends. Also headless and GPU-free.
+    const bool inpaintOk = np::runInpaintTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD E1, E2, M1): core/SelectionMask's
     // uint8 coverage store, its antialiased rectangle constructor, and the
     // coverage-weighted clear. Also headless and GPU-free -- pure CPU tile
@@ -3601,6 +3626,17 @@ int main(int argc, char** argv) {
     // an unset source refuses out loud rather than stamping the layer onto
     // itself, which is a perfect no-op and therefore invisible.
     const bool cloneStampOk = np::runCloneStampTest();
+    // ops/Poisson, brush/Heal and app/StrokeSession §1c -- PRD D6's heal, the
+    // tenth stroke tool and the first route whose answer is the solution to an
+    // equation rather than a composite of samples. Everything it shares with
+    // the clone stamp -- the anchor, the snapshot, the footprint, the ceiling
+    // -- makes "it looks about right" worthless as evidence, so the section is
+    // built out of claims a clone cannot pass: the solver against analytic
+    // answers (a constant rim exactly, a linear rim reproduced, a zero
+    // Laplacian inside), the two exactness cases at zero tolerance, and one dab
+    // over a ramp that a heal must leave bit-identical while the clone stamp,
+    // on the identical fixture at the identical offset, moves every texel.
+    const bool healOk = np::runHealTest();
     // PRD D25/D26 -- the paint bucket's refusals. ops/FloodFill was never
     // wrong; the gate in front of it was inside the click condition, so a
     // bucket click on the layer kind a new layer defaults to disappeared with
@@ -3715,6 +3751,14 @@ int main(int argc, char** argv) {
     // See SelfTest.hpp for why this section deliberately re-tests neither the
     // maths nor the selection blend. Headless and GPU-free.
     const bool adjustmentMenuOk = np::runAdjustmentMenuTest();
+    // PRD D8 / PLAN.md phase 9: lighting-gradient removal and offset with
+    // wrap, the two make-tileable pixel ops, through the same
+    // app/PixelOpBridge.hpp templates the Filter menu already runs on. Proves
+    // what is new -- that the light comes out, that the mean is put back,
+    // that the mean's rectangle is not the request's, that an offset copies
+    // rather than filters, and that an offset refuses a selection out loud.
+    // Headless and GPU-free.
+    const bool tileableOk = np::runTileableTest();
     // Reachability audit A5/B2/B3: the BRUSH panel's shared-field ranges, the
     // WET slider's route-dependent disabled state, and the loaded pigment's
     // ownership of Density/Staining/Granulation. Headless -- no ImGui frame,
@@ -3735,6 +3779,11 @@ int main(int argc, char** argv) {
     // anchor math and the brush-size gesture/bracket-key range, both as pure
     // functions -- app/ZoomAndSize.hpp. Headless and GPU-free.
     const bool zoomAndSizeOk = np::runZoomAndSizeTest();
+    // PRD D8 / PLAN.md Phase 9: the 3x3 repeat preview -- where the nine
+    // copies go, that they abut through the real ViewTransform, and that
+    // entering and leaving give the user's view back (app/TilePreview.hpp).
+    // Headless and GPU-free.
+    const bool tilePreviewOk = np::runTilePreviewTest();
     // naturalPaint canvasdim bug fix: `canvasDimensionsFor()` (app/
     // ZoomAndSize.hpp section 4) -- the active document's own size is now
     // `ui/MacPaintUI.cpp`'s canvas block's one source of truth for its
@@ -3843,7 +3892,8 @@ int main(int argc, char** argv) {
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     eyedropperOk && sceneReferredColourOk && measureOk && toolSwitchOk &&
-                    springEyedropperOk && flatsExpandOk && flatsSourceOk && toolSurfaceOk &&
+                    springEyedropperOk && flatsExpandOk && flatsSourceOk && strokesLayerOk &&
+                    toolSurfaceOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     halfOk && histogramOk && pointOpsOk && toneOpsOk && colorOpsOk && monoOpsOk &&
                     autoLevelsOk &&
@@ -3858,7 +3908,7 @@ int main(int argc, char** argv) {
                     gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
                     textShaperOk && vectorLayerOk && textContentOk &&
                     transformPreviewTextureOk &&
-                    transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && curveEditOk &&
+                    transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && inpaintOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
                     multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk &&
                     userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
@@ -3887,15 +3937,17 @@ int main(int argc, char** argv) {
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk && smudgeOk &&
                     smudgeOptionsOk &&
                     pigmentSelectionOk && bucketRefusalOk &&
-                    pigmentSelectionOk && cloneStampOk && bucketRefusalOk &&
+                    pigmentSelectionOk && cloneStampOk && healOk && bucketRefusalOk &&
                     layerMultiSelectOk && layerPanel2aOk && layerListHeightOk &&
                     toolCursorOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk && pigmentPanelOk &&
-                    openAnyFileOk && psdImportOk && filterMenuOk && adjustmentMenuOk && selectMenuOk &&
-                    chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk && canvasDimensionsOk &&
+                    openAnyFileOk && psdImportOk && filterMenuOk && adjustmentMenuOk && tileableOk &&
+                    selectMenuOk &&
+                    chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk && tilePreviewOk &&
+                    canvasDimensionsOk &&
                     angleConventionOk && wheelInputOk && touchGestureOk && touchGestureSessionOk && pressureFeelOk
                     && transferDynamicsOk && toolOptionsBlendOk &&
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
@@ -4442,6 +4494,16 @@ int main(int argc, char** argv) {
                 "the readout and the OVER RANGE badge and the swatch is clamped\n",
                 static_cast<double>(st.brush.rgb[0]), static_cast<double>(st.brush.rgb[1]),
                 static_cast<double>(st.brush.rgb[2]));
+  }
+  if (tileDemo) {
+    // Through `setTilePreview()`, not by writing `active` directly: that
+    // function is what raises the fit request, and a demo that skipped it
+    // would photograph the preview at the single-tile zoom -- a picture of a
+    // state no menu pick can actually produce, which is worse than no picture.
+    np::setTilePreview(st.tilePreview, st.view, st.requestFitWindow, true);
+    std::printf("[tile-demo] View > 3x3 Repeat Preview on -- the document drawn nine "
+                "times through ui/CanvasQuad, fitted so all nine are visible; the "
+                "centre tile keeps the canvas border and is the document\n");
   }
   if (munsellDemo) {
     st.brush.colorMode = np::ColorMode::Munsell;

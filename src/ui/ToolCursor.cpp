@@ -69,6 +69,12 @@ ToolCursor cursorForTool(Tool tool) noexcept {
     case Tool::Dodge:
     case Tool::Burn:
     case Tool::CloneStamp:
+    // Beside the clone rather than in a class of its own, and the reason is
+    // this switch's own opening sentence: a tip is dragged and the pixels under
+    // it change. That a heal *computes* what it lays down instead of copying it
+    // is invisible to the pointer, and inventing a second intent for it would
+    // be a distinction the user could never see -- §2's rule.
+    case Tool::Heal:
       return ToolCursor::Paint;
 
     // The two fill ops. `Paint` rather than a `Fill` of their own: a bucket

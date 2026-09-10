@@ -5,6 +5,7 @@
 
 #include "brush/ToolOptionsBlend.hpp"
 #include "color/Space.hpp"
+#include "core/StrokesContent.hpp"
 
 namespace np {
 namespace {
@@ -55,6 +56,161 @@ constexpr float kHalfPi = kTwoPi * 0.25f;
 // applied once, inside the formula, so a stroke-begin base times a second
 // per-dab correction would apply it twice). There is no longer a base value
 // to correct.
+
+// The tiles of a dab record's own footprint, clipped to the canvas, appended to
+// `touchedOut` -- and the clipped area as a texel count.
+//
+// Extracted from `eraseDabRecordsAt()` above, which had this loop inline over
+// the records it had just DELETED. Both routes need the identical answer to the
+// identical question ("which part of the picture did this record's presence or
+// absence change"), and the erase's own version had already grown three
+// explicit corner pushes for the non-tile-aligned far edge -- a fiddly detail
+// worth having in one place rather than in two that can drift by one tile.
+size_t touchDabRecordBounds(const DabRecord& d, int32_t canvasW, int32_t canvasH,
+                            std::vector<TileCoord>* touchedOut) {
+  const DabBounds b = dabRecordBounds(d);
+  const int x0 = std::max(b.x0, 0), y0 = std::max(b.y0, 0);
+  const int x1 = std::min(b.x1, static_cast<int>(canvasW));
+  const int y1 = std::min(b.y1, static_cast<int>(canvasH));
+  if (x1 <= x0 || y1 <= y0) return 0;
+  if (touchedOut != nullptr) {
+    for (int y = y0; y < y1; y += kTileSize)
+      for (int x = x0; x < x1; x += kTileSize)
+        touchedOut->push_back(tileCoordAt(PixelCoord{x, y}));
+    // The far edge of the bounds may not be tile-aligned, so the loop above
+    // can miss the last column and row of tiles. Added explicitly rather than
+    // by rounding the loop bounds up, which reads as arithmetic and hides
+    // which case it is fixing. `sortUniqueTiles()` at the end of the frame
+    // removes the duplicates this produces for an aligned rectangle.
+    touchedOut->push_back(tileCoordAt(PixelCoord{x1 - 1, y1 - 1}));
+    touchedOut->push_back(tileCoordAt(PixelCoord{x0, y1 - 1}));
+    touchedOut->push_back(tileCoordAt(PixelCoord{x1 - 1, y0}));
+  }
+  return static_cast<size_t>(x1 - x0) * static_cast<size_t>(y1 - y0);
+}
+
+// PRD F11: one eraser dab on a `LayerKind::Strokes` layer.
+//
+// **The one route whose destination is not a tile store**, so it is spelled
+// here rather than in brush/ beside the seven that are: there is no
+// accumulator, no coverage buffer and no per-texel arithmetic to put in a
+// `brush/StrokesErase` -- the whole operation is `eraseDabsUnderDisc()` plus
+// the bookkeeping every route shares. A file for two lines of engine would be
+// a file whose header had nothing to argue.
+//
+// `touchedOut` gains the tiles of every texel the DELETED dabs could have
+// covered, because that is the region of the canvas whose picture just
+// changed and the region ui/DocumentTexture has to re-upload. The dabs are
+// gone by then, so the bounds come from the records the erase handed back --
+// which is exactly why `eraseDabsUnderDisc()` returns them.
+//
+// The returned `texels` is that same area, clipped to the canvas: it feeds
+// the session's per-stroke counter, which means "how much of the picture this
+// stroke changed", and on this route the honest answer is the footprint of
+// what vanished rather than the number of records (a hundred tiny dabs and
+// one enormous one are not the same edit).
+DepositCount eraseDabRecordsAt(Layer& layer, const BrushTip& tip, Vec2 centre, int32_t canvasW,
+                               int32_t canvasH, const Selection* selection,
+                               std::vector<TileCoord>* touchedOut) {
+  DepositCount out;
+  if (tip.radius <= 0.0f) return out;
+  // **The selection gates the erase at the DAB's centre, not per texel** --
+  // PRD E1 still bounds this route, but the unit of effect here is a whole
+  // record (core/StrokesContent's F11 section on why there is no partial
+  // deletion), so the only coherent question is whether the eraser is inside
+  // the selection at all. Any non-zero coverage counts: a feathered edge means
+  // "partly selected", and half-deleting a record is not a state.
+  if (selection != nullptr) {
+    const PixelCoord at{static_cast<int>(std::lround(centre.x)),
+                        static_cast<int>(std::lround(centre.y))};
+    if (selectionTileCoverage(selection->tiles.find(tileCoordAt(at)), tileLocalOffset(at)) <= 0.0f)
+      return out;
+  }
+  std::vector<DabRecord> removed;
+  if (eraseDabsUnderDisc(layer.strokes, centre.x, centre.y, tip.radius, &removed) == 0) return out;
+  for (const DabRecord& d : removed)
+    out.texels += touchDabRecordBounds(d, canvasW, canvasH, touchedOut);
+  return out;
+}
+
+// PRD D6's non-destructive half: one Clone Stamp or Heal dab on a
+// `LayerKind::Strokes` layer, APPENDED as a `DabRecord` (header §1d).
+//
+// **The second route whose destination is not a tile store**, spelled here
+// beside the erase for that function's stated reason: there is no accumulator,
+// no coverage buffer and no per-texel arithmetic to put in a `brush/` module --
+// what this does is build one aggregate and push it onto a vector, and a file
+// for that would be a file whose header had nothing to argue. What there IS to
+// argue is which fields a live dab collapses into which stored ones, and that
+// is §1d plus the comments below.
+//
+// `touchedOut` gains the tiles the appended record can cover, because that is
+// the region of the picture that just changed and the region ui/DocumentTexture
+// has to re-upload -- the erase's rule with the sign flipped, and the same
+// function answering it.
+DepositCount recordDabAt(Layer& layer, const BrushTip& tip, Vec2 centre, int32_t canvasW,
+                         int32_t canvasH, const Selection* selection, DabColorSource source,
+                         float sourceDx, float sourceDy, float opacity,
+                         uint64_t* strokeIdInOut, std::vector<TileCoord>* touchedOut) {
+  DepositCount out;
+  if (tip.radius <= 0.0f) return out;
+  // **The selection gates at the DAB's centre, not per texel** -- header §1d,
+  // and the erase route's argument in the other direction. The unit of effect
+  // is a whole record and a record carries no mask, so "half recorded" is not a
+  // state; the only coherent question is whether the dab is inside the
+  // selection at all, and any non-zero coverage counts.
+  if (selection != nullptr) {
+    const PixelCoord at{static_cast<int>(std::lround(centre.x)),
+                        static_cast<int>(std::lround(centre.y))};
+    if (selectionTileCoverage(selection->tiles.find(tileCoordAt(at)), tileLocalOffset(at)) <= 0.0f)
+      return out;
+  }
+
+  DabRecord d;
+  // The shape, field for field. core/StrokesContent §1: the four names match
+  // `BrushTip`'s exactly BECAUSE `strokesRasterize()` builds a `BrushTip` back
+  // out of them and calls the one `dabCoverage()` in this build -- so a
+  // recorded dab's footprint is the footprint the same tip painted live, rather
+  // than a second, subtly different brush.
+  d.x = centre.x;
+  d.y = centre.y;
+  d.radius = tip.radius;
+  d.hardness = tip.hardness;
+  d.roundness = tip.roundness;
+  d.angle = tip.angle;
+  // **Flow times the stroke's opacity, collapsed into the one number a stored
+  // dab has** -- header §1d, and core/StrokesContent's own decision on the
+  // member ("a stored dab has no stroke around it for a per-stroke ceiling to
+  // be a ceiling OVER"). Clamped because both factors are user-facing sliders
+  // and `applyDab()`'s own clamp is not a licence to hand it nonsense.
+  d.flow = std::clamp(tip.flow, 0.0f, 1.0f) * std::clamp(opacity, 0.0f, 1.0f);
+  d.source = source;
+  d.sourceDx = sourceDx;
+  d.sourceDy = sourceDy;
+  // `rgba` is deliberately left at its default and deliberately not zeroed to
+  // something "meaningful": core/StrokesContent says it is read only when
+  // `source == Ink`, and inventing a colour for a record that has none would
+  // put a value in the content hash that no evaluation ever reads and every
+  // save would carry.
+
+  // A dab that covers nothing is not recorded at all. `dabRecordBounds()` is
+  // the same predicate the evaluation uses, so a record this route stored and
+  // the rasteriser then skipped would be an invisible entry the eraser could
+  // still hit and the file would still carry.
+  if (dabRecordBounds(d).empty()) return out;
+
+  StrokesContent& content = layer.strokes;
+  d.id = content.nextDabId++;
+  // The stroke is named by its FIRST dab's id -- one allocator for both, so a
+  // reopened layer cannot mint a stroke id a live undo entry still names, which
+  // is `nextDabId`'s own stated reason for existing.
+  if (*strokeIdInOut == 0) *strokeIdInOut = d.id;
+  d.strokeId = *strokeIdInOut;
+
+  out.texels = touchDabRecordBounds(d, canvasW, canvasH, touchedOut);
+  content.dabs.push_back(d);
+  return out;
+}
 
 }  // namespace
 
@@ -124,6 +280,7 @@ const char* strokeRouteName(StrokeRoute route) noexcept {
     // the comparison `depositPending()` makes every frame.
     case StrokeRoute::TonalBrush: return "tonal-brush";
     case StrokeRoute::CloneStamp: return "clone-stamp";
+    case StrokeRoute::Heal: return "heal";
     case StrokeRoute::Smudge: return "smudge";
     case StrokeRoute::PaintSim: return "paint-sim";
     // Named for the STORE it writes and not for the tool that reaches it, like
@@ -131,6 +288,19 @@ const char* strokeRouteName(StrokeRoute route) noexcept {
     // label, so "Brush -> mask-paint" says the one thing a user needs when a
     // brush stroke is not appearing where they expected it to.
     case StrokeRoute::MaskPaint: return "mask-paint";
+    // Named for what it writes, like every other row: "Eraser -> strokes-erase"
+    // is the one thing a user needs when an eraser drag makes whole marks
+    // disappear at once instead of thinning them (PRD F11, and that is the
+    // feature rather than a fault).
+    case StrokeRoute::StrokesErase: return "strokes-erase";
+    // Named for what it writes, like every other row, and NOT for either of
+    // the two tools that reach it: "Clone Stamp -> strokes-record" and "Heal ->
+    // strokes-record" printed side by side in the options bar say the true
+    // thing -- one destination, two things being recorded into it -- exactly as
+    // "Dodge -> tonal-brush" and "Burn -> tonal-brush" do one route up. A pair
+    // of names would suggest two routes for `depositPending()` to re-validate
+    // against when there is one.
+    case StrokeRoute::StrokesRecord: return "strokes-record";
   }
   return "?";
 }
@@ -191,6 +361,16 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
   // being its own row -- has one right answer, and a third copy of it would
   // drift from the other two.
   bool cloning = false;
+  // The fifth bit, and it is deliberately not a second value of `cloning`.
+  // Every *target* answer the two share -- RGB yes, Pigment no, locked no,
+  // alpha-locked yes, nullptr None -- and the shared body below is written once
+  // for both. What a flag on `cloning` could not express is that they are two
+  // ROUTES: `depositPending()` re-asks `strokeRouteFor()` every frame and
+  // compares the answer with the one `begin()` latched, so a heal that routed
+  // to `StrokeRoute::CloneStamp` and then chose an engine by re-reading the
+  // tool would be a stroke whose route could not tell the two engines apart
+  // (§1c, and brush/Heal §0 on why they are not one engine with a flag).
+  bool healing = false;
   // The second bit, and it is deliberately NOT a third value of the first one.
   // `erasing` selects between "adds" and "removes" on a target the two families
   // agree about; smudge answers a different question on four of the six rows
@@ -229,6 +409,13 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
     // palette cells, so the clone stamp routed nowhere and did nothing at all.
     case Tool::CloneStamp:
       cloning = true;
+      break;
+    // §1c. Unlike every other tool that has been wired since this table was
+    // written, this case was never in the not-built list below: `Tool::Heal`
+    // arrived with its route, so there has been no window in which the palette
+    // offered a heal that reached nothing.
+    case Tool::Heal:
+      healing = true;
       break;
     // brush/Smudge. This case used to sit in the not-built list below too, so
     // a drag with the smudge tool reached no layer, wrote no texel, produced no
@@ -302,6 +489,10 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
   // store, so there is nothing to *sample*, and a clone sent there would lay
   // down the foreground colour instead. Nothing to copy, so nowhere to go.
   //
+  // **And except for the heal**, which is the clone's row with nothing added
+  // (§1c) -- it needs both a source to sample and a destination surround to
+  // solve against, and the solver canvas is neither.
+  //
   // **And except for the smudge**, which is the eraser's row with the argument
   // one notch stronger: the solver has no smudge step either, so a smudge sent
   // there would run the paint path and deposit the loaded FOREGROUND pigment --
@@ -322,8 +513,8 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
   // target by name, which is what makes the merge stick: re-narrowing the
   // condition fails four assertions rather than passing silently.
   if (target == nullptr)
-    return (erasing || pencil || tonal || cloning || smudging) ? StrokeRoute::None
-                                                              : StrokeRoute::PaintSim;
+    return (erasing || pencil || tonal || cloning || healing || smudging) ? StrokeRoute::None
+                                                                         : StrokeRoute::PaintSim;
 
   // Locked before kind, so a locked layer refuses for being locked whatever it
   // is made of -- and so the UI's "clear its Lock in LAYERS" message is the one
@@ -368,6 +559,14 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
     // look right at full opacity and be wrong at every soft edge -- the version
     // nobody would report.
     if (cloning) return StrokeRoute::None;
+    // **And the heal refuses it one step earlier than the clone does** --
+    // header §1c. The clone's argument is about the soft edge of a dab; the
+    // heal's correction is a Laplacian of the source and a linear interpolation
+    // of *differences*, and neither of those is defined on a Kubelka-Munk
+    // latent premultiplied by mass. `depositTexel()` mixes latents, it does not
+    // subtract them, and this build has not decided what the second difference
+    // of one means.
+    if (healing) return StrokeRoute::None;
   //
   // **The smudge refuses this row by name, on a stated condition** -- header
   // §1's Smudge paragraphs. `brush/Smudge` §2's pick-up is a coverage-weighted
@@ -412,6 +611,13 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
     // that needs no un-premultiply. Refusing here would block a legitimate
     // edit; letting the ERASE through above would make the flag decorative.
     if (cloning) return StrokeRoute::CloneStamp;
+    // **And alpha lock does not refuse the heal either**, which was re-asked
+    // rather than inherited because this route solves for alpha as well as for
+    // colour (ops/Poisson §3): the solve produces an alpha correction, and the
+    // composite is `cloneStampTexel()`'s alpha-locked colour-only form, which
+    // copies `dst[3]` through untouched rather than recomputing it. The lock is
+    // honoured by the same line that honours it one row up (§1c).
+    if (healing) return StrokeRoute::Heal;
     //
     // **And it refuses the SMUDGE, for a sharper version of the same
     // argument.** Smudge moves alpha inseparably from colour --
@@ -426,9 +632,51 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
     return erasing ? StrokeRoute::RgbErase : StrokeRoute::RgbDeposit;
   }
 
+  // **A Strokes layer takes the eraser and nothing else** -- PRD F11, and
+  // core/StrokesContent's F11 section is the arithmetic. The eraser here does
+  // not remove alpha from a store: it DELETES the dab records whose centres
+  // the disc covers, which is the behaviour that makes the kind worth having
+  // and the reason this row exists at all.
+  //
+  // **And it takes the two REPAIR tools, which is the row this comment used to
+  // promise** -- §1d, PRD D6's non-destructive half, `docs/operations.md`'s
+  // class C. The paragraph that stood here said "the row opens when a tool
+  // exists that knows what it is recording", and a clone and a heal are exactly
+  // that: what they record is fully determined by the gesture, because the
+  // footprint is the tip and the colour policy is "the composite beneath, at
+  // the offset the user Option-clicked". Nothing has to be guessed, which is
+  // what separates these two from the row below them.
+  //
+  // **One route for both**, with the `DabColorSource` latched from the tool at
+  // pen-down -- §1d argues that against the `CloneStamp`/`Heal` pair, which are
+  // two routes precisely because they choose between two engines and this one
+  // chooses none.
+  //
+  // **The ordinary Brush still answers `None` here, and that stays a deferral
+  // with a stated condition rather than an oversight.** `DabColorSource::Ink`
+  // means "a recorded paint stroke", so the model allows it, and PLAN.md:505
+  // names only clone and heal for this phase. The difference is not scope
+  // discipline alone: a recorded paint stroke has to decide what a dab's colour
+  // is when the swatch moves mid-stroke, whether a seven-channel pigment latent
+  // is expressible as one straight RGBA at all (it is not), and what a preset's
+  // BITMAP tip records into a struct that deliberately carries no bitmap
+  // (core/StrokesContent §1). A stroke recorded with the wrong `source`
+  // reproduces a picture nobody authored -- io/StrokesSerial makes the same
+  // argument about an unknown source byte -- so the brush refuses by name
+  // rather than painting nothing in silence, exactly as it did before.
+  //
+  // Checked after the two raster kinds and before the fallthrough, so a
+  // LOCKED Strokes layer still refuses for being locked -- the ordering every
+  // row in this table shares. **`alphaLocked` is deliberately not consulted**:
+  // it freezes a channel this kind does not have (§1d).
+  if (target->kind == LayerKind::Strokes) {
+    if (cloning || healing) return StrokeRoute::StrokesRecord;
+    return erasing ? StrokeRoute::StrokesErase : StrokeRoute::None;
+  }
+
   // Everything left is a real target that cannot take a stroke: an Adjustment
-  // layer (no tiles by construction), a Media/Strokes/Text/Flats layer (no
-  // storage built yet), or a Pigment/RGB layer whose store was never allocated.
+  // layer (no tiles by construction), a Media/Text/Flats layer (no storage
+  // built yet), or a Pigment/RGB layer whose store was never allocated.
   // **`None`, not `PaintSim`** -- see §1. Falling through to the solver here is
   // what made "select an RGB layer and paint" put colour on the canvas texture
   // instead of on the layer, invisibly, one line below the locked row that
@@ -504,6 +752,12 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target, LayerEditTarget editT
     //     ceiling, and those are two different features wearing one name.
     //   * **Clone Stamp** -- would need a snapshot of a `MaskTileStore`, which
     //     `brush/CloneStamp`'s snapshot type is not.
+    //   * **Heal** -- the same missing snapshot type, and then a second
+    //     question on top of it: `ops/Poisson` solves four channels of
+    //     premultiplied colour, and a mask sample is one scalar coverage with
+    //     no privileged end (brush/MaskPaint §1). A harmonic correction of a
+    //     coverage is well defined; whether "heal" is what a user would call
+    //     it is not, and this is not the file to decide that in.
     //   * **Smudge** -- `brush/Smudge` §2's pick-up is a coverage-weighted mean
     //     of premultiplied RGBA; the scalar analogue is well defined but its
     //     "finger has no alpha" degenerate case is not the same one, so it is a
@@ -516,6 +770,7 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target, LayerEditTarget editT
     case Tool::Dodge:
     case Tool::Burn:
     case Tool::CloneStamp:
+    case Tool::Heal:
     case Tool::Smudge:
     case Tool::Water:
     case Tool::Move:
@@ -576,6 +831,13 @@ const char* strokeEditLabel(Tool tool) noexcept {
     // in a column of identical brush rows, and a clone is exactly the kind of
     // edit that gets undone selectively.
     case Tool::CloneStamp: return "clone stamp";
+    // Its own noun, and NOT "clone stamp" -- the two tools share a source, a
+    // gesture and a composite, and a history panel in which they share a row
+    // label would be unable to tell a copy from a repair. That is the exact
+    // complaint the Dodge/Burn rows above are written about: `strokeRouteName()`
+    // may fold tools together because a route is what re-validation compares;
+    // a history row is what a user reads to find the edit they want back.
+    case Tool::Heal: return "heal";
     // Likewise its own noun rather than the generic "stroke": PRD O2's panel is
     // scanned to find an edit to undo, and a smudge is the row a user most
     // wants to find -- it is the one edit in the paint family that destroys
@@ -644,15 +906,28 @@ bool latchCloneOffset(AppState::CloneSourceState& clone, Vec2 penDown) noexcept 
   return true;
 }
 
-std::string cloneSourceRefusal(const AppState::CloneSourceState& clone) {
+std::string cloneSourceRefusal(const AppState::CloneSourceState& clone, const char* toolLabel) {
   if (clone.haveOffset) return {};
   // One sentence for both states -- no anchor at all, and an anchor whose
   // offset nothing has latched yet -- because they present to a user as the
   // same thing and have the same fix. Named in the gesture's own words
   // ("Option-click"), since a modifier that does nothing visible until it is
   // held is not something anyone discovers by trying.
-  return "clone stamp: no source set. Option-click the canvas to set the clone source, "
-         "then paint.";
+  //
+  // The tool's own label leads the sentence, so a heal that refuses does not
+  // name the clone stamp -- which is the one way a shared refusal string could
+  // make a shared anchor read as a bug ("I picked Heal and it is telling me
+  // about the clone stamp").
+  return std::string(toolLabel != nullptr ? toolLabel : "clone stamp") +
+         ": no source set. Option-click the canvas to set the source, then paint.";
+}
+
+bool toolUsesCloneSource(Tool tool) noexcept {
+  // Two rows, listed rather than derived from `strokeRouteFor()` -- the header
+  // says why: a route is about where texels go and this is about a gesture, and
+  // the two are independent questions that happen to have the same answer for
+  // both of today's tools.
+  return tool == Tool::CloneStamp || tool == Tool::Heal;
 }
 
 // --- the pixel-writing ops that are not strokes (header §6) ----------------
@@ -735,6 +1010,28 @@ std::string pixelOpRefusalMessage(PixelOpRefusal reason, const Layer* target,
       return "\"" + name + "\" is " +
              (target != nullptr ? layerKindName(target->kind) : "?") +
              " and has no RGB pixels for the " + op + ". Pick an RGB layer in LAYERS.";
+    case PixelOpRefusal::NoSelection:
+      // The one refusal that names no layer, because the layer is not what is
+      // wrong: the op needs a selection and there is none. It says *why* it
+      // needs one rather than just that it does, because "select something
+      // first" invites the user to select the good pixels they want to keep
+      // -- which is the exact inverse of what an inpaint wants, and the
+      // inversion ops/Inpaint.hpp's first section exists to make impossible
+      // to get wrong in code. It should be equally hard to get wrong in the
+      // sentence.
+      return "no selection: the " + op +
+             " fills the SELECTED texels from what surrounds them, so it needs a marquee "
+             "over the damage. Select the scratch on the canvas.";
+    case PixelOpRefusal::SelectionActive:
+      // Names neither the layer nor its kind, because neither is the problem:
+      // this refusal is about the document's selection and the fix is one
+      // command away. `Cmd+D` is spelled out because the menu item's own
+      // label ("Deselect") is what the user has to find, and a sentence that
+      // said only "a selection is active" would leave them looking for a
+      // setting on the op instead.
+      return "the " + op +
+             " moves the whole layer, so a selection cannot bound it. Deselect first "
+             "(Select > Deselect, Cmd+D).";
   }
   return {};
 }
@@ -1132,9 +1429,21 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // A null `clone` takes the same branch as an unanchored one deliberately --
   // "the UI forgot to pass it" and "the user has not set a source" have the same
   // correct answer.
-  if (route == StrokeRoute::CloneStamp) {
+  //
+  // **Both source-reading routes, through one condition.** The heal shares the
+  // anchor (§1c), so it shares the precondition and the sentence -- with its own
+  // label in it, which is `strokeEditLabel()`'s answer and therefore the same
+  // noun the history panel will show for the stroke that is being refused.
+  // **All THREE source-reading routes, through one condition.** The recording
+  // route (§1d) shares the anchor because it shares the tools, and it needs the
+  // refusal more than either destructive route does: with no offset every
+  // record would reproduce exactly what is already directly beneath it, which
+  // is invisible in the picture, permanent in the document and saved to disk.
+  if (route == StrokeRoute::CloneStamp || route == StrokeRoute::Heal ||
+      route == StrokeRoute::StrokesRecord) {
     const AppState::CloneSourceState empty{};
-    const std::string why = cloneSourceRefusal(clone != nullptr ? *clone : empty);
+    const std::string why =
+        cloneSourceRefusal(clone != nullptr ? *clone : empty, strokeEditLabel(tool));
     if (!why.empty()) return refuse(why);
   }
 
@@ -1315,6 +1624,19 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
                  resolvedOpacity, layer.alphaLocked);
   else
     clone_.end();
+  // The heal route's snapshot, offset and ceiling (brush/Heal §2), bound the
+  // same way and for the same reasons -- a *fifth* `begin()`/`else end()` pair,
+  // and the one whose `else` is worth the most: this and `clone_` are the two
+  // members that can hold a whole second `TileStore`, so a stroke that left
+  // either live would keep the previous target alive at twice its size. Same
+  // ordering rule as the clone's: the store is copied here, before any dab, and
+  // `layer.rgbTiles` is engaged on this route by construction because
+  // `strokeRouteFor()` only answers `Heal` for an RGB layer whose store exists.
+  if (route_ == StrokeRoute::Heal)
+    heal_.begin(*layer.rgbTiles, clone != nullptr ? clone->offset : Vec2{0.0f, 0.0f},
+                resolvedOpacity, layer.alphaLocked);
+  else
+    heal_.end();
   // The smudge route's carried colour and its strength, latched for the stroke
   // (brush/Smudge.hpp §3): strength is how far the finger dominates the canvas,
   // and a stroke whose dominance moved half way through would have been picking
@@ -1361,6 +1683,34 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
     maskPaint_.begin(maskTargetForInk(tip.linearRgb), resolvedOpacity);
   else
     maskPaint_.end();
+
+  // The recording route's own latched state (§1d). **Not a `begin()`/`end()`
+  // pair like the seven above it**, because there is no accumulator and no
+  // snapshot to allocate or drop -- so there is nothing an interrupted drag can
+  // leave live, which is what every one of those `else` branches exists to
+  // prevent. What must still be latched is what the stroke MEANS, and these
+  // four are set unconditionally rather than inside the branch for the same
+  // reason: a stroke that took another route must not be able to leave a stale
+  // stroke id behind for the next recording stroke to append into.
+  //
+  // `Tool::Heal` explicitly, never "not CloneStamp": this is the one line that
+  // turns a tool into a source policy, and a default that swallowed a future
+  // third source-reading tool into the clone is exactly the silent wrong answer
+  // one route serving two tools must not make easy -- `TonalStroke`'s latched
+  // sign takes the identical precaution one route up.
+  recordSource_ = tool == Tool::Heal ? DabColorSource::BelowHealed : DabColorSource::Below;
+  // Rounded to whole texels here, by the same `std::lround` `CloneStampStroke::
+  // begin()` and `HealStroke::begin()` apply to the same vector, so a repair
+  // recorded with one gesture and a repair painted with it copy from the same
+  // texel (brush/CloneStamp §3 on why integer, and brush/Heal §3 on the extra
+  // reason a solve has).
+  recordDx_ = clone != nullptr ? std::round(clone->offset.x) : 0.0f;
+  recordDy_ = clone != nullptr ? std::round(clone->offset.y) : 0.0f;
+  recordOpacity_ = resolvedOpacity;
+  // Allocated lazily, from the layer's own `nextDabId`, when the first dab is
+  // actually appended -- so a stroke that recorded nothing consumes no id and
+  // leaves `DabRecord::strokeId`'s documented "no stroke" value behind.
+  recordStrokeId_ = 0;
 
   // Leftover arc length and point history from whatever stroke happened
   // before must not bleed into this one -- brush/StrokePath::reset()'s own
@@ -1695,7 +2045,28 @@ void StrokeSession::depositPending() {
           // guaranteed by the re-validation above, which re-asks
           // `strokeRouteFor()` with `editTarget_` and stops the stroke if the
           // answer moved (a mask removed mid-drag is exactly that).
-          route_ == StrokeRoute::MaskPaint
+          // **The Strokes erase is first**, ahead of the mask route, for the
+          // mask route's own stated reason turned up one notch: it names no
+          // content STORE at all -- not `*layer.rgbTiles`, not
+          // `*layer.pigmentTiles`, not `*layer.mask` -- because what it writes
+          // is `layer.strokes`, a vector of records (PRD F11). Placed where a
+          // reader looking for "which store does this route write" finds the
+          // answer "none of them" before reading eight ternaries that each
+          // name one.
+          route_ == StrokeRoute::StrokesErase
+              ? eraseDabRecordsAt(layer, dabTip, centre, doc.width, doc.height, selection,
+                                  &frameTiles_)
+          // **And the recording route beside it**, for the identical reason it
+          // is placed first: it names no content store either -- what it writes
+          // is `layer.strokes`, a vector of records (§1d, PRD D6's
+          // non-destructive half). The two record-writing routes read together
+          // here rather than being separated by eight ternaries that each name
+          // a store neither of them touches.
+          : route_ == StrokeRoute::StrokesRecord
+              ? recordDabAt(layer, dabTip, centre, doc.width, doc.height, selection,
+                            recordSource_, recordDx_, recordDy_, recordOpacity_,
+                            &recordStrokeId_, &frameTiles_)
+          : route_ == StrokeRoute::MaskPaint
               ? maskPaint_.paintDab(*layer.mask, dabTip, centre, doc.width, doc.height, selection,
                                     &frameTiles_)
           : route_ == StrokeRoute::TonalBrush
@@ -1719,6 +2090,13 @@ void StrokeSession::depositPending() {
           : route_ == StrokeRoute::CloneStamp
               ? clone_.cloneDab(*layer.rgbTiles, dabTip, centre, doc.width, doc.height,
                                 selection, &frameTiles_)
+          // The heal reads its source from its own snapshot and its boundary
+          // from `*layer.rgbTiles` -- the live store, deliberately, so that
+          // dab N's correction is computed against dab N-1's output rather
+          // than against paint the stroke has already replaced (brush/Heal §2).
+          : route_ == StrokeRoute::Heal
+              ? heal_.healDab(*layer.rgbTiles, dabTip, centre, doc.width, doc.height, selection,
+                              &frameTiles_)
           : route_ == StrokeRoute::RgbDeposit
               ? rgb_.depositDab(*layer.rgbTiles, dabTip, centre, doc.width, doc.height, selection,
                                 &frameTiles_)
@@ -1781,6 +2159,10 @@ const std::vector<TileCoord>& StrokeSession::end() {
   // behind, since it shares a tile with the layer for every tile the layer had
   // at pen-down.
   clone_.end();
+  // And the heal's, which is the same size and the same argument: two members
+  // of this class can hold a whole `TileStore`, and both are dropped here
+  // unconditionally rather than by asking which route this stroke took.
+  heal_.end();
   // The fourth, unconditionally with the rest. This one frees no tiles -- its
   // whole state is 16 bytes and a bool -- but dropping it here is what stops an
   // application sitting idle between strokes from holding a colour that the

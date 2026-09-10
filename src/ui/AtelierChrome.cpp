@@ -255,6 +255,20 @@ constexpr ToolMeta kToolMeta[] = {
     // it makes the palette cell clickable at all, and its Option+click source
     // gesture only exists while the cell is selected.
     {"Clone Stamp", "stamp", 58299u, "S", "clone_stamp", true},
+    // **Built on arrival**: PRD D6, brush/Heal, `StrokeRoute::Heal`, and
+    // app/StrokeSession §1c for the table it routes through. This is the one
+    // row here that was never false -- the enum value, the route, the canvas
+    // gate and this flag landed in a single change, so there has been no window
+    // in which the palette offered a heal that reached nothing. That is what
+    // every other "Built, as of ..." note above records the absence of.
+    // `J` is docs/shortcuts.md section 1's own reserved letter for the tool,
+    // and `bandage` is Photoshop's own metaphor for it rather than an invented
+    // one -- docs/ui.md §2a's substitution table carries that note.
+    //
+    // The `slug` arrived from main's side of this merge: it is the stable
+    // string identity `toolFromSlug()` reverse-looks-up, which is how an
+    // action file names a tool without depending on an enum ordinal.
+    {"Heal", "bandage", 58909u, "J", "heal", true},
     // **Built**, as of the RGB erase route: PRD F9/F10 (P0), ADR-0007,
     // brush/RgbErase. It stays in this half of the table because the rows are in
     // `Tool`'s declaration order and the static_assert below rests on that --

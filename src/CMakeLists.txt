@@ -162,6 +162,7 @@ add_executable(naturalPaint
   app/selftest/Gradient.cpp
   app/selftest/GuidesGridSnap.cpp
   app/selftest/Half.cpp
+  app/selftest/Heal.cpp
   app/selftest/Histogram.cpp
   app/selftest/History.cpp
   app/selftest/HistoryPanel.cpp
@@ -181,6 +182,7 @@ add_executable(naturalPaint
   app/selftest/CommandsImage.cpp
   app/selftest/CommandCallsites.cpp
   app/selftest/Json.cpp
+  app/selftest/Inpaint.cpp
   app/selftest/Keymap.cpp
   app/selftest/LayerComp.cpp
   app/selftest/LayerEditor.cpp
@@ -253,9 +255,11 @@ add_executable(naturalPaint
   app/selftest/ExportDialog.cpp
   app/selftest/FlatsExpand.cpp
   app/selftest/FlatsSource.cpp
+  app/selftest/StrokesLayer.cpp
   app/selftest/ToolSwitch.cpp
   app/selftest/ToolHotkeys.cpp
   app/selftest/SpringEyedropper.cpp
+  app/selftest/TilePreview.cpp
   app/selftest/TonalBrush.cpp
   app/selftest/ToolOptionsBlend.cpp
   app/selftest/TouchGesture.cpp
@@ -290,6 +294,7 @@ add_executable(naturalPaint
   app/selftest/TextSerial.cpp
   app/selftest/PathConsumers.cpp
   app/selftest/TextKeyCapture.cpp
+  app/selftest/Tileable.cpp
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
   app/LayerThumbnail.cpp
@@ -304,6 +309,7 @@ add_executable(naturalPaint
   app/StrokePreview.cpp
   app/StrokeSession.cpp
   app/DocumentPresets.cpp
+  app/TilePreview.cpp
   app/TouchGesture.cpp
   app/TouchGestureSession.cpp
   app/UserBrushLibrary.cpp
@@ -314,6 +320,7 @@ add_executable(naturalPaint
   brush/BrushModelIo.cpp
   brush/BrushModelDiff.cpp
   brush/CloneStamp.cpp
+  brush/Heal.cpp
   brush/CoverageBlend.cpp
   brush/Deposit.cpp
   brush/Dynamics.cpp
@@ -326,6 +333,7 @@ add_executable(naturalPaint
   brush/RgbErase.cpp
   brush/Smudge.cpp
   brush/StrokePath.cpp
+  brush/StrokesLayer.cpp
   brush/TonalBrush.cpp
   brush/ToolOptionsBlend.cpp
   brush/Variance.cpp
@@ -355,6 +363,7 @@ add_executable(naturalPaint
   core/VectorRaster.cpp
   core/VectorShape.cpp
   core/TextContent.cpp
+  core/StrokesContent.cpp
   core/Pigment.cpp
   core/PigmentBake.cpp
   core/Probe.cpp
@@ -392,6 +401,7 @@ add_executable(naturalPaint
   io/SvgStyle.cpp
   io/TileResidency.cpp
   io/TextSerial.cpp
+  io/StrokesSerial.cpp
   ops/AutoLevels.cpp
   ops/Blur.cpp
   ops/ColorOps.cpp
@@ -400,11 +410,13 @@ add_executable(naturalPaint
   ops/Filters.cpp
   ops/FloodFill.cpp
   ops/Gradient.cpp
+  ops/Inpaint.cpp
   ops/Lens.cpp
   ops/MonoOps.cpp
   ops/Pattern.cpp
   ops/PointOpTiles.cpp
   ops/PointOps.cpp
+  ops/Poisson.cpp
   ops/Resample.cpp
   ops/Roi.cpp
   ops/ToneOps.cpp
