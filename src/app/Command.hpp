@@ -111,6 +111,53 @@ struct CommandSpec {
   std::string (*unavailableReason)(const OpenDocument& doc, const JsonValue& params);
   // Does the thing. Only called when `unavailableReason()` returned empty.
   CommandResult (*apply)(OpenDocument& doc, const JsonValue& params);
+
+  // **True when an ABSENT selection silently means "the whole canvas" for this
+  // command.** That is the whole definition, and it is narrower than "reads
+  // the selection" on purpose.
+  //
+  // app/Recorder §4 is the consumer: a step taken under a live marquee that no
+  // saved channel matches is refused at record time, because a selection is
+  // session state and never reaches a file (docs/automation-plan.md §7), so
+  // the step would replay with nothing selected -- and nothing selected means
+  // no restriction, so it would cover the whole canvas and report success.
+  // Nothing in the file would be wrong; the file would be missing the half of
+  // the state that made the step mean what it meant.
+  //
+  // The recorder used to decide this from `CommandResult::changesPixels`, and
+  // that proxy is wrong in both directions:
+  //
+  //  * `flatten_image`, `image_size` and `canvas_size` all change pixels and
+  //    none of them is bounded by the selection -- they act on the whole
+  //    document by construction. Recording a flatten under a live marquee was
+  //    refused for a reason that does not apply to it.
+  //  * `define_pattern` changes no pixel at all and IS bounded: its source
+  //    rectangle is the selection's bounds, and absent means the whole canvas
+  //    (app/CommandsPatterns.cpp says so at the fallback). A recorded
+  //    define_pattern used to sail through and replay as a pattern the size of
+  //    the document.
+  //
+  // The commands that *operate on* the selection -- `select_grow`,
+  // `invert_selection`, `save_selection_as_channel` -- are **not** bounded.
+  // The selection is their operand rather than a mask on their reach, and an
+  // absent one is a named refusal from their own precondition rather than a
+  // silent "everything". `save_selection_as_channel` in particular has to stay
+  // recordable: it is the fix the recorder's refusal tells the user to apply,
+  // and a recorder that refused to record the escape hatch would be a closed
+  // loop.
+  //
+  // **The default is false, and `--selftest` is what makes that safe.** Fifty
+  // of the sixty-odd rows are not bounded, so writing `false` on each would be
+  // noise a reader learns to skip. What stops a new bounded row from being
+  // forgotten is not this default but an assertion: app/selftest/Command.cpp
+  // section H walks the whole table and requires every row whose precondition
+  // is `pixelOpUnavailable` -- which is every command that reaches the
+  // selection-aware `applyPixelFilter()` bridge -- to carry this flag, and
+  // requires the rows that carry it *without* that precondition to be exactly
+  // the one named exception. A filter registered next month gets the rule for
+  // free, and one registered with a hand-written precondition fails the suite
+  // by name.
+  bool selectionBounded = false;
 };
 
 // --- where the rows come from -------------------------------------------

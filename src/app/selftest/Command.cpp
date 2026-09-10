@@ -2,6 +2,12 @@
 
 #include "app/Command.hpp"
 #include "app/CommandCoverage.hpp"
+// Section H compares each row's precondition against `pixelOpUnavailable`
+// itself. It is an `inline` function, so its address is the same in every
+// translation unit -- which is what makes "this row goes through the
+// selection-aware pixel bridge" a thing a test can ask rather than a list a
+// human keeps.
+#include "app/CommandSupport.hpp"
 #include "app/LayerEditor.hpp"
 #include "core/LayerOps.hpp"
 #include "ops/Transform.hpp"
@@ -353,6 +359,89 @@ bool runCommandTest() {
           "coverage: exactly the two known gaps, and no new one has appeared");
     check(notRecordable > registered,
           "coverage: most menu actions are session state, which is the rule doing its job");
+  }
+
+  std::printf("  -- H. selectionBounded, over the whole table --\n");
+  {
+    // **What this section is for.** app/Recorder §4 refuses to record a step
+    // taken under a live marquee that no saved channel matches, and it used to
+    // decide which steps to police from `CommandResult::changesPixels`. That
+    // proxy was wrong in both directions (app/Command.hpp on the field). The
+    // flag replacing it is a per-row claim, and a per-row claim that nobody
+    // checks is the shape that goes stale the first time somebody registers a
+    // filter -- so it is checked structurally, not spot-checked.
+    const std::vector<CommandSpec>& all = allCommands();
+
+    // The structural half. Every command that reaches `applyPixelFilter()` --
+    // the bridge that composites its result THROUGH `doc.selection` -- carries
+    // `pixelOpUnavailable` as its precondition, because that is the shared
+    // precondition of exactly that set. So: bounded and pixel-op are the same
+    // set, up to a named exception list. A filter registered next month with
+    // the same precondition and no flag fails here by name.
+    std::vector<std::string> pixelOpsMissingTheFlag;
+    std::vector<std::string> boundedWithoutTheBridge;
+    for (const CommandSpec& spec : all) {
+      const bool bridged = spec.unavailableReason == &pixelOpUnavailable;
+      if (bridged && !spec.selectionBounded) pixelOpsMissingTheFlag.push_back(spec.id);
+      if (spec.selectionBounded && !bridged) boundedWithoutTheBridge.push_back(spec.id);
+    }
+    for (const std::string& id : pixelOpsMissingTheFlag)
+      std::printf("      a pixel-op row with no selectionBounded flag: %s\n", id.c_str());
+    check(pixelOpsMissingTheFlag.empty(),
+          "bounded: every row that composites through the selection says so");
+
+    // **The number is the review**, the discipline section G uses for the
+    // coverage gaps. `crop_to_selection` is bounded and does not go through
+    // the pixel bridge -- the region it crops to IS the selection. It is the
+    // only such row, and a second one has to be added to this literal by a
+    // human who has thought about it.
+    for (const std::string& id : boundedWithoutTheBridge)
+      std::printf("      bounded outside the pixel bridge: %s\n", id.c_str());
+    check(boundedWithoutTheBridge.size() == 1 && boundedWithoutTheBridge[0] == "crop_to_selection",
+          "bounded: exactly one row is bounded outside the pixel bridge, and it is the crop");
+
+    // The by-name half, in both directions, because a structural rule that
+    // happened to be vacuous -- no row bounded at all -- would pass everything
+    // above.
+    auto boundedById = [&](const char* id) {
+      const CommandSpec* spec = findCommand(id);
+      return spec != nullptr && spec->selectionBounded;
+    };
+    check(boundedById("filter_gaussian_blur") && boundedById("adjust_levels") &&
+              boundedById("adjust_invert") && boundedById("fill_with_pattern") &&
+              boundedById("crop_to_selection"),
+          "bounded: the destructive ops that act through the selection are bounded");
+
+    // The three the field was added for. Each changes pixels; none is
+    // restricted by the selection; each was refused at record time under a
+    // live marquee for a reason that does not apply to it.
+    check(!boundedById("flatten_image") && !boundedById("image_size") &&
+              !boundedById("canvas_size"),
+          "bounded: flatten_image, image_size and canvas_size are NOT bounded");
+
+    // The commands that operate ON the selection are not bounded BY it. The
+    // last of these is load-bearing beyond tidiness: a bounded
+    // `save_selection_as_channel` would be refused at record time under the
+    // very marquee it exists to name, which is the fix the refusal tells the
+    // user to apply -- a closed loop.
+    check(!boundedById("select_all") && !boundedById("deselect") &&
+              !boundedById("invert_selection") && !boundedById("select_grow") &&
+              !boundedById("save_selection_as_channel"),
+          "bounded: a command that operates on the selection is not bounded by it");
+
+    // The one row where `selectionBounded` and `changesPixels` genuinely
+    // disagree, asserted by RUNNING it rather than by reading the table --
+    // `changesPixels` is a result field and the table cannot see it. This is
+    // what the old proxy let through: a step whose meaning is the marquee and
+    // whose texel count is zero.
+    {
+      OpenDocument od = makeCommandDocument();
+      JsonValue p = JsonValue::object();
+      p.set("name", JsonValue::string("Swatch"));
+      const CommandResult defined = applyCommand(od, Command{"define_pattern", p});
+      check(defined.ok && !defined.changesPixels && boundedById("define_pattern"),
+            "bounded: define_pattern changes no pixel and is bounded anyway");
+    }
   }
 
   return ok;

@@ -820,99 +820,126 @@ void registerImageCommands(std::vector<CommandSpec>* out) {
   // load-bearing rather than documentation.
 
   // ---- document geometry -------------------------------------------------
+  //
+  // **Three of these four are the rows `selectionBounded` was added for.**
+  // `image_size`, `canvas_size` and `trim_to_content` all change pixels and
+  // none of them is restricted by the selection -- they act on the whole
+  // document by construction, and `trim_to_content` reads the layers' content
+  // rather than any marquee. The recorder used to police them anyway, because
+  // it decided "is this selection-bounded?" from `CommandResult::changesPixels`
+  // (app/Command.hpp on the field), so recording a resize under a live
+  // marquee was refused for a reason that does not apply to it.
+  //
+  // `crop_to_selection` is the exception, and it is the one row in the table
+  // that is bounded without going through `pixelOpUnavailable` -- the region
+  // it crops to IS the selection. It is asserted as that named exception in
+  // app/selftest/Command.cpp section H, so a second one has to be looked at by
+  // a human rather than joining a growing list.
   out->push_back({"image_size", "Image Size", {"width", "height", "kernel"}, documentUnavailable,
                   doImageSize});
   out->push_back({"canvas_size", "Canvas Size", {"width", "height", "anchor"}, documentUnavailable,
                   doCanvasSize});
   out->push_back({"crop_to_selection", "Crop to Selection", {}, documentUnavailable,
-                  doCropToSelection});
+                  doCropToSelection, /*selectionBounded=*/true});
   out->push_back({"trim_to_content", "Trim to Content", {}, documentUnavailable, doTrimToContent});
 
   // ---- the Filter menu's seven -------------------------------------------
   out->push_back({"filter_gaussian_blur", "Gaussian Blur", {"sigma"}, pixelOpUnavailable,
-                  doGaussianBlur});
-  out->push_back({"filter_sharpen", "Sharpen", {"strength"}, pixelOpUnavailable, doSharpen});
+                  doGaussianBlur, /*selectionBounded=*/true});
+  out->push_back({"filter_sharpen", "Sharpen", {"strength"}, pixelOpUnavailable, doSharpen,
+                  /*selectionBounded=*/true});
   out->push_back({"filter_unsharp_mask",
                   "Unsharp Mask",
                   {"amount", "radius", "blur_kind", "threshold"},
                   pixelOpUnavailable,
-                  doUnsharpMask});
+                  doUnsharpMask, /*selectionBounded=*/true});
   out->push_back({"filter_add_noise",
                   "Add Noise",
                   {"amount", "distribution", "monochrome", "seed"},
                   pixelOpUnavailable,
-                  doAddNoise});
+                  doAddNoise, /*selectionBounded=*/true});
   out->push_back({"filter_emboss",
                   "Emboss",
                   {"amount", "dx", "dy", "depth"},
                   pixelOpUnavailable,
-                  doEmboss});
-  out->push_back({"filter_median", "Median", {"radius"}, pixelOpUnavailable, doMedian});
+                  doEmboss, /*selectionBounded=*/true});
+  out->push_back({"filter_median", "Median", {"radius"}, pixelOpUnavailable, doMedian,
+                  /*selectionBounded=*/true});
   out->push_back({"filter_motion_blur",
                   "Motion Blur",
                   {"radius", "angle_radians"},
                   pixelOpUnavailable,
-                  doMotionBlur});
+                  doMotionBlur, /*selectionBounded=*/true});
 
   // ---- Image > Adjustments -----------------------------------------------
-  out->push_back({"adjust_levels", "Levels", {"channels"}, pixelOpUnavailable, doLevels});
-  out->push_back({"adjust_curves", "Curves", {"channels"}, pixelOpUnavailable, doCurves});
-  out->push_back({"adjust_exposure", "Exposure", {"stops"}, pixelOpUnavailable, doExposure});
+  out->push_back({"adjust_levels", "Levels", {"channels"}, pixelOpUnavailable, doLevels,
+                  /*selectionBounded=*/true});
+  out->push_back({"adjust_curves", "Curves", {"channels"}, pixelOpUnavailable, doCurves,
+                  /*selectionBounded=*/true});
+  out->push_back({"adjust_exposure", "Exposure", {"stops"}, pixelOpUnavailable, doExposure,
+                  /*selectionBounded=*/true});
   out->push_back(
-      {"adjust_channel_mixer", "Channel Mixer", {"matrix"}, pixelOpUnavailable, doChannelMixer});
-  out->push_back({"adjust_desaturate", "Desaturate", {}, pixelOpUnavailable, doDesaturate});
+      {"adjust_channel_mixer", "Channel Mixer", {"matrix"}, pixelOpUnavailable, doChannelMixer,
+       /*selectionBounded=*/true});
+  out->push_back({"adjust_desaturate", "Desaturate", {}, pixelOpUnavailable, doDesaturate,
+                  /*selectionBounded=*/true});
   out->push_back({"adjust_brightness_contrast",
                   "Brightness/Contrast",
                   {"gain", "offset", "gamma"},
                   pixelOpUnavailable,
-                  doBrightnessContrast});
+                  doBrightnessContrast, /*selectionBounded=*/true});
   out->push_back({"adjust_hue_saturation",
                   "Hue/Saturation",
                   {"hue_degrees", "saturation", "lightness", "colorize", "colorize_hue_degrees",
                    "colorize_saturation"},
                   pixelOpUnavailable,
-                  doHueSaturation});
+                  doHueSaturation, /*selectionBounded=*/true});
   out->push_back({"adjust_vibrance",
                   "Vibrance",
                   {"amount", "luma_weights"},
                   pixelOpUnavailable,
-                  doVibrance});
+                  doVibrance, /*selectionBounded=*/true});
   out->push_back({"adjust_color_balance",
                   "Color Balance",
                   {"shadows", "midtones", "highlights", "preserve_luminosity"},
                   pixelOpUnavailable,
-                  doColorBalance});
+                  doColorBalance, /*selectionBounded=*/true});
   out->push_back({"adjust_black_and_white",
                   "Black & White",
                   {"reds", "yellows", "greens", "cyans", "blues", "magentas"},
                   pixelOpUnavailable,
-                  doBlackAndWhite});
+                  doBlackAndWhite, /*selectionBounded=*/true});
   out->push_back({"adjust_photo_filter",
                   "Photo Filter",
                   {"density", "color", "preserve_luminosity"},
                   pixelOpUnavailable,
-                  doPhotoFilter});
-  out->push_back({"adjust_posterize", "Posterize", {"levels"}, pixelOpUnavailable, doPosterize});
+                  doPhotoFilter, /*selectionBounded=*/true});
+  out->push_back({"adjust_posterize", "Posterize", {"levels"}, pixelOpUnavailable, doPosterize,
+                  /*selectionBounded=*/true});
   out->push_back({"adjust_threshold", "Threshold", {"threshold", "amount"}, pixelOpUnavailable,
-                  doThreshold});
+                  doThreshold, /*selectionBounded=*/true});
   out->push_back({"adjust_gradient_map",
                   "Gradient Map",
                   {"stops", "luma_weights"},
                   pixelOpUnavailable,
-                  doGradientMap});
+                  doGradientMap, /*selectionBounded=*/true});
   out->push_back(
-      {"adjust_invert", "Invert", {"amount", "domain"}, pixelOpUnavailable, doInvert});
+      {"adjust_invert", "Invert", {"amount", "domain"}, pixelOpUnavailable, doInvert,
+       /*selectionBounded=*/true});
   out->push_back(
-      {"adjust_auto_tone", "Auto Tone", {"clip_fraction"}, pixelOpUnavailable, doAutoTone});
+      {"adjust_auto_tone", "Auto Tone", {"clip_fraction"}, pixelOpUnavailable, doAutoTone,
+       /*selectionBounded=*/true});
   out->push_back({"adjust_auto_contrast",
                   "Auto Contrast",
                   {"clip_fraction"},
                   pixelOpUnavailable,
-                  doAutoContrast});
+                  doAutoContrast, /*selectionBounded=*/true});
   out->push_back(
-      {"adjust_auto_color", "Auto Color", {"clip_fraction"}, pixelOpUnavailable, doAutoColor});
+      {"adjust_auto_color", "Auto Color", {"clip_fraction"}, pixelOpUnavailable, doAutoColor,
+       /*selectionBounded=*/true});
   out->push_back(
-      {"adjust_equalize", "Equalize", {"clip_fraction"}, pixelOpUnavailable, doEqualize});
+      {"adjust_equalize", "Equalize", {"clip_fraction"}, pixelOpUnavailable, doEqualize,
+       /*selectionBounded=*/true});
 }
 
 }  // namespace np

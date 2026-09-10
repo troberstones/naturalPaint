@@ -173,14 +173,25 @@ void registerPatternCommands(std::vector<CommandSpec>* out) {
                   "Lens Correction",
                   {"k1", "k2", "ca_red", "ca_blue", "kernel"},
                   pixelOpUnavailable,
-                  doLensCorrect});
+                  doLensCorrect, /*selectionBounded=*/true});
+  // **`selectionBounded` and `changesPixels` disagree here, and this is the
+  // only row in the table where they do.** Defining a pattern touches no
+  // texel, so the result reports `changesPixels == false` -- the adapter above
+  // argues why. It is nonetheless bounded in the sense app/Command.hpp
+  // defines: the source rectangle IS the selection's bounds, and an absent
+  // selection silently means the whole canvas. A `define_pattern` recorded
+  // under a live marquee and replayed with nothing selected therefore defines
+  // a pattern the size of the document and reports success -- exactly the
+  // failure app/Recorder §4 exists to refuse, and exactly what the old
+  // `changesPixels` proxy let straight through.
   out->push_back(
-      {"define_pattern", "Define Pattern", {"name"}, pixelOpUnavailable, doDefinePattern});
+      {"define_pattern", "Define Pattern", {"name"}, pixelOpUnavailable, doDefinePattern,
+       /*selectionBounded=*/true});
   out->push_back({"fill_with_pattern",
                   "Fill With Pattern",
                   {"pattern", "origin_x", "origin_y"},
                   pixelOpUnavailable,
-                  doFillWithPattern});
+                  doFillWithPattern, /*selectionBounded=*/true});
 }
 
 }  // namespace np

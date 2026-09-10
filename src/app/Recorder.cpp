@@ -81,8 +81,23 @@ void Recorder::note(const Command& command, const CommandResult& result,
   // app/Recorder.hpp §2: what the user tried is not what the user did.
   if (!result.ok) return;
 
+  const CommandSpec* spec = findCommand(command.id);
+
   // --- §4: the marquee refusal -------------------------------------------
-  if (result.changesPixels && before.selectionLive && before.selectionChannel.empty()) {
+  //
+  // **`CommandSpec::selectionBounded`, not `CommandResult::changesPixels`.**
+  // The old proxy was wrong in both directions and both are now asserted:
+  // `flatten_image` / `image_size` / `canvas_size` change pixels and are not
+  // bounded by the selection, so they were refused for a reason that does not
+  // apply to them; `define_pattern` changes no pixel and IS bounded, so it
+  // sailed through and replayed as a whole-canvas pattern. A row missing from
+  // the table cannot get here at all -- `applyCommand()` refuses an unknown id
+  // before the tap exists -- but the null check is honest rather than
+  // decorative, because `note()` is a public method and this file is not its
+  // only possible caller.
+  const bool bounded = spec != nullptr && spec->selectionBounded;
+
+  if (bounded && before.selectionLive && before.selectionChannel.empty()) {
     refusals_.push_back(
         "refused to record \"" + command.id +
         "\": a selection was live that no saved channel matches. A selection is session "
@@ -92,12 +107,12 @@ void Recorder::note(const Command& command, const CommandResult& result,
         "document data and survives into the file), or deselect before recording.");
     return;
   }
-  if (result.changesPixels && before.selectionLive) {
+  if (bounded && before.selectionLive) {
     warnings_.push_back(
         "\"" + command.id + "\" was recorded under the saved selection \"" +
         before.selectionChannel +
-        "\". The step list cannot carry that on its own -- no command that loads a channel "
-        "as a selection is registered in this build -- so the action must load \"" +
+        "\". The step list does not carry that on its own, so the action must run "
+        "load_channel_as_selection with \"" +
         before.selectionChannel + "\" before this step or it will apply to the whole canvas.");
   }
 
@@ -124,7 +139,6 @@ void Recorder::note(const Command& command, const CommandResult& result,
   // one never does, because the user's intent was the layer they were looking
   // at and not the one a replay happens to arrive with.
   Command step = command;
-  const CommandSpec* spec = findCommand(command.id);
   if (spec != nullptr && takesLayerParam(*spec) && step.params.find("layer") == nullptr &&
       before.haveActiveLayer) {
     step.params.set("layer", JsonValue::string(before.activeLayerName));

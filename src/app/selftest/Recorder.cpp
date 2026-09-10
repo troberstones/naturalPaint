@@ -369,6 +369,93 @@ bool runRecorderTest() {
           "ambiguous: and the ambiguity is reported, naming the layer");
   }
 
+  std::printf("  -- G. the marquee rule reads the TABLE, not the texel count --\n");
+  {
+    // §4 used to decide which steps to police from
+    // `CommandResult::changesPixels`. `CommandSpec::selectionBounded` replaced
+    // it, and the two disagree about four commands -- three that were refused
+    // for a reason that does not apply to them, and one that was not refused
+    // and should have been. All four are asserted here through the real
+    // recorder under a real live marquee, because the table walk in
+    // app/selftest/Command.cpp section H can see only the claim and not the
+    // behaviour it is supposed to produce.
+    const Selection marquee = selectRectangle(8.0f, 8.0f, 32.0f, 32.0f);
+
+    // The three that change pixels and are NOT bounded. Each acts on the whole
+    // document by construction, so the marquee is not part of what the step
+    // meant and nothing is missing from the file.
+    {
+      OpenDocument od = makeRecorderDocument();
+      od.selection = marquee;
+      session.arm(od);
+      const CommandResult flat = applyCommand(od, Command{"flatten_image", JsonValue::object()});
+      session.stop();
+      check(flat.ok && session.refusals().empty() && session.usable(),
+            "unbounded: a flatten under a live marquee is no longer refused");
+      check(countId(session.steps(), "flatten_image") == 1,
+            "unbounded: and it really is in the step list");
+    }
+    {
+      OpenDocument od = makeRecorderDocument();
+      od.selection = marquee;
+      session.arm(od);
+      JsonValue size = JsonValue::object();
+      size.set("width", JsonValue::number(32));
+      size.set("height", JsonValue::number(32));
+      const CommandResult resized = applyCommand(od, Command{"image_size", size});
+      session.stop();
+      check(resized.ok && session.refusals().empty() &&
+                countId(session.steps(), "image_size") == 1,
+            "unbounded: a resize under a live marquee is recorded too");
+    }
+    {
+      OpenDocument od = makeRecorderDocument();
+      od.selection = marquee;
+      session.arm(od);
+      JsonValue canvas = JsonValue::object();
+      canvas.set("width", JsonValue::number(96));
+      canvas.set("height", JsonValue::number(96));
+      const CommandResult grown = applyCommand(od, Command{"canvas_size", canvas});
+      session.stop();
+      check(grown.ok && session.refusals().empty() &&
+                countId(session.steps(), "canvas_size") == 1,
+            "unbounded: a canvas resize under a live marquee is recorded too");
+    }
+
+    // **The direction the old proxy got wrong silently.** `define_pattern`
+    // reports `changesPixels == false` and IS bounded: its source rectangle is
+    // the selection's bounds, absent meaning the whole canvas. Recorded under
+    // a marquee and replayed with nothing selected, it defined a pattern the
+    // size of the document and reported success.
+    {
+      OpenDocument od = makeRecorderDocument();
+      od.selection = marquee;
+      session.arm(od);
+      JsonValue p = JsonValue::object();
+      p.set("name", JsonValue::string("Swatch"));
+      const CommandResult defined = applyCommand(od, Command{"define_pattern", p});
+      session.stop();
+      check(defined.ok, "bounded: define_pattern itself still ran");
+      check(session.steps().empty() && session.refusals().size() == 1,
+            "bounded: but a define_pattern under an unnamed marquee is now refused");
+      check(!session.refusals().empty() && contains(session.refusals()[0], "define_pattern"),
+            "bounded: and the refusal names it");
+    }
+
+    // The control. If the flag were simply read as false everywhere, all four
+    // assertions above would pass and the guard would be gone entirely; this
+    // is the one that says it is still there.
+    {
+      OpenDocument od = makeRecorderDocument();
+      od.selection = marquee;
+      session.arm(od);
+      const CommandResult blurred = applyCommand(od, blurStep(2.0));
+      session.stop();
+      check(blurred.ok && session.steps().empty() && session.refusals().size() == 1,
+            "bounded: a blur under an unnamed marquee is still refused");
+    }
+  }
+
   // Leave the session recorder stopped: it is process-wide, and a section that
   // left it armed would have every later section's `applyCommand()` appending
   // to a recording nobody is looking at.
