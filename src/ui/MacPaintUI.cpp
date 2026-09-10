@@ -36,6 +36,9 @@
 #include "app/BrushLibraryFile.hpp"
 #include "app/BrushRowIcon.hpp"
 #include "app/CloseDecision.hpp"
+#include "app/Command.hpp"
+#include "app/CommandsImage.hpp"
+#include "app/CommandsLayers.hpp"
 #include "app/CompPanel.hpp"
 #include "app/CropTool.hpp"  // Tool::Crop, both modes
 #include "app/PanelLayout.hpp"
@@ -1289,6 +1292,82 @@ float distancePointToSegment(ImVec2 p, ImVec2 a, ImVec2 b) {
 // function's own comment above ("the grading stack's own widget rather than
 // a second one"). Reopened immediately after this function's closing brace.
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// The three UI -> command-layer boundaries (ui/MacPaintUI.hpp)
+// ---------------------------------------------------------------------------
+//
+// At file scope, not in the anonymous namespace above, because `--selftest`
+// calls them -- and an anonymous-namespace function is exactly the "test that
+// tests a copy" this project has been bitten by twice. They still see
+// `g_layers` and every other file-local of this translation unit, which is
+// what lets `runLayerCommand()` below stay the panel-shaped wrapper it was.
+//
+// Nothing here decides anything. Each one is: build nothing, call
+// `applyCommand()`, translate `CommandResult` into the shape its callers
+// already spoke. The translation is the only code, and it is here rather than
+// repeated at seventeen dialogs for the reason `drawAdjustmentButtons()` gives
+// for existing at all -- "the three-way outcome is the part most likely to
+// drift if copied".
+
+PixelCommandOutcome runPixelCommand(OpenDocument& od, const Command& command,
+                                    const char* nothingChangedText) {
+  const CommandResult r = applyCommand(od, command);
+  PixelCommandOutcome out;
+  if (!r.ok) {
+    // The refusal sentence the command layer produced, verbatim and in the
+    // same red line the `pixelOpRefusalMessage()` this replaced went into.
+    // **Not always the same sentence**: `applyCommand()` also refuses a
+    // parameter the applier would have accepted and quietly turned into an
+    // identity (a sigma of 0, a strength of 0, a density of 0), because
+    // docs/automation-plan.md §7 makes "a silent no-op is the failure mode
+    // this feature is built to have" the command layer's rule. In the dialog
+    // that shows as an explanation where the old code closed the popup and
+    // said nothing the user could read -- `CloseCurrentPopup()` takes effect
+    // at `EndPopup()`, so its "Nothing changed" line was drawn for exactly one
+    // frame. This is the one behaviour difference step 2 knowingly ships; it
+    // is recorded in this commit's message and in docs/automation-plan.md.
+    out.status = r.status;
+    return out;
+  }
+  out.closeDialog = true;
+  // A success that moved no texels keeps the dialog's own sentence rather than
+  // `CommandResult::status`: "gaussian blur: 0 texels changed" is the
+  // replayer's report and "Nothing changed (radius 0, or no selected texels)"
+  // is the user's. Both mean the same thing; only one names what to do next.
+  if (r.changesPixels && r.texelsChanged == 0) out.status = nothingChangedText;
+  return out;
+}
+
+LayerCommandOutcome runLayerGesture(OpenDocument& od, LayerCommand command) {
+  const char* id = layerCommandId(command);
+  LayerCommandOutcome out;
+  if (id == nullptr) {
+    // Unreachable while `--selftest`'s exhaustiveness section is green: it
+    // walks `allLayerCommands()` and fails on any enumerator with no row. Said
+    // out loud anyway rather than dropped, because a gesture that silently did
+    // nothing is the failure this whole layer exists to end.
+    out.error = std::string("layer command refused: this build has no command row for \"") +
+                layerCommandLabel(command) + "\", so it cannot be applied or recorded.";
+    return out;
+  }
+  Command c;
+  c.id = id;
+  const CommandResult r = applyCommand(od, c);
+  out.ok = r.ok;
+  out.error = r.ok ? std::string() : r.status;
+  out.warnings = r.warnings;
+  return out;
+}
+
+LayerCommandOutcome runActiveLayerSetter(OpenDocument& od, const Command& command) {
+  const CommandResult r = applyCommand(od, command);
+  LayerCommandOutcome out;
+  out.ok = r.ok;
+  out.error = r.ok ? std::string() : r.status;
+  out.warnings = r.warnings;
+  return out;
+}
 
 bool drawCurveWidget(Curve& curve, float plotSize = 200.0f) {
   const float kPlotSize = plotSize;
@@ -8355,10 +8434,29 @@ void drawRecoveryDialog(AppState& st) {
 // verb-named confirm button and a `Cancel` beside it, function-local
 // `static` fields for the dialog's own widget state (this is UI state, not
 // `AppState`'s, per that struct's own ownership rule). The pixel that
-// actually changes is still, in every case, `app/FilterOps.cpp`'s four
-// `applyX()` functions -- the ones `--selftest` (app/selftest/FilterMenu.cpp)
-// also calls, so the dialog and the test cannot disagree about what
-// confirming one does.
+// actually changes is still, in every case, `app/FilterOps.cpp`'s `applyX()`
+// functions -- the ones `--selftest` (app/selftest/FilterMenu.cpp) also
+// calls, so the dialog and the test cannot disagree about what confirming one
+// does.
+//
+// **Reached through `app::applyCommand()` since docs/automation-plan.md step
+// 2**, not called directly. The appliers, their signatures and their tests are
+// untouched; what changed is that a confirm button now names a command
+// (`filter_gaussian_blur` and its six siblings, encoded by
+// app/CommandsImage.hpp) and hands it to the one door the recorder taps. A
+// dialog that called its applier around that door would be a user action that
+// silently failed to record, which is the entire argument of that step.
+//
+// One user-visible consequence, and it is the only one step 2 knowingly ships:
+// the command layer refuses a parameter at its documented identity (sigma 0,
+// strength 0, amount 0, density 0) rather than running an op that changes
+// nothing, because docs/automation-plan.md §7 makes a silent no-op the failure
+// mode this whole feature exists to prevent. The dialog therefore stays open
+// with that sentence where it used to close and say nothing legible -- its
+// "Nothing changed" line was drawn for exactly one frame, because
+// `CloseCurrentPopup()` takes effect at `EndPopup()`. A success that moved no
+// texels for any OTHER reason (an empty selection) still closes and still
+// shows the dialog's own sentence.
 //
 // **All four now carry a live preview (docs/testing-issues.md T15).** Each
 // dialog calls the matching `previewX()` (app/FilterOps.hpp) on every frame
@@ -8711,16 +8809,9 @@ void drawGaussianBlurDialog(AppState& st) {
   wasOpen = true;
 
   if (ImGui::Button("Blur") && od != nullptr) {
-    const FilterOpResult r = applyGaussianBlur(*od, sigma);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "gaussian blur");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (radius 0, or no selected texels).";
-      ImGui::CloseCurrentPopup();
-    } else {
-      status.clear();
-      ImGui::CloseCurrentPopup();
-    }
+    const PixelCommandOutcome out = runPixelCommand(*od, gaussianBlurCommand(sigma), "Nothing changed (radius 0, or no selected texels).");
+    status = out.status;
+    if (out.closeDialog) ImGui::CloseCurrentPopup();
   }
   ImGui::SameLine();
   if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
@@ -8772,16 +8863,9 @@ void drawSharpenDialog(AppState& st) {
   wasOpen = true;
 
   if (ImGui::Button("Sharpen") && od != nullptr) {
-    const FilterOpResult r = applySharpen(*od, strength);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "sharpen");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (strength 0, or no selected texels).";
-      ImGui::CloseCurrentPopup();
-    } else {
-      status.clear();
-      ImGui::CloseCurrentPopup();
-    }
+    const PixelCommandOutcome out = runPixelCommand(*od, sharpenCommand(strength), "Nothing changed (strength 0, or no selected texels).");
+    status = out.status;
+    if (out.closeDialog) ImGui::CloseCurrentPopup();
   }
   ImGui::SameLine();
   if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
@@ -8839,16 +8923,9 @@ void drawUnsharpMaskDialog(AppState& st) {
   wasOpen = true;
 
   if (ImGui::Button("Sharpen") && od != nullptr) {
-    const FilterOpResult r = applyUnsharpMask(*od, params);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "unsharp mask");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (amount or radius 0, or no selected texels).";
-      ImGui::CloseCurrentPopup();
-    } else {
-      status.clear();
-      ImGui::CloseCurrentPopup();
-    }
+    const PixelCommandOutcome out = runPixelCommand(*od, unsharpMaskCommand(params), "Nothing changed (amount or radius 0, or no selected texels).");
+    status = out.status;
+    if (out.closeDialog) ImGui::CloseCurrentPopup();
   }
   ImGui::SameLine();
   if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
@@ -8918,16 +8995,9 @@ void drawAddNoiseDialog(AppState& st) {
   wasOpen = true;
 
   if (ImGui::Button("Add Noise") && od != nullptr) {
-    const FilterOpResult r = applyAddNoise(*od, params);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "add noise");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (amount 0, or no selected texels).";
-      ImGui::CloseCurrentPopup();
-    } else {
-      status.clear();
-      ImGui::CloseCurrentPopup();
-    }
+    const PixelCommandOutcome out = runPixelCommand(*od, addNoiseCommand(params), "Nothing changed (amount 0, or no selected texels).");
+    status = out.status;
+    if (out.closeDialog) ImGui::CloseCurrentPopup();
   }
   ImGui::SameLine();
   if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
@@ -9008,16 +9078,9 @@ void drawEmbossDialog(AppState& st) {
   wasOpen = true;
 
   if (ImGui::Button("Emboss") && od != nullptr) {
-    const FilterOpResult r = applyEmboss(*od, params);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "emboss");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (amount 0, or no selected texels).";
-      ImGui::CloseCurrentPopup();
-    } else {
-      status.clear();
-      ImGui::CloseCurrentPopup();
-    }
+    const PixelCommandOutcome out = runPixelCommand(*od, embossCommand(params), "Nothing changed (amount 0, or no selected texels).");
+    status = out.status;
+    if (out.closeDialog) ImGui::CloseCurrentPopup();
   }
   ImGui::SameLine();
   if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
@@ -9061,16 +9124,9 @@ void drawMedianDialog(AppState& st) {
   wasOpen = true;
 
   if (ImGui::Button("Despeckle") && od != nullptr) {
-    const FilterOpResult r = applyMedian(*od, params);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "median");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (radius 0, or no selected texels).";
-      ImGui::CloseCurrentPopup();
-    } else {
-      status.clear();
-      ImGui::CloseCurrentPopup();
-    }
+    const PixelCommandOutcome out = runPixelCommand(*od, medianCommand(params), "Nothing changed (radius 0, or no selected texels).");
+    status = out.status;
+    if (out.closeDialog) ImGui::CloseCurrentPopup();
   }
   ImGui::SameLine();
   if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
@@ -9121,16 +9177,9 @@ void drawMotionBlurDialog(AppState& st) {
   wasOpen = true;
 
   if (ImGui::Button("Motion Blur") && od != nullptr) {
-    const FilterOpResult r = applyMotionBlur(*od, params);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "motion blur");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (distance 0, or no selected texels).";
-      ImGui::CloseCurrentPopup();
-    } else {
-      status.clear();
-      ImGui::CloseCurrentPopup();
-    }
+    const PixelCommandOutcome out = runPixelCommand(*od, motionBlurCommand(params), "Nothing changed (distance 0, or no selected texels).");
+    status = out.status;
+    if (out.closeDialog) ImGui::CloseCurrentPopup();
   }
   ImGui::SameLine();
   if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
@@ -9344,27 +9393,38 @@ bool drawLevelsHistogramWidget(const HistogramResult& hist, int channelIdx, Leve
   return edited;
 }
 
-// Shared tail of all four dialogs: the commit button, Cancel, and the refusal
-// line. `applyFn` returns the `FilterOpResult` its `applyX()` produced.
+// Shared tail of all thirteen dialogs: the commit button, Cancel, and the
+// refusal line.
 //
-// Written once rather than four times because the three-way outcome -- refused
-// / changed nothing / done -- is the part most likely to drift if copied, and
-// because "nothing changed" MUST close the popup rather than sit there looking
-// broken (a neutral params struct is a legitimate thing to click OK on).
-template <typename ApplyFn>
-void drawAdjustmentButtons(OpenDocument* od, const char* verb, const char* label,
-                           std::string& status, ApplyFn applyFn) {
+// Written once rather than thirteen times because the three-way outcome --
+// refused / changed nothing / done -- is the part most likely to drift if
+// copied, and because "nothing changed" MUST close the popup rather than sit
+// there looking broken (a neutral params struct is a legitimate thing to click
+// OK on).
+//
+// **`command` replaced an `applyFn` callable** (docs/automation-plan.md step
+// 2). It is built by the caller from the params struct its own sliders hold,
+// through the encoder that lives beside the reader (app/CommandsImage.hpp),
+// and it is what makes these thirteen dialogs recordable: the recorder taps
+// `applyCommand()`, so a dialog that called its applier directly was a user
+// action that silently failed to record. `label` went with the callable --
+// the refusal sentence now arrives in `CommandResult::status`, already naming
+// the op, which is the same sentence `pixelOpRefusalMessage()` produced from
+// the same refusal.
+//
+// It is built on every frame the dialog is open rather than only on the click,
+// because the argument is evaluated before `ImGui::Button()` returns and
+// hoisting it behind the press would mean a second copy of every caller's
+// params expression. A `JsonValue` of a dozen numbers, once per frame of an
+// open modal, is not a cost this file needs to think about.
+void drawAdjustmentButtons(OpenDocument* od, const char* verb, std::string& status,
+                           const Command& command) {
   if (ImGui::Button(verb) && od != nullptr) {
-    const FilterOpResult r = applyFn(*od);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), label);
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (neutral settings, or no selected texels).";
-      ImGui::CloseCurrentPopup();
-    } else {
-      status.clear();
-      ImGui::CloseCurrentPopup();
-    }
+    const PixelCommandOutcome out =
+        runPixelCommand(*od, command, "Nothing changed (neutral settings, or no selected "
+                                      "texels).");
+    status = out.status;
+    if (out.closeDialog) ImGui::CloseCurrentPopup();
   }
   ImGui::SameLine();
   if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
@@ -9447,8 +9507,7 @@ void drawLevelsDialog(AppState& st) {
     updateFilterPreview(od, FilterPreviewOwner::AdjustLevels, previewLevelsAdjustment, channels);
   wasOpen = true;
 
-  drawAdjustmentButtons(od, "Levels", "levels", status,
-                        [](OpenDocument& d) { return applyLevelsAdjustment(d, channels); });
+  drawAdjustmentButtons(od, "Levels", status, levelsCommand(channels));
   ImGui::EndPopup();
 }
 
@@ -9505,8 +9564,7 @@ void drawCurvesDialog(AppState& st) {
     updateFilterPreview(od, FilterPreviewOwner::AdjustCurves, previewCurvesAdjustment, channels);
   wasOpen = true;
 
-  drawAdjustmentButtons(od, "Curves", "curves", status,
-                        [](OpenDocument& d) { return applyCurvesAdjustment(d, channels); });
+  drawAdjustmentButtons(od, "Curves", status, curvesCommand(channels));
   ImGui::EndPopup();
 }
 
@@ -9537,8 +9595,7 @@ void drawExposureDialog(AppState& st) {
     updateFilterPreview(od, FilterPreviewOwner::AdjustExposure, previewExposureAdjustment, params);
   wasOpen = true;
 
-  drawAdjustmentButtons(od, "Exposure", "exposure", status,
-                        [](OpenDocument& d) { return applyExposureAdjustment(d, params); });
+  drawAdjustmentButtons(od, "Exposure", status, exposureCommand(params));
   ImGui::EndPopup();
 }
 
@@ -9590,8 +9647,7 @@ void drawChannelMixerDialog(AppState& st) {
                         previewChannelMixerAdjustment, params);
   wasOpen = true;
 
-  drawAdjustmentButtons(od, "Mix", "channel mixer", status,
-                        [](OpenDocument& d) { return applyChannelMixerAdjustment(d, params); });
+  drawAdjustmentButtons(od, "Mix", status, channelMixerCommand(params));
   ImGui::EndPopup();
 }
 
@@ -9638,8 +9694,7 @@ void drawBrightnessContrastDialog(AppState& st) {
     updateFilterPreview(od, FilterPreviewOwner::AdjustBrightnessContrast,
                         previewBrightnessContrast, params);
   wasOpen = true;
-  drawAdjustmentButtons(od, "Apply", "brightness/contrast", status,
-                        [](OpenDocument& d) { return applyBrightnessContrast(d, params); });
+  drawAdjustmentButtons(od, "Apply", status, brightnessContrastCommand(params));
   ImGui::EndPopup();
 }
 
@@ -9685,8 +9740,7 @@ void drawHueSaturationDialog(AppState& st) {
     updateFilterPreview(od, FilterPreviewOwner::AdjustHueSaturation,
                         previewHueSaturationAdjustment, params);
   wasOpen = true;
-  drawAdjustmentButtons(od, "Apply", "hue/saturation", status,
-                        [](OpenDocument& d) { return applyHueSaturationAdjustment(d, params); });
+  drawAdjustmentButtons(od, "Apply", status, hueSaturationCommand(params));
   ImGui::EndPopup();
 }
 
@@ -9710,8 +9764,7 @@ void drawVibranceDialog(AppState& st) {
   if (edited || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustVibrance, previewVibranceAdjustment, params);
   wasOpen = true;
-  drawAdjustmentButtons(od, "Apply", "vibrance", status,
-                        [](OpenDocument& d) { return applyVibranceAdjustment(d, params); });
+  drawAdjustmentButtons(od, "Apply", status, vibranceCommand(params));
   ImGui::EndPopup();
 }
 
@@ -9752,8 +9805,7 @@ void drawColorBalanceDialog(AppState& st) {
     updateFilterPreview(od, FilterPreviewOwner::AdjustColorBalance,
                         previewColorBalanceAdjustment, params);
   wasOpen = true;
-  drawAdjustmentButtons(od, "Apply", "colour balance", status,
-                        [](OpenDocument& d) { return applyColorBalanceAdjustment(d, params); });
+  drawAdjustmentButtons(od, "Apply", status, colorBalanceCommand(params));
   ImGui::EndPopup();
 }
 
@@ -9796,8 +9848,7 @@ void drawBlackAndWhiteDialog(AppState& st) {
     updateFilterPreview(od, FilterPreviewOwner::AdjustBlackAndWhite,
                         previewBlackAndWhiteAdjustment, params);
   wasOpen = true;
-  drawAdjustmentButtons(od, "Apply", "black & white", status,
-                        [](OpenDocument& d) { return applyBlackAndWhiteAdjustment(d, params); });
+  drawAdjustmentButtons(od, "Apply", status, blackAndWhiteCommand(params));
   ImGui::EndPopup();
 }
 
@@ -9837,8 +9888,7 @@ void drawPhotoFilterDialog(AppState& st) {
     updateFilterPreview(od, FilterPreviewOwner::AdjustPhotoFilter,
                         previewPhotoFilterAdjustment, params);
   wasOpen = true;
-  drawAdjustmentButtons(od, "Apply", "photo filter", status,
-                        [](OpenDocument& d) { return applyPhotoFilterAdjustment(d, params); });
+  drawAdjustmentButtons(od, "Apply", status, photoFilterCommand(params));
   ImGui::EndPopup();
 }
 
@@ -9868,8 +9918,7 @@ void drawPosterizeDialog(AppState& st) {
     updateFilterPreview(od, FilterPreviewOwner::AdjustPosterize, previewPosterizeAdjustment,
                         params);
   wasOpen = true;
-  drawAdjustmentButtons(od, "Apply", "posterize", status,
-                        [](OpenDocument& d) { return applyPosterizeAdjustment(d, params); });
+  drawAdjustmentButtons(od, "Apply", status, posterizeCommand(params));
   ImGui::EndPopup();
 }
 
@@ -9894,8 +9943,7 @@ void drawThresholdDialog(AppState& st) {
     updateFilterPreview(od, FilterPreviewOwner::AdjustThreshold, previewThresholdAdjustment,
                         params);
   wasOpen = true;
-  drawAdjustmentButtons(od, "Apply", "threshold", status,
-                        [](OpenDocument& d) { return applyThresholdAdjustment(d, params); });
+  drawAdjustmentButtons(od, "Apply", status, thresholdCommand(params));
   ImGui::EndPopup();
 }
 
@@ -9961,8 +10009,7 @@ void drawGradientMapDialog(AppState& st) {
     updateFilterPreview(od, FilterPreviewOwner::AdjustGradientMap,
                         previewGradientMapAdjustment, params);
   wasOpen = true;
-  drawAdjustmentButtons(od, "Apply", "gradient map", status,
-                        [](OpenDocument& d) { return applyGradientMapAdjustment(d, params); });
+  drawAdjustmentButtons(od, "Apply", status, gradientMapCommand(params));
   ImGui::EndPopup();
 }
 
@@ -9973,15 +10020,24 @@ void drawGradientMapDialog(AppState& st) {
 // named as a real gap rather than a design: a painter who invokes Auto Tone
 // on a Pigment layer sees nothing happen and gets no account of why. The fix
 // is a transient status line in the chrome, which does not exist yet.
-template <typename ApplyFn>
-void performImmediateAdjustment(AppState& st, const char* label, ApplyFn applyFn) {
+// Through `applyCommand()` since docs/automation-plan.md step 2, for the
+// reason `drawAdjustmentButtons()` above gives: these six are exactly as
+// recordable as the thirteen with dialogs, and a route around the command
+// layer is a user action that silently fails to record. Nothing else about
+// them moves -- each command's adapter calls the identical
+// `app/AdjustmentOps` entry point with the identical default params struct
+// (app/CommandsImage.hpp says why an empty params object is exactly, not
+// approximately, what `applyInvert(doc)` meant).
+//
+// **The stderr line stays a real gap and stays worded the same way.** It now
+// prints `CommandResult::status` -- the same refusal, from the same
+// `pixelOpRefusalFor()`, reached one layer up -- but it is still stderr,
+// because there is still no transient status line in the chrome to put it in.
+void performImmediateAdjustment(AppState& st, const char* label, const Command& command) {
   OpenDocument* od = st.documents.active();
   if (od == nullptr) return;
-  const FilterOpResult r = applyFn(*od);
-  if (r.refusal != PixelOpRefusal::None) {
-    std::fprintf(stderr, "[%s] %s\n", label,
-                 pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), label).c_str());
-  }
+  const CommandResult r = applyCommand(*od, command);
+  if (!r.ok) std::fprintf(stderr, "[%s] %s\n", label, r.status.c_str());
 }
 
 // The single consumer of `AppState::requestAdjustment`. Runs BEFORE the four
@@ -10020,28 +10076,22 @@ void serviceAdjustmentRequest(AppState& st) {
 
     // The six that act on the spot.
     case AdjustmentRequest::Desaturate:
-      performImmediateAdjustment(st, "desaturate",
-                                 [](OpenDocument& d) { return applyDesaturate(d); });
+      performImmediateAdjustment(st, "desaturate", desaturateCommand());
       break;
     case AdjustmentRequest::Invert:
-      performImmediateAdjustment(st, "invert",
-                                 [](OpenDocument& d) { return applyInvert(d); });
+      performImmediateAdjustment(st, "invert", invertCommand());
       break;
     case AdjustmentRequest::AutoTone:
-      performImmediateAdjustment(st, "auto tone",
-                                 [](OpenDocument& d) { return applyAutoTone(d); });
+      performImmediateAdjustment(st, "auto tone", autoToneCommand());
       break;
     case AdjustmentRequest::AutoContrast:
-      performImmediateAdjustment(st, "auto contrast",
-                                 [](OpenDocument& d) { return applyAutoContrast(d); });
+      performImmediateAdjustment(st, "auto contrast", autoContrastCommand());
       break;
     case AdjustmentRequest::AutoColor:
-      performImmediateAdjustment(st, "auto colour",
-                                 [](OpenDocument& d) { return applyAutoColor(d); });
+      performImmediateAdjustment(st, "auto colour", autoColorCommand());
       break;
     case AdjustmentRequest::Equalize:
-      performImmediateAdjustment(st, "equalize",
-                                 [](OpenDocument& d) { return applyEqualize(d); });
+      performImmediateAdjustment(st, "equalize", equalizeCommand());
       break;
 
     case AdjustmentRequest::None:
@@ -10118,11 +10168,19 @@ void drawImageSizeDialog(AppState& st) {
   const bool valid = width > 0 && height > 0;
   if (!valid) ImGui::BeginDisabled();
   if (ImGui::Button("Resize") && od != nullptr) {
-    const DocumentOpOutcome r =
-        applyImageSize(*od, static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-                       kKernels[kernelIdx]);
-    status = r.ok ? std::string() : r.error;
-    if (r.ok) ImGui::CloseCurrentPopup();
+    // Through `applyCommand()` (docs/automation-plan.md step 2). "Resize to
+    // 512x512" is the plan's own first worked example of a recordable action,
+    // and it was the one this dialog could not record. `runPixelCommand()`'s
+    // "nothing changed" sentence is unreachable here: `fromDocumentOutcome()`
+    // reports an honest 1 for every success because `applyImageSize()` cannot
+    // tell it whether the extent moved -- that helper's own note.
+    const PixelCommandOutcome out = runPixelCommand(
+        *od,
+        imageSizeCommand(static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                         kKernels[kernelIdx]),
+        "");
+    status = out.status;
+    if (out.closeDialog) ImGui::CloseCurrentPopup();
   }
   if (!valid) ImGui::EndDisabled();
   ImGui::SameLine();
@@ -10175,11 +10233,19 @@ void drawCanvasSizeDialog(AppState& st) {
   const bool valid = width > 0 && height > 0;
   if (!valid) ImGui::BeginDisabled();
   if (ImGui::Button("Resize") && od != nullptr) {
-    const DocumentOpOutcome r =
-        applyCanvasSize(*od, static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-                        static_cast<CanvasAnchor>(anchorIdx));
-    status = r.ok ? std::string() : r.error;
-    if (r.ok) ImGui::CloseCurrentPopup();
+    // The anchor crosses as a NAME, never as `anchorIdx` (docs/automation-plan
+    // .md §5): `canvasAnchorName()` is the encoding, and ops/Transform.hpp
+    // argues at length why this enum in particular would be the worst one to
+    // key by position. The cast to `CanvasAnchor` stays -- the nine-cell grid
+    // above is declared in the enum's own order, which is what makes it legal
+    // -- and the name is taken from the enumerator, not from the index.
+    const PixelCommandOutcome out = runPixelCommand(
+        *od,
+        canvasSizeCommand(static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                          static_cast<CanvasAnchor>(anchorIdx)),
+        "");
+    status = out.status;
+    if (out.closeDialog) ImGui::CloseCurrentPopup();
   }
   if (!valid) ImGui::EndDisabled();
   ImGui::SameLine();
@@ -15087,16 +15153,28 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // the same channel the bucket's and the gradient's refusals already use,
       // so "why did nothing happen" has one answer and one place to read it.
       if (od != nullptr && (st.requestCropToSelection || st.requestTrimToContent)) {
-        const DocumentTransformResult r = st.requestCropToSelection
-                                              ? applyCropToSelection(*od)
-                                              : applyTrimToContent(*od);
+        // Through `applyCommand()` (docs/automation-plan.md step 2). The two
+        // crops are `crop_to_selection` and `trim_to_content`, neither of
+        // which carries a parameter: the region comes from
+        // `OpenDocument::selection`, and recording marquee coordinates "is
+        // the wrong answer; they are meaningless at another resolution"
+        // (§7).
+        //
+        // The before/after extents that used to be printed from
+        // `DocumentTransformResult` are `CommandResult::status`'s own
+        // sentence now, produced by `fromDocumentTransform()` from the same
+        // two fields -- including the case this line could not state, a
+        // successful crop of a document that was already that size. The
+        // locked-layer count comes across as a warning, which this line had
+        // no way to see before and ops/DocumentTransform.hpp §5 says a UI
+        // should say out loud.
+        const CommandResult r = applyCommand(
+            *od, st.requestCropToSelection ? cropToSelectionCommand() : trimToContentCommand());
         if (!r.ok) {
-          g_strokeRefusal = r.error;
+          g_strokeRefusal = r.status;
         } else {
-          std::printf("[crop] %s: %dx%d -> %ux%u\n",
-                      st.requestCropToSelection ? "crop to selection" : "trim to content",
-                      r.previousWidth, r.previousHeight, od->document.width,
-                      od->document.height);
+          std::printf("[crop] %s\n", r.status.c_str());
+          for (const std::string& w : r.warnings) std::printf("[crop]   warning: %s\n", w.c_str());
         }
       }
       st.requestCropToSelection = false;
