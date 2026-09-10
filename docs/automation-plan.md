@@ -448,12 +448,19 @@ Baseline on that base: **8619 pass, 0 FAIL**, `--selftest` exit 0.
 - [x] sabotage: a claimed-but-unregistered id goes red, and adding a `MenuAction`
       enumerator fails the build by name in `CommandCoverage.cpp`
 
-### Step 2 — migrate the call sites (49)
+### Step 2 — migrate the call sites (46, not 49 — see §6's "step 2, as built")
 
-- [ ] 29 sites across the 28 public `FilterOps`/`AdjustmentOps` appliers
-- [ ] 4 `applyLayerCommand` / `applyLayerSetCommand` sites
-- [ ] 16 `core/LayerOps` setter sites
-- [ ] **gate:** Filter and Adjustments golden views unchanged; `--selftest` additions-only
+- [x] 29 sites across the 28 public `FilterOps`/`AdjustmentOps` appliers — all migrated
+- [x] 4 `applyLayerCommand` / `applyLayerSetCommand` sites — 1 migrated,
+      3 named exceptions (`runLayerSetCommand()`, and both demo drivers)
+- [x] ~~16~~ **13** `core/LayerOps` setter sites — 10 migrated, 3 named exceptions
+      (the eye, the padlock, the inline rename: they address a ROW, and a row has no
+      unambiguous name)
+- [x] the encoders the migration needed: `app/CommandsImage.hpp` (30) and
+      `app/CommandsLayers.hpp` (7), beside the readers they feed
+- [x] **gate:** `--selftest` additions-only, 9095 → 9121, 0 FAIL, exit 0
+- [x] **gate:** golden — argued, not run. **There are no Filter or Adjustments views
+      to move**, and no launch flag reaches a migrated line in any of the 58
 
 ### Step 3 — `app/Recorder`
 
@@ -559,3 +566,7 @@ Filled in as steps complete. Empty until step 0 runs.
 
 | date | step | finding |
 |---|---|---|
+| 2026-09-09 | 2 | The count was 49 and is 46: the layer-setter figure was 16, and thirteen of those are UI sites — the other six are main.cpp fixture builders. |
+| 2026-09-09 | 2 | **Six sites cannot be migrated at all, and they are one problem**: a layer name is not unique, so a control that acts on a ROW has no target a command can name. `Layer::id` is what would close all six, and it is 0 on every layer this build creates. |
+| 2026-09-09 | 2 | The step's own gate names golden views that do not exist. There is no launch flag that opens a Filter or an Adjustments modal, so the harness has never photographed one. |
+| 2026-09-09 | 2 | Un-migrating ONE call site leaves the suite green — an inert sabotage, recorded because it bounds what the new section proves. It asserts the three boundaries reach `applyCommand()`, not that each of the forty controls calls a boundary. |
