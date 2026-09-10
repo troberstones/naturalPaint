@@ -1,5 +1,7 @@
 #include "io/Export.hpp"
 
+#include "io/PsdExport.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -249,12 +251,10 @@ std::string exportRefusalReason(ImageFormat format, ExportTargetSpace targetSpac
       message += imageFormatName(format);
       message +=
           " can be read by this build but not written -- there is no writer for it here. ";
-      if (format == ImageFormat::Psd) {
-        message +=
-            "PLAN.md Phase 4 step 2 asks for flattened PSD *read* only; PSD export is phase "
-            "15, and the OpenImageIO linked here has no PSD writer at all (its "
-            "output_format_list contains no 'psd' entry).";
-      }
+      // PSD is no longer one of these -- `canWrite` is true since phase 15
+      // landed. It is left unmentioned here rather than given a stale
+      // branch: this arm is reached only by a format this build genuinely
+      // cannot write, and a message naming PSD would now be a lie.
     }
     return message;
   }
@@ -471,6 +471,31 @@ ExportResult exportDocument(const Document& doc, ImageFormat format,
                   doc.width, doc.height);
     return failure(buf);
   }
+  // **PSD does not go through `encodeLinearImage()`, and that is the point.**
+  // Every other format here is written from the FLATTENED composite; a PSD
+  // written that way would be a one-layer PSD, which is a worse PNG. So this
+  // is the one format whose encoder is handed the `Document` itself
+  // (io/PsdExport's `writeLayeredPsd()`), and it writes the same flattened
+  // composite into its Image Data Section internally -- so the two paths
+  // cannot disagree about what the picture is.
+  if (format == ImageFormat::Psd) {
+    const std::string refusal = exportRefusalReason(format, targetSpace, bitDepth, &doc.workingSpace, &flat);
+    if (!refusal.empty()) return failure(refusal);
+
+    const PsdExportResult psd = writeLayeredPsd(doc);
+    if (!psd.ok) return failure(psd.error);
+
+    ExportResult result;
+    result.ok = true;
+    result.bytes = psd.bytes;
+    // The flatten's warnings AND the writer's own, in that order: the first
+    // are about the composite, the second name layers whose latents, op
+    // stacks or editability the format cannot carry.
+    result.warnings = std::move(warnings);
+    result.warnings.insert(result.warnings.end(), psd.warnings.begin(), psd.warnings.end());
+    return result;
+  }
+
   ExportResult result = encodeLinearImage(flat, doc.workingSpace, format, targetSpace, bitDepth);
   // Carried on a refusal too. A user whose EXR export was refused for a depth
   // reason still needs to know the composite it would have written is an
