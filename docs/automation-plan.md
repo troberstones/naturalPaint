@@ -411,12 +411,28 @@ Baseline on that base: **8619 pass, 0 FAIL**, `--selftest` exit 0.
 
 ### Step 5 — `replayAction()`
 
-- [ ] resolve layers by name and kind; refuse by name, having changed nothing
-- [ ] consult each step's precondition (`menuItemEnabled`-equivalent) before applying
-- [ ] a step that changes zero texels is a reported warning, never a silent pass
-- [ ] a non-`PointA` or `Unknown` op-stack step refuses the run
-- [ ] the whole replay is one history entry
-- [ ] **gate:** A-recorded → B-replayed produces A's pixels; a missing layer refuses
+- [x] resolve layers by name and kind; refuse by name, having changed nothing
+- [x] consult each step's precondition — `applyCommand()` already does, in front of the
+      recorder tap, so replay gets it by going through the one door rather than by asking
+- [x] a step that changes zero texels is a reported warning, never a silent pass
+- [x] a non-`PointA` or `Unknown` op-stack step refuses the run — **in pre-flight**, so not
+      one step of such an action is attempted
+- [x] the whole replay is one history entry
+- [x] **the shape decision:** the run happens on a scratch copy and the caller's document is
+      assigned only when the last step has succeeded. "Refuses without touching a pixel" is
+      then not a promise the function makes but one it **cannot break** — there is no write
+      to the caller's document on the refusing path. The alternatives were a static
+      pre-flight (which cannot work: the plan's own example selects a layer step 2 creates)
+      and apply-then-undo (a restore procedure, which is code that can have a bug, reached
+      only when a replay has already gone wrong)
+- [x] `RecorderSuspension` — an armed recording does not swallow a replay's steps. Not
+      `stop()`: stopping ends the take and offers to save it, with no way back
+- [x] **gate:** A-recorded → B-replayed produces A's pixels; a missing layer refuses
+- [x] sabotage: 7 run, **2 were green** — "a refused run changes nothing" could not fail
+      (it refused at step 1, when the scratch is still identical), and the gate itself
+      could not fail, because it located the layer it inspected with the very
+      `layerIndexNamed()` the sabotage broke, and because comparing A to B cannot detect a
+      mistake they both make. Both rewritten and re-proved
 
 ### Step 6 — `app/Batch` and `--batch`
 
@@ -456,6 +472,20 @@ appending to one `std::vector<CommandSpec>` literal is one shared conflict, and
 
 Steps 2 (migrate the 49 call sites), 5 (replay), 6 (batch) and 7 (UI) are the sequential
 chain and are not scattered — each needs the one before it.
+
+### The second wave — dispatched 2026-09-09, after `main` was merged in at `af11e53`
+
+The claim above turned out to be too strong, and the shape of the dependency is worth
+recording because it is what made a second scatter possible. Step 2 needs step 1 and
+nothing else; step 5 needs steps 1 and 4 and **not** step 2; the eight coverage gaps need
+none of them. Only 6 and 7 are genuinely downstream, and 7 splits: the ACTIONS panel needs
+the recorder and the replayer, the BATCH dialog needs `app/Batch`.
+
+| branch | worktree | owns | step |
+|---|---|---|---|
+| `wave2/callsites` | `np-image` | the 49 UI call sites | 2 |
+| `wave2/gaps` | `np-layers` | the 5 refine rows, `selectionBounded`, two follow-ups | 1 |
+| — | `naturalPaint-automation` | `app/Replay` | 5 |
 
 **Gather-time checks, none of which a track can do for itself:**
 
