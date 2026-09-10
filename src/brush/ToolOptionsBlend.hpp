@@ -16,17 +16,21 @@
 // mapping; `BrushTip::blend` (brush/Deposit.hpp) is where `brushTipFor()`
 // stores the result.
 //
-// **Not wired into any deposit route.** `brushTipFor()`'s own comment on
-// `BrushTip::blend` names the two obstacles a bounded investigation found:
+// **Wired into exactly one deposit route: `brush/RgbDeposit`.** The two
+// obstacles that stopped this mapping from reaching ANY route both name an
+// RGBA-shaped destination, and one of the four still has one:
 // a Pigment texel has no premultiplied RGBA for `core::blendPixel()` to
 // blend (`core::Pigment.hpp` stores a straight latent plus a mass, and
 // `rgbToLatent()` -- the only way back from a blended RGBA to a latent --
 // is documented elsewhere in this codebase as "plausible rather than true",
 // which is not the reading this project uses for anything that paints), and
 // Photoshop's own Eraser tool does not consult a brush's blend mode at all,
-// so wiring `tip.blend` into either erase route would be inventing a
-// behaviour Photoshop itself does not have. The mapping and the field are
-// left in place, harmless and unused, as groundwork.
+// so wiring `tip.blend` into either erase route would still be inventing a
+// behaviour Photoshop itself does not have -- both obstacles stand exactly
+// as before for Pigment and for both erase routes. A plain RGB layer has
+// neither problem: its texel already IS premultiplied RGBA, and
+// `brush/RgbDeposit.hpp` §2a is the stroke-level (never per-dab) composite
+// that reads this mapping's output, through `RgbStroke::begin()`.
 //
 // **`core::BlendMode` itself is not grown for this.** It is the layer-
 // compositing vocabulary, serialized into the document file format, and an

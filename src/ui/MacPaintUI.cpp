@@ -6032,6 +6032,21 @@ void drawBrushTransferGroup(AppState& st) {
 void drawBrushToolOptionsGroup(AppState& st) {
   // No `enabled` field on `PsToolOptions` -- Tool Options has no off switch
   // in Photoshop either (BrushSettingsTab::ToolOptions's own comment).
+  //
+  // **Blend Mode is now the one field below this line the engine actually
+  // reads on a stroke** -- brush/RgbDeposit.hpp §2a, reached through
+  // `brush/ToolOptionsBlend.hpp`'s mapping and `RgbStroke::begin()`. Opacity,
+  // Flow and Smoothing are not: `BrushState::opacity`/`load` (the brush's own
+  // sliders, drawn on the Paint group, not this imported value) are what a
+  // stroke actually reads for the first two, and Smoothing has no engine
+  // target at all. Said here, once, rather than leaving the reader to guess
+  // which of four adjacent fields the RGB-blend work below changed.
+  textDisabledWrapped(
+      "Blend Mode IS applied to a stroke on an RGB layer (Normal, Multiply and Darken "
+      "-- Linear Burn and Dissolve are refused by name, brush/ToolOptionsBlend.hpp) and "
+      "does nothing on a Pigment layer, which has no RGBA to blend. Opacity, Flow and "
+      "Smoothing below are parsed and carried but not applied -- the brush's own "
+      "Opacity/Flow sliders are what a stroke actually reads.");
   drawBrushModelFieldsForPrefix(st, "options.");
 
   // The bare top-level checkbox tail -- `noise`/`wetEdges`/`airbrush`/

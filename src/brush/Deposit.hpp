@@ -802,15 +802,20 @@ struct BrushTip {
   // (`blendModeFromPsToolOptions()`, brush/ToolOptionsBlend.hpp) onto this
   // project's layer-compositing vocabulary (`core::BlendMode`).
   //
-  // **Set by `brushTipFor()`, read by nothing downstream yet.** None of the
-  // four deposit routes (`brush/RgbDeposit`, `brush/RgbErase`,
-  // `brush/PigmentErase`, the free `depositDab()` for Pigment) thread this
-  // through to their own per-texel write -- see `brushTipFor()`'s own
-  // comment for the two obstacles that stopped that (a Pigment texel has no
-  // premultiplied RGBA to blend, and Photoshop's own Eraser tool does not
-  // read a brush's blend mode at all). The field and the mapping function
-  // are left in place, harmless and unused, as the groundwork a future task
-  // can build the wiring on top of without re-deriving the mapping.
+  // **Set by `brushTipFor()`. Read by exactly ONE downstream consumer:
+  // `brush/RgbDeposit`'s `RgbStroke`, on the RGB deposit route, and nowhere
+  // else.** `app/StrokeSession.cpp`'s `StrokeSession::begin()` passes it to
+  // `RgbStroke::begin()` only when `route_ == StrokeRoute::RgbDeposit`; every
+  // other route (`brush/RgbErase`, `brush/PigmentErase`, the free
+  // `depositDab()` for Pigment, and heal/clone/smudge/tonal/mask/pencil)
+  // still ignores it, for the two obstacles this comment used to name as
+  // having stopped ALL wiring: a Pigment texel has no premultiplied RGBA to
+  // blend, and Photoshop's own Eraser tool does not read a brush's blend
+  // mode at all. Neither obstacle applies to a plain RGB layer, which is why
+  // this is one reader and not zero -- see `brush/RgbDeposit.hpp` §2a for the
+  // stroke-level (never per-dab) composite that reads it, and
+  // `brush/ToolOptionsBlend.hpp` for which of the five Photoshop ids
+  // (`Nrml`/`Mltp`/`Drkn`/`linearBurn`/`Dslv`) ever reach here at all.
   BlendMode blend = BlendMode::Normal;
 
   // **`sizeFloorPx` is gone.** Through commit 8f6f960 this held the pixel

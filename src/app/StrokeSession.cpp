@@ -1538,8 +1538,13 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // through. Read here rather than inside `rgb_` because `Layer` is what this
   // file already has in hand and `brush/RgbDeposit` deliberately knows nothing
   // about one (its header §5, "No Document, no Layer").
+  // `tip.blend`, latched with the ink/ceiling/lock for the identical reason
+  // (brush/RgbDeposit.hpp §2a): the RGB route is the ONLY one that reads it
+  // -- pigment has no RGBA to blend and erase/heal/clone/smudge/tonal/mask/
+  // pencil do not consult a brush's blend mode in Photoshop either
+  // (`BrushTip::blend`'s own comment names this as the one reader).
   if (route_ == StrokeRoute::RgbDeposit)
-    rgb_.begin(tip.linearRgb, resolvedOpacity, layer.alphaLocked);
+    rgb_.begin(tip.linearRgb, resolvedOpacity, layer.alphaLocked, tip.blend);
   else
     rgb_.end();
 
