@@ -333,7 +333,7 @@ bool runCommandTest() {
           "coverage: every id the classification claims is registered really is");
     check(everyExclusionGivesAReason,
           "coverage: every action left out of the table carries the reason it is out");
-    check(registered >= 33, "coverage: the registered set is the size the table says it is");
+    check(registered >= 40, "coverage: the registered set is the size the table says it is");
 
     // **The number is the review.** This list may shrink freely; it cannot grow
     // without someone editing the literal below, which is the only moment a new
@@ -341,8 +341,16 @@ bool runCommandTest() {
     // have given each of them a fake justification and made the table look
     // complete -- see app/CommandCoverage.hpp §2.
     std::printf("      %zu document edits are classified as not-yet-registered\n", notYet);
-    check(notYet == 8,
-          "coverage: exactly the eight known gaps, and no new one has appeared");
+    // Was eight. Six closed at once: PRD E4/E8/E9's five refines were
+    // registered (app/CommandsOpStack.cpp §4), and `SelectUndoRefine` --
+    // listed beside them as a sixth gap -- turned out on reading the code not
+    // to be one at all. It pops `OpenDocument::refineUndoStack`, which that
+    // member's own comment is explicit is per-session state outside both
+    // core::History and the file, so it is NotRecordable for the reason Undo
+    // and Redo are. The two left are `NumericTransform` and `DeleteSelection`,
+    // each of which states what it is waiting for.
+    check(notYet == 2,
+          "coverage: exactly the two known gaps, and no new one has appeared");
     check(notRecordable > registered,
           "coverage: most menu actions are session state, which is the rule doing its job");
   }

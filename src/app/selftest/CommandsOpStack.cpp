@@ -1,13 +1,22 @@
 #include "app/selftest/Support.hpp"
 
 #include "app/Command.hpp"
+#include "color/Space.hpp"
 #include "core/Channels.hpp"
 #include "core/LayerOps.hpp"
 #include "core/OpStack.hpp"
 #include "core/SelectionMask.hpp"
 #include "core/SelectionOps.hpp"
+#include "core/SelectionRefine.hpp"
+#include "ops/Feather.hpp"
 #include "ops/PointOps.hpp"
 #include "ops/ToneOps.hpp"
+// Section H only, and for one purpose. The five refine rows call the engine
+// directly (app/CommandsOpStack.cpp §4 -- app/ must not include ui/), so until
+// step 2 deletes the UI half there are two decoders of the same dialog values.
+// This is the one translation unit that can see both, so it is where they are
+// held to the same answer rather than to a comment.
+#include "ui/MacPaintUI.hpp"
 
 namespace np {
 
@@ -195,6 +204,28 @@ OpenDocument makeOpStackDocument() {
     for (int32_t x = 0; x < kTileSize; ++x) t.writePixel(PixelCoord{x, y}, {0.25f, 0.5f, 0.75f, 1.0f});
   od.recordEdit("op-stack fixture", EditKind::Content);
   return od;
+}
+
+// Two selections agree, texel for texel, over the whole canvas.
+//
+// **Every texel, not a handful of probes.** Section H uses this to hold the
+// command rows and ui/MacPaintUI.cpp's dialog boundary to the same answer, and
+// the drift it is guarding against -- a missing sRGB decode, an edge band
+// clamped in one place and not the other -- shows up as a soft edge a few
+// texels wide. Three sample points would miss exactly that and report the two
+// identical. `std::nullopt` on either side means "no restriction", which
+// `selectionCoverageAt()` already reports as 1.0 everywhere, so an absent
+// selection and a full one compare equal here on purpose: they are the same
+// restriction.
+bool sameCoverage(const std::optional<Selection>& a, const std::optional<Selection>& b,
+                  int32_t width, int32_t height) {
+  const Selection* lhs = a.has_value() ? &*a : nullptr;
+  const Selection* rhs = b.has_value() ? &*b : nullptr;
+  for (int32_t y = 0; y < height; ++y)
+    for (int32_t x = 0; x < width; ++x)
+      if (selectionCoverageAt(lhs, PixelCoord{x, y}) != selectionCoverageAt(rhs, PixelCoord{x, y}))
+        return false;
+  return true;
 }
 
 JsonValue opParams(const JsonValue& op) {
@@ -645,6 +676,220 @@ bool runCommandsOpStackTest() {
           "channels: a second save under a taken name appends rather than replacing");
     check(!second.warnings.empty() && contains(second.warnings[0], "Mask"),
           "channels: and it warns that a later load of that name gets the earlier channel");
+  }
+
+  std::printf("  -- H. PRD E4/E8/E9's five refines, as command rows --\n");
+  {
+    // These were five of app/CommandCoverage's eight "not yet registered"
+    // gaps. What each has to prove is not that the engine works -- section
+    // app/selftest/SelectMenu.cpp already holds the engine and the dialogs to
+    // each other -- but the two things a *command* row adds: that every number
+    // the dialog was holding in a static now travels in the step, and that the
+    // second decoder this creates gives the identical answer to the first.
+    bool allPresent = true;
+    for (const char* id : {"select_grow", "select_shrink", "select_feather",
+                           "select_colour_range", "select_luminance_range"})
+      if (findCommand(id) == nullptr) allPresent = false;
+    check(allPresent, "refine: all five rows are registered");
+
+    const int32_t w = 64, h = 64;
+    auto rectDoc = []() {
+      OpenDocument od = makeOpStackDocument();
+      od.selection = selectRectangle(16.0f, 16.0f, 48.0f, 48.0f);
+      return od;
+    };
+
+    JsonValue r8 = JsonValue::object();
+    r8.set("radius", JsonValue::number(8.0));
+
+    // --- the parameters that used to live in a dialog static ---------------
+    {
+      OpenDocument od = rectDoc();
+      const CommandResult noRadius =
+          applyCommand(od, Command{"select_grow", JsonValue::object()});
+      check(!noRadius.ok && contains(noRadius.status, "radius"),
+            "refine: a missing radius refuses, and says which key");
+
+      JsonValue zero = JsonValue::object();
+      zero.set("radius", JsonValue::number(0.0));
+      const CommandResult zeroRadius = applyCommand(od, Command{"select_grow", zero});
+      check(!zeroRadius.ok,
+            "refine: a radius of zero refuses rather than recording a documented no-op");
+
+      // The one a slider cannot express and a file can:
+      // `shrinkSelection(s, r) == growSelection(s, -r)`, so a negative radius
+      // makes a step that says "shrink" grow.
+      JsonValue negative = JsonValue::object();
+      negative.set("radius", JsonValue::number(-8.0));
+      const CommandResult grew = applyCommand(od, Command{"select_shrink", negative});
+      check(!grew.ok && contains(grew.status, "opposite"),
+            "refine: a negative radius refuses rather than silently doing the opposite");
+
+      OpenDocument bare = makeOpStackDocument();
+      const CommandResult nothingSelected = applyCommand(bare, Command{"select_grow", r8});
+      check(!nothingSelected.ok && contains(nothingSelected.status, "no restriction"),
+            "refine: grow with nothing selected refuses -- there is no edge to move");
+      check(!bare.selection.has_value() && bare.refineUndoStack.empty(),
+            "refine: and the refusal pushed nothing onto the refine-undo stack");
+    }
+
+    // --- the anti-drift cross-check ---------------------------------------
+    //
+    // The command decodes the step; ui/MacPaintUI.cpp's boundary decodes the
+    // dialog. Two decoders of one set of values is the shape
+    // docs/automation-plan.md §7 calls out for op encodings ("two encoders of
+    // one op list will drift"), and it applies here for as long as both exist.
+    {
+      OpenDocument od = rectDoc();
+      const Selection before = *od.selection;
+      check(applyCommand(od, Command{"select_grow", r8}).ok,
+            "refine: select_grow ran");
+      check(sameCoverage(od.selection,
+                         applySelectRefineAction(MenuAction::SelectGrow, before, 8.0f), w, h),
+            "refine: select_grow agrees with the Grow dialog, texel for texel");
+
+      OpenDocument shrunk = rectDoc();
+      check(applyCommand(shrunk, Command{"select_shrink", r8}).ok &&
+                sameCoverage(shrunk.selection,
+                             applySelectRefineAction(MenuAction::SelectShrink, before, 8.0f), w, h),
+            "refine: select_shrink agrees with the Shrink dialog");
+      // The assertion that stops the three rows from being wired to one
+      // engine function: a shrink is not a grow.
+      check(!sameCoverage(od.selection, shrunk.selection, w, h),
+            "refine: and select_shrink is not select_grow for the same radius");
+
+      OpenDocument feathered = rectDoc();
+      check(applyCommand(feathered, Command{"select_feather", r8}).ok &&
+                sameCoverage(feathered.selection,
+                             applySelectRefineAction(MenuAction::SelectFeather, before, 8.0f), w,
+                             h),
+            "refine: select_feather agrees with the Feather dialog");
+    }
+
+    // --- Undo Refine still has something to pop ----------------------------
+    //
+    // `MenuAction::SelectUndoRefine` is classified NotRecordable precisely
+    // because `refineUndoStack` is session state -- but that is only an
+    // honest answer if the *recordable* half keeps filling it. A command row
+    // that installed its result without pushing would leave step 2's
+    // call-site migration silently deleting a menu item's effect, which is
+    // the one thing that migration promises not to do.
+    {
+      OpenDocument od = rectDoc();
+      const Selection before = *od.selection;
+      check(od.refineUndoStack.empty(), "undo refine: the stack starts empty");
+      check(applyCommand(od, Command{"select_grow", r8}).ok && od.refineUndoStack.size() == 1,
+            "undo refine: a refine issued as a command pushes exactly one entry");
+      check(undoLastRefine(od) && sameCoverage(od.selection, before, w, h) &&
+                od.refineUndoStack.empty(),
+            "undo refine: and Select > Undo Refine restores exactly what it replaced");
+    }
+
+    // --- the colour travels in the step, decoded ---------------------------
+    {
+      OpenDocument od = makeOpStackDocument();  // filled linear {0.25, 0.5, 0.75, 1}
+      const CommandResult noColour =
+          applyCommand(od, Command{"select_colour_range", JsonValue::object()});
+      check(!noColour.ok && contains(noColour.status, "session state"),
+            "colour range: a step with no colour refuses, and says why there is no default");
+
+      auto colourStep = [](float r, float g, float b) {
+        JsonValue c = JsonValue::array();
+        c.push(JsonValue::number(static_cast<double>(r)));
+        c.push(JsonValue::number(static_cast<double>(g)));
+        c.push(JsonValue::number(static_cast<double>(b)));
+        JsonValue p = JsonValue::object();
+        p.set("colour", std::move(c));
+        return p;
+      };
+
+      // **The assertion the sRGB decode lives or dies by.** The layer is a
+      // flat linear {0.25, 0.5, 0.75}; the step carries the DISPLAY encoding
+      // of that colour, which is what the swatch showed. A row that forwarded
+      // the three numbers straight to `selectColourRange()` -- which wants
+      // straight linear -- would be asking for a much brighter colour and
+      // would select nothing, and a row that decoded twice would select
+      // nothing either.
+      const JsonValue encoded =
+          colourStep(srgbEncode(0.25f), srgbEncode(0.5f), srgbEncode(0.75f));
+      check(applyCommand(od, Command{"select_colour_range", encoded}).ok &&
+                od.selection.has_value() &&
+                selectionCoverageAt(&*od.selection, PixelCoord{32, 32}) == 1.0f,
+            "colour range: the step's sRGB colour is decoded, and finds the layer's texels");
+
+      // The same three numbers read as if they were already linear: a
+      // different colour, far enough away that the default tolerance does not
+      // reach it. This is what makes the assertion above about the decode
+      // rather than about the tolerance being generous.
+      OpenDocument raw = makeOpStackDocument();
+      const CommandResult wrong =
+          applyCommand(raw, Command{"select_colour_range", colourStep(0.25f, 0.5f, 0.75f)});
+      check(wrong.ok && raw.selection.has_value() &&
+                selectionCoverageAt(&*raw.selection, PixelCoord{32, 32}) == 0.0f,
+            "colour range: the undecoded numbers name a different colour and select nothing");
+
+      OpenDocument viaDialog = makeOpStackDocument();
+      const std::array<float, 3> swatch = {srgbEncode(0.25f), srgbEncode(0.5f), srgbEncode(0.75f)};
+      const Layer* src = activeLayerOf(viaDialog);
+      check(src != nullptr && src->rgbTiles.has_value() &&
+                sameCoverage(od.selection,
+                             applySelectColourRangeAction(swatch, kFloodDefaultTolerance,
+                                                          kFloodDefaultEdgeBand, *src->rgbTiles, w,
+                                                          h),
+                             w, h),
+            "colour range: agrees with the Colour Range dialog, texel for texel");
+
+      OpenDocument noPixels = makeOpStackDocument();
+      noPixels.document.layers[0].rgbTiles.reset();
+      const CommandResult noSource =
+          applyCommand(noPixels, Command{"select_colour_range", encoded});
+      check(!noSource.ok && contains(noSource.status, "sample"),
+            "colour range: a layer with no RGB to sample refuses, rather than selecting nothing");
+    }
+
+    // --- the luminance band ------------------------------------------------
+    {
+      OpenDocument od = makeOpStackDocument();
+      JsonValue half = JsonValue::object();
+      half.set("low", JsonValue::number(0.0));
+      const CommandResult onlyLow = applyCommand(od, Command{"select_luminance_range", half});
+      check(!onlyLow.ok && contains(onlyLow.status, "high"),
+            "luminance range: a band missing one end refuses rather than defaulting to 0..1");
+
+      const std::array<float, 4> texel = {0.25f, 0.5f, 0.75f, 1.0f};
+      const float luma = selectionLuminanceOf(texel);
+      JsonValue band = JsonValue::object();
+      band.set("low", JsonValue::number(static_cast<double>(luma) - 0.05));
+      band.set("high", JsonValue::number(static_cast<double>(luma) + 0.05));
+      check(applyCommand(od, Command{"select_luminance_range", band}).ok &&
+                od.selection.has_value() &&
+                selectionCoverageAt(&*od.selection, PixelCoord{32, 32}) == 1.0f,
+            "luminance range: a band around the layer's own luminance selects it");
+
+      OpenDocument viaDialog = makeOpStackDocument();
+      const Layer* src = activeLayerOf(viaDialog);
+      check(src != nullptr &&
+                sameCoverage(od.selection,
+                             applySelectLuminanceRangeAction(luma - 0.05f, luma + 0.05f,
+                                                             kFloodDefaultEdgeBand, *src->rgbTiles,
+                                                             w, h),
+                             w, h),
+            "luminance range: agrees with the Luminance Range dialog, texel for texel");
+
+      // core/SelectionRefine.hpp: "low > high selects nothing (an empty band
+      // is empty, not inverted)". The dialog says so in yellow beside the
+      // sliders. In a batch there is nobody to say it to, so it has to be a
+      // warning on the result rather than thirty files that quietly selected
+      // nothing.
+      OpenDocument inverted = makeOpStackDocument();
+      JsonValue backwards = JsonValue::object();
+      backwards.set("low", JsonValue::number(0.9));
+      backwards.set("high", JsonValue::number(0.1));
+      const CommandResult empty =
+          applyCommand(inverted, Command{"select_luminance_range", backwards});
+      check(empty.ok && !empty.warnings.empty() && contains(empty.warnings[0], "nothing"),
+            "luminance range: a backwards band warns that it selected nothing");
+    }
   }
 
   return ok;
