@@ -1538,6 +1538,31 @@ bool runPackBitsTest();
 // Kyle Webster brush packs and real Photoshop files, so agreeing with it is a
 // stronger claim than agreeing with this project's own reading of the spec.
 bool runPsdWriteTest();
+
+// io/PsdBlendKeys -- the ONE table mapping Photoshop's 4-character blend keys
+// onto `core::BlendMode`, read in both directions. It lived in
+// io/PsdImport.cpp's anonymous namespace until PSD export needed mode -> key
+// too; a second table would have been a second place for `"mul"` to lose its
+// trailing space, which is invisible in a file that opens.
+//
+// Asserts: the table's rows are unique in both key and mode (so neither
+// linear scan is ambiguous); every key is four bytes and no key contains a
+// NUL, with the five space-padded ones named; key -> mode -> key returns the
+// identical four bytes for every row; `mul` + NUL does NOT match `mul `, which
+// is the exact silent failure the padding discipline exists to prevent; an
+// unknown key (`diss`, `pass`) still returns Normal with exactMatch FALSE;
+// and the importer's own mapping for fourteen real keys is unchanged by the
+// move, `colr` and `lddg` among them (the two present in the three genuine
+// Photoshop files io/PsdImport.hpp is verified against).
+//
+// **And a tripwire**: every `core::BlendMode` enumerator is either in the
+// table or in an explicit list of modes with no PSD key -- today exactly
+// `Mix`, this build's Kubelka-Munk latent lerp, which Photoshop has no
+// concept of. The list is written out by name, not checked as a count, so a
+// mode added tomorrow must be triaged rather than exporting as Normal by
+// omission. `psdBlendKeyFor()` returns nullptr for it and the caller warns;
+// never a silent substitution.
+bool runPsdBlendKeysTest();
 bool runTransformCompositeSplitTest();
 bool runTransformPreviewTextureTest();
 

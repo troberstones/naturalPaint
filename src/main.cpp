@@ -3011,6 +3011,11 @@ int main(int argc, char** argv) {
     // decoder from an unchecked one. Headless and GPU-free.
     const bool packBitsOk = np::runPackBitsTest();
     const bool psdWriteOk = np::runPsdWriteTest();
+    // io/PsdBlendKeys: the one Photoshop-blend-key table, read in both
+    // directions now that PSD export needs mode -> key. Includes the tripwire
+    // that a new core::BlendMode must be triaged into the table or into a
+    // named "no PSD key" list rather than exporting as Normal by omission.
+    const bool psdBlendKeysOk = np::runPsdBlendKeysTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD M1, M3, M4, M5, M8): the
     // internal clipboard's copy/cut/paste, its copy-on-write sharing, and the
     // two different coverage-weighting rules RGB and Pigment tiles take. Also
@@ -3909,7 +3914,7 @@ int main(int argc, char** argv) {
                     gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
                     textShaperOk && vectorLayerOk && textContentOk &&
                     transformPreviewTextureOk &&
-                    transformCompositeSplitOk && packBitsOk && psdWriteOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && inpaintOk && curveEditOk &&
+                    transformCompositeSplitOk && packBitsOk && psdWriteOk && psdBlendKeysOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && inpaintOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
                     multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk &&
                     userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&

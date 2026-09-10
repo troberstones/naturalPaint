@@ -219,6 +219,7 @@ add_executable(naturalPaint
   app/selftest/Probe.cpp
   app/selftest/PackBits.cpp
   app/selftest/PsdWrite.cpp
+  app/selftest/PsdBlendKeys.cpp
   app/selftest/PsdImport.cpp
   app/selftest/QuitGuard.cpp
   app/selftest/RecoveryJournal.cpp
@@ -395,6 +396,7 @@ add_executable(naturalPaint
   io/OpSerial.cpp
   io/PackBits.cpp
   io/PsdWrite.cpp
+  io/PsdBlendKeys.cpp
   io/PathSerial.cpp
   io/PsPatterns.cpp
   io/PsdImport.cpp
