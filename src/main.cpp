@@ -73,6 +73,11 @@
 #include "ui/AtelierTheme.hpp"
 
 #include "imgui.h"
+// The one reach into ImGui's internals in this program, for one thing:
+// `ImGuiContext::OpenPopupStack`, so `--screenshot` can report where the open
+// modal actually is. See the print site in the frame loop for why that rect
+// cannot be derived from the outside.
+#include "imgui_internal.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_wgpu.h"
 
@@ -1593,6 +1598,16 @@ int main(int argc, char** argv) {
   bool openExportAs = false;
   const char* exportAsPath = nullptr;
   bool openLayerProperties = false;
+  // --open-modal <MenuActionName>: enqueue one menu action on the first frame
+  // so `--screenshot` can photograph the modal it opens. `MenuAction::None`
+  // means the flag was not given. See the flag's own comment in the parse
+  // loop for why this is one flag rather than thirty.
+  np::MenuAction openModalAction = np::MenuAction::None;
+  // --press-key <Escape|Return> [frame]: one synthetic key press through
+  // ImGui's own event queue, so a `--screenshot` can photograph what a dialog
+  // does with it. See the injection in the frame loop.
+  ImGuiKey pressKey = ImGuiKey_None;
+  int pressKeyFrame = 10;
   bool advancedDynamics = false;
   // D4 (docs/reachability-audit.md): `naturalPaint foo.npaint` used to open
   // nothing, because this loop matched only `--flag` strings and fell
@@ -2236,6 +2251,65 @@ int main(int argc, char** argv) {
       // photographable -- "no output file yet" state.
       openExportAs = true;
       if (i + 1 < argc && argv[i + 1][0] != '-') exportAsPath = argv[++i];
+    } else if (a == "--open-modal") {
+      // **One flag for every dialog a menu item opens.** The three
+      // `--open-*-dialog` flags above each exist because one modal had no
+      // route from a launch; there are thirty-six `BeginPopupModal` ids in
+      // this program (thirty-one string literals, two named constants, and
+      // three instances sharing `RefineRadiusDialog::popupId`), and thirty-six
+      // bespoke flags with thirty-six `AppState` fields is not a shape worth
+      // repeating. Every one of these dialogs is already opened by exactly one
+      // `MenuAction` going through `performMenuAction()`, and the native menu
+      // bar already has a way to hand this loop a `MenuAction` from outside an
+      // ImGui frame (`enqueueMenuAction()`), so this flag is that queue with a
+      // name resolved off `menuActionName()` -- the same table --selftest
+      // prints -- rather than a second list that could drift from it.
+      //
+      // Resolved here, at parse time, so an unknown name fails before a window
+      // opens. A screenshot harness that silently photographed the wrong
+      // dialog -- or the plain window with no dialog at all -- is the exact
+      // failure this project has hit before with a mistyped popup id.
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        const std::string want = argv[++i];
+        for (int m = 1; m < static_cast<int>(np::MenuAction::Count); ++m) {
+          if (want == np::menuActionName(static_cast<np::MenuAction>(m))) {
+            openModalAction = static_cast<np::MenuAction>(m);
+            break;
+          }
+        }
+        if (openModalAction == np::MenuAction::None) {
+          std::fprintf(stderr, "[open-modal] '%s' is not a MenuAction. Known names:\n",
+                       want.c_str());
+          for (int m = 1; m < static_cast<int>(np::MenuAction::Count); ++m)
+            std::fprintf(stderr, "  %s\n", np::menuActionName(static_cast<np::MenuAction>(m)));
+          return 2;
+        }
+      } else {
+        std::fprintf(stderr, "[open-modal] needs a MenuAction name\n");
+        return 2;
+      }
+    } else if (a == "--press-key") {
+      // The other half of --open-modal: with a dialog open, press one key and
+      // photograph the result. This is what makes ui/Dialog's keyboard
+      // contract -- Return commits, Escape cancels -- a thing the harness can
+      // show rather than a thing the code claims: `--open-modal AdjustLevels
+      // --press-key Escape` must photograph no dialog at all. Through
+      // `io.AddKeyEvent()`, the same queue the SDL backend feeds, so the
+      // frame being tested is the real one.
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        const std::string name = argv[++i];
+        if (name == "Escape") pressKey = ImGuiKey_Escape;
+        else if (name == "Return" || name == "Enter") pressKey = ImGuiKey_Enter;
+        else {
+          std::fprintf(stderr, "[press-key] '%s' is not a key this flag knows (Escape, Return)\n",
+                       name.c_str());
+          return 2;
+        }
+        if (i + 1 < argc && argv[i + 1][0] != '-') pressKeyFrame = std::atoi(argv[++i]);
+      } else {
+        std::fprintf(stderr, "[press-key] needs a key name\n");
+        return 2;
+      }
     } else if (a == "--open-layer-properties") {
       // The LAYERS panel's own gear-button modal, same justification as
       // --open-export-states one dialog over: it too is opened by a click and
@@ -4157,6 +4231,12 @@ int main(int argc, char** argv) {
   }
   st.openExportAsDialog = openExportAs;
   st.openLayerProperties = openLayerProperties;
+  // Through the same queue a native menu click uses, drained at the top of the
+  // first UI frame -- which is the only moment `performMenuAction()` has an
+  // ImGui frame, an `AppState&` and a canvas size all at once. Everything the
+  // dialogs need (a document, a selection) is already built by the demo flags
+  // above, so this line goes last.
+  if (openModalAction != np::MenuAction::None) np::enqueueMenuAction(openModalAction, 0);
   st.showAdvancedDynamics = advancedDynamics;
   if (exportStatesFolder != nullptr) st.exportStatesFolder = exportStatesFolder;
   if (exportAsPath != nullptr) st.exportAsPath = exportAsPath;
@@ -5081,6 +5161,13 @@ int main(int argc, char** argv) {
     // Injected after `ImGui_ImplSDL3_NewFrame()` and before `NewFrame()`,
     // which is the window in which ImGui accepts queued input events for the
     // frame about to be built.
+    // --press-key: down on one frame, up on the next, through the same queue.
+    if (pressKey != ImGuiKey_None) {
+      if (static_cast<int>(frameIndex) == pressKeyFrame)
+        ImGui::GetIO().AddKeyEvent(pressKey, true);
+      else if (static_cast<int>(frameIndex) == pressKeyFrame + 1)
+        ImGui::GetIO().AddKeyEvent(pressKey, false);
+    }
     if (penDemo) {
       const int step = static_cast<int>(frameIndex) - kPenDemoFirstFrame;
       if (step >= 0 && step <= kPenDemoSteps) {
@@ -5432,6 +5519,38 @@ int main(int argc, char** argv) {
         std::printf("[screenshot] wrote %s (%ux%u)\n", shotPath.c_str(), gpu.width, gpu.height);
       else
         std::fprintf(stderr, "[screenshot] %s\n", shotError.c_str());
+      // Where the modal is, for a harness that wants to crop to it.
+      //
+      // **Read off ImGui rather than guessed.** These dialogs are
+      // `AlwaysAutoResize` and centred by ImGui's own popup placement, so
+      // their size is a function of their content and their position is a
+      // function of their size -- both change the moment a label gets a word
+      // longer, which is exactly the kind of change a UI review is looking
+      // for. A hardcoded crop box would silently start cutting the dialog in
+      // half, and a diff-against-a-baseline crop cannot work here at all:
+      // seven of these dialogs live-preview into the canvas, so the region
+      // that differs from a no-dialog launch is the whole window.
+      //
+      // `OpenPopupStack` is `imgui_internal.h`, the one place in this program
+      // that reaches into it. The alternative was thirty-one dialog functions
+      // each reporting their own rect, which is thirty-one places for one to
+      // be forgotten. `Window` is null until `BeginPopup()` resolves it, so a
+      // popup that was opened and never drawn prints nothing rather than
+      // printing zeroes that look like a rect.
+      if (const ImGuiContext* g = ImGui::GetCurrentContext()) {
+        if (!g->OpenPopupStack.empty()) {
+          const ImGuiWindow* pw = g->OpenPopupStack.back().Window;
+          if (pw != nullptr) {
+            // Framebuffer pixels, not ImGui points -- the PNG is the former.
+            const float sc = ImGui::GetIO().DisplayFramebufferScale.x > 0.0f
+                                 ? ImGui::GetIO().DisplayFramebufferScale.x
+                                 : 1.0f;
+            std::printf("[screenshot] modal \"%s\" rect %d %d %d %d\n", pw->Name,
+                        static_cast<int>(pw->Pos.x * sc), static_cast<int>(pw->Pos.y * sc),
+                        static_cast<int>(pw->Size.x * sc), static_cast<int>(pw->Size.y * sc));
+          }
+        }
+      }
       st.requestScreenshot = false;
       if (screenshotPath != nullptr) st.quit = true;  // --screenshot is capture-and-exit
     }

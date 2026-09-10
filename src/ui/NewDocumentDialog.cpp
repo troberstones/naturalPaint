@@ -15,6 +15,7 @@
 #include "app/DocumentPresets.hpp"
 #include "io/ClipboardImage.hpp"
 #include "io/ImageIO.hpp"
+#include "ui/Dialog.hpp"
 
 // See ui/NewDocumentDialog.hpp for the shape this follows and why it is a
 // separate translation unit from ui/MacPaintUI.cpp.
@@ -23,7 +24,6 @@ namespace {
 
 bool g_newDocumentRequested = false;
 
-const ImVec4 kError(0.95f, 0.45f, 0.40f, 1.0f);
 
 }  // namespace
 
@@ -31,15 +31,13 @@ void requestNewDocumentDialog() { g_newDocumentRequested = true; }
 
 void drawNewDocumentDialog(AppState& st) {
   // Session state, function-local statics -- UI state, not app state, the
-  // same split every other dialog in ui/MacPaintUI.cpp makes (drawImageSizeDialog,
-  // drawExportAsDialog, ...).
+  // same split every other dialog in ui/MacPaintUI.cpp makes.
   static int width = 1280;
   static int height = 720;
   // The name of the preset last clicked, so the Remove button knows what to
   // remove and the list knows what to highlight. Cleared the moment
   // width/height is hand-edited, because at that point the fields no longer
-  // describe that preset -- matching drawExportAsDialog's own "loading a
-  // preset fills the fields; editing them is a new, unsaved thing" shape.
+  // describe that preset.
   static std::string selectedPresetName;
   static char newPresetNameBuf[96] = "";
   static std::string status;
@@ -50,7 +48,7 @@ void drawNewDocumentDialog(AppState& st) {
   // and doing that 60 times a second while this modal sits open would be
   // pointless work for a value that cannot change without the app losing and
   // regaining key focus anyway (see io/ClipboardImage.hpp's own note on
-  // SDL's macOS mime-type cache). "Check again" below re-probes on demand.
+  // SDL's macOS mime-type cache). "Check Again" below re-probes on demand.
   static ClipboardImageProbe clipboardProbe;
 
   if (g_newDocumentRequested) {
@@ -61,7 +59,7 @@ void drawNewDocumentDialog(AppState& st) {
     clipboardProbe = probeClipboardImage();
     ImGui::OpenPopup("New Document");
   }
-  if (!ImGui::BeginPopupModal("New Document", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+  if (!beginDialog("New Document", DialogWidth::Wide)) return;
 
   // Loaded on first open, never at startup (AppState::documentPresetsLoaded):
   // a preset file nobody asked for costs nothing, and --selftest's headless
@@ -80,98 +78,86 @@ void drawNewDocumentDialog(AppState& st) {
   }
   const std::string presetsPath = defaultDocumentPresetsFilePath();
 
-  // --- Presets --------------------------------------------------------------
-  ImGui::TextUnformatted("Presets");
+  // --- Size, from a preset or typed --------------------------------------------
   const std::vector<DocumentPreset> presets = st.documentPresets.allPresets();
   bool selectedIsBuiltin = false;
-  if (ImGui::BeginListBox("##newDocPresets", ImVec2(320.0f, 140.0f))) {
+  float listW = 0.0f;
+  dialogLabelRow("Preset", &listW);
+  const float listH = ImGui::GetTextLineHeightWithSpacing() * 6.5f;
+  if (ImGui::BeginListBox("##newDocPresets", ImVec2(listW, listH))) {
     for (const DocumentPreset& p : presets) {
       ImGui::PushID(p.name.c_str());
       const bool isSelected = p.name == selectedPresetName;
       char row[160];
-      std::snprintf(row, sizeof(row), "%s  (%d x %d)", p.name.c_str(), p.width, p.height);
+      std::snprintf(row, sizeof(row), "%s   %d \xc3\x97 %d", p.name.c_str(), p.width, p.height);
       if (ImGui::Selectable(row, isSelected)) {
         selectedPresetName = p.name;
         width = p.width;
         height = p.height;
       }
       if (isSelected) selectedIsBuiltin = p.builtin;
-      // Visually distinguishes built-in from user presets, per this dialog's
-      // brief -- built-ins are never editable or removable, and the tag says
-      // so at a glance rather than only when a Remove click is refused.
-      ImGui::SameLine();
-      ImGui::TextDisabled(p.builtin ? "built-in" : "user");
+      // Built-ins are never editable or removable, and the tag says so at a
+      // glance rather than only when a Remove click is refused.
+      if (!p.builtin) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("user");
+      }
       ImGui::PopID();
     }
     ImGui::EndListBox();
   }
-
-  // --- Size -------------------------------------------------------------
-  ImGui::SetNextItemWidth(140.0f);
-  if (ImGui::InputInt("Width", &width)) selectedPresetName.clear();
-  ImGui::SetNextItemWidth(140.0f);
-  if (ImGui::InputInt("Height", &height)) selectedPresetName.clear();
+  if (dialogInputInt("Width", &width, "px")) selectedPresetName.clear();
+  if (dialogInputInt("Height", &height, "px")) selectedPresetName.clear();
 
   // Never let an invalid size reach document creation -- validated with the
   // exact same function the preset store itself validates a hand-typed
   // `size` line with (app/DocumentPresets.hpp), so this dialog and a
-  // hand-edited presets file are held to one rule, not two.
-  // Two bounds, asked in this order, and the order is the message: a size that
-  // fails BOTH is a nonsense number (a pasted extra digit), and saying so is
-  // more useful than telling the user their 90000px canvas is 5.5x the GPU's
-  // limit. `validateDocumentPresetSize()`'s 32768 is the corrupt-input bound
-  // and this build's adapter limit is usually 16384, so the window between
-  // them -- sizes that parse fine and abort the renderer -- is exactly what
-  // core/CanvasLimits.hpp exists to close, and it is closed here rather than
-  // inside `validateDocumentPresetSize()` because that function also validates
-  // a *stored* presets file, where a GPU this machine does not have is not a
-  // reason to drop the user's saved size.
+  // hand-edited presets file are held to one rule, not two. Two bounds, asked
+  // in this order, and the order is the message: a size that fails BOTH is a
+  // nonsense number (a pasted extra digit), and saying so is more useful than
+  // telling the user their 90000px canvas is 5.5x the GPU's limit.
+  // core/CanvasLimits.hpp closes the window between the store's 32768 and the
+  // adapter's usual 16384.
   std::string sizeError =
       validateDocumentPresetSize(static_cast<int32_t>(width), static_cast<int32_t>(height));
   if (sizeError.empty())
     sizeError = canvasDimensionRefusal(static_cast<int32_t>(width), static_cast<int32_t>(height));
   const bool validSize = sizeError.empty();
-  if (!validSize) {
-    ImGui::PushStyleColor(ImGuiCol_Text, kError);
-    ImGui::TextWrapped("%s", sizeError.c_str());
-    ImGui::PopStyleColor();
-  }
+  dialogStatusLine(DialogStatus::Error, sizeError);
 
-  if (!validSize) ImGui::BeginDisabled();
-  if (ImGui::Button("Create")) {
-    st.documents.add(makeBlankOpenDocument(static_cast<int32_t>(width),
-                                           static_cast<int32_t>(height), WorkingSpace{}));
-    ImGui::CloseCurrentPopup();
-  }
-  if (!validSize) ImGui::EndDisabled();
-
-  ImGui::Separator();
-
-  // --- Save / remove a user preset ------------------------------------------
-  ImGui::TextUnformatted("Save current size as a preset");
-  ImGui::SetNextItemWidth(220.0f);
-  ImGui::InputText("##newPresetName", newPresetNameBuf, sizeof(newPresetNameBuf));
-  ImGui::SameLine();
-  if (ImGui::Button("Add Preset")) {
-    std::string err;
-    if (!st.documentPresets.add(newPresetNameBuf, static_cast<int32_t>(width),
-                                static_cast<int32_t>(height), &err)) {
-      status = err;
-      statusIsError = true;
-    } else if (!st.documentPresets.saveToFile(presetsPath, &err)) {
-      status = err;
-      statusIsError = true;
-    } else {
-      status = std::string("Saved preset '") + newPresetNameBuf + "'.";
-      statusIsError = false;
-      selectedPresetName = newPresetNameBuf;
-      newPresetNameBuf[0] = '\0';
+  // --- Save the size as a preset ----------------------------------------------
+  dialogSection("Save as preset");
+  {
+    float avail = 0.0f;
+    dialogLabelRow("Name", &avail);
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float addW = ImGui::CalcTextSize("Add").x + style.FramePadding.x * 4.0f;
+    ImGui::SetNextItemWidth(std::max(40.0f, avail - addW - style.ItemInnerSpacing.x));
+    ImGui::InputText("##newPresetName", newPresetNameBuf, sizeof(newPresetNameBuf));
+    ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+    ImGui::BeginDisabled(newPresetNameBuf[0] == '\0' || !validSize);
+    if (ImGui::Button("Add", ImVec2(addW, 0.0f))) {
+      std::string err;
+      if (!st.documentPresets.add(newPresetNameBuf, static_cast<int32_t>(width),
+                                  static_cast<int32_t>(height), &err)) {
+        status = err;
+        statusIsError = true;
+      } else if (!st.documentPresets.saveToFile(presetsPath, &err)) {
+        status = err;
+        statusIsError = true;
+      } else {
+        status = std::string("Saved preset '") + newPresetNameBuf + "'.";
+        statusIsError = false;
+        selectedPresetName = newPresetNameBuf;
+        newPresetNameBuf[0] = '\0';
+      }
     }
+    ImGui::EndDisabled();
   }
-
   const bool canRemove = !selectedPresetName.empty() && !selectedIsBuiltin;
-  if (!canRemove) ImGui::BeginDisabled();
-  if (ImGui::Button("Remove Selected Preset")) {
+  dialogLabelRow(nullptr);
+  ImGui::BeginDisabled(!canRemove);
+  if (ImGui::SmallButton("Remove Selected Preset")) {
     std::string err;
     // The store itself refuses a built-in by name (app/DocumentPresets.hpp
     // section 1); canRemove above already keeps this button from firing on
@@ -189,41 +175,34 @@ void drawNewDocumentDialog(AppState& st) {
       selectedPresetName.clear();
     }
   }
-  if (!canRemove) ImGui::EndDisabled();
+  ImGui::EndDisabled();
+  dialogStatusLine(statusIsError ? DialogStatus::Error : DialogStatus::Info, status);
 
-  if (!status.empty()) {
-    if (statusIsError) ImGui::PushStyleColor(ImGuiCol_Text, kError);
-    ImGui::TextWrapped("%s", status.c_str());
-    if (statusIsError) ImGui::PopStyleColor();
-  }
-
-  ImGui::Separator();
-
-  // --- From Clipboard ---------------------------------------------------
-  ImGui::TextUnformatted("From Clipboard");
-  ImGui::SameLine();
-  if (ImGui::SmallButton("Check again")) clipboardProbe = probeClipboardImage();
-
+  // --- From the clipboard -----------------------------------------------------
+  dialogSection("Clipboard");
+  dialogLabelRow("Contents");
+  ImGui::AlignTextToFramePadding();
   switch (clipboardProbe.status) {
     case ClipboardImageStatus::Empty:
-      ImGui::TextDisabled("Clipboard is empty.");
+      ImGui::TextDisabled("Empty.");
       break;
     case ClipboardImageStatus::NotAnImage:
-      ImGui::TextDisabled("Clipboard does not contain an image.");
+      ImGui::TextDisabled("Not an image.");
       break;
     case ClipboardImageStatus::Unreadable:
-      ImGui::PushStyleColor(ImGuiCol_Text, kError);
-      ImGui::TextWrapped("%s", clipboardProbe.detail.c_str());
+      ImGui::PushStyleColor(ImGuiCol_Text, dialogStatusColor(DialogStatus::Error));
+      ImGui::TextUnformatted(clipboardProbe.detail.c_str());
       ImGui::PopStyleColor();
       break;
     case ClipboardImageStatus::Image:
-      ImGui::Text("Clipboard image: %u x %u (%s)", clipboardProbe.width, clipboardProbe.height,
+      ImGui::Text("Image, %u \xc3\x97 %u (%s)", clipboardProbe.width, clipboardProbe.height,
                   clipboardProbe.mimeType.c_str());
       break;
   }
-  ImGui::TextDisabled(
-      "Reflects the clipboard as of the last time this window came to the front -- copy, "
-      "then click back into naturalPaint, before checking again.");
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Check Again")) clipboardProbe = probeClipboardImage();
+  dialogHint("As of the last time this window came to the front: copy, click back into "
+             "naturalPaint, then Check Again.");
 
   // The clipboard's own extent gets the same ceiling as a typed one -- a
   // screenshot of a very wide multi-monitor desktop is the realistic way to
@@ -234,15 +213,11 @@ void drawNewDocumentDialog(AppState& st) {
           ? canvasDimensionRefusal(static_cast<int32_t>(clipboardProbe.width),
                                    static_cast<int32_t>(clipboardProbe.height))
           : std::string{};
-  if (!clipboardSizeError.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, kError);
-    ImGui::TextWrapped("%s", clipboardSizeError.c_str());
-    ImGui::PopStyleColor();
-  }
-
+  dialogStatusLine(DialogStatus::Error, clipboardSizeError);
   const bool hasClipboardImage =
       clipboardProbe.status == ClipboardImageStatus::Image && clipboardSizeError.empty();
-  if (!hasClipboardImage) ImGui::BeginDisabled();
+  dialogLabelRow(nullptr);
+  ImGui::BeginDisabled(!hasClipboardImage);
   if (ImGui::Button("New From Clipboard")) {
     OpenDocument* od = st.documents.add(makeBlankOpenDocument(
         static_cast<int32_t>(clipboardProbe.width), static_cast<int32_t>(clipboardProbe.height),
@@ -259,12 +234,24 @@ void drawNewDocumentDialog(AppState& st) {
       statusIsError = true;
     }
   }
-  if (!hasClipboardImage) ImGui::EndDisabled();
+  ImGui::EndDisabled();
 
-  ImGui::Separator();
-  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-
-  ImGui::EndPopup();
+  DialogFooter footer;
+  footer.commit = "Create";
+  footer.commitEnabled = validSize;
+  switch (dialogFooter(footer)) {
+    case DialogAction::Commit:
+      st.documents.add(makeBlankOpenDocument(static_cast<int32_t>(width),
+                                             static_cast<int32_t>(height), WorkingSpace{}));
+      ImGui::CloseCurrentPopup();
+      break;
+    case DialogAction::Cancel:
+      ImGui::CloseCurrentPopup();
+      break;
+    default:
+      break;
+  }
+  endDialog();
 }
 
 }  // namespace np

@@ -1495,10 +1495,10 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 #   animated once the ant clock is pinned, and it would stop holding the
 #   moment a suggestion, a lasso in progress or a box-select drag entered the
 #   crop.
-view_crop_x=(0 1916 920 0 0 0 900 1000 1830 1900 1900 40 480 40 480 480 390 390 40 40 40 0 0 0 1920 0 40 706 706 672 40 40 350 320 40 1916 1916 1916 340 340 340 0 0 440 440 440 0 1920 1920 0 0 1946 340 1200 1916 40 0 200 1192 1192 1912 1912 556 548)
-view_crop_y=(5 927 965 148 664 0 628 1000 158 166 1462 76 560 76 560 560 370 370 76 76 76 148 0 664 235 1370 76 34 34 32 76 76 350 420 76 940 940 940 370 370 370 76 76 540 540 540 930 235 176 76 76 950 370 200 565 76 230 300 188 188 176 176 164 40)
-view_crop_w=(1400 640 384 100 400 2560 700 900 100 660 660 1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100 900 400 600 90 1090 1124 1124 1204 1000 1000 1060 1220 2400 640 640 640 1340 1340 1340 1500 1500 1240 1240 1240 110 632 640 1500 1500 590 1340 630 620 1800 100 900 644 644 648 648 1444 1460)
-view_crop_h=(166 190 192 402 350 77 500 400 500 64 64 76 800 76 800 800 550 550 76 76 76 1240 77 350 280 120 76 800 800 1512 76 76 830 830 76 240 240 240 960 960 960 100 100 740 740 740 300 290 800 100 100 290 960 820 600 76 680 1160 840 840 580 580 1240 1540)
+view_crop_x=(0 1916 920 0 0 0 900 1000 1830 1900 1900 40 480 40 480 480 390 390 40 40 40 0 0 0 1920 0 40 612 612 612 40 40 350 320 40 1916 1916 1916 340 340 340 0 0 440 440 440 0 1920 1920 0 0 1946 340 1200 1916 40 0 200 1192 1192 1912 1912 556 548)
+view_crop_y=(5 927 965 148 664 0 628 1000 158 166 1462 76 560 76 560 560 370 370 76 76 76 148 0 664 235 1370 76 232 232 136 76 76 350 420 76 940 940 940 370 370 370 76 76 540 540 540 930 235 176 76 76 950 370 200 565 76 230 300 188 188 176 176 164 40)
+view_crop_w=(1400 640 384 100 400 2560 700 900 100 660 660 1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100 900 400 600 90 1090 1336 1336 1336 1000 1000 1060 1220 2400 640 640 640 1340 1340 1340 1500 1500 1240 1240 1240 110 632 640 1500 1500 590 1340 630 620 1800 100 900 644 644 648 648 1444 1460)
+view_crop_h=(166 190 192 402 350 77 500 400 500 64 64 76 800 76 800 800 550 550 76 76 76 1240 77 350 280 120 76 1116 1116 1308 76 76 830 830 76 240 240 240 960 960 960 100 100 740 740 740 300 290 800 100 100 290 960 820 600 76 680 1160 840 840 580 580 1240 1540)
 view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
@@ -1602,12 +1602,18 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 9
 #     is launched with `.` as its output folder for the same reason -- a real
 #     directory, so the plan table renders, spelled in a way that is the same
 #     on any machine.
-#   * **`export_states`' crop is the whole modal, 1204x1512 of a 1580-tall
-#     window.** It only just fits, and only because this revision stopped both
-#     of that dialog's scrolling lists reserving a fixed height whatever they
-#     held -- before that the Export and Close buttons were below the bottom
-#     of the screen. A future edit that adds a row to that dialog will push
-#     them off again, and this view is what will say so.
+#   * **All three crops are the whole modal plus a 28 px margin**, read off
+#     the `[screenshot] modal ... rect` line `--screenshot` prints (the same
+#     way tools/modal-shots/capture_modals.sh frames its contact sheet), at
+#     the rect each dialog has under ui/Dialog: 640x260 1280x1060 for Export
+#     As, 640x164 1280x1252 for Export Comps. They were 706x34 1124x800 and
+#     672x32 1204x1512 before that module existed -- the dialogs then sat at
+#     the top edge, and `export_states` only just fit a 1580-tall window with
+#     its Export and Close buttons at the bottom of the screen. ui/Dialog caps
+#     the BODY at 85% of the viewport and pins the footer below it, so a row
+#     added to Export Comps now scrolls the body instead of pushing the
+#     buttons off; what this view says about such an edit is that the crop's
+#     bottom band changed, not that the buttons went.
 # **The five `crop_*` views are exact (0, 0), measured, not borrowed.** Three
 # of them are text-and-chrome band crops (`crop_options`,
 # `crop_options_perspective`, `crop_refused`) and two are canvas crops full of
