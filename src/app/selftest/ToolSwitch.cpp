@@ -455,7 +455,7 @@ bool runToolSwitchTest() {
   // because that is where it is enforced -- ToolSwitch.hpp section 0's "one
   // writer" argument applies to the rules a writer keeps as much as to the
   // field it writes. The palette, the flyout, the Goodies menu and the flats
-  // panel each draw themselves greyed from `toolChangeRefusal()`, and
+  // panel each draw themselves greyed from `transformModalRefusal()`, and
   // `app/selftest/ToolSurface.cpp` pins the menu's half of that.
   {
     std::printf("  -- 8. a live gizmo is modal --\n");
@@ -488,7 +488,7 @@ bool runToolSwitchTest() {
     setActiveTool(t, Tool::Brush);
     check(withLiveSession(t), "toolswitch: (setup) a transform session is live on the "
                               "active document");
-    check(toolChangeRefusal(t) != nullptr,
+    check(transformModalRefusal(t) != nullptr,
           "toolswitch: REQUIRED -- a live gizmo on the document in front of the user refuses "
           "a tool change, and says so in a sentence a greyed cell can show");
 
@@ -545,7 +545,7 @@ bool runToolSwitchTest() {
     OpenDocument* b = addInkedDocument(away);
     check(b != nullptr && away.documents.active() == b && away.transform.active(),
           "toolswitch: (setup) document B is active and the session on A is still live");
-    check(toolChangeRefusal(away) == nullptr && setActiveTool(away, Tool::Text) &&
+    check(transformModalRefusal(away) == nullptr && setActiveTool(away, Tool::Text) &&
               away.brush.tool == Tool::Text,
           "toolswitch: REQUIRED -- a session on a document the user has tabbed AWAY from does "
           "not lock the palette. It draws no gizmo and its Escape key is scoped to the "
@@ -566,7 +566,7 @@ bool runToolSwitchTest() {
     // Nothing live, nothing refused -- the case that must not regress, since
     // every tool change in the application goes through the same door.
     AppState idle;
-    check(toolChangeRefusal(idle) == nullptr && setActiveTool(idle, Tool::Lasso) &&
+    check(transformModalRefusal(idle) == nullptr && setActiveTool(idle, Tool::Lasso) &&
               idle.brush.tool == Tool::Lasso,
           "toolswitch: with no session at all the setter is exactly what it was");
 

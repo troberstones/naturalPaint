@@ -75,7 +75,7 @@ void installTool(AppState& st, Tool next) noexcept {
 
 }  // namespace
 
-const char* toolChangeRefusal(const AppState& st) noexcept {
+const char* transformModalRefusal(const AppState& st) noexcept {
   if (!st.transform.active()) return nullptr;
   // The document scoping ToolSwitch.hpp section 5 argues for, spelled the same
   // way `ui/MacPaintUI.cpp`'s `transformOnThisDoc` spells it. A session on a
@@ -91,7 +91,7 @@ const char* toolChangeRefusal(const AppState& st) noexcept {
 }
 
 bool setActiveTool(AppState& st, Tool next) noexcept {
-  if (toolChangeRefusal(st) != nullptr) return false;
+  if (transformModalRefusal(st) != nullptr) return false;
   installTool(st, next);
   return true;
 }
@@ -246,7 +246,7 @@ bool setFlatsTool(AppState& st, FlatsTool next) noexcept {
   // Its own check rather than `setActiveTool()`'s, because the switch at the
   // bottom of this function writes `brush.tool` directly -- ToolSwitch.hpp
   // section 5's second paragraph on this function says why it has to.
-  if (toolChangeRefusal(st) != nullptr) return false;
+  if (transformModalRefusal(st) != nullptr) return false;
   st.flatsTool = next;
   // Picking a flatting tool cancels a half-finished two-click merge: the
   // armed point belongs to the gesture being abandoned, and carrying it into

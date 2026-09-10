@@ -495,6 +495,147 @@ const char* menuActionName(MenuAction action) noexcept {
   return "<UNNAMED MenuAction -- add it to menuActionName()>";
 }
 
+bool menuActionEndsTransform(MenuAction action) noexcept {
+  switch (action) {
+    // --- The exemptions, and only these -----------------------------------
+    //
+    // The header carries the argument for each group. Everything below this
+    // block returns true.
+    case MenuAction::None:
+      return false;
+
+    // View: `AppState::view`, the chrome flags, and `st.guides` -- not one of
+    // them is inside `OpenDocument::document`. Zooming to place something
+    // precisely is a mid-transform gesture, not an interruption of one.
+    case MenuAction::FitToWindow:
+    case MenuAction::Zoom100:
+    case MenuAction::ZoomIn:
+    case MenuAction::ZoomOut:
+    case MenuAction::MirrorX:
+    case MenuAction::MirrorY:
+    case MenuAction::ResetRotation:
+    case MenuAction::ResetView:
+    case MenuAction::GrayscalePreview:
+    case MenuAction::Rulers:
+    case MenuAction::Navigator:
+    case MenuAction::Guides:
+    case MenuAction::AddGuide:
+    case MenuAction::ClearGuides:
+    case MenuAction::Grid:
+    case MenuAction::Snap:
+      return false;
+
+    // Window, plus the two developer toggles that live beside them: window
+    // and process state, no document in the expression.
+    case MenuAction::BrushSettings:
+    case MenuAction::Pigment:
+    case MenuAction::ImGuiDemo:
+    case MenuAction::PauseSolver:
+    case MenuAction::ReloadShaders:
+      return false;
+
+    // Writing a file changes no pixel and moves no layer. Cmd+S is muscle
+    // memory and must not cost a transform.
+    case MenuAction::Save:
+    case MenuAction::SaveAs:
+    case MenuAction::SaveCopy:
+    case MenuAction::SaveIncremental:
+    case MenuAction::ExportAs:
+    case MenuAction::ExportStates:
+      return false;
+
+    // A session outlives a document switch on purpose; the quit is a sequence
+    // the user can still cancel; the tool item is the tool rule's business.
+    case MenuAction::ActivateDocument:
+    case MenuAction::Quit:
+    case MenuAction::ToolItem:
+      return false;
+
+    // The recent-documents list itself is a preferences file.
+    case MenuAction::ClearRecentMenu:
+      return false;
+
+    // --- Everything else ends it ------------------------------------------
+    //
+    // Listed rather than caught by a `default:`, so that adding a
+    // `MenuAction` is a decision this function is forced to make. A new item
+    // that silently inherited "does not end the transform" would be T28
+    // arriving again through a door nobody remembered was there.
+    //
+    // The four that make the case on their own: `LayerCommandItem` and
+    // `LayerSetCommandItem` are the delete/reorder/merge family T28 measured;
+    // `Undo`/`Redo` replace the whole `Document` from a snapshot; `Paste`
+    // inserts a layer; `PaintModeItem` and the two canvas items clear it.
+    case MenuAction::NewCanvas:
+    case MenuAction::NewDocument:
+    case MenuAction::Open:
+    case MenuAction::OpenRecentEntry:
+    case MenuAction::ImportImage:
+    case MenuAction::RecoverDocuments:
+    case MenuAction::Revert:
+    case MenuAction::DuplicateDocument:
+    case MenuAction::CloseDocument:
+    case MenuAction::Undo:
+    case MenuAction::Redo:
+    case MenuAction::FreeTransform:
+    case MenuAction::NumericTransform:
+    case MenuAction::Cut:
+    case MenuAction::Copy:
+    case MenuAction::CopyMerged:
+    case MenuAction::Paste:
+    case MenuAction::DeleteSelection:
+    case MenuAction::SelectAll:
+    case MenuAction::Deselect:
+    case MenuAction::Reselect:
+    case MenuAction::InvertSelection:
+    case MenuAction::ClearCanvas:
+    case MenuAction::LayerCommandItem:
+    case MenuAction::LayerSetCommandItem:
+    case MenuAction::SelectGrow:
+    case MenuAction::SelectShrink:
+    case MenuAction::SelectFeather:
+    case MenuAction::SelectColourRange:
+    case MenuAction::SelectLuminanceRange:
+    case MenuAction::SelectUndoRefine:
+    case MenuAction::PaintModeItem:
+    case MenuAction::GaussianBlur:
+    case MenuAction::Sharpen:
+    case MenuAction::UnsharpMask:
+    case MenuAction::AddNoise:
+    case MenuAction::Emboss:
+    case MenuAction::Median:
+    case MenuAction::MotionBlur:
+    case MenuAction::ImageSize:
+    case MenuAction::CanvasSize:
+    case MenuAction::CropToSelection:
+    case MenuAction::TrimToContent:
+    case MenuAction::AdjustLevels:
+    case MenuAction::AdjustCurves:
+    case MenuAction::AdjustExposure:
+    case MenuAction::AdjustChannelMixer:
+    case MenuAction::AdjustDesaturate:
+    case MenuAction::AdjustBrightnessContrast:
+    case MenuAction::AdjustHueSaturation:
+    case MenuAction::AdjustVibrance:
+    case MenuAction::AdjustColorBalance:
+    case MenuAction::AdjustBlackAndWhite:
+    case MenuAction::AdjustPhotoFilter:
+    case MenuAction::AdjustInvert:
+    case MenuAction::AdjustPosterize:
+    case MenuAction::AdjustThreshold:
+    case MenuAction::AdjustGradientMap:
+    case MenuAction::AdjustAutoTone:
+    case MenuAction::AdjustAutoContrast:
+    case MenuAction::AdjustAutoColor:
+    case MenuAction::AdjustEqualize:
+    case MenuAction::Count:
+      return true;
+  }
+  // Unreachable for any real `MenuAction` -- `menuActionEffect()` below ends
+  // the same way, and for the same reason.
+  return true;
+}
+
 MenuEffect menuActionEffect(MenuAction action) noexcept {
   switch (action) {
     // **The one that matters.** See MenuEffect::QuitRequest's comment: this

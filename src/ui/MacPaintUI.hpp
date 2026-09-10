@@ -244,7 +244,7 @@ void moveHistoryCursor(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext&
 // ("I can select a tool while transforming") named the palette only because
 // that is the one the user reached for first. `nullptr` when nothing is
 // refusing -- the sentence itself, not a bool, so the greyed entry can say
-// why, which is `toolChangeRefusal()`'s own argument.
+// why, which is `transformModalRefusal()`'s own argument.
 std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen,
                                             const char* modalWhy);
 

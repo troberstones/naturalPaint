@@ -135,7 +135,7 @@
 //
 // **Enforced HERE, not at the four controls that ask for a switch.** The
 // palette cell, the flyout row, the Goodies > Tools menu item and the flats
-// palette are four places, and Â§0's whole argument is that a rule spread over
+// palette are four places, and §0's whole argument is that a rule spread over
 // four call sites is a rule the fifth one will not have. The controls still
 // draw themselves disabled -- a refusal the user cannot see coming is its own
 // defect -- but drawing is what they do, and the refusing is done once, in
@@ -158,7 +158,7 @@
 // nothing if it holds only at the moment the gizmo appears.
 //
 // **Space still pans.** `beginSpringHand()` does not go through
-// `setActiveTool()` (Â§1) and is deliberately not gated: borrowing the Hand to
+// `setActiveTool()` (§1) and is deliberately not gated: borrowing the Hand to
 // see the far end of what you are transforming is not choosing a tool, it
 // changes nothing about what a click means when you let go, and Photoshop's
 // Free Transform allows it too. The Eyedropper's borrow is already impossible
@@ -218,21 +218,35 @@ bool setActiveTool(AppState& st, Tool next) noexcept;
 // deliberately while the gizmo was up.
 bool enterTransformTool(AppState& st) noexcept;
 
-// **The sentence a tool control shows while Â§5's live gizmo refuses to let the
-// tool change**, or `nullptr` when nothing is refusing and the palette is
-// ordinary.
+// **The sentence a modal surface shows while §5's live gizmo is up**, or
+// `nullptr` when no gizmo is in the way.
+//
+// **Named for the gizmo rather than for the tool**, because it outgrew the
+// tool palette. Six surfaces read it now -- the palette cell, the flyout row,
+// the Goodies tool family, the flats palette, the options band and the LAYERS
+// panel -- and only four of those are about tools. What they share is the
+// question, not the widget: *is a transform gizmo live on the document in
+// front of the user*. It stays in this file because this is where the half
+// that REFUSES is enforced (`setActiveTool()`, `setFlatsTool()`), and a
+// predicate kept away from its own enforcement is a predicate the two can
+// disagree about.
 //
 // A `const char*` refusal rather than a `bool`, matching
-// `app/ToolSurface.hpp`'s `toolSurfaceRefusal()` exactly: the palette, the
-// flyout and the menu each need a reason to put in front of the user, and a
-// bool would have each of them inventing its own wording for the same state.
-// One string, three controls, and the writer below tests the same function
-// for nullptr -- so what the palette says and what the setter does cannot
-// drift apart.
+// `app/ToolSurface.hpp`'s `toolSurfaceRefusal()` exactly: every one of those
+// surfaces needs a reason to put in front of the user, and a bool would have
+// each of them inventing its own wording for the same state. One string, six
+// surfaces, and the setters below test the same function for nullptr -- so
+// what a panel says and what a setter does cannot drift apart.
 //
 // Takes no `Tool`. This axis is a property of the session, not of the tool:
 // every cell is refused, including the Move cell that is already lit.
-const char* toolChangeRefusal(const AppState& st) noexcept;
+//
+// **Not the menu bar's rule.** The menu CANCELS a live transform rather than
+// being greyed by it (`ui/MenuModel.hpp`'s `menuActionEndsTransform()`), and
+// the difference is that the menu carries the escape hatches -- Undo, Save,
+// Quit -- while a palette of tools and a panel of layer buttons carry none.
+// Greying the menu would trap a user behind a box; greying these does not.
+const char* transformModalRefusal(const AppState& st) noexcept;
 
 // Pick a flatting tool (or `FlatsTool::None` to leave flatting mode), and
 // install the host tool ADR-0009's table gives it. The single writer of
@@ -240,7 +254,7 @@ const char* toolChangeRefusal(const AppState& st) noexcept;
 // `brush.tool`: two writers of "what does a click mean" is how a gesture
 // ends up meaning two things at once.
 //
-// Refused, changing nothing, under Â§5's live gizmo -- and it needs its own
+// Refused, changing nothing, under §5's live gizmo -- and it needs its own
 // check rather than inheriting `setActiveTool()`'s, because the switch
 // statement at the bottom of it writes `brush.tool` DIRECTLY (that function
 // would clear the very `flatsTool` this one is setting). Two writers of

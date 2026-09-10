@@ -593,7 +593,7 @@ bool toolButton(AppState& st, Tool t, float cellSize) {
   // just the content-making ones. Asked here as well as inside
   // `setActiveTool()` because these are two different jobs: the setter makes
   // the refusal true, and this makes it visible before the user aims at it.
-  const char* modalWhy = toolChangeRefusal(st);
+  const char* modalWhy = transformModalRefusal(st);
   // All three axes, and a cell is live only if it clears every one.
   const bool live = implemented && onSurface && modalWhy == nullptr;
   const bool clickedRaw = ImGui::InvisibleButton("##tool", size);
@@ -636,7 +636,7 @@ bool toolButton(AppState& st, Tool t, float cellSize) {
       tip += why;
     }
     // Never stacked on the surface sentence above, and it cannot be: a
-    // transform session belongs to a document, `toolChangeRefusal()` only
+    // transform session belongs to a document, `transformModalRefusal()` only
     // answers for the ACTIVE one, so `documentOpen` is true whenever this is
     // non-null and `toolSurfaceRefusal()` has already answered nullptr. Two
     // axes, two sentences, never both at once -- app/ToolSurface.hpp's own
@@ -877,7 +877,7 @@ void toolGroupButton(AppState& st, int groupIndex, float cellSize, bool forceOpe
       rowW += kFlyoutIconGutter + kFlyoutPadX;
 
       const bool documentOpen = st.documents.active() != nullptr;
-      const char* modalWhy = toolChangeRefusal(st);
+      const char* modalWhy = transformModalRefusal(st);
       for (int m = 0; m < group.memberCount; ++m) {
         const Tool member = group.members[m];
         if (toolFlyoutRow(member, member == current, documentOpen, modalWhy, rowW)) {
@@ -2558,6 +2558,44 @@ void drawThumbCheckerboard(ImDrawList* dl, const ImVec2& lo, const ImVec2& hi) {
 }
 
 void drawLayersSection(AppState& st, GpuContext& gpu) {
+  // **The whole panel is inert while a transform gizmo is up.**
+  //
+  // Every control in here edits the thing the live session is holding an index
+  // into: selecting a row moves what the gizmo is NOT aimed at (the session
+  // keeps the layer it began on, so the highlight and the box would disagree
+  // with nothing on screen saying so), and the delete, reorder, merge and
+  // group buttons move the stack itself -- which is
+  // `docs/testing-issues.md` T28's own measured corruption.
+  // `TransformSession::commit()` now refuses a stack that moved, so the
+  // consequence is already contained; this is what stops the user reaching the
+  // refusal at all.
+  //
+  // **One `BeginDisabled()` around the whole body rather than a term on each
+  // control**, deliberately: this panel has row clicks, eye and lock chips, a
+  // blend combo, an opacity field, a filter box, a rename popup, a drag
+  // reorder and eleven buttons, and a rule spread over that many controls is a
+  // rule the twelfth will not have. It is `app/ToolSwitch.hpp` section 5's own
+  // argument, applied to a panel instead of a setter -- and the same
+  // `transformModalRefusal()` predicate the palette, the flyout, the Goodies tool
+  // family and the flats panel are all already greyed from, so what these five
+  // surfaces do while a gizmo is up cannot drift apart.
+  //
+  // Not the menu's rule. `Layer > Delete Layer` CANCELS the transform and then
+  // deletes (`menuActionEndsTransform()`); this panel refuses instead. The
+  // difference is that the menu bar carries the escape hatches -- Undo, Save,
+  // Quit -- and a panel of layer buttons carries none.
+  const char* transformWhy = transformModalRefusal(st);
+  ImGui::BeginDisabled(transformWhy != nullptr);
+  struct LayersDisabledScope {
+    ~LayersDisabledScope() { ImGui::EndDisabled(); }
+  } layersDisabledScope;
+  if (transformWhy != nullptr) {
+    // Above the list, not below it: the panel is grey from its first pixel and
+    // the reason has to be the first thing read, or it looks broken.
+    textDisabledWrapped("%s", transformWhy);
+    ImGui::Separator();
+  }
+
   OpenDocument* od = st.documents.active();
   if (od == nullptr) {
     ImGui::TextDisabled("No document open.");
@@ -10772,7 +10810,7 @@ MenuContext menuContextFromState(AppState& st) {
   // needing an `AppState` or touching the recent-documents file this
   // function's own first line reads.
   ctx.tools = toolMenuFamily(st.brush.tool, st.documents.active() != nullptr,
-                             toolChangeRefusal(st));
+                             transformModalRefusal(st));
   ctx.paused = st.paused;
 
   // --- View ---------------------------------------------------------------
@@ -11008,6 +11046,38 @@ std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen,
 void savePanelLayout(const AppState& st);
 void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canvasW,
                        uint32_t canvasH) {
+  // **A menu action that could touch this document ends the transform first**
+  // (ui/MenuModel.hpp's `menuActionEndsTransform()` carries the classification
+  // and the argument for every exemption). The menu is deliberately NOT
+  // greyed the way the tool palette is: a user who cannot reach Undo or Save
+  // because a box is on screen has been trapped, not protected. So the gizmo
+  // gets out of the way instead.
+  //
+  // Cancel, not commit: baking a resample the user was still adjusting, on the
+  // strength of a click aimed at a menu, is the unrecoverable direction -- the
+  // gizmo's own "a click on nothing is NOT a commit" comment makes the same
+  // argument about a click that is much closer to it than this one.
+  //
+  // Ahead of the switch, so it is one statement rather than a line the next
+  // `case` added will be missing. Scoped to a session on the document this
+  // action is about to act on, the same scoping `transformModalRefusal()` uses --
+  // a gizmo parked on a document the user has tabbed away from is not in this
+  // command's way.
+  if (st.transform.active() && menuActionEndsTransform(action)) {
+    const OpenDocument* on = st.documents.active();
+    if (on != nullptr && st.transform.documentId() == on->id) {
+      st.transform.cancel();
+      g_transformPreview.reset();
+      // Said out loud in the band that has been carrying "Return applies it,
+      // Escape cancels it" for as long as the gizmo was up -- with the session
+      // gone, `transformModalRefusal()` stops answering and this is what the band
+      // falls back to, so the sentence lands in the same place the one it
+      // replaces was.
+      g_strokeRefusal = "the transform was cancelled: a menu command needs the layer stack to "
+                        "hold still.";
+    }
+  }
+
   OpenDocument* doc = st.documents.active();
 
   switch (action) {
@@ -12051,7 +12121,7 @@ void drawFlatsToolsSection(AppState& st) {
   // to "what does a click mean", and one armed under a gizmo is the same hole
   // the Text tool put a stray layer through. `setFlatsTool()` refuses it
   // anyway -- this is what makes the refusal visible before the click.
-  const char* modalWhy = toolChangeRefusal(st);
+  const char* modalWhy = transformModalRefusal(st);
   const bool live = sub.layer != nullptr && !sub.locked && modalWhy == nullptr;
 
   std::shared_ptr<const FlatEvaluation> eval;
@@ -12191,7 +12261,7 @@ void drawPanelBody(AppState& st, ControlsSection section, std::unique_ptr<PaintS
       // claimed "both are stated in the status line for as long as the session
       // is live" since that gizmo was written, and until now nothing stated
       // them anywhere.
-      if (const char* modalWhy = toolChangeRefusal(st))
+      if (const char* modalWhy = transformModalRefusal(st))
         drawAtelierOptionsBarContent(st, ImGui::GetWindowHeight(), modalWhy);
       else
         drawAtelierOptionsBarContent(st, ImGui::GetWindowHeight(), g_strokeRefusal);
@@ -14538,7 +14608,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // still adjusting is unrecoverable in the way an extra keystroke
         // never is. Return commits, Escape cancels, and both are stated in
         // the options band for as long as the session is live -- see the
-        // `toolChangeRefusal()` branch at this file's `ControlsSection::Options`
+        // `transformModalRefusal()` branch at this file's `ControlsSection::Options`
         // arm, which is what finally made that sentence true.
         if (grabbed != TransformHandle::None) st.transform.beginDrag(grabbed, Point2{tx, ty});
       }

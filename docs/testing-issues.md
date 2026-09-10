@@ -1651,7 +1651,7 @@ line of `--frame-trace`, which is why that line now carries `pacing=`.
 
 ---
 
-## T28 — A live transform is modal for the TOOLS only; the menu bar and the layer panel are still live · PARTLY CLOSED (the commit can no longer land on the wrong layer; the menu is still ungated)
+## T28 — A live transform must be resolved before another action · CLOSED
 
 **Reported.** "I can select a tool while transforming, prevent this from
 happening, the transform needs to be committed before another action can be
@@ -1703,15 +1703,12 @@ merge and group are the same shape (all index-based against the same stored
 
 **Work.** Two pieces, and the second is not just "more of the first":
 
-1. **Scope the menu.** — still open. `toolChangeRefusal()`
-   (`app/ToolSwitch.hpp` §5) is already the one predicate the palette, the
-   flyout, the Goodies tool family and the flats panel all grey themselves
-   from, and it already returns the sentence a disabled entry needs. The open
-   question is *which* menu actions it should cover — blanket-disabling the
-   menu bar would take `Edit > Undo` and `File > Save` with it, and neither is
-   a reason to lose a gizmo. The defensible line is the actions that move a
-   layer's index or its pixels; naming that set is the actual work, not the
-   wiring.
+1. **Scope the menu.** — **done, and the answer turned out not to be
+   "scope" at all.** The open question was *which* menu actions
+   `transformModalRefusal()` should grey, and the right answer was none of
+   them: greying the menu bar takes `Edit > Undo`, `File > Save` and `Quit`
+   with it. The menu cancels the transform instead. See the closing note below
+   for the classification and its exemptions.
 2. **Make the session name the layer it owns, not merely its slot.** — **done,
    and it is what makes the corruption unrepresentable rather than merely
    unreachable through one route.** `TransformSession` now stamps the layer
@@ -1764,6 +1761,71 @@ picture and a Return that refuses with a sentence, where it used to be a
 Return that silently resampled the wrong layer. Scoping the menu (piece 1)
 closes the display half too, which is the argument for doing it rather than
 leaving the guard to carry this alone.
+
+---
+
+**Closed 2026-09-10 by `1e8fca2` (tools), `30a10ea` (the commit guard) and this
+change (the panel and the menu).** What was decided, since the two routes ended
+up with *opposite* answers and that is the part worth not re-litigating:
+
+**The LAYERS panel is REFUSED.** One `ImGui::BeginDisabled()` around the whole
+of `drawLayersSection()`, from the same `transformModalRefusal()` the tool
+palette, the flyout, the Goodies tool family and the flats panel are already
+greyed by — five surfaces, one predicate, so what they do while a gizmo is up
+cannot drift apart. A term on each control was rejected: this panel has row
+clicks, eye and lock chips, a blend combo, an opacity field, a filter box, a
+rename popup, a drag reorder and eleven buttons, and a rule spread over that
+many controls is a rule the twelfth will not have.
+
+**The menu bar CANCELS instead.** Greying it would take `Edit > Undo`,
+`File > Save` and `Quit` with it, and a user who cannot save because a box is on
+screen has been trapped, not protected. The menu carries the escape hatches; a
+palette of tools and a panel of layer buttons carry none. That asymmetry is the
+whole of the decision.
+
+`ui/MenuModel.hpp`'s `menuActionEndsTransform()` holds the classification, as
+an exhaustive switch so a new `MenuAction` is a **compile-time** decision — the
+first attempt to sabotage it by deleting cases failed to build on
+`-Werror,-Wswitch`, which is the protection working. The default is "ends it";
+the exemptions are the argued minority:
+
+* **View** — every item writes `AppState::view`, a chrome flag or `st.guides`,
+  none of which is inside `OpenDocument::document`. Zooming in to place
+  something precisely is a *mid*-transform gesture, and Cmd+= ending the gizmo
+  would be the feature fighting the thing it exists to support.
+* **Window**, plus `PauseSolver` / `ReloadShaders` — window and process state.
+* **Save / Save As / Save a Copy / Save Incremental / Export** — these write a
+  FILE. The document is unchanged, and Cmd+S is muscle memory; losing a
+  transform to it is the worst surprise available here.
+* **`ActivateDocument`** — a session outlives a document switch on purpose
+  (`app/TransformSession.hpp`), and cancelling here would undo that decision
+  through the back door.
+* **`Quit`** — a sequence the user can still back out of, once per dirty
+  document.
+* **`ToolItem`** — the *other* rule owns it: the family is drawn disabled and
+  `setActiveTool()` refuses it, so the two rules must not contradict.
+
+**Cancel, not commit.** Committing would bake a resample the user was still
+adjusting on the strength of a click aimed at a menu — the gizmo already makes
+that argument about a click on empty canvas, which is far closer to it than a
+menu item is.
+
+**Scoped to the document the command is about to act on**, the same scoping
+`transformModalRefusal()` uses: a gizmo parked on a document the user has
+tabbed away from is not in this command's way, and A's work is not B's to
+discard.
+
+Eleven sabotages across the two halves. The classifier, the hook that reads it,
+its document scoping, the save exemption, the layer-family classification and
+the panel's own lock each redden their own assertion; `layers_transform` is the
+golden view for the panel. 8885 pass, golden 64/64.
+
+**One thing deliberately left as it is:** the gizmo still draws over whatever
+occupies the slot if a layer is deleted *from the menu* — the menu cancels the
+transform, so the case is now unreachable that way, but a session on a
+background document whose stack is edited still ends at
+`TransformSession::commit()`'s refusal rather than at the canvas. That refusal
+is `30a10ea` and it is the backstop, not the front door.
 
 ---
 
