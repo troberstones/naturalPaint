@@ -730,6 +730,193 @@ bool runTransformSessionTest() {
           "cross-document: cancel() clears the bound document, not just the active flag");
   }
 
+  // --- 17. A session belongs to ONE LAYER, not to one SLOT ------------------
+  //
+  // Section 14's defect, one level down, and it was reachable with one menu
+  // item. `layerIndex_` is an index into the ACTIVE document's layer list, and
+  // an index does not survive that list moving -- `Layer > Delete Layer` is
+  // live from the menu bar while a gizmo is up (docs/testing-issues.md T28).
+  //
+  // Driven against the old code first, on the fixture below: the commit was
+  // NOT refused. It resampled `L1`, a layer the user had never transformed,
+  // and reported success -- the same silent corruption `documentId_` was added
+  // to stop, wearing the other hat.
+  {
+    // Four named layers, so a wrong commit names the layer it hit rather than
+    // being a difference of pixels somebody has to interpret.
+    auto stack = []() {
+      OpenDocument od = makeBlankOpenDocument(32, 24, WorkingSpace{});
+      for (int k = 0; k < 3; ++k) {
+        Layer L;
+        L.kind = LayerKind::RGB;
+        L.name = "L" + std::to_string(k);
+        L.rgbTiles = TileStore{};
+        for (int32_t y = 0; y < 6; ++y)
+          for (int32_t x = 0; x < 6; ++x)
+            L.rgbTiles->getOrCreate(tileCoordAt(PixelCoord{x, y}))
+                .writePixel(tileLocalOffset(PixelCoord{x, y}),
+                            {0.1f * static_cast<float>(k + 1), 0.2f, 0.3f, 1.0f});
+        od.document.layers.push_back(std::move(L));
+      }
+      od.recordEdit("stack fixture", EditKind::Content);
+      return od;
+    };
+
+    // The id is stamped by the begin, on a document that has never captured a
+    // comp -- `Layer::id` is handed out lazily and every layer here starts at
+    // 0, so a session that did not stamp one would have nothing to compare.
+    {
+      OpenDocument od = stack();
+      check(od.document.layers[1].id == 0,
+            "layer identity: (setup) the layer carries no id before the transform begins -- "
+            "ids are lazy, and a document that never captured a comp has none");
+      TransformSession ts;
+      check(ts.beginLayer(od, 1).ok, "layer identity: (setup) a session begins on index 1");
+      check(od.document.layers[1].id != 0 && ts.layerId() == od.document.layers[1].id,
+            "layer identity: REQUIRED -- the begin stamps the layer with a stable id and "
+            "records it. A bare index has nothing to check at commit");
+      // Only that layer. Beginning a transform has no better claim on the rest
+      // of the stack than grouping does (core/Layer.hpp's `groupTag`).
+      check(od.document.layers[0].id == 0 && od.document.layers[2].id == 0 &&
+                od.document.layers[3].id == 0,
+            "layer identity: and it stamps THAT LAYER ONLY -- no other layer in the document "
+            "is given an id merely because one of them was transformed");
+    }
+
+    // **The reported failure.** Session on the layer named `L0`, sitting at
+    // index 1; delete the layer below it; the stack shifts and index 1 now
+    // names `L1`.
+    {
+      OpenDocument od = stack();
+      TransformSession ts;
+      check(ts.beginLayer(od, 1).ok, "layer identity: (setup) a session on the layer named L0");
+      check(od.document.layers[1].name == "L0", "layer identity: (setup) index 1 names L0");
+      ts.beginDrag(TransformHandle::Move, Point2{0.0f, 0.0f});
+      ts.updateDrag(Point2{5.0f, 0.0f}, false, false);
+      ts.endDrag();
+
+      od.document.layers.erase(od.document.layers.begin());
+      check(od.document.layers[1].name == "L1",
+            "layer identity: (setup) deleting the layer below shifts the stack -- index 1 now "
+            "names a DIFFERENT layer");
+
+      const uint64_t revBefore = od.revision;
+      const TransformCommitResult wrong = ts.commit(od);
+      check(!wrong.ok,
+            "layer identity: REQUIRED -- the commit is REFUSED. Before this guard it succeeded, "
+            "resampling L1 -- a layer the user never transformed -- and reported it done");
+      check(wrong.error.find("no longer at that position") != std::string::npos,
+            "layer identity: ...and the refusal says what happened, rather than failing "
+            "silently or blaming the index");
+      check(od.revision == revBefore,
+            "layer identity: ...and nothing was written -- the wrong layer's pixels are "
+            "untouched, which is the whole point of refusing rather than clamping");
+      check(ts.active(),
+            "layer identity: ...and the session SURVIVES, matching the cross-document guard: "
+            "undo the delete and the id lines up again");
+    }
+
+    // Deleting ABOVE the transformed layer moves nothing below it. This half
+    // has to keep working, or the guard would refuse an edit that never
+    // touched the session's layer -- a false refusal is its own defect.
+    {
+      OpenDocument od = stack();
+      TransformSession ts;
+      check(ts.beginLayer(od, 1).ok, "layer identity: (setup) a session on index 1 again");
+      ts.beginDrag(TransformHandle::Move, Point2{0.0f, 0.0f});
+      ts.updateDrag(Point2{5.0f, 0.0f}, false, false);
+      ts.endDrag();
+      od.document.layers.erase(od.document.layers.begin() + 3);  // the top layer, above it
+      const TransformCommitResult fine = ts.commit(od);
+      check(fine.ok,
+            "layer identity: REQUIRED -- deleting a layer ABOVE the transformed one still "
+            "commits. Indices below an erase do not move, and refusing here would be the "
+            "guard inventing a conflict");
+    }
+
+    // A REORDER keeps the layer count identical, so a count-based guard would
+    // miss it entirely. This is why the guard is an identity and not a tally.
+    {
+      OpenDocument od = stack();
+      TransformSession ts;
+      check(ts.beginLayer(od, 1).ok, "layer identity: (setup) a session before a reorder");
+      std::swap(od.document.layers[1], od.document.layers[2]);
+      const TransformCommitResult wrong = ts.commit(od);
+      check(!wrong.ok,
+            "layer identity: REQUIRED -- a REORDER is caught too, and it is what proves this "
+            "is an identity check: the layer count never changed, so counting would have "
+            "committed onto the swapped layer");
+    }
+
+    // The out-of-range case was already refused before this guard, by
+    // `transformLayer()`'s own bounds check. It is folded in here so that one
+    // question gets one sentence, and it must not have regressed.
+    {
+      OpenDocument od = stack();
+      TransformSession ts;
+      check(ts.beginLayer(od, 3).ok, "layer identity: (setup) a session on the TOP layer");
+      ts.beginDrag(TransformHandle::Move, Point2{0.0f, 0.0f});
+      ts.updateDrag(Point2{5.0f, 0.0f}, false, false);
+      ts.endDrag();
+      od.document.layers.erase(od.document.layers.begin());
+      const TransformCommitResult wrong = ts.commit(od);
+      check(!wrong.ok && wrong.error.find("no longer at that position") != std::string::npos,
+            "layer identity: an index left OUT OF RANGE by the delete is refused by this "
+            "guard, in the same sentence -- not by a bounds check one file over");
+    }
+
+    // Nothing moved: the ordinary commit, which every other section here
+    // depends on and which a guard written slightly wrong would break for
+    // every user who never touches the menu bar mid-transform.
+    {
+      OpenDocument od = stack();
+      TransformSession ts;
+      check(ts.beginLayer(od, 1).ok, "layer identity: (setup) an undisturbed session");
+      ts.beginDrag(TransformHandle::Move, Point2{0.0f, 0.0f});
+      ts.updateDrag(Point2{5.0f, 0.0f}, false, false);
+      ts.endDrag();
+      check(ts.commit(od).ok,
+            "layer identity: with the stack left alone the commit still lands -- the guard "
+            "costs the ordinary path nothing");
+    }
+
+    // **A SELECTION-pixels transform goes stale the same way.** It is bounded
+    // by the selection but still lands on one layer at `layerIndex_`, so a
+    // guard that covered only `beginLayer()` would leave the other target
+    // exactly as it was -- and the Move tool picks between the two by whether
+    // a selection exists, so which one a user gets is not a decision they made.
+    {
+      OpenDocument od = stack();
+      Selection sel = selectRectangle(0.0f, 0.0f, 6.0f, 6.0f);
+      TransformSession ts;
+      check(ts.beginSelectionPixels(od, sel, 1).ok,
+            "layer identity: (setup) a SELECTION-pixels session on index 1");
+      check(ts.layerId() != 0 && ts.layerId() == od.document.layers[1].id,
+            "layer identity: REQUIRED -- the selection-pixels begin stamps the layer too. Move "
+            "picks between the two targets by whether a selection exists, so a guard on only "
+            "one of them covers a coin flip");
+      ts.beginDrag(TransformHandle::Move, Point2{0.0f, 0.0f});
+      ts.updateDrag(Point2{5.0f, 0.0f}, false, false);
+      ts.endDrag();
+      od.document.layers.erase(od.document.layers.begin());
+      const uint64_t revBefore = od.revision;
+      const TransformCommitResult wrong = ts.commit(od);
+      check(!wrong.ok && od.revision == revBefore,
+            "layer identity: ...and it is refused after the same delete, writing nothing");
+    }
+
+    // `cancel()` forgets it, exactly as it forgets the document (section 16):
+    // a stale id left behind would be a session half-bound to a layer.
+    {
+      OpenDocument od = stack();
+      TransformSession ts;
+      check(ts.beginLayer(od, 1).ok, "layer identity: (setup) begin before cancel");
+      ts.cancel();
+      check(ts.layerId() == 0,
+            "layer identity: cancel() clears the bound LAYER too, not only the bound document");
+    }
+  }
+
   // --- an EMPTY text frame is still an object -------------------------------
   //
   // A paragraph frame is dragged out before a word of it is typed, and from

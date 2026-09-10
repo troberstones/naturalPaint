@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "core/LayerGeometry.hpp"
+#include "core/LayerOps.hpp"
 
 namespace np {
 namespace {
@@ -334,7 +335,7 @@ void TransformSession::endDrag() noexcept { drag_.active = false; }
 
 void TransformSession::cancel() noexcept { *this = TransformSession{}; }
 
-TransformBeginResult TransformSession::beginLayer(const OpenDocument& od, size_t layerIndex,
+TransformBeginResult TransformSession::beginLayer(OpenDocument& od, size_t layerIndex,
                                                   const Mat3& initialPending) {
   const Document& doc = od.document;
   TransformBeginResult r;
@@ -382,12 +383,20 @@ TransformBeginResult TransformSession::beginLayer(const OpenDocument& od, size_t
     return r;
   }
 
+  // **Stamped before the reset below wipes the session**, and read back out of
+  // the document rather than remembered from above: `ensureLayerId()` is what
+  // assigns one when the layer has none, and the number it returns is the one
+  // `commit()` will compare against. See the header's `layerId()` for the
+  // defect this closes.
+  const uint64_t layerId = ensureLayerId(od.document, layerIndex);
+
   *this = TransformSession{};
   sourceBounds_ = regionFromBounds(bounds);
-  // Set together with `layerIndex_`, and never apart from it: the pair is what
-  // identifies the pixels this session owns. See the header's beginLayer().
+  // Set together with `layerIndex_`, and never apart from it: the three are
+  // what identify the pixels this session owns. See the header's beginLayer().
   documentId_ = od.id;
   layerIndex_ = layerIndex;
+  layerId_ = layerId;
   target_ = TransformTarget::Layer;
   pending_ = initialPending;
   active_ = true;
@@ -395,7 +404,7 @@ TransformBeginResult TransformSession::beginLayer(const OpenDocument& od, size_t
   return r;
 }
 
-TransformBeginResult TransformSession::beginSelectionPixels(const OpenDocument& od,
+TransformBeginResult TransformSession::beginSelectionPixels(OpenDocument& od,
                                                              const Selection& selection,
                                                              size_t layerIndex) {
   const Document& doc = od.document;
@@ -441,11 +450,17 @@ TransformBeginResult TransformSession::beginSelectionPixels(const OpenDocument& 
     return r;
   }
 
+  const uint64_t layerId = ensureLayerId(od.document, layerIndex);
+
   *this = TransformSession{};
   sourceBounds_ = region;
   selectionSnapshot_ = selection;
   documentId_ = od.id;
   layerIndex_ = layerIndex;
+  // A selection-pixels transform is bounded by the selection but still lands
+  // on ONE layer, at `layerIndex_`, so it goes stale in exactly the same way
+  // and gets the identical stamp.
+  layerId_ = layerId;
   target_ = TransformTarget::SelectionPixels;
   active_ = true;
   r.ok = true;
@@ -469,6 +484,33 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
   if (od.id != documentId_) {
     out.error = "transform commit refused: this transform belongs to a different document. "
                 "Switch back to it to commit or cancel.";
+    return out;
+  }
+
+  // **The same guard, one level down: the LAYER this session began on.**
+  // `documentId_` above stops a commit landing in the wrong document;
+  // `layerIndex_` is an index into THIS document's layer list and does not
+  // survive that list moving. `Layer > Delete Layer` is reachable from the menu
+  // bar while a gizmo is up (docs/testing-issues.md T28), and deleting a layer
+  // BELOW the transformed one shifts every index above it down by one --
+  // measured on a four-layer document, a session begun on the layer named `L0`
+  // at index 1 committed onto `L1` and reported success.
+  //
+  // Refused rather than clamped or re-found by searching for the id: the
+  // matrix was dragged against a layer at a position that no longer holds it,
+  // and silently applying it somewhere else is the defect, not the fix.
+  // `active_` stays true, matching the document guard just above -- undo the
+  // reorder and the id lines up again, and Return does what the user meant.
+  //
+  // Out-of-range is folded in here rather than left to `transformLayer()`'s
+  // own bounds check, so that the two halves of one question ("is the layer
+  // still there, and is it still the same layer") answer in one sentence
+  // instead of two written in different files.
+  if (layerIndex_ >= od.document.layers.size() ||
+      od.document.layers[layerIndex_].id != layerId_) {
+    out.error = "transform commit refused: the layer this transform began on is no longer at "
+                "that position in the stack -- it was deleted, reordered or merged, or the "
+                "document was undone past it. Press Escape to discard the transform.";
     return out;
   }
 

@@ -1651,7 +1651,7 @@ line of `--frame-trace`, which is why that line now carries `pacing=`.
 
 ---
 
-## T28 — A live transform is modal for the TOOLS only; the menu bar and the layer panel are still live · open
+## T28 — A live transform is modal for the TOOLS only; the menu bar and the layer panel are still live · PARTLY CLOSED (the commit can no longer land on the wrong layer; the menu is still ungated)
 
 **Reported.** "I can select a tool while transforming, prevent this from
 happening, the transform needs to be committed before another action can be
@@ -1692,7 +1692,8 @@ PROBE: commit ok=1 err=''
 ```
 
 The resample landed on `L1`, a layer the user was never transforming, and the
-commit reported success. `Layer > Delete Layer` while a gizmo is up is the
+commit reported success. (Closed — see **Work** below; the same probe is now a
+permanent assertion in `app/selftest/TransformSession.cpp` §17.) `Layer > Delete Layer` while a gizmo is up is the
 reachable gesture. Deleting *above* the transformed layer is harmless (indices
 below do not move) and deleting enough to put the index out of range is
 refused by name (`"index 3 is out of range; this document has 3 layer(s).
@@ -1702,22 +1703,67 @@ merge and group are the same shape (all index-based against the same stored
 
 **Work.** Two pieces, and the second is not just "more of the first":
 
-1. **Scope the menu.** `toolChangeRefusal()` (`app/ToolSwitch.hpp` §5) is
-   already the one predicate the palette, the flyout, the Goodies tool family
-   and the flats panel all grey themselves from, and it already returns the
-   sentence a disabled entry needs. The open question is *which* menu actions
-   it should cover — blanket-disabling the menu bar would take `Edit > Undo`
-   and `File > Save` with it, and neither is a reason to lose a gizmo. The
-   defensible line is the actions that move a layer's index or its pixels;
-   naming that set is the actual work, not the wiring.
-2. **Make the session name the layer it owns, not merely its slot.** The
-   `documentId_` guard is the precedent and the argument is identical one
-   level down: the pair that identifies the pixels a session owns should be
-   checkable at commit, so a list that moved underneath produces a refusal
-   with a sentence instead of a successful resample of the wrong thing. That
-   is worth doing **even if the menu is scoped**, because it is what makes the
-   corruption unrepresentable rather than merely unreachable through the one
-   route that was closed.
+1. **Scope the menu.** — still open. `toolChangeRefusal()`
+   (`app/ToolSwitch.hpp` §5) is already the one predicate the palette, the
+   flyout, the Goodies tool family and the flats panel all grey themselves
+   from, and it already returns the sentence a disabled entry needs. The open
+   question is *which* menu actions it should cover — blanket-disabling the
+   menu bar would take `Edit > Undo` and `File > Save` with it, and neither is
+   a reason to lose a gizmo. The defensible line is the actions that move a
+   layer's index or its pixels; naming that set is the actual work, not the
+   wiring.
+2. **Make the session name the layer it owns, not merely its slot.** — **done,
+   and it is what makes the corruption unrepresentable rather than merely
+   unreachable through one route.** `TransformSession` now stamps the layer
+   with a `core::ensureLayerId()` at `beginLayer()`/`beginSelectionPixels()`
+   and compares it at `commit()`, exactly as `documentId_` does one level up.
+   The probe above now reads `commit ok=0` with *"the layer this transform
+   began on is no longer at that position in the stack — it was deleted,
+   reordered or merged, or the document was undone past it. Press Escape to
+   discard the transform."*
+
+   Four decisions inside that are worth not re-litigating:
+
+   * **The id is stamped on THAT LAYER ONLY**, not by calling
+     `normalizeLayerIds()`. `core/Layer.hpp`'s `groupTag` comment already
+     settled the general rule — adding a group "must not force every layer in
+     a grouped document to acquire a `Layer::id` merely because two of them
+     were grouped" — and beginning a transform has no better claim on the rest
+     of the stack. `core::ensureLayerId()` is the one-layer form, with
+     `normalizeLayerIds()`'s counter-raise (a file whose `np:comps` another
+     tool stripped comes back with live ids above a default counter) and
+     without its duplicate-id renumbering, which would move an id a comp may
+     already refer to.
+   * **`begin*()` therefore takes `OpenDocument&`, not `const&`.** The
+     mutation is one number, no edit is recorded, and it costs nothing on disk
+     — `Layer::id` is written only inside `np:comps`
+     (`io/NpaintFile.cpp:1913`, guarded on `!doc.comps.empty()`), so a
+     document with no comps still saves byte-identically.
+   * **Refused, not re-found.** The guard does not search the stack for the id
+     and commit there instead. The matrix was dragged against a layer at a
+     position that no longer holds it; applying it somewhere else is the
+     defect, not the fix. `active()` stays true, matching the document guard —
+     undo the reorder and Return does what the user meant.
+   * **Out-of-range is folded into the same test**, so "is the layer still
+     there" and "is it still the same layer" answer in one sentence instead of
+     two written in different files. It was already refused before this, by
+     `transformLayer()`'s bounds check; the assertion pins that it now comes
+     from here.
+
+   Sabotage-proven seven ways. **A duplicate-id file is the one case this does
+   not catch** — two layers answering to one number could be swapped past the
+   check. This build never writes one (`duplicateLayer()` resets the copy's id
+   to 0) and `restoreLayerComp()` refuses that state by name; named here rather
+   than claimed as covered.
+
+**What is still reachable, and what is not.** `Layer > Delete Layer` under a
+live gizmo still deletes the layer and still leaves the gizmo drawn over
+whatever now occupies that slot — the *canvas* has not been taught about this,
+only the commit. So the remaining symptom is a gizmo pointing at the wrong
+picture and a Return that refuses with a sentence, where it used to be a
+Return that silently resampled the wrong layer. Scoping the menu (piece 1)
+closes the display half too, which is the argument for doing it rather than
+leaving the guard to carry this alone.
 
 ---
 

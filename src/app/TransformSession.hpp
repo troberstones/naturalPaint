@@ -460,7 +460,15 @@ class TransformSession {
   // would have left it possible to pass the wrong one; taking the whole
   // `OpenDocument` makes that unrepresentable. `commit()` already took an
   // `OpenDocument&`, so this costs no coupling that was not already here.
-  TransformBeginResult beginLayer(const OpenDocument& od, size_t layerIndex,
+  //
+  // **`OpenDocument&`, not `const&`, and the mutation is one number.** The
+  // session has to be able to tell at commit whether the layer it began on is
+  // still the layer at `layerIndex`, so it stamps that layer with a
+  // `core::ensureLayerId()` -- see `layerId()` below for the defect this
+  // closes and why a bare index could not close it. Nothing else about the
+  // document is touched, no edit is recorded, and a layer that already carries
+  // an id keeps it.
+  TransformBeginResult beginLayer(OpenDocument& od, size_t layerIndex,
                                   const Mat3& initialPending = mat3Identity());
 
   // Begins a transform of the pixels `selection` covers on
@@ -472,7 +480,7 @@ class TransformSession {
   // (which nothing in a headless session should cause mid-drag) does not
   // retarget an in-progress transform.
   // Takes the `OpenDocument` for the same reason `beginLayer()` above does.
-  TransformBeginResult beginSelectionPixels(const OpenDocument& od, const Selection& selection,
+  TransformBeginResult beginSelectionPixels(OpenDocument& od, const Selection& selection,
                                             size_t layerIndex);
 
   // Which document this session belongs to, or 0 when no session is active.
@@ -480,6 +488,28 @@ class TransformSession {
   // must compare this against the document it is about to act on -- see
   // `beginLayer()` above for what happens when nobody does.
   DocumentId documentId() const noexcept { return documentId_; }
+
+  // **Which LAYER this session belongs to** -- `core::Layer::id`, stamped at
+  // `begin*()`, 0 when no session is active.
+  //
+  // `documentId()` above exists because a session outlives a document switch
+  // and `layerIndex_` means nothing in another document. This exists because
+  // **`layerIndex_` can stop meaning what it meant in the SAME document.** An
+  // index does not survive the list moving under it, and the list can move
+  // while a gizmo is up: `Layer > Delete Layer` is reachable from the menu
+  // bar, which a live transform does not gate (docs/testing-issues.md T28).
+  //
+  // Measured before this member existed, on a four-layer document with the
+  // session begun on the layer named `L0` sitting at index 1: deleting layer 0
+  // shifted the stack, index 1 came to name `L1`, and `commit()` **succeeded**
+  // -- resampling a layer the user had never transformed and reporting it
+  // done. That is the exact failure `documentId_` was added to stop, one level
+  // down, and it was reachable with one menu item.
+  //
+  // Deleting ABOVE the transformed layer moves nothing below it and was never
+  // the problem; deleting enough to put the index out of range was already
+  // refused by name. It is the middle case this closes.
+  uint64_t layerId() const noexcept { return layerId_; }
 
   TransformHandlePositions handlePositions(
       float rotateReach = kDefaultRotateHandleReach) const noexcept;
@@ -526,6 +556,11 @@ class TransformSession {
   // resetting the whole object.
   DocumentId documentId_ = 0;
   size_t layerIndex_ = 0;
+  // The identity `layerIndex_` is an index TO -- see `layerId()` above.
+  // Written only beside `layerIndex_`, never apart from it: the three together
+  // are what name the pixels this session owns, and a pair kept in two places
+  // is a pair that can disagree.
+  uint64_t layerId_ = 0;
   DocumentRegion sourceBounds_;
   Mat3 pending_ = mat3Identity();
   Selection selectionSnapshot_;  // only meaningful for SelectionPixels

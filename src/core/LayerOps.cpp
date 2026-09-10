@@ -586,4 +586,18 @@ LayerOpResult setLayerOpEnabled(Document& doc, size_t index, size_t opIndex, boo
   return layerOpSucceed(label, index);
 }
 
+uint64_t ensureLayerId(Document& doc, size_t index) {
+  if (index >= doc.layers.size()) return 0;
+  Layer& layer = doc.layers[index];
+  if (layer.id != 0) return layer.id;
+  // `normalizeLayerIds()`'s own first loop, and needed here for the identical
+  // reason: `nextLayerId` is persisted only inside `np:comps`, so a document
+  // loaded from a file whose comps another tool stripped comes back with the
+  // default counter and live ids above it.
+  for (const Layer& other : doc.layers)
+    if (other.id >= doc.nextLayerId) doc.nextLayerId = other.id + 1;
+  layer.id = doc.nextLayerId++;
+  return layer.id;
+}
+
 }  // namespace np
