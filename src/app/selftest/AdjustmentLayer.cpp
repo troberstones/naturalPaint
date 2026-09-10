@@ -322,10 +322,18 @@ bool runAdjustmentLayerTest() {
     // is the boundary it describes, from both sides.
     //
     //   0100       u16 opCount = 1
-    //   06000000   u32 bodyLength = 6 (header only)
+    //   0a000000   u32 bodyLength = 10
     //     0000 0900 01 00   PointA, kind 9, enabled -- a kind this build has no
     //                       implementation for
-    const std::string handTenth = "npops1:0100" "06000000" "00000900" "0100";
+    //     0000803e          four bytes of params it cannot interpret
+    //
+    // **The body is deliberately a well-formed length for a kind this build
+    // DOES know** (ten bytes, exactly what an Exposure record occupies). A
+    // six-byte header-only body would be refused by the length rule as well as
+    // by the kind rule, and an assertion on it cannot tell the two apart --
+    // a sabotage that mapped kind 9 onto a known kind left it green, which is
+    // how this payload came to be ten bytes.
+    const std::string handTenth = "npops1:0100" "0a000000" "00000900" "0100" "0000803e";
     OpStack tenth;
     const bool tenthOk = deserializeOpStack(handTenth, &tenth, &why);
     check(tenthOk && tenth.size() == 1 && tenth.at(0).opClass == OpClass::Unknown,
