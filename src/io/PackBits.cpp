@@ -75,4 +75,46 @@ bool decodePackBits(std::span<const uint8_t> body, size_t off, size_t end, uint3
   return out.size() == expected;
 }
 
+
+std::vector<uint8_t> encodePackBits(std::span<const uint8_t> row) {
+  std::vector<uint8_t> out;
+  // Worst case exactly, not a guess: one literal packet per 128 bytes, each
+  // costing a single count byte. Reserving it means no reallocation on the
+  // incompressible input this function is explicitly allowed to grow.
+  out.reserve(row.size() + (row.size() + 127) / 128 + 1);
+
+  size_t i = 0;
+  const size_t n = row.size();
+  while (i < n) {
+    // A repeat packet is worth emitting at three identical bytes, not two:
+    // at two it costs the same as leaving them inside a literal run (2 bytes
+    // either way) while forcing the surrounding literal to be split into two
+    // packets, each paying its own count byte. Three is where it starts
+    // winning, and is what Adobe's own encoder does.
+    size_t run = 1;
+    while (i + run < n && row[i + run] == row[i] && run < 128) ++run;
+
+    if (run >= 3) {
+      out.push_back(static_cast<uint8_t>(257 - run));
+      out.push_back(row[i]);
+      i += run;
+      continue;
+    }
+
+    // Literal packet: copy until a run of three appears, or 128 bytes, or
+    // the row ends. The lookahead is `i + 2 < n` rather than `i + 2 <= n`
+    // because it reads row[i+2].
+    const size_t start = i;
+    size_t lit = 0;
+    while (i < n && lit < 128) {
+      if (i + 2 < n && row[i] == row[i + 1] && row[i] == row[i + 2]) break;
+      ++i;
+      ++lit;
+    }
+    out.push_back(static_cast<uint8_t>(lit - 1));
+    out.insert(out.end(), row.data() + start, row.data() + start + lit);
+  }
+  return out;
+}
+
 }  // namespace np

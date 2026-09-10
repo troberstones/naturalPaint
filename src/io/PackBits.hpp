@@ -47,4 +47,34 @@ namespace np {
 bool decodePackBits(std::span<const uint8_t> body, size_t off, size_t end, uint32_t height,
                     size_t expected, std::vector<uint8_t>& out) noexcept;
 
+
+// --- The encoder ----------------------------------------------------------
+//
+// Added for io/PsdExport (PLAN.md phase 15), and living here rather than in
+// the writer for the reason this module exists at all: a second copy of
+// PackBits is a second place for an off-by-one to live. `decodePackBits()`
+// above is its inverse, and app/selftest/PsdWrite.cpp asserts exactly that
+// on every stream this encoder can produce -- a round trip through the
+// function two real importers already depend on is a stronger check than any
+// hand-authored expected-bytes fixture.
+//
+// Encodes ONE row. Photoshop's framing needs each row's compressed length
+// separately (the row-count table precedes the compressed bytes for a whole
+// channel), so a whole-buffer entry point would have to return those lengths
+// anyway and the caller would still loop.
+//
+// The packet forms, and the one byte that must never be emitted: a literal
+// packet is a count byte `n-1` in 0..127 followed by `n` bytes; a repeat
+// packet is `257-n` for `n` in 2..128 followed by the single repeated byte;
+// **128 (0x80) is a no-op in Adobe's own reader and this encoder never emits
+// it**. Runs never straddle a row boundary here because a row is all this
+// function is ever given -- which is the property `decodePackBits()`'s own
+// single-pass framing relies on.
+//
+// **A compressed row can be LARGER than the raw row** -- worst case
+// `n + ceil(n/128)`, an incompressible row. That is expected and correct;
+// callers must not "fall back to raw" for one row, because PSD's compression
+// word is per channel, not per row.
+std::vector<uint8_t> encodePackBits(std::span<const uint8_t> row);
+
 }  // namespace np

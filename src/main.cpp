@@ -3010,6 +3010,7 @@ int main(int argc, char** argv) {
     // well-formed files, which is the one input that cannot tell a checked
     // decoder from an unchecked one. Headless and GPU-free.
     const bool packBitsOk = np::runPackBitsTest();
+    const bool psdWriteOk = np::runPsdWriteTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD M1, M3, M4, M5, M8): the
     // internal clipboard's copy/cut/paste, its copy-on-write sharing, and the
     // two different coverage-weighting rules RGB and Pigment tiles take. Also
@@ -3908,7 +3909,7 @@ int main(int argc, char** argv) {
                     gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
                     textShaperOk && vectorLayerOk && textContentOk &&
                     transformPreviewTextureOk &&
-                    transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && inpaintOk && curveEditOk &&
+                    transformCompositeSplitOk && packBitsOk && psdWriteOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && inpaintOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
                     multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk &&
                     userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&

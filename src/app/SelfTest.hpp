@@ -1530,6 +1530,14 @@ bool runGradientToolTest();
 // class (app/selftest/DabPreview.cpp never touches DabPreviewTexture's
 // wgpuQueueWriteTexture() call either).
 bool runPackBitsTest();
+
+// io/PsdWrite's byte primitives and io/PackBits' encoder -- the byte-level
+// half of PSD export (PLAN.md phase 15, docs/psd-export.md). The encoder is
+// asserted as the DECODER's inverse rather than against a hand-written table
+// of expected bytes: `decodePackBits()` is already exercised against real
+// Kyle Webster brush packs and real Photoshop files, so agreeing with it is a
+// stronger claim than agreeing with this project's own reading of the spec.
+bool runPsdWriteTest();
 bool runTransformCompositeSplitTest();
 bool runTransformPreviewTextureTest();
 
