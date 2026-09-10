@@ -9772,7 +9772,10 @@ void drawInpaintDialog(AppState& st) {
     status.clear();
     ImGui::OpenPopup("Inpaint");
   }
-  if (!ImGui::BeginPopupModal("Inpaint", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  // ADR-0010: through ui/Dialog. The teardown branch is unchanged; it is what
+  // lets Cancel be a bare close, because a dialog that stops being open by ANY
+  // route clears the preview it owns on that frame.
+  if (!beginDialog("Inpaint")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::Inpaint);
     return;
@@ -9780,10 +9783,8 @@ void drawInpaintDialog(AppState& st) {
 
   OpenDocument* od = st.documents.active();
 
-  ImGui::SetNextItemWidth(200.0f);
-  ImGui::SliderInt("Radius", &radius, 1, kInpaintMaxRadius, "%d texels");
-  const bool radiusSettled = ImGui::IsItemDeactivatedAfterEdit();
-  ImGui::TextDisabled(
+  const bool radiusSettled = dialogSliderInt("Radius", &radius, 1, kInpaintMaxRadius, "texels").settled;
+  dialogHint(
       "The SELECTED texels are replaced by a smooth continuation of what surrounds them.\n"
       "Radius is how far from each filled texel its sources may lie -- larger is smoother\n"
       "and slower. Diffusion, so a hole with real texture in it comes back smooth.");
@@ -9793,19 +9794,21 @@ void drawInpaintDialog(AppState& st) {
   // locked layer, which is what the post-press `status` line below is for.
   if (od != nullptr) {
     const PixelOpRefusal reason = inpaintRefusal(*od);
-    if (reason != PixelOpRefusal::None) {
-      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-      ImGui::TextWrapped("%s",
-                         pixelOpRefusalMessage(reason, activeLayerOf(*od), "inpaint").c_str());
-      ImGui::PopStyleColor();
-    }
+    if (reason != PixelOpRefusal::None)
+      dialogStatusLine(DialogStatus::Error,
+                       pixelOpRefusalMessage(reason, activeLayerOf(*od), "inpaint"));
   }
 
   if (radiusSettled || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::Inpaint, previewInpaint, radius);
   wasOpen = true;
 
-  if (ImGui::Button("Inpaint") && od != nullptr) {
+  if (!status.empty()) dialogStatusLine(DialogStatus::Error, status);
+
+  DialogFooter f;
+  f.commit = "Inpaint";
+  const DialogAction act = dialogFooter(f);
+  if (act == DialogAction::Commit && od != nullptr) {
     const FilterOpResult r = applyInpaint(*od, radius);
     if (r.refusal != PixelOpRefusal::None) {
       status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "inpaint");
@@ -9816,15 +9819,10 @@ void drawInpaintDialog(AppState& st) {
       status.clear();
       ImGui::CloseCurrentPopup();
     }
+  } else if (act == DialogAction::Cancel) {
+    ImGui::CloseCurrentPopup();
   }
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-  if (!status.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-    ImGui::TextWrapped("%s", status.c_str());
-    ImGui::PopStyleColor();
-  }
-  ImGui::EndPopup();
+  endDialog();
 }
 
 // ===========================================================================
@@ -9851,8 +9849,8 @@ void drawRemoveLightingGradientDialog(AppState& st) {
     status.clear();
     ImGui::OpenPopup("Remove Lighting Gradient");
   }
-  if (!ImGui::BeginPopupModal("Remove Lighting Gradient", nullptr,
-                              ImGuiWindowFlags_AlwaysAutoResize)) {
+  // ADR-0010: through ui/Dialog, with the teardown branch unchanged.
+  if (!beginDialog("Remove Lighting Gradient")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::RemoveLightingGradient);
     return;
@@ -9865,11 +9863,20 @@ void drawRemoveLightingGradientDialog(AppState& st) {
   // divide is not the identity but the erase -- every ratio is exactly 1 and
   // the layer flattens to a single colour. The engine refuses 0 by name; the
   // control simply cannot ask for it.
+  //
+  // **Deliberately NOT `dialogSlider()`**, which is the one place this dialog
+  // departs from ui/Dialog's helpers. That helper has no logarithmic option,
+  // and this range is 1..256 where the useful part is the bottom two octaves:
+  // a linear track puts every value a texture actually wants inside the first
+  // eighth of its width. Porting to the helper for consistency would have
+  // changed the control's feel, which is not what ADR-0010 asks for -- the
+  // rule is about the modal, the footer and the colours, and those are here.
+  dialogLabelRow("Blur radius");
   ImGui::SetNextItemWidth(200.0f);
-  ImGui::SliderFloat("Blur radius", &sigma, 1.0f, 256.0f, "%.0f texels",
+  ImGui::SliderFloat("##sigma", &sigma, 1.0f, 256.0f, "%.0f texels",
                      ImGuiSliderFlags_Logarithmic);
   const bool sigmaSettled = ImGui::IsItemDeactivatedAfterEdit();
-  ImGui::TextDisabled(
+  dialogHint(
       "Divides the layer by a heavily blurred copy and puts the mean back. Wide enough to "
       "hold light but no texture: too narrow and it eats the texture itself.");
 
@@ -9878,7 +9885,12 @@ void drawRemoveLightingGradientDialog(AppState& st) {
                         previewRemoveLightingGradient, sigma);
   wasOpen = true;
 
-  if (ImGui::Button("Remove") && od != nullptr) {
+  if (!status.empty()) dialogStatusLine(DialogStatus::Error, status);
+
+  DialogFooter f;
+  f.commit = "Remove";
+  const DialogAction act = dialogFooter(f);
+  if (act == DialogAction::Commit && od != nullptr) {
     const FilterOpResult r = applyRemoveLightingGradient(*od, sigma);
     if (r.refusal != PixelOpRefusal::None) {
       status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "lighting-gradient removal");
@@ -9889,15 +9901,10 @@ void drawRemoveLightingGradientDialog(AppState& st) {
       status.clear();
       ImGui::CloseCurrentPopup();
     }
+  } else if (act == DialogAction::Cancel) {
+    ImGui::CloseCurrentPopup();
   }
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-  if (!status.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-    ImGui::TextWrapped("%s", status.c_str());
-    ImGui::PopStyleColor();
-  }
-  ImGui::EndPopup();
+  endDialog();
 }
 
 void drawOffsetDialog(AppState& st) {
@@ -9912,7 +9919,11 @@ void drawOffsetDialog(AppState& st) {
     status.clear();
     ImGui::OpenPopup("Offset");
   }
-  if (!ImGui::BeginPopupModal("Offset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  // ADR-0010: through ui/Dialog, not a bare BeginPopupModal(). The teardown
+  // branch is unchanged -- it is what makes a bare Cancel correct, because a
+  // dialog that closes by ANY route (button, Escape, click-away) clears the
+  // preview it owns on the frame its popup stops being open.
+  if (!beginDialog("Offset")) {
     wasOpen = false;
     clearFilterPreview(FilterPreviewOwner::Offset);
     return;
@@ -9920,10 +9931,8 @@ void drawOffsetDialog(AppState& st) {
 
   OpenDocument* od = st.documents.active();
 
-  ImGui::SetNextItemWidth(120.0f);
-  bool paramsChanged = ImGui::InputInt("Horizontal", &dx);
-  ImGui::SetNextItemWidth(120.0f);
-  paramsChanged |= ImGui::InputInt("Vertical", &dy);
+  bool paramsChanged = dialogInputInt("Horizontal", &dx, "px").changed;
+  paramsChanged |= dialogInputInt("Vertical", &dy, "px").changed;
 
   // The canonical make-tileable gesture, one click: `offsetByHalf()` is the
   // same function --selftest asserts lands on floor(w/2), floor(h/2), rather
@@ -9949,17 +9958,23 @@ void drawOffsetDialog(AppState& st) {
   // explanation until they clicked Offset.
   const PixelOpRefusal standing =
       od != nullptr ? offsetRefusalFor(*od) : PixelOpRefusal::NoLayer;
-  if (standing == PixelOpRefusal::SelectionActive) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-    ImGui::TextWrapped("%s", pixelOpRefusalMessage(standing, activeLayerOf(*od), "offset").c_str());
-    ImGui::PopStyleColor();
-  }
+  if (standing == PixelOpRefusal::SelectionActive)
+    dialogStatusLine(DialogStatus::Error,
+                     pixelOpRefusalMessage(standing, activeLayerOf(*od), "offset"));
 
   if (paramsChanged || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::Offset, previewOffset, request);
   wasOpen = true;
 
-  if (ImGui::Button("Offset") && od != nullptr) {
+  if (!status.empty()) dialogStatusLine(DialogStatus::Error, status);
+
+  // The footer reads Return and Escape and does NOT close the popup -- a
+  // commit that refuses keeps the dialog up carrying the reason, which is
+  // this module's stated contract and exactly what this op needs.
+  DialogFooter f;
+  f.commit = "Offset";
+  const DialogAction act = dialogFooter(f);
+  if (act == DialogAction::Commit && od != nullptr) {
     const FilterOpResult r = applyOffset(*od, request);
     if (r.refusal != PixelOpRefusal::None) {
       status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "offset");
@@ -9970,15 +9985,10 @@ void drawOffsetDialog(AppState& st) {
       status.clear();
       ImGui::CloseCurrentPopup();
     }
+  } else if (act == DialogAction::Cancel) {
+    ImGui::CloseCurrentPopup();
   }
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-  if (!status.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-    ImGui::TextWrapped("%s", status.c_str());
-    ImGui::PopStyleColor();
-  }
-  ImGui::EndPopup();
+  endDialog();
 }
 
 // ===========================================================================
