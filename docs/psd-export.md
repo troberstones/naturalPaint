@@ -1,5 +1,28 @@
 # PSD export: writing the format we already read
 
+> ## Status: landed, 2026-09-10
+>
+> `io/PsdWrite` · `io/PsdExport` · `io/PsdLayerSection` · `io/PsdLayerExtras` ·
+> `io/PsdBlendKeys`. Both tiers, masks, groups, and one 26-row blend-key table
+> read in both directions. PSD is writable and offerable from the export
+> dialog at **8 bits only**, with 16-bit refused by name.
+>
+> **Verified against psd-tools 1.19.0**, not just against our own reader:
+> stacking order right way up (`Background` at index 0), the inverted hidden
+> flag correct (exactly one hidden layer of three), opacity 128/255, blend
+> `MULTIPLY`, `clipping=1`, and both name forms — `luni` carrying `Top — Ω`
+> exactly, the legacy Pascal field carrying its documented lossy fallback.
+> **Every observable pixel is exact**: zero difference on all four channels
+> across fully opaque texels, 0.66/255 across partial ones. The only
+> differing pixels are the 1,464 with alpha exactly 0, where the merged
+> composite is deliberately matted on white — Photoshop's own convention,
+> and unobservable by construction.
+>
+> Two things the plan below got wrong, kept rather than edited away: the
+> blend table is **26** rows, not 30; and this document asserted our importer
+> does not reconstruct groups, which is false — it does, so a group
+> round-trips as a `LayerKind::Group` rather than as three flat records.
+
 PLAN.md phase 15 asks for "flattened PSD first (small), then simply-layered:
 one PSD layer per naturalPaint layer, blend modes mapped where they exist,
 latents dropped with a warning naming what was lost."
@@ -42,7 +65,7 @@ before.
 | big-endian byte writer, backpatched section lengths | **landed in the wave base** — `io/PsdWrite`, `5881d5b` |
 | PackBits **encoder** | **landed in the wave base** — `encodePackBits()`, asserted as `decodePackBits()`'s inverse |
 | PSD wire layout | **known and verified** — `io/PsdImport.cpp` parses every field below |
-| blend-key ↔ `core::BlendMode` table | **exists**, 30 keys, `PsdImport.cpp:238` — but file-local; needs promoting (track D) |
+| blend-key ↔ `core::BlendMode` table | **shared** — `io/PsdBlendKeys`, 26 rows, read both directions; `BlendMode::Mix` is the one mode with no PSD key |
 | flattened composite as linear RGBA | **exists** — `flattenDocumentToLinear(doc, warningsOut)`, `io/Export.hpp:345` |
 | per-layer pixels | **exists** — `TileStore` iteration; `app/PsdReport.cpp:55` is a worked example |
 | sRGB encode on the way out | **exists** — `color::srgbEncode()`, the exact inverse of the `srgbDecode()` the importer uses |
@@ -360,6 +383,11 @@ writes its own backpatch arithmetic.
 | **B** | `psd/layers` | tier 2: layer records, channel data, `luni` + Pascal names, opacity/flags/clipping. **Assumes no masks and no groups** | `io/PsdLayerSection.{hpp,cpp}` |
 | **C** | `psd/extras` | the mask block + channel `-2`, the `lsct` blocks, and the group divider/header expansion — as **standalone functions**, not edits to B's record writer | `io/PsdLayerExtras.{hpp,cpp}` |
 | **D** | `psd/blend` | promote `kBlendKeyMap` to a shared header with a reverse lookup; correct io/PsdImport.hpp's stale "no equivalent for Overlay/Soft Light/Color" prose | `io/PsdBlendKeys.hpp`, `io/PsdImport.{hpp,cpp}` |
+
+**Outcome:** all four tracks landed. A session limit killed A, B and C
+mid-flight; each was further along than its last message implied, and each
+had left a **live sabotage** in production source that the coordinator
+reverted before committing anything. E and F were done at gather as planned.
 
 **E (capability + dialog + doc corrections) and F (the round-trip selftest)
 are gather-time work, not scatter work.** E cannot flip `canWrite` until A's

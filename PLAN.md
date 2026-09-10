@@ -632,7 +632,14 @@ Text on a path, vertical text and rich-text runs are non-goals.
 > shift-click, no double-click-a-word, no styled runs). Text on a path,
 > vertical text and rich-text runs stay non-goals.
 
-## 15 — PSD export
+## 15 — PSD export ✅
+**Landed.** `io/PsdWrite` · `io/PsdExport` · `io/PsdLayerSection` · `io/PsdLayerExtras` ·
+`io/PsdBlendKeys`. Both tiers, masks, groups, and one blend-key table read in both
+directions. Plan and verification: [docs/psd-export.md](docs/psd-export.md).
+**8-bit only, by refusal**: a 16-bit layered PSD carries its records in an `Lr16` block
+`io/PsdImport` has no case for, so writing one would produce a file Photoshop reads as
+corrupt or our own reader opens flat. That is an *import* gap this work found.
+
 Not the save path — native save shipped in phase 4. Flattened PSD first (small), then
 simply-layered: one PSD layer per naturalPaint layer, blend modes mapped where they
 exist, latents dropped with a warning naming what was lost.
