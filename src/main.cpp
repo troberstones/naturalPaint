@@ -3289,6 +3289,11 @@ int main(int argc, char** argv) {
     // pass, a corrected ramp against the published radial model, and a
     // pattern's own seams. See app/SelfTest.hpp.
     const bool commandsPatternsOk = np::runCommandsPatternsTest();
+    // The UI -> command-layer reroute (docs/automation-plan.md step 2): that
+    // every migrated menu item, dialog and panel control reaches
+    // `applyCommand()` and therefore the recorder, and that reaching it left
+    // the pixels bit-identical. See app/SelfTest.hpp.
+    const bool commandCallsitesOk = np::runCommandCallsitesTest();
     const bool jsonOk = np::runJsonTest();
     const bool exportStatesOk = np::runExportStatesTest();
     // app/ExportDialog: the decisions BOTH export dialogs make -- which
@@ -3641,6 +3646,7 @@ int main(int argc, char** argv) {
                     commandOk && jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     commandsImageOk &&
                     commandsPatternsOk &&
+                    commandCallsitesOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && documentResidencyOk && layerEditorOk &&
