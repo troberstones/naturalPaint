@@ -3317,6 +3317,11 @@ int main(int argc, char** argv) {
     // rather than a promise about it. A thirty-file run, headless, into a temp
     // directory, with every input hashed on both sides. See app/SelfTest.hpp.
     const bool batchOk = np::runBatchTest();
+    // app/ActionsPanel: the ACTIONS panel's model -- which buttons are live
+    // when, what a step row reads, the two row verbs, and the arm/stop
+    // lifecycle that keeps a process-wide recorder from being left armed.
+    // See app/SelfTest.hpp.
+    const bool actionsPanelOk = np::runActionsPanelTest();
     // app/CommandsOpStack: the rows that carry an op as a parameter, keyed by
     // kind NAME, and the selection rows that cross the session/document line.
     // See app/SelfTest.hpp.
@@ -3685,6 +3690,7 @@ int main(int argc, char** argv) {
                     recorderOk &&
                     actionFileOk && replayOk &&
                     batchOk &&
+                    actionsPanelOk &&
                     commandsOpStackOk &&
                     commandOk && jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     commandsImageOk &&

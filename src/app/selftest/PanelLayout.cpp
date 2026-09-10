@@ -19,6 +19,7 @@ namespace {
 constexpr ControlsSection kAllSections[] = {
     ControlsSection::Tools,        ControlsSection::Options,   ControlsSection::Color,
     ControlsSection::Layers,       ControlsSection::History,   ControlsSection::Comps,
+    ControlsSection::Actions,
     ControlsSection::FlatsSegmentation,
     ControlsSection::Grade,        ControlsSection::Histogram, ControlsSection::BrushLibrary,
     ControlsSection::Brush,        ControlsSection::FlatsTools,
@@ -110,8 +111,14 @@ bool runPanelLayoutTest() {
       // starts on the rail rather than spending a grip of a dock that does
       // not scroll. app/PanelLayout's `defaultPlacementFor()` carries the
       // argument in full.
+      //
+      // ACTIONS is the fourth exception and the first `Document`-rolled one:
+      // recording is a deliberate act begun a few times a session, and a
+      // permanent grip in the right dock comes straight out of the LAYERS
+      // list. Same argument as FLATS TOOLS, same place it is written down
+      // (docs/automation-plan.md step 7).
       if (e.section == ControlsSection::Tools || e.section == ControlsSection::Options ||
-          e.section == ControlsSection::FlatsTools)
+          e.section == ControlsSection::FlatsTools || e.section == ControlsSection::Actions)
         continue;
       // PIGMENT is Simulation-rolled but starts Hidden, not Flyout -- see
       // `defaultPlacementFor()`'s own comment (app/PanelLayout.cpp) and
@@ -137,10 +144,19 @@ bool runPanelLayoutTest() {
     // recorded here because a count assertion is exactly where a merge
     // resolved by picking a side goes green while describing a rail nobody
     // has.
-    check(layout.sectionsIn(PanelPlacement::Flyout).size() == 7,
-          "panel layout: which is seven panels on the rail -- the four remaining View/Simulation "
-          "sections, GRADE, HISTOGRAM and FLATS TOOLS -- and the rail is not empty on a first "
-          "run, which is the mode the revamp was asked for by name");
+    //
+    // **Eight now**, and the eighth is ACTIONS -- the first `Document`-rolled
+    // panel to start on the rail (docs/automation-plan.md step 7). The count
+    // is asserted rather than the membership for the reason the paragraph
+    // above records: this is exactly the assertion a merge that picked a side
+    // would leave green while describing a rail nobody has.
+    check(layout.sectionsIn(PanelPlacement::Flyout).size() == 8,
+          "panel layout: which is eight panels on the rail -- the four remaining "
+          "View/Simulation sections, GRADE, HISTOGRAM, FLATS TOOLS and ACTIONS -- and the rail "
+          "is not empty on a first run, which is the mode the revamp was asked for by name");
+    check(layout.placementOf(ControlsSection::Actions) == PanelPlacement::Flyout,
+          "panel layout: ACTIONS specifically -- on the rail, not in the right dock its "
+          "Document role would otherwise give it");
 
     // Whatever is in the right dock is in `controlsSections()`'s own order --
     // i.e. the outgoing column's order with the flyout sections lifted out.
@@ -477,7 +493,7 @@ bool runPanelLayoutTest() {
         "naturalPaint-panel-layout 2\n"
         "panel layers right 1.000 0\n");
     check(exactlyOnceEach(missing),
-          "panel layout: a file naming one section still yields all seventeen");
+          "panel layout: a file naming one section still yields all eighteen");
     check(missing.placementOf(ControlsSection::Tools) == PanelPlacement::Left &&
               missing.placementOf(ControlsSection::Options) == PanelPlacement::Top,
           "panel layout: **an appended section arrives at its default placement**, not swept "

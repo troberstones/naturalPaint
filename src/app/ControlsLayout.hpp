@@ -120,6 +120,22 @@ enum class ControlsSection {
   // rather than second because a comp is a saved state *of* the layer stack and
   // a history row is an edit *to* it, so LAYERS reads before either.
   Comps,
+  // docs/automation-plan.md step 7 / PRD P1, P5: record a sequence of
+  // commands, edit it as a list, replay it, and keep it in the `.npaction`
+  // library. A `Document` role, and the role is the argument for the
+  // placement rather than a formality: a step IS an edit to the open document
+  // (`applyCommand(OpenDocument&, const Command&)`), and PLAY applies the
+  // whole list to what is on the canvas right now -- which is exactly what
+  // this role means.
+  //
+  // It starts on the FLYOUT RAIL rather than in the right dock, which is the
+  // second `Document`-role section to take an explicit placement and the
+  // fourth exception overall (`defaultPlacementFor()` carries the reasoning
+  // beside it): recording is a deliberate act begun a few times a session,
+  // and the right dock does not scroll, so a permanent 26 px grip here comes
+  // straight out of the LAYERS list that the budget correction was written to
+  // protect.
+  Actions,
   // ADR-0009 / PRD N1-N6: the segmentation parameters of the active Flats
   // layer -- all thirteen of `flats/Model.hpp`'s `FlatParams`, of which only
   // SHEET, GAP and DECLUTTER were reachable before this section, and only

@@ -41,6 +41,10 @@
 #include "app/CommandsLayers.hpp"
 #include "app/CompPanel.hpp"
 #include "app/CropTool.hpp"  // Tool::Crop, both modes
+#include "app/ActionsPanel.hpp"
+#include "app/Recorder.hpp"
+#include "app/Replay.hpp"
+#include "io/ActionFile.hpp"
 #include "app/PanelLayout.hpp"
 #include "app/ControlsLayout.hpp"
 #include "app/CurveEdit.hpp"
@@ -6962,6 +6966,200 @@ void drawCompsSection(AppState& st) {
   }
 }
 
+
+// ------------------------------------------------------- The ACTIONS panel
+//
+// docs/automation-plan.md step 7. The chrome only: every decision about what
+// the list shows and which button is live is app/ActionsPanel's, for the
+// reason app/HistoryPanel.hpp states about its own split -- a panel whose
+// logic is reachable only by drawing it is a panel with no assertions, and
+// this one's logic includes "never offer to save a recording with a hole in
+// it", which is exactly the class of rule a screenshot cannot check.
+//
+// The chrome does three things this file's other panels do not, and each is
+// here rather than in the model because it is genuinely chrome: it holds the
+// name field's `char[]`, it walks the library directory (a filesystem read,
+// which the model does only through `listActionFiles()`), and it turns a click
+// into a `replayAction()` call on the live document.
+
+// The panel's error line, and the library listing's cache. Both file-static
+// for the same reason `g_compsError` and `g_historyError` are: there is
+// exactly one ACTIONS panel to remember them for.
+std::string g_actionsError;
+std::vector<ActionLibraryRow> g_actionsLibrary;
+bool g_actionsLibraryLoaded = false;
+size_t g_actionsLibrarySelected = 0;
+
+void refreshActionsLibrary() {
+  g_actionsLibrary = actionsPanelLibrary(actionsDirectoryPath());
+  g_actionsLibraryLoaded = true;
+  if (g_actionsLibrarySelected >= g_actionsLibrary.size()) g_actionsLibrarySelected = 0;
+}
+
+// A button plus the reason it is grey, as one call. The reason goes in the
+// tooltip rather than nowhere: docs/ui.md records the complaint about greyed
+// controls that say nothing, and every one of these reasons is already a
+// sentence the model wrote.
+bool actionsButton(const char* label, const ActionsPanelButton& b) {
+  ImGui::BeginDisabled(!b.enabled);
+  const bool clicked = ImGui::SmallButton(label);
+  ImGui::EndDisabled();
+  if (!b.enabled && !b.disabledReason.empty())
+    ImGui::SetItemTooltip("%s", b.disabledReason.c_str());
+  return clicked && b.enabled;
+}
+
+void drawActionsSection(AppState& st) {
+  OpenDocument* od = st.documents.active();
+  ActionsPanelState& panel = st.actionsPanel;
+  Recorder& rec = sessionRecorder();
+  const ActionsPanelView v = actionsPanelView(panel, rec, od);
+
+  // The library is read once and refreshed after a save, never every frame:
+  // a directory scan per frame is the same mistake `recentDocumentsLoaded`
+  // and `panelsLoaded` already exist to avoid, and --selftest's headless path
+  // must never touch the real library.
+  if (!g_actionsLibraryLoaded) refreshActionsLibrary();
+
+  textDisabledWrapped("%s", v.headline.c_str());
+
+  if (actionsButton("Record", v.record) && od != nullptr)
+    actionsPanelRecord(panel, rec, *od);
+  ImGui::SameLine();
+  if (actionsButton("Stop", v.stop)) actionsPanelStop(panel, rec);
+  ImGui::SameLine();
+  if (actionsButton("Play", v.play) && od != nullptr) {
+    // One history entry, and a scratch copy that is only committed when every
+    // step succeeded -- app/Replay.hpp sections 1 and 2. Nothing here has to
+    // arrange either, which is why PLAY is four lines.
+    const ReplayResult r = replayAction(*od, panel.action);
+    g_actionsError = r.ok ? std::string() : r.status;
+    panel.status = r.status;
+  }
+
+  // The rows. Bounded scroll region, the same idiom `##historyrows` and
+  // `##compsrows` use, including the `WindowPadding` term T11 measured.
+  constexpr int kActionVisibleRows = 8;
+  const float rowH = ImGui::GetTextLineHeightWithSpacing();
+  const float childH =
+      std::max(rowH, static_cast<float>(std::min(v.steps.size(),
+                                                 static_cast<size_t>(kActionVisibleRows))) *
+                         rowH) +
+      2.0f * ImGui::GetStyle().WindowPadding.y;
+  if (ImGui::BeginChild("##actionrows", ImVec2(0.0f, childH), true)) {
+    for (const ActionStepRow& row : v.steps) {
+      ImGui::PushID(static_cast<int>(row.index));
+      // An unknown step is drawn in the refusal colour rather than omitted:
+      // a shorter list would make the action look shorter than it is.
+      if (!row.known) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 120, 110, 255));
+      if (ImGui::Selectable(row.text.c_str(), row.selected) && v.stepsEditable)
+        panel.selected = row.index;
+      if (!row.known) ImGui::PopStyleColor();
+      // A row is a label plus however many parameters the command advertises,
+      // so it has no bounded width and a docked column will clip some of them.
+      // Clipped rather than wrapped, with the full text one hover away --
+      // drawHistorySection()'s own rule for the same shape of row.
+      ImGui::SetItemTooltip("%s", row.text.c_str());
+      ImGui::PopID();
+    }
+  }
+  ImGui::EndChild();
+
+  if (actionsButton("Up", v.moveUp)) actionsPanelMoveStep(panel, panel.selected, -1);
+  ImGui::SameLine();
+  if (actionsButton("Down", v.moveDown)) actionsPanelMoveStep(panel, panel.selected, +1);
+  ImGui::SameLine();
+  if (actionsButton("Delete", v.removeStep)) actionsPanelDeleteStep(panel, panel.selected);
+
+  // **The refusals, above SAVE rather than below it.** app/ActionsPanel.hpp
+  // §2: disabling SAVE alone is a greyed button with no explanation, and
+  // showing the refusals alone is an explanation the user clicks past. They
+  // are printed verbatim -- each is already a full sentence naming the
+  // command, the reason and the fix (app/Recorder.hpp §4) -- and never
+  // summarised into a count.
+  if (!v.refusals.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 120, 110, 255));
+    for (const std::string& refusal : v.refusals) ImGui::TextWrapped("%s", refusal.c_str());
+    ImGui::PopStyleColor();
+  }
+  for (const std::string& warning : v.warnings) textDisabledWrapped("%s", warning.c_str());
+
+  // The name field writes straight into the action's name, which is what SAVE
+  // sanitises into a file name -- `actionFileNameFor()` is the seam between
+  // user text and a path and there is exactly one of it (io/ActionFile.hpp).
+  static char nameBuf[128] = "";
+  if (!ImGui::IsItemActive())
+    std::snprintf(nameBuf, sizeof(nameBuf), "%s", panel.action.name.c_str());
+  if (ctlInputText("Name", nameBuf, sizeof(nameBuf), 0)) panel.action.name = nameBuf;
+
+  if (actionsButton("Save", v.save)) {
+    std::string err;
+    const std::string path = actionsPanelSavePath(panel, actionsDirectoryPath(), &err);
+    if (path.empty()) {
+      g_actionsError = err;
+    } else if (!saveActionToFile(path, panel.action, &err)) {
+      g_actionsError = err;
+    } else {
+      g_actionsError.clear();
+      panel.status = "Saved to " + path;
+      refreshActionsLibrary();
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Refresh")) refreshActionsLibrary();
+  ImGui::SetItemTooltip("Re-reads %s.", actionsDirectoryPath().c_str());
+
+  // The library: every `.npaction` in the actions directory, by file name.
+  // The row shows the file's stem and not the action's name, because the name
+  // is inside the file and titling fifty rows would mean opening fifty files
+  // (app/ActionsPanel.hpp's `ActionLibraryRow`).
+  if (g_actionsLibrary.empty()) {
+    textDisabledWrapped("No saved actions in %s.", actionsDirectoryPath().c_str());
+  } else {
+    const char* preview = g_actionsLibrarySelected < g_actionsLibrary.size()
+                              ? g_actionsLibrary[g_actionsLibrarySelected].name.c_str()
+                              : "";
+    if (ctlBeginCombo("Library", preview)) {
+      for (size_t i = 0; i < g_actionsLibrary.size(); ++i) {
+        const bool selected = i == g_actionsLibrarySelected;
+        if (ImGui::Selectable(g_actionsLibrary[i].name.c_str(), selected))
+          g_actionsLibrarySelected = i;
+        if (selected) ImGui::SetItemDefaultFocus();
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::BeginDisabled(v.recording);
+    if (ImGui::SmallButton("Load")) {
+      Action loaded;
+      std::string err;
+      const std::string& path = g_actionsLibrary[g_actionsLibrarySelected].path;
+      if (loadActionFromFile(path, &loaded, &err)) {
+        panel.action = std::move(loaded);
+        panel.selected = kNoActionStep;
+        // The refusals belong to the take that produced them, and this is a
+        // different action -- app/ActionsPanel.hpp §2. A load that left them
+        // standing would grey SAVE on a file that was never holed.
+        panel.refusals.clear();
+        panel.warnings.clear();
+        panel.status = "Loaded " + path;
+        g_actionsError.clear();
+      } else {
+        g_actionsError = err;
+      }
+    }
+    ImGui::EndDisabled();
+    if (v.recording) ImGui::SetItemTooltip("Stop the recording first.");
+  }
+
+  if (!panel.status.empty()) textDisabledWrapped("%s", panel.status.c_str());
+  if (!g_actionsError.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 120, 110, 255));
+    ImGui::TextWrapped("%s", g_actionsError.c_str());
+    ImGui::PopStyleColor();
+    if (ImGui::SmallButton("Dismiss##actionserror")) g_actionsError.clear();
+  }
+}
+
 // ------------------------------------------------------- The two export dialogs
 //
 // PLAN.md Phase 4 step 7 / PRD I15 (File > Export As...: "target format,
@@ -12339,6 +12537,8 @@ void drawPanelBody(AppState& st, ControlsSection section, std::unique_ptr<PaintS
     case ControlsSection::History:      drawHistorySection(st, sim, gpu); break;
     // PLAN.md Phase 5 step 12 ("Layer comps ...", PRD C14).
     case ControlsSection::Comps:        drawCompsSection(st); break;
+    // docs/automation-plan.md step 7 / PRD P1, P5.
+    case ControlsSection::Actions:      drawActionsSection(st); break;
     case ControlsSection::FlatsSegmentation: drawFlatsSegmentationSection(st); break;
     case ControlsSection::FlatsTools:   drawFlatsToolsSection(st); break;
     // PLAN.md Phase 3 step 8 ("Op-stack UI -- reorder, toggle, delete, and a
@@ -13457,6 +13657,33 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     int queuedParam = 0;
     while (dequeueMenuAction(&queued, &queuedParam))
       performMenuAction(st, queued, queuedParam, canvasW, canvasH);
+  }
+
+  // The ACTIONS panel's arm/stop guard (app/ActionsPanel.hpp section 1).
+  //
+  // **Here, in the frame loop, and deliberately NOT inside
+  // `drawActionsSection()`.** `sessionRecorder()` is one recorder per process,
+  // so a take nobody stopped goes on appending every `applyCommand()` in the
+  // session -- and the three states that make a take wrong are exactly the
+  // three in which the panel does not draw: the document is gone, the user is
+  // on another document, or the panel has been put away. A stop that lived in
+  // the draw would be a stop that never ran.
+  //
+  // After the menu drain above, so a File > Close picked from the native bar
+  // is already reflected in `st.documents` on this frame rather than being
+  // noticed on the next one.
+  //
+  // Costs one enum read when nothing is recording, which is every frame of
+  // almost every session.
+  {
+    ActionsPanelContext actionsCtx;
+    const OpenDocument* activeDoc = st.documents.active();
+    actionsCtx.documentOpen = activeDoc != nullptr;
+    actionsCtx.activeDocument = activeDoc != nullptr ? activeDoc->id : 0;
+    actionsCtx.panelVisible =
+        st.panels.placementOf(ControlsSection::Actions) != PanelPlacement::Hidden;
+    const std::string stopped = actionsPanelGuard(st.actionsPanel, sessionRecorder(), actionsCtx);
+    if (!stopped.empty()) g_actionsError = stopped;
   }
 
   const ImGuiViewport* vp = ImGui::GetMainViewport();
