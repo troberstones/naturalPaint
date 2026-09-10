@@ -395,6 +395,7 @@ add_executable(naturalPaint
   io/OpSerial.cpp
   io/PackBits.cpp
   io/PsdWrite.cpp
+  io/PsdBlendKeys.cpp
   io/PathSerial.cpp
   io/PsPatterns.cpp
   io/PsdImport.cpp
