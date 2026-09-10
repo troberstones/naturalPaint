@@ -1,6 +1,7 @@
 #include "io/PsdLayerSection.hpp"
 
 #include "io/PsdBlendKeys.hpp"
+#include "io/PsdLayerExtras.hpp"
 
 #include <algorithm>
 #include <array>
@@ -397,18 +398,117 @@ void writePsdLayerChannelData(PsdWriter& w, const PsdLayerRecord& rec) {
   for (const PsdChannelBlock& ch : rec.channels) w.raw(ch.data);
 }
 
+namespace {
+
+// The 20-byte mask record and its `-2` channel, from io/PsdLayerExtras.
+//
+// **One `psdMaskRect()` answer drives both**, which that module's header
+// asks for by name: a record that writes the block but not the channel (or
+// the reverse) declares a channel table that does not match its own extra
+// data, and our own reader would walk one straight into the other.
+//
+// `writePsdMaskBlock()` emits the block's own `u32` length as well as its
+// content, while `PsdLayerRecord::maskBlock` is content-only -- so the four
+// length bytes are dropped here rather than the layout being written out a
+// second time in this file. The size is asserted rather than assumed,
+// because "strip a prefix" is exactly the kind of coupling that survives a
+// change to the thing it strips.
+void attachMask(const Layer& layer, PsdLayerRecord& rec) {
+  PsdMaskRect mrect;
+  if (!psdMaskRect(layer, mrect)) return;  // no mask, or a fully-revealed one
+
+  PsdWriter mw;
+  writePsdMaskBlock(mw, &mrect);
+  const std::vector<uint8_t>& framed = mw.bytes();
+  if (!mw.ok() || framed.size() != 24) return;  // 4 length + 20 content
+  rec.maskBlock.assign(framed.begin() + 4, framed.end());
+
+  // Channel -2 goes FIRST, ahead of the alpha channel, which is the order
+  // io/PsdImport.cpp walks and the order real files carry.
+  rec.channels.insert(rec.channels.begin(),
+                      PsdChannelBlock{-2, encodePsdMaskChannel(layer, mrect)});
+}
+
+// One of the two synthetic records that bracket a group.
+//
+// Both are empty layers -- zero-size rect, and four channels carrying
+// nothing but their own compression word, which is what Photoshop itself
+// writes for a record with no pixels. The header record is the one that
+// carries the group's name, opacity and visibility; the divider carries
+// Photoshop's own `</Layer group>` and nothing else.
+//
+// **The divider is written BEFORE the members and the header AFTER them**,
+// which is the opposite of the intuitive reading and is the trap
+// docs/psd-import-gaps.md section 3 records. That ordering is
+// `planPsdRecords()`' responsibility, not this function's; this only fills
+// in whichever record it is handed.
+PsdLayerRecord makeGroupBoundaryRecord(PsdRecordRole role, const Layer& group) {
+  PsdLayerRecord rec;
+  const bool header = role == PsdRecordRole::kGroupHeader;
+
+  rec.name = header ? group.name : std::string(kPsdGroupDividerName);
+  // `pass` on the header record matches what Photoshop writes for a
+  // pass-through group, and core/Composite.hpp makes a Group pass-through
+  // here too, so it is the truthful key rather than a default. The divider
+  // carries `norm`, as both verified real files do.
+  rec.blendKey = header ? "pass" : "norm";
+  rec.opacity = header ? static_cast<uint8_t>(std::lround(
+                             std::clamp(group.opacity, 0.0f, 1.0f) * 255.0f))
+                       : uint8_t{255};
+  rec.hidden = header ? !group.visible : false;
+
+  const std::vector<uint8_t> emptyChannel = {0x00, 0x00};  // compression 0, no rows
+  for (const int16_t id : {int16_t{-1}, int16_t{0}, int16_t{1}, int16_t{2}})
+    rec.channels.push_back(PsdChannelBlock{id, emptyChannel});
+
+  PsdWriter lw;
+  // `openFolder` is true because a `Document` alone carries no collapsed
+  // state -- that lives in app/LayerPanel's `collapsedGroupTags`, which an
+  // export from a document cannot consult. io/PsdLayerExtras.hpp says so.
+  writePsdLsctBlock(lw, role, /*openFolder=*/true);
+  rec.extraBlocks = lw.take();
+  return rec;
+}
+
+}  // namespace
+
 PsdLayerSectionResult writePsdLayerAndMaskInfo(PsdWriter& w, const Document& doc,
                                                const PsdLayerSectionOptions& options) {
   PsdLayerSectionResult result;
 
+  // The record ORDER comes from io/PsdLayerExtras, which expands every
+  // `LayerKind::Group` into the two synthetic records PSD uses to bracket
+  // it. A document with no groups plans to exactly one entry per layer, in
+  // `Document::layers` order.
+  //
+  // **No reversal, anywhere.** `Document::layers` index 0 is the bottom of
+  // the stack and so is the first PSD layer record; see this module's header
+  // for the evidence and for why the guess in either direction is wrong.
+  std::vector<PsdRecordPlan> plan;
+  std::string planError;
+  if (!planPsdRecords(doc, plan, planError)) {
+    // A refusal is total. `planPsdRecords()` refuses only group shapes PSD
+    // genuinely cannot express -- non-contiguous members, a group whose
+    // members sit above it, a `parent` cycle -- and emitting a plausible
+    // order for one of those would produce a file that opens with the wrong
+    // layers inside the wrong groups.
+    result.error = planError;
+    return result;
+  }
+
   std::vector<PsdLayerRecord> records;
-  records.reserve(doc.layers.size());
-  // **No reversal.** `Document::layers` index 0 is the bottom of the stack
-  // and so is the first PSD layer record; see this module's header for the
-  // evidence and for why the guess in either direction is wrong.
-  for (const Layer& layer : doc.layers) {
+  records.reserve(plan.size());
+  for (const PsdRecordPlan& entry : plan) {
+    const Layer& layer = doc.layers[entry.layerIndex];
+
+    if (entry.role != PsdRecordRole::kLayer) {
+      records.push_back(makeGroupBoundaryRecord(entry.role, layer));
+      continue;
+    }
+
     PsdLayerRecord rec;
     if (!buildPsdLayerRecord(layer, doc, rec, result.warnings)) continue;
+    attachMask(layer, rec);
     records.push_back(std::move(rec));
   }
 

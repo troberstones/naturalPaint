@@ -17,6 +17,7 @@
 #include "core/TileStore.hpp"
 #include "io/PsdImport.hpp"
 #include "io/PsdLayerSection.hpp"
+#include "io/PsdLayerExtras.hpp"
 #include "io/PsdWrite.hpp"
 
 namespace np {
@@ -449,11 +450,23 @@ bool runPsdLayerSectionTest() {
           "layers: an Adjustment layer warns by name that its op stack was lost");
   }
 
-  // --- F. A Group is skipped, by name ------------------------------------
+  // --- F. A Group becomes its two bracketing records ---------------------
   //
-  // Group structure is the neighbouring piece of work, not this one. What
-  // matters here is that a Group does not become a silent empty layer: PRD
-  // I11's rule is that a save which loses something names exactly what.
+  // **Rewritten at gather.** This section used to assert the opposite -- that
+  // a Group wrote NO record and warned that its structure was dropped -- which
+  // was the correct assertion while group expansion was a neighbouring track's
+  // unmerged work. It is now wired in (io/PsdLayerExtras' `planPsdRecords()`),
+  // so the old assertions were not a regression when they reddened; they were
+  // a scope note that had expired. Replaced rather than deleted, because what
+  // replaces them is strictly stronger.
+  //
+  // **The order is the trap.** PSD records run bottom-first, so the DIVIDER
+  // opens the group from below and the HEADER closes and names it from above
+  // -- the opposite of the intuitive reading, and the thing
+  // docs/psd-import-gaps.md section 3 records as inverting every group's
+  // membership silently when it is got backwards. Our own importer does not
+  // reconstruct groups, so a round trip sees the three records flat, in file
+  // order, which is exactly the level this assertion needs to work at.
 
   {
     Document doc;
@@ -461,22 +474,36 @@ bool runPsdLayerSectionTest() {
     doc.height = 32;
     Layer member = makeRasterLayer("Inside the group");
     fillRect(member, 0, 0, 32, 32, 0.3f, 0.3f, 0.3f, 1.0f);
+    member.parent = "G1";
     Layer group;
     group.kind = LayerKind::Group;
     group.name = "A folder";
+    group.groupTag = "G1";
+    group.opacity = 0.5f;
     doc.layers.push_back(std::move(member));
     doc.layers.push_back(std::move(group));
 
     const RoundTrip rt = roundTrip(doc);
-    check(rt.ok && rt.document.layers.size() == 1 &&
-              rt.document.layers[0].name == "Inside the group",
-          "layers: a Group writes no record and its member still writes one");
+    check(rt.ok && rt.document.layers.size() == 3,
+          "groups: a group and one member write three records, not two");
+    check(rt.ok && rt.document.layers.size() == 3 &&
+              rt.document.layers[0].name == kPsdGroupDividerName &&
+              rt.document.layers[1].name == "Inside the group" &&
+              rt.document.layers[2].name == "A folder",
+          "groups: divider FIRST, member, then the naming header LAST");
+    check(rt.ok && rt.document.layers.size() == 3 &&
+              std::lround(rt.document.layers[2].opacity * 255.0f) == 128,
+          "groups: the header record carries the group's own opacity");
+
+    // The old warning must be GONE. A warning saying group structure was
+    // dropped, emitted by a build that carries it, is worse than no warning
+    // at all -- it would send someone looking for a bug that is fixed.
     bool groupWarned = false;
     for (const std::string& warning : rt.warnings)
       if (warning.find("A folder") != std::string::npos &&
           warning.find("group") != std::string::npos)
         groupWarned = true;
-    check(groupWarned, "layers: a skipped Group warns by name");
+    check(!groupWarned, "groups: a carried group no longer warns that it was dropped");
   }
 
   // --- G. The two claims that are about bytes, not about a round trip ----
