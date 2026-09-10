@@ -198,24 +198,30 @@ bool runMenuModelTest() {
   // 92 -> 93: `Pigment` (Window > Pigment), the check item that turns
   // `ControlsSection::Pigment`'s Hidden-by-default placement on -- counted
   // the same way, off `MenuAction`'s enumerators (94 including `Count`).
-  // 93 -> 96, from THREE independent tracks in one wave: `Inpaint` (Filter >
-  // Inpaint..., PLAN.md phase 8 / PRD D7's diffusion half) and PRD D8's two
-  // make-tileable ops, Filter > Remove Lighting Gradient and Filter > Offset.
+  // 93 -> 97, from FOUR independent tracks in one wave: `Inpaint` (Filter >
+  // Inpaint..., PLAN.md phase 8 / PRD D7's diffusion half), PRD D8's two
+  // make-tileable ops (Filter > Remove Lighting Gradient, Filter > Offset),
+  // and `TilePreview` (View > 3x3 Repeat Preview, PRD D8 / PLAN.md phase 9).
   //
-  // **Both branches predicted this merge in the comment they left here**, and
-  // both said the same thing: count off `MenuAction`'s enumerators in the
-  // merged header, never by adding your own delta to 93. They were right to.
-  // Taken as written, one side asserts 94 and the other 95, each green against
-  // its own tree and each under-counting the other by exactly the items the
-  // other added -- a tripwire that passes while the thing it guards is wrong.
-  // 96 is 97 enumerators including `Count`, read from the header after the
-  // merge.
-  check(kMenuActionCount == 96,
-        "ids: exactly 96 actions -- the original 41-item extraction plus D1/D2's "
+  // **Every one of those branches predicted this merge in the comment it left
+  // here**, and every one said the same thing: count off `MenuAction`'s
+  // enumerators in the merged header, never by adding your own delta to 93.
+  // They were right to. Taken as written the four sides assert 94, 95, 94 and
+  // 96 -- each green against its own tree, each under-counting the others by
+  // exactly what the others added, a tripwire that passes while the thing it
+  // guards is wrong.
+  //
+  // 97 is the merged header's 99 enumerators less `Count` itself less the
+  // leading non-action. Counted, not derived: the arithmetic "96 + 1" is the
+  // move this comment exists to forbid, and an earlier edition of this very
+  // paragraph got the enumerator total wrong by one while doing it.
+  check(kMenuActionCount == 97,
+        "ids: exactly 97 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
-        "dialog, Brush Settings, the crop pair, Pigment, Inpaint and D8's "
-        "make-tileable pair, so an item lost in a later edit fails here");
+        "dialog, Brush Settings, the crop pair, Pigment, Inpaint, D8's "
+        "make-tileable pair and the 3x3 repeat preview, so an item lost in a "
+        "later edit fails here");
 
   {
     std::set<MenuAction> seen;

@@ -5210,6 +5210,36 @@ bool runSaveReadbackTest();
 bool runZoomAndSizeTest();
 
 // ---------------------------------------------------------------------------
+// PRD D8 / PLAN.md Phase 9: the 3x3 repeat preview -- `app/TilePreview` plus
+// the View-menu item and dispatch that reach it. Headless and GPU-free.
+// Covers:
+//  - `tilePreviewTiles()`: ONE copy with the preview off (so the canvas
+//    block's draw loop with it off is the single-quad path it replaced, not
+//    a second arrangement), nine with it on, each of the -1..1 grid exactly
+//    once, and the document queued LAST so no repeat can cover it.
+//  - `tilePreviewSpan()`/`tilePreviewField()`: the divisor fit-to-window
+//    uses, and the rectangle the drop shadow goes behind -- the document's
+//    own rectangle with the preview off, the centred 3x3 block with it on.
+//  - The tiling property itself, through the real `app/ViewTransform` and
+//    under zoom/rotation/mirror: adjacent copies share their edge exactly,
+//    and the nine together fill exactly the field the shadow is drawn behind.
+//    A gap here would draw a seam into a document that has none, which is
+//    the one lie this feature must not tell.
+//  - `setTilePreview()`: the view is saved on the way in and given back on
+//    the way out, mirror/rotation/grayscale flipped INSIDE the preview
+//    survive leaving it, re-entering a preview that is already on does not
+//    overwrite the saved view, and a pending Fit to Window is never swallowed.
+//  - The menu, through `performMenuAction()` itself rather than a copy of
+//    its switch: the item is a Check, appears once, ticks from
+//    `MenuContext::tilePreview` both ways, and does not write the grayscale
+//    preview's flag.
+// Not reachable from here: the canvas block that hands the nine quads to
+// `addCanvasQuad()` (F4). `runPresentTransferTest()` owns that call's transfer
+// function, and `tools/golden/run_golden.sh`'s `tile_preview` view is what
+// would notice a quad dropped past `kMaxQuads`.
+bool runTilePreviewTest();
+
+// ---------------------------------------------------------------------------
 // naturalPaint canvasdim bug fix: app/ZoomAndSize.hpp's `canvasDimensionsFor()`
 // -- the pure function `ui/MacPaintUI.cpp`'s canvas block now calls for its
 // `texW`/`texH` instead of reading `main.cpp`'s fixed `kCanvasW`/`kCanvasH`

@@ -174,6 +174,16 @@ const MenuItemSpec* specTable() {
     set(MenuAction::GrayscalePreview, "Grayscale Preview", "Cmd+Y",
         MenuKeyEquivalent{'y', kMenuModCmd, "toggle_grayscale"});
 
+    // PRD D8 / PLAN.md Phase 9. No shortcut and no key equivalent:
+    // `docs/shortcuts.md` assigns none, and claiming a chord from a native
+    // menu **consumes** it before SDL ever sees it (MenuKeyEquivalent's own
+    // header) -- not something to do speculatively, and the same reasoning
+    // `BrushSettings` and `Rulers` already make below. Spelt "3x3" rather
+    // than with a multiplication sign because this string reaches an AppKit
+    // menu title and an accessibility label, and nothing else in this table
+    // is non-ASCII.
+    set(MenuAction::TilePreview, "3x3 Repeat Preview", "");
+
     // Rulers has no shortcut string, and the reason is a spec conflict rather
     // than an oversight: `docs/shortcuts.md` §3 assigns rulers ⌘R, but ⌘R is
     // already bound to `reload_shaders` (main.cpp's dispatch carries the full
@@ -454,6 +464,7 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::ResetRotation: return "ResetRotation";
     case MenuAction::ResetView: return "ResetView";
     case MenuAction::GrayscalePreview: return "GrayscalePreview";
+    case MenuAction::TilePreview: return "TilePreview";
     case MenuAction::Rulers: return "Rulers";
     case MenuAction::Navigator: return "Navigator";
     case MenuAction::BrushSettings: return "BrushSettings";
@@ -1003,6 +1014,10 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     v.push_back(item(MenuAction::ResetView));
     v.push_back(separator());
     v.push_back(check(MenuAction::GrayscalePreview, ctx.grayscale));
+    // Beside Grayscale Preview because the two are the same kind of thing --
+    // a display state that shows the document differently without changing
+    // it -- and not up with Fit/100%/Zoom, which are one-shot commands.
+    v.push_back(check(MenuAction::TilePreview, ctx.tilePreview));
     v.push_back(separator());
     v.push_back(check(MenuAction::Rulers, ctx.showRulers));
     v.push_back(check(MenuAction::Navigator, ctx.showNavigator));
