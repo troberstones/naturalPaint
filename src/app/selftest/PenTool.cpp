@@ -504,19 +504,37 @@ bool runPenToolTest() {
   }
 
   // =======================================================================
-  // 7. toolEditsPath() -- true for exactly Pen and Curve
+  // 7. toolEditsPath() -- the gate, and pathToolPlacesAnchors() -- the split
   // =======================================================================
+  //
+  // **Two predicates asserted together, because one without the other is the
+  // defect.** `toolEditsPath()` widened to three tools when
+  // `Tool::PathSelect` landed; on its own that widening would have handed the
+  // Pen's placement to Path Select and Path Select's manipulator to the Pen,
+  // since the canvas block used to route on the HIT rather than the tool.
+  // `pathToolPlacesAnchors()` is the routing split that makes the widening
+  // safe, so a change that reverted either one alone must redden here.
   {
-    bool exactlyPenAndCurve = true;
+    bool exactlyThree = true;
+    bool placesExactlyTwo = true;
     for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
       const Tool t = static_cast<Tool>(i);
-      const bool expected = (t == Tool::Pen || t == Tool::Curve);
-      if (toolEditsPath(t) != expected) exactlyPenAndCurve = false;
+      const bool edits = (t == Tool::Pen || t == Tool::Curve || t == Tool::PathSelect);
+      const bool places = (t == Tool::Pen || t == Tool::Curve);
+      if (toolEditsPath(t) != edits) exactlyThree = false;
+      if (pathToolPlacesAnchors(t) != places) placesExactlyTwo = false;
     }
-    check(exactlyPenAndCurve,
-          "toolEditsPath(): true for exactly Tool::Pen and Tool::Curve -- docs/ui.md section "
-          "4a's own grouping of the two tools blocked on PLAN Phase 13's path model -- and "
-          "false for every other Tool, Tool::Shape included");
+    check(exactlyThree,
+          "toolEditsPath(): true for exactly Pen, Curve and PathSelect -- the three tools "
+          "that author or edit the same anchor model -- and false for every other Tool, "
+          "Tool::Shape included");
+    check(placesExactlyTwo,
+          "pathToolPlacesAnchors(): true for exactly Pen and Curve -- PathSelect edits "
+          "geometry and never creates an anchor");
+    check(toolEditsPath(Tool::PathSelect) && !pathToolPlacesAnchors(Tool::PathSelect),
+          "PathSelect is gated IN by toolEditsPath() and OUT by pathToolPlacesAnchors(): the "
+          "two predicates disagreeing about it is exactly what makes the canvas block route "
+          "it to the editing gestures rather than to placement");
     // Named explicitly, the way app/selftest/Eyedropper.cpp names Move
     // against toolPansView(): the tool most likely to be confused for this
     // one is Shape, which also produces vector geometry but is not gated by

@@ -1651,6 +1651,84 @@ line of `--frame-trace`, which is why that line now carries `pacing=`.
 
 ---
 
+## T28 — The click point is not always logical or visible · closed 2026-09-09
+
+**Reported.** "We need to address deficiencies in how the tool cursors
+display, the click point is not always logical or visible."
+
+**Verified — measurable, and measured.** T17 gave every tool a bitmap cursor
+whose hotspot was a per-tool fraction of that glyph's own inked BOUNDING BOX.
+A bounding box's corner is not a point on the drawing: for any diagonal glyph
+it is empty air. Instrumented at the shipping 24x24, counting the white halo
+as ink so the reading is the generous one:
+
+* **Nine of the twenty-nine hotspots sat on a fully transparent pixel** —
+  Measure five pixels from its own ink; Dry Brush, Smudge and Pen three;
+  Lasso, Crop, Frame and Eraser two; Water and Hand one.
+* **Six more sat on ink below alpha 22 of 255** — Brush at 1, Clone Stamp at
+  2, Eyedropper at 4 — the outermost anti-aliased fringe, which is invisible.
+
+Over half the palette, the Brush included, pointed at something the user
+could not see; and only the two marquees drew any mark at their hotspot at
+all, because T17's report had named a crosshair for them specifically.
+
+**Why the suite did not catch it, which is the more useful half.**
+`app/selftest/ToolCursor.cpp` section G asserted each hotspot *lies inside its
+glyph's drawn bounding box* — and all fifteen do. In-bounds was the strictly
+weaker claim, and it was chosen because it was the claim a bounding-box anchor
+could satisfy. **The assertion was written to fit the mechanism rather than
+the requirement**, which is the general lesson here.
+
+**Fixed** — `ui/ToolCursor.hpp` §8 and §9. Every cursor is now the composite
+the two marquees already shipped: the tool glyph in a box at the upper right,
+a crosshair at the lower left, and the hotspot is the crosshair's own centre
+pixel. Logical because the layout defines the point rather than a fraction of
+a picture; visible because there is now something drawn at it. Both slots are
+inset two design units so the halo has room on all four arms — the marquee's
+old placement put its lower arm on the last row of the canvas, with no outline
+against a dark canvas.
+
+The per-tool anchor table is gone with the class of bug rather than the
+instances: the glyph identifies the tool and points at nothing, so a tool
+added tomorrow inherits a correct hotspot with no entry in any table.
+
+**Admitted cost, and the one exception taken.** The glyph no longer sits under
+the pointer. For an icon that is itself a pointing thing that is a real loss,
+and Illustrator would keep the hotspot at the arrow tip.
+
+Path Select was the entry that proved it and **was fixed the same day**
+(`ui/ToolCursor` §10): it now shows a filled pointer aiming from its own tip,
+with no crosshair, because an arrow tip already IS the click mark and a second
+one below-left would say the click lands somewhere it does not.
+
+That does not reopen the argument. The exception is a named tool rather than a
+policy, and its tip is a coordinate the file **chooses** rather than a fraction
+of a picture it has to infer — which is exactly where the anchor table went
+wrong.
+
+**The Pen followed**, and §10 now has two members. Both shapes are drawn
+procedurally rather than taken from Lucide, for a reason that was measured
+rather than assumed: `mouse-pointer-2` and `pen-tool` are both hollow stroked
+outlines, and at the shipping 24×24 each one's point is two or three rows of
+partial-alpha ink with the first fully opaque pixel well inside it. The choice
+was therefore a hotspot on an anti-aliased fringe (§8's own measured defect), a
+hotspot two pixels back from the point the user aims with, or weakening the
+"fully opaque" assertion for these tools — and the third is exactly how the
+original fifteen shipped. A drawn shape has no apex problem: the tip is vertex
+zero and the boundary stroke stamps it.
+
+`Tool::Curve` is the line that makes §10's bar concrete. It places anchors
+exactly as the Pen does, shares its flyout and its whole gesture, and stays on
+the composite — because `spline` is a curve through control points and there is
+nothing on it to point with. The bar is what the cursor **is**, not what the
+tool does.
+
+**And `Caps Lock` works.** `docs/shortcuts.md` §2 has promised "precise
+crosshair cursor" since it was written; nothing implemented it. §9 does, over
+the canvas only.
+
+---
+
 ## Re-reported 2026-09-02, against entries already open
 
 * **T3 (gradient)** — reported again as "the gradient tool does nothing."

@@ -26,7 +26,10 @@ add_executable(naturalPaint
   app/HistoryPanel.cpp
   app/Keymap.cpp
   app/PenAxes.cpp
+  app/PathOps.cpp
+  app/PathsPanel.cpp
   app/PenTool.cpp
+  app/VectorStyle.cpp
   app/TextTool.cpp
   app/PsdReport.cpp
   app/SvgReport.cpp
@@ -182,6 +185,7 @@ add_executable(naturalPaint
   app/selftest/LayerEditor.cpp
   app/selftest/LayerGroup.cpp
   app/selftest/LayerGroupPanel.cpp
+  app/selftest/LayerListHeight.cpp
   app/selftest/LayerMask.cpp
   app/selftest/LayerMultiSelect.cpp
   app/selftest/LayerPanel2a.cpp
@@ -249,6 +253,7 @@ add_executable(naturalPaint
   app/selftest/FlatsExpand.cpp
   app/selftest/FlatsSource.cpp
   app/selftest/ToolSwitch.cpp
+  app/selftest/ToolHotkeys.cpp
   app/selftest/SpringEyedropper.cpp
   app/selftest/TonalBrush.cpp
   app/selftest/ToolOptionsBlend.cpp
@@ -266,8 +271,11 @@ add_executable(naturalPaint
   app/selftest/CropTool.cpp
   app/selftest/PathRaster.cpp
   app/selftest/SvgImport.cpp
+  app/selftest/PathOps.cpp
+  app/selftest/PathsPanel.cpp
   app/selftest/PenTool.cpp
   app/selftest/PenDraw.cpp
+  app/selftest/VectorStyle.cpp
   app/selftest/TextTool.cpp
   app/selftest/TextShaper.cpp
   app/selftest/SvgPath.cpp

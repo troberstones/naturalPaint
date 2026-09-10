@@ -50,8 +50,6 @@ const std::vector<ControlsSectionSpec>& controlsSections() {
        true},
       {ControlsSection::BrushLibrary, R::Tool, "BRUSH LIBRARY", false},
       {ControlsSection::Brush, R::Tool, "BRUSH EDITOR", false},
-      // Last of the `Tool` roles, which is what keeps the role sequence
-      // non-decreasing (app/selftest/ControlsLayout.cpp asserts it).
       {ControlsSection::FlatsTools, R::Tool, "FLATS TOOLS", false,
        "The flatting gestures of a Flats layer, as tools rather than as keys. Each one is\n"
        "STICKY: pick DELETE and every click deletes a fill until you pick something else,\n"
@@ -59,6 +57,23 @@ const std::vector<ControlsSectionSpec>& controlsSections() {
        "region id -- so editing the line art re-flats the drawing and every repair you made\n"
        "replays against the fresh regions (ADR-0009).\n\n"
        "The buttons grey out when the active layer is not a Flats layer. The panel stays\n"
+       "where you docked it rather than vanishing, so its place on screen is yours to keep."},
+      // Last of the `Tool` roles, which is what keeps the role sequence
+      // non-decreasing (app/selftest/ControlsLayout.cpp asserts it).
+      {ControlsSection::Paths, R::Tool, "PATHS", false,
+       "What you can do to a path once it exists: close it, open it, join two of them at\n"
+       "their end points, reverse the direction it runs in, gather several into one\n"
+       "compound path or release one back into its parts -- and, with anchors selected,\n"
+       "smooth or corner or break a knot, insert one in the middle of a segment, or delete\n"
+       "the ones you picked.\n\n"
+       "EVERY BUTTON IS A LIVE READOUT. A verb is lit exactly when it would run against\n"
+       "what is selected right now, so a lit button cannot refuse and a greyed one says\n"
+       "why underneath. Anchor verbs need COMPONENT mode on the OPTIONS band; the shape\n"
+       "verbs need SHAPE mode.\n\n"
+       "MAKE turns the path into something else: a selection, a filled area, or a stroke\n"
+       "laid down with the current brush. Those three paint into the nearest layer BELOW\n"
+       "the path, because the path's own layer is the source.\n\n"
+       "The buttons grey out when the active layer is not a Vector layer. The panel stays\n"
        "where you docked it rather than vanishing, so its place on screen is yours to keep."},
       {ControlsSection::Layers, R::Document, "LAYERS", true},
       {ControlsSection::History, R::Document, "HISTORY", true},

@@ -95,4 +95,53 @@ void moveAnchorTo(Anchor& anchor, PathPoint to) noexcept {
   anchor.out.y += dy;
 }
 
+void reverseSubPath(SubPath& sub) noexcept {
+  if (sub.anchors.size() < 2) return;
+  std::reverse(sub.anchors.begin(), sub.anchors.end());
+  // The header's whole point: the order flip alone is half the operation.
+  // `smooth` is untouched -- a knot the user marked smooth is still smooth
+  // walked the other way round, and the swap keeps its two handles opposite
+  // through `pt` if they already were.
+  for (Anchor& a : sub.anchors) std::swap(a.in, a.out);
+}
+
+void fitAnchorTangent(SubPath* sub, size_t i, bool closed) noexcept {
+  if (sub == nullptr) return;
+  const size_t n = sub->anchors.size();
+  if (i >= n) return;
+  Anchor& anchor = sub->anchors[i];
+  if (n == 1) {
+    anchor.in = anchor.pt;
+    anchor.out = anchor.pt;
+    anchor.smooth = false;
+    return;
+  }
+
+  bool hasPrev = false, hasNext = false;
+  PathPoint prev{}, next{};
+  if (closed) {
+    hasPrev = hasNext = true;
+    prev = sub->anchors[(i + n - 1) % n].pt;
+    next = sub->anchors[(i + 1) % n].pt;
+  } else {
+    hasPrev = i > 0;
+    hasNext = i + 1 < n;
+    if (hasPrev) prev = sub->anchors[i - 1].pt;
+    if (hasNext) next = sub->anchors[i + 1].pt;
+  }
+
+  PathPoint m{0.0f, 0.0f};
+  if (hasPrev && hasNext) {
+    m = PathPoint{(next.x - prev.x) * 0.5f, (next.y - prev.y) * 0.5f};
+  } else if (hasNext) {
+    m = PathPoint{next.x - anchor.pt.x, next.y - anchor.pt.y};
+  } else if (hasPrev) {
+    m = PathPoint{anchor.pt.x - prev.x, anchor.pt.y - prev.y};
+  }
+
+  anchor.out = PathPoint{anchor.pt.x + m.x / 3.0f, anchor.pt.y + m.y / 3.0f};
+  anchor.in = PathPoint{anchor.pt.x - m.x / 3.0f, anchor.pt.y - m.y / 3.0f};
+  anchor.smooth = true;
+}
+
 }  // namespace np

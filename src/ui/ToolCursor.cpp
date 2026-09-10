@@ -127,6 +127,16 @@ ToolCursor cursorForTool(Tool tool) noexcept {
     // something already on the canvas follows the drag.
     case Tool::Move:
     case Tool::Frame:
+    // Path Select shares that MEANING while sharing neither slot nor pixels:
+    // its whole job is that existing geometry follows the drag. It is
+    // deliberately NOT folded in with Pen and Curve above, even though the
+    // three are flyout siblings -- those two define geometry by clicking
+    // points, which is `Select`'s intent, and this one moves geometry that is
+    // already there. Sorting the group's members by what they DO rather than
+    // by which slot they live in is the whole reason this switch lists
+    // enumerators instead of groups. §7's per-`Tool` bitmap still gives it
+    // its own arrow, so it does not look like the Move tool.
+    case Tool::PathSelect:
       return ToolCursor::MoveObject;
 
     case Tool::Text:
@@ -339,6 +349,21 @@ void setPixel(std::vector<uint8_t>& rgba, int w, int h, int x, int y, uint8_t a)
   p[3] = a;
 }
 
+// The inverse of `setPixel()`: makes a texel transparent again. Used only to
+// carve §10's nib slit out of a filled shape, and kept next to `setPixel()` so
+// the two ways this file writes a texel are read together.
+//
+// The carved texels do not stay empty: `applyCursorOutline()` dilates the
+// surrounding ink into every transparent neighbour, so a one-unit slit comes
+// out WHITE rather than showing the canvas through it -- which is what a nib's
+// slit looks like and is why nothing here has to composite a second colour.
+void clearPixel(std::vector<uint8_t>& rgba, int w, int h, int x, int y) {
+  if (x < 0 || y < 0 || x >= w || y >= h) return;
+  uint8_t* p = &rgba[(static_cast<size_t>(y) * w + x) * 4];
+  p[0] = p[1] = p[2] = 0;
+  p[3] = 0;
+}
+
 // One design unit, in pixels, for this bitmap. Rounded rather than truncated
 // so a scale of 2.07 does not systematically pull every coordinate toward the
 // top-left of where it was drawn.
@@ -375,21 +400,239 @@ void drawLine(std::vector<uint8_t>& rgba, int w, int h, int x0, int y0, int x1, 
   }
 }
 
-// The marquee composite hpp §7 promised: ONE generator taking the shape as a
-// parameter, not two hand-drawn cursors, because the crosshair and its
-// position are identical between the two marquees and the shape is the only
-// thing the report asked to vary.
-CursorBitmap drawMarqueeCrosshair(CursorMarqueeShape shape, float scale) {
-  CursorBitmap out;
-  out.width = out.height = px(kCursorDesignUnits, scale);
-  out.rgba.assign(static_cast<size_t>(out.width) * out.height * 4, 0);
-  const int t = strokeWidth(scale);
+// ============================ §8: the composite every cursor is now made of
+//
+// **Two slots, and the division of labour between them.** A tool GLYPH in the
+// upper-right box says WHICH tool; a CROSSHAIR at the lower-left says WHERE
+// the click lands, and the hotspot is that crosshair's own centre pixel.
+//
+// This layout is not new -- it is exactly what the two marquees have shipped
+// since T17, generalised from two tools to all of them. What changed is the
+// reason: the marquee pair got it because the report named a crosshair, and
+// every other tool kept a bare glyph whose hotspot was resolved against its
+// own bounding box. Measured at the shipping 24x24, that rule put **nine of
+// the twenty-nine hotspots on a fully transparent pixel** (Measure five pixels
+// from its own ink; Dry Brush, Smudge and Pen three) and six more on ink below
+// alpha 22 -- the outermost anti-aliased fringe, which is to say invisible.
+// See `ui/ToolCursor.hpp` §8 for the measurement and for what it cost.
+//
+// **The glyph stops pointing at anything, and that is the simplification.**
+// Under the old rule each icon had to nominate its own working end, because
+// the hotspot was a fraction of that icon's bounding box -- per-tool knowledge
+// that had to be right twenty-nine times and was wrong fifteen. Here the glyph
+// is an identifier and nothing more, so there is no per-tool placement to get
+// right at all, and a tool added tomorrow inherits a correct hotspot with no
+// entry in any table. `cursorHotspotAnchorFor()` is gone for that reason and
+// not because its per-tool judgements were bad ones.
+// **Both slots are inset by two units from every canvas edge, and that margin
+// is load-bearing rather than tidy.** `applyCursorOutline()` draws the white
+// halo INSIDE the existing canvas, so a shape touching the edge simply has no
+// halo on that side -- and the crosshair is the one shape that cannot afford
+// it, being the whole of what tells the user where the click lands. The
+// marquee pair shipped at (6, 26) with 5-unit arms, whose bottom pixel is row
+// 31 of 31: against a dark canvas its lower arm ended in nothing. Moving it to
+// (8, 23) costs three units of glyph and buys the crosshair an outline on all
+// four arms.
+constexpr int kGlyphLeft = 12, kGlyphTop = 2, kGlyphSize = 17;
+constexpr int kCrossX = 8, kCrossY = 23, kCrossArm = 6;
 
-  // The shape: a 20x20 box in the canvas's upper-right, offset so its own
-  // bottom-left corner (10, 22) sits well clear of the crosshair below.
-  // Design units; `px()` is the only place they become pixels.
-  constexpr int kLeft = 10, kTop = 2, kSize = 20;
-  const int left = px(kLeft, scale), top = px(kTop, scale), size = px(kSize, scale);
+// Caps Lock's bare crosshair (§9): no glyph at all, centred, arms running most
+// of the canvas. The hotspot is the centre, where the arms cross -- inked by
+// construction, the same property that makes the composite's own crosshair the
+// right thing to hang a hotspot on.
+constexpr int kPreciseArm = 12;
+
+// **The crosshair, and the hotspot that IS its centre.** One function, called
+// by every cursor this file produces, so "the hotspot is a drawn pixel" is a
+// structural fact rather than twenty-nine separate placements that happen to
+// agree. The alternative -- each generator setting its own hotspot -- is what
+// was there before, and section G's assertion could only check the weaker
+// claim that the point fell somewhere inside the glyph's bounding box.
+//
+// Both coordinates go through the SAME `px()` the arms themselves went
+// through, not a second rounding of the same product, which is how a hotspot
+// drifts a pixel off its own crosshair at some scales and not others.
+void drawHotspotCrosshair(CursorBitmap& out, float scale) {
+  const int t = strokeWidth(scale);
+  const int crossX = px(kCrossX, scale), crossY = px(kCrossY, scale);
+  const int arm = px(kCrossArm, scale);
+  drawLine(out.rgba, out.width, out.height, crossX - arm, crossY, crossX + arm, crossY, t);
+  drawLine(out.rgba, out.width, out.height, crossX, crossY - arm, crossX, crossY + arm, t);
+  out.hotspotX = crossX;
+  out.hotspotY = crossY;
+}
+
+// ================================= §10: the tool whose icon IS a pointer
+//
+// **The exception §8 predicted, and the reason it is a narrow one.** §8 moved
+// every glyph out from under the pointer because per-tool placement is what
+// put fifteen hotspots on transparent pixels. For an icon that is *itself a
+// pointing thing*, though, displacing it is worse than the disease: every
+// arrow ever drawn aims from its own tip, and a user who has to discover
+// otherwise has already mis-clicked. Illustrator keeps its selection arrow's
+// hotspot at the tip and badges it with modifiers rather than offsetting it.
+//
+// So this is one exception with one member, gated by a predicate rather than
+// by an `if` in the middle of the rasteriser, and it does not reopen §8: the
+// tip is a coordinate this file CHOOSES, not a fraction of a picture it has to
+// infer. That is the whole difference. `cursorHotspotAnchorFor()` failed
+// because it guessed where a glyph's working end was; here the working end is
+// vertex zero of a polygon drawn on purpose.
+//
+// **Why the arrow is drawn rather than taken from Lucide**, which is the part
+// worth recording. `mouse-pointer-2` -- the palette's own Path Select icon --
+// is a HOLLOW stroked outline. At the shipping 24x24 its apex is one or two
+// pixels of anti-aliased ink at partial alpha, so a hotspot on that apex would
+// be exactly the invisible-fringe case §8 measured: Brush at alpha 1,
+// Eyedropper at 4. Making the tip land on a pixel a human eye can see would
+// have meant weakening §8's own assertion from "fully opaque" back to "some
+// ink", which is the trap that let fifteen of these ship in the first place.
+//
+// A filled arrow has no such apex problem, and it is also what every pointer
+// on every platform actually looks like. Same precedent as the marquee pair
+// four functions down: no Lucide glyph is this shape, so this file draws it.
+// The cost is that the cursor no longer matches its palette cell pixel for
+// pixel -- it is still an arrow, and it is still the only arrow in the set.
+constexpr int kArrowTipX = 2, kArrowTipY = 2;
+
+// The classic seven-vertex pointer, clockwise from the tip, in design units.
+// Vertex 0 IS the hotspot, which is why it is written first and why nothing
+// below reorders this list.
+constexpr int kArrow[7][2] = {
+    {kArrowTipX, kArrowTipY},  // the tip, and the hotspot
+    {2, 24},                   // straight down the left edge
+    {8, 19},                   // in to the notch
+    {12, 27},                  // down the tail's left side
+    {15, 26},                  // across the tail's foot
+    {10, 17},                  // back up the tail's right side
+    {17, 17},                  // out to the wing, and closed back to the tip
+};
+
+// Fills a closed polygon and then strokes its own boundary. Shared by §10's
+// two shapes, which is why it is a function rather than a loop inside one of
+// them: the arrow and the nib both taper to the vertex their hotspot sits on,
+// and they must taper the same way.
+//
+// Scanline fill sampling each row's centre. Even-odd is the same as non-zero
+// for both of these -- neither self-intersects -- so the cheaper rule is the
+// honest one.
+//
+// **The boundary stroke is not decoration.** Sampling row centres means a
+// shape tapering to a point can lose its last row or two entirely, which is
+// exactly what happens at the vertex a §10 hotspot hangs on. Stroking puts
+// them back, and `drawLine()` stamps at its start coordinate, so vertex 0 is
+// opaque black by construction rather than by luck.
+void fillClosedPolygon(CursorBitmap& out, const int* xs, const int* ys, int n, int t) {
+  int minY = ys[0], maxY = ys[0];
+  for (int i = 1; i < n; ++i) {
+    minY = std::min(minY, ys[i]);
+    maxY = std::max(maxY, ys[i]);
+  }
+  for (int y = minY; y <= maxY; ++y) {
+    const float sy = static_cast<float>(y) + 0.5f;
+    float xsAt[16];
+    int hits = 0;
+    for (int i = 0; i < n && hits < 16; ++i) {
+      const int j = (i + 1) % n;
+      const float y0 = static_cast<float>(ys[i]), y1 = static_cast<float>(ys[j]);
+      if ((sy >= y0) == (sy >= y1)) continue;  // this edge does not cross the row
+      const float u = (sy - y0) / (y1 - y0);
+      xsAt[hits++] = static_cast<float>(xs[i]) + u * static_cast<float>(xs[j] - xs[i]);
+    }
+    std::sort(xsAt, xsAt + hits);
+    for (int k = 0; k + 1 < hits; k += 2)
+      for (int x = static_cast<int>(std::lround(xsAt[k]));
+           x <= static_cast<int>(std::lround(xsAt[k + 1])); ++x)
+        setPixel(out.rgba, out.width, out.height, x, y, 255);
+  }
+  for (int i = 0; i < n; ++i) {
+    const int j = (i + 1) % n;
+    drawLine(out.rgba, out.width, out.height, xs[i], ys[i], xs[j], ys[j], t);
+  }
+}
+
+void drawPointerArrow(CursorBitmap& out, float scale) {
+  const int t = strokeWidth(scale);
+  int xs[7], ys[7];
+  for (int i = 0; i < 7; ++i) {
+    xs[i] = px(kArrow[i][0], scale);
+    ys[i] = px(kArrow[i][1], scale);
+  }
+
+  fillClosedPolygon(out, xs, ys, 7, t);
+  out.hotspotX = xs[0];
+  out.hotspotY = ys[0];
+}
+
+// §10's second member: a pen nib, tip first.
+//
+// **Why this is drawn rather than taken from Lucide, measured rather than
+// assumed.** `pen-tool` -- the palette's own Pen icon -- is a hollow stroked
+// outline whose nib points up and left. Probed at the shipping scale, the
+// apex is three rows of PARTIAL-alpha ink and the first fully opaque pixel is
+// two rows inside it. So the choice would have been a hotspot on an
+// anti-aliased fringe (§8's measured defect, Brush at alpha 1) or a hotspot
+// two pixels back from the nib the user is aiming with. Neither is "point
+// from the nib", and the third option -- relaxing §8's opacity assertion for
+// this one tool -- is how the original fifteen shipped.
+//
+// A drawn nib has no apex problem: the tip is vertex zero and `drawLine()`
+// stamps it. Same trade the arrow above makes, and taken the same way on
+// purpose -- two members of one exception behaving differently would be worse
+// than either rule alone.
+//
+// **`Tool::Curve` deliberately stays on §8's composite.** Its icon is
+// `spline`, a curve through control points, which has no nib and no tip; it
+// places anchors exactly as the Pen does but it does not LOOK like a thing
+// that points, and §10's bar is what the icon is, not what the tool does.
+constexpr int kNibTipX = 2, kNibTipY = 2;
+
+// The nib, clockwise from the tip, symmetric about the tip's own diagonal --
+// reflecting (x, y) to (y, x) maps this list onto itself, which is what makes
+// it read as a nib rather than as a leaf leaning one way.
+constexpr int kNib[5][2] = {
+    {kNibTipX, kNibTipY},  // the tip, and the hotspot
+    {19, 10},              // the right shoulder
+    {25, 19},              // the widest point, right
+    {19, 25},              // the back, where a holder would meet it
+    {10, 19},              // the widest point, left, and closed back to the tip
+};
+
+void drawPenNib(CursorBitmap& out, float scale) {
+  const int t = strokeWidth(scale);
+  int xs[5], ys[5];
+  for (int i = 0; i < 5; ++i) {
+    xs[i] = px(kNib[i][0], scale);
+    ys[i] = px(kNib[i][1], scale);
+  }
+  fillClosedPolygon(out, xs, ys, 5, t);
+
+  // The slit and the vent, carved out of the fill rather than drawn into it.
+  // They start four units back from the tip so the hotspot's own pixel is
+  // never one of them -- a nib whose slit reached the point would put the
+  // hotspot on a transparent texel, which is the entire defect §8 is about.
+  // `applyCursorOutline()` fills both with white afterwards, which is what a
+  // slit looks like.
+  const int slitFrom = px(6, scale), slitTo = px(15, scale);
+  for (int d = slitFrom; d <= slitTo; ++d)
+    for (int w = 0; w < t; ++w) clearPixel(out.rgba, out.width, out.height, d + w, d);
+  const int ventX = px(18, scale), ventY = px(18, scale), ventR = std::max(1, px(2, scale));
+  for (int dy = -ventR; dy <= ventR; ++dy)
+    for (int dx = -ventR; dx <= ventR; ++dx)
+      if (dx * dx + dy * dy <= ventR * ventR)
+        clearPixel(out.rgba, out.width, out.height, ventX + dx, ventY + dy);
+
+  out.hotspotX = xs[0];
+  out.hotspotY = ys[0];
+}
+
+// The two shapes no font carries. Drawn into §8's glyph slot exactly as a
+// Lucide glyph is, so the marquees are no longer a special case of the
+// LAYOUT -- only of where their picture comes from.
+void drawMarqueeShape(CursorBitmap& out, CursorMarqueeShape shape, float scale) {
+  const int t = strokeWidth(scale);
+  const int left = px(kGlyphLeft, scale), top = px(kGlyphTop, scale);
+  const int size = px(kGlyphSize, scale);
   if (shape == CursorMarqueeShape::Rectangle) {
     drawLine(out.rgba, out.width, out.height, left, top, left + size, top, t);
     drawLine(out.rgba, out.width, out.height, left + size, top, left + size, top + size, t);
@@ -414,133 +657,130 @@ CursorBitmap drawMarqueeCrosshair(CursorMarqueeShape shape, float scale) {
       prevY = y;
     }
   }
-
-  // The crosshair: bottom-left of the canvas. 4 units of clearance from the
-  // shape's own bottom-left corner on both axes -- close enough to read as
-  // "attached to the same cursor", never touching it.
-  constexpr int kCrossX = 6, kCrossY = 26, kArm = 5;
-  const int crossX = px(kCrossX, scale), crossY = px(kCrossY, scale), arm = px(kArm, scale);
-  drawLine(out.rgba, out.width, out.height, crossX - arm, crossY, crossX + arm, crossY, t);
-  drawLine(out.rgba, out.width, out.height, crossX, crossY - arm, crossX, crossY + arm, t);
-
-  // **The hotspot is the crosshair's own centre, not the shape's corner and
-  // not the canvas's centre.** This is the bug the report is actually
-  // describing: a marquee's drag starts at the exact pixel under the
-  // pointer, and the crosshair is what tells the user which pixel that is --
-  // so the OS has to agree. `app/selftest/ToolCursor.cpp` section G asserts
-  // this specifically, not merely that the hotspot sits somewhere inked.
-  //
-  // Scaled with everything else, and by the SAME `px()` the crosshair's own
-  // arms went through -- not by a second rounding of the same product, which
-  // is how a hotspot drifts a pixel off its own crosshair at some scales and
-  // not others. `app/selftest/ToolCursor.cpp` section G checks the identity
-  // at several scales rather than only at 1.0.
-  out.hotspotX = crossX;
-  out.hotspotY = crossY;
-  return out;
 }
 
-// Rasterises one Lucide codepoint through stb_truetype directly -- no
-// `ImFontAtlas`, no `GImGui`, see this section's own opening comment for why.
-// Returns an all-transparent, zero-hotspot `CursorBitmap` (which
-// `rasterizeToolCursorBitmap()`'s generic non-blank scan will then correctly
-// call blank) for a missing file, an unreadable file, or a codepoint the
-// vendored font build does not contain -- the exact three failure modes
-// `ui/ToolCursor.hpp`'s original §1 worried a bitmap cursor could hit
-// silently.
-CursorBitmap rasterizeLucideGlyphCursor(uint32_t codepoint, float scale,
-                                        CursorHotspotAnchor anchor) {
-  CursorBitmap out;
-  out.width = out.height = px(kCursorDesignUnits, scale);
-  out.rgba.assign(static_cast<size_t>(out.width) * out.height * 4, 0);
-
+// Draws one Lucide codepoint into §8's glyph slot, through stb_truetype
+// directly -- no `ImFontAtlas`, no `GImGui`, see this section's own opening
+// comment for why.
+//
+// **Returns whether anything was drawn**, and draws nothing at all for a
+// missing file, an unreadable file, or a codepoint the vendored font build
+// does not contain -- the exact three failure modes `ui/ToolCursor.hpp`'s
+// original §1 worried a bitmap cursor could hit silently. The bool is what
+// `rasterizeToolCursorBitmap()` needs and a scan of the finished bitmap can no
+// longer give it: once the crosshair is drawn the composite is non-blank
+// whatever the font did, so a failed glyph would otherwise ship as a
+// crosshair-only cursor for every tool -- twenty-nine identical pointers, and
+// a font failure that stayed exactly as silent as before §7 was written.
+bool drawLucideGlyph(CursorBitmap& out, uint32_t codepoint, float scale) {
   // core/ResourcePaths.hpp: tries the executable-relative and override
   // locations before the compile-time path, so a copied binary still finds
   // the vendored font here, same as installToolIconFont() above it in
-  // ui/Fonts.cpp. A missing file already falls through to the blank,
-  // zero-hotspot bitmap this function's own header comment documents, so no
-  // separate report is added here -- resolveResourcePath() already wrote
-  // every location it tried to stderr if none of them existed.
+  // ui/Fonts.cpp. A missing file already falls through to the `false` this
+  // function's own header comment documents, so no separate report is added
+  // here -- resolveResourcePath() already wrote every location it tried to
+  // stderr if none of them existed.
   std::ifstream file(lucideTtfPath(), std::ios::binary);
-  if (!file.is_open()) return out;
+  if (!file.is_open()) return false;
   const std::vector<unsigned char> buffer((std::istreambuf_iterator<char>(file)),
                                           std::istreambuf_iterator<char>());
-  if (buffer.empty()) return out;
+  if (buffer.empty()) return false;
 
   stbtt_fontinfo info;
   if (!stbtt_InitFont(&info, buffer.data(), stbtt_GetFontOffsetForIndex(buffer.data(), 0)))
-    return out;
+    return false;
   if (stbtt_FindGlyphIndex(&info, static_cast<int>(codepoint)) == 0)
-    return out;  // codepoint absent from this build of the vendored font
+    return false;  // codepoint absent from this build of the vendored font
 
-  // 22 units of glyph height inside the 32-unit canvas: 5 units of margin top
-  // and bottom for the anti-aliased edge, the same headroom
-  // `installToolIconFont()` leaves around its own 15px icons, scaled up for a
-  // cursor. Multiplied by the caller's scale like every other coordinate --
-  // and note that this is the one shape in this file that needs no stroke
-  // thickening, because asking stb_truetype for a taller glyph thickens its
-  // strokes as a matter of course, which a Bresenham line does not.
-  const float glyphPx = 22.0f * scale;
+  // The glyph fills §8's slot rather than the whole canvas: `kGlyphSize` tall,
+  // in the box the crosshair leaves free. Multiplied by the caller's scale
+  // like every other coordinate -- and note that this is the one shape in this
+  // file that needs no stroke thickening, because asking stb_truetype for a
+  // taller glyph thickens its strokes as a matter of course, which a Bresenham
+  // line does not.
+  const float glyphPx = static_cast<float>(kGlyphSize) * scale;
   const float fontScale = stbtt_ScaleForPixelHeight(&info, glyphPx);
   int gw = 0, gh = 0, xoff = 0, yoff = 0;
   unsigned char* bitmap = stbtt_GetCodepointBitmap(&info, fontScale, fontScale,
                                                    static_cast<int>(codepoint), &gw, &gh, &xoff, &yoff);
-  if (bitmap == nullptr) return out;
+  if (bitmap == nullptr) return false;
   if (gw <= 0 || gh <= 0) {
     stbtt_FreeBitmap(bitmap, nullptr);
-    return out;
+    return false;
   }
 
-  // Centred in the canvas -- a cursor has no baseline to align to the way a
+  // Centred inside the SLOT -- a cursor has no baseline to align to the way a
   // line of text does, so centring the glyph's own tight bitmap is the only
-  // placement rule that means anything here.
-  const int originX = (out.width - gw) / 2;
-  const int originY = (out.height - gh) / 2;
+  // placement rule that means anything here. Centred in the slot rather than
+  // in the canvas, so a glyph narrower than its box does not drift toward the
+  // crosshair and crowd it.
+  const int left = px(kGlyphLeft, scale), top = px(kGlyphTop, scale);
+  const int size = px(kGlyphSize, scale);
+  const int originX = left + (size - gw) / 2;
+  const int originY = top + (size - gh) / 2;
+  bool inked = false;
   for (int y = 0; y < gh; ++y)
     for (int x = 0; x < gw; ++x) {
       const uint8_t coverage = bitmap[static_cast<size_t>(y) * gw + x];
-      if (coverage != 0) setPixel(out.rgba, out.width, out.height, originX + x, originY + y, coverage);
+      if (coverage != 0) {
+        setPixel(out.rgba, out.width, out.height, originX + x, originY + y, coverage);
+        inked = true;
+      }
     }
   stbtt_FreeBitmap(bitmap, nullptr);
+  return inked;
+}
 
-  // **The hotspot, placed against the glyph's own bounding box rather than at
-  // its centre.** An earlier revision used centre-of-glyph for every icon, on
-  // the reasoning that a tip is not recoverable from rasterised coverage --
-  // which is true, and was the wrong conclusion: it is not recoverable from
-  // the PIXELS, but it is perfectly well known to whoever chose the icon. A
-  // lasso draws from the end of its tail, not from the middle of its loop,
-  // and pointing at the middle of the loop is the same class of defect as the
-  // resize arrow T17 started from: a cursor that does not say where the click
-  // lands. `cursorHotspotAnchorFor()` is that per-tool knowledge, expressed
-  // as a fraction of this bounding box so it survives every scale.
-  // Resolved against the INKED bounding box, not against stb_truetype's glyph
-  // metrics. The two differ: a glyph's metric box can carry an edge row whose
-  // anti-aliased coverage rounds to zero, and `setPixel()` skips those, so an
-  // anchor of 1.0 against the metric box lands one row PAST the last visible
-  // pixel -- a hotspot on a transparent texel, which is precisely what section
-  // G exists to catch. Measured, not reasoned about: eight of the twenty-eight
-  // tools failed that assertion when this was resolved against `gw`/`gh`.
-  int minX = out.width, minY = out.height, maxX = -1, maxY = -1;
-  for (int y = 0; y < out.height; ++y)
-    for (int x = 0; x < out.width; ++x)
-      if (out.rgba[(static_cast<size_t>(y) * out.width + x) * 4 + 3] != 0) {
-        minX = std::min(minX, x);
-        maxX = std::max(maxX, x);
-        minY = std::min(minY, y);
-        maxY = std::max(maxY, y);
-      }
-  if (maxX < 0) return out;  // nothing inked: `nonBlank` stays false, hotspot stays (0,0)
-  out.hotspotX = minX + static_cast<int>(std::lround(anchor.fx * (maxX - minX)));
-  out.hotspotY = minY + static_cast<int>(std::lround(anchor.fy * (maxY - minY)));
-  return out;
+// One `SDL_Cursor` from a base bitmap and its 2x alternate. Extracted so the
+// per-tool loop and §9's single precise cursor build theirs the same way
+// rather than by two copies of the same ownership dance.
+//
+// Null when the base surface could not be made; the caller treats that
+// exactly as it treats a blank rasterisation.
+SDL_Cursor* createColorCursorFrom(const CursorBitmap& base, const CursorBitmap& retina) {
+  SDL_Surface* surface =
+      SDL_CreateSurfaceFrom(base.width, base.height, SDL_PIXELFORMAT_RGBA32,
+                            const_cast<uint8_t*>(base.rgba.data()), base.width * 4);
+  if (surface == nullptr) return nullptr;
+
+  // The 2x ALTERNATE representation -- the display backing scale, which is
+  // the ONE axis this file still scales along. SDL adds one
+  // `NSBitmapImageRep` per image to a single `NSImage` sized from the base,
+  // so AppKit picks this one on a 2x display and the base on a 1x display,
+  // and the cursor stays `kCursorBasePoints` points either way. Without it
+  // the base is stretched and the cursor is visibly soft on every Mac made
+  // in the last decade.
+  //
+  // Best-effort: a failure here leaves a perfectly usable 1x cursor rather
+  // than no cursor, which is why nothing below is conditional on it.
+  if (retina.nonBlank) {
+    SDL_Surface* alt =
+        SDL_CreateSurfaceFrom(retina.width, retina.height, SDL_PIXELFORMAT_RGBA32,
+                              const_cast<uint8_t*>(retina.rgba.data()), retina.width * 4);
+    if (alt != nullptr) {
+      // `SDL_AddSurfaceAlternateImage()` takes its own reference, so this
+      // surface is destroyed here and the alternate outlives it -- SDL's
+      // own documented ownership for this call.
+      SDL_AddSurfaceAlternateImage(surface, alt);
+      SDL_DestroySurface(alt);
+    }
+  }
+
+  // `SDL_CreateColorCursor()` copies what it needs out of the surface, so it
+  // can be destroyed immediately after -- the same pattern SDL's own docs
+  // show. The hotspot is in BASE-surface pixels, which is the same coordinate
+  // space as the NSImage's points, so it does not get a second scaling here.
+  SDL_Cursor* cursor = SDL_CreateColorCursor(surface, base.hotspotX, base.hotspotY);
+  SDL_DestroySurface(surface);
+  return cursor;
 }
 
 // **The funnel-point outline.** A black glyph is invisible against a black
 // canvas -- exactly the report this whole change answers -- so every
 // rasterised cursor gets a white halo drawn behind it, run here rather than
-// inside `drawMarqueeCrosshair()` or `rasterizeLucideGlyphCursor()` so both
-// glyph-drawing paths stay unaware of it and a tool added to either one gets
-// the outline for free, with nothing to duplicate.
+// inside `drawMarqueeShape()`, `drawLucideGlyph()` or `drawHotspotCrosshair()`,
+// so every one of them stays unaware of it and a shape added to any of them
+// gets the outline for free, with nothing to duplicate.
 //
 // A grayscale dilation of the ORIGINAL alpha channel, not a binary one: the
 // stamped alpha is the source pixel's own coverage, so an anti-aliased glyph
@@ -602,68 +842,14 @@ int cursorBasePoints() noexcept { return kCursorBasePoints; }
 
 float cursorBaseScale() noexcept { return kCursorBaseScale; }
 
-CursorHotspotAnchor cursorHotspotAnchorFor(Tool tool) noexcept {
-  // **Read off the glyphs, not guessed.** Each fraction below was chosen by
-  // rasterising the Lucide icon this tool actually uses and looking at where
-  // its working point is: the end of the lasso's tail, the nib of the pen,
-  // the drip under the tipped bucket, the centre of the magnifier's lens.
-  // Anything genuinely symmetric -- a hand, a move cross, the gradient's two
-  // circles -- is the centre because the centre IS its working point, not
-  // because nothing better was available.
-  switch (tool) {
-    // A tip that touches the canvas at its lower-left end.
-    case Tool::Lasso:
-    case Tool::Brush:
-    case Tool::Water:
-    case Tool::DryBrush:
-    case Tool::Pencil:
-    case Tool::Eraser:
-    case Tool::Smudge:
-    case Tool::CloneStamp:
-    case Tool::Eyedropper:
-    case Tool::Measure:
-    case Tool::Pen:
-    case Tool::Curve:
-      return {0.0f, 1.0f};
 
-    // The pentagon standing in for the polygon lasso: a polygon is built
-    // vertex by vertex and its apex is the vertex the icon leads with.
-    case Tool::PolygonLasso:
-      return {0.5f, 0.0f};
-
-    // The wand's tip is the top-right end of the shaft, where its sparkles are.
-    case Tool::MagicWand:
-      return {1.0f, 0.0f};
-
-    // The bucket is drawn tipped, pouring; the drip leaves at lower-right, and
-    // that drip is where the fill lands.
-    case Tool::PaintBucket:
-      return {0.9f, 1.0f};
-
-    // The magnifier's LENS centre, not the icon's centre -- the icon is a lens
-    // plus a handle running to the lower right, so its bounding-box centre sits
-    // on the glass's edge rather than in the middle of it.
-    case Tool::Zoom:
-      return {0.4f, 0.4f};
-
-    // Genuinely centred: what these tools act on is under the middle of the
-    // shape, so the centre is a choice here rather than a default.
-    case Tool::Hand:
-    case Tool::Move:
-    case Tool::Frame:
-    case Tool::Gradient:
-    case Tool::Crop:
-    case Tool::Slice:
-    case Tool::Shape:
-    case Tool::Text:
-    case Tool::Dodge:
-    case Tool::Burn:
-    case Tool::Marquee:
-    case Tool::EllipseMarquee:
-    case Tool::Count:
-      return {0.5f, 0.5f};
-  }
-  return {0.5f, 0.5f};
+bool toolCursorPointsFromItsTip(Tool tool) noexcept {
+  // Two members, and §10 argues why it is a short list rather than a policy.
+  // A tool added here loses §8's crosshair, so the bar is "this cursor IS a
+  // pointing thing" -- an arrow, a nib -- not "this icon has a pointy end",
+  // which is most of them. `Tool::Curve` places anchors exactly as the Pen
+  // does and is deliberately not here: `spline` is a curve, not a nib.
+  return tool == Tool::PathSelect || tool == Tool::Pen;
 }
 
 bool toolHasBitmapCursor(Tool tool) noexcept {
@@ -691,13 +877,41 @@ CursorBitmap rasterizeToolCursorBitmap(Tool tool, float scale) noexcept {
   CursorBitmap out;
   if (!toolHasBitmapCursor(tool)) return out;
 
-  // The two the report described in words rather than by icon: "a circle or
-  // square with a crosshair to the bottom left". No Lucide glyph is that
-  // composite, so §7 draws it -- one generator with the shape as a parameter.
+  out.width = out.height = px(kCursorDesignUnits, scale);
+  out.rgba.assign(static_cast<size_t>(out.width) * out.height * 4, 0);
+
+  // **The glyph first, and a failed glyph is a blank cursor.** The crosshair
+  // below inks the canvas unconditionally, so the order here is what preserves
+  // §7's fallback contract: a font that did not load must still produce a
+  // bitmap `create()` refuses to install, not a crosshair with no tool on it.
+  bool inked = false;
+  if (toolCursorPointsFromItsTip(tool)) {
+    // §10: no glyph slot and no crosshair. The shape occupies the canvas and
+    // the hotspot is its own tip -- both generators set it, so the
+    // `drawHotspotCrosshair()` call below must be skipped rather than merely
+    // producing a mark nobody looks at: it would overwrite the hotspot.
+    if (tool == Tool::Pen)
+      drawPenNib(out, scale);
+    else
+      drawPointerArrow(out, scale);
+    applyCursorOutline(out, scale);
+    for (size_t i = 3; i < out.rgba.size(); i += 4)
+      if (out.rgba[i] != 0) {
+        out.nonBlank = true;
+        break;
+      }
+    return out;
+  }
   if (tool == Tool::Marquee) {
-    out = drawMarqueeCrosshair(CursorMarqueeShape::Rectangle, scale);
+    // The two shapes no Lucide glyph carries -- the report described them in
+    // words rather than by icon ("a circle or square with a crosshair to the
+    // bottom left"), so §8 draws them. One generator with the shape as a
+    // parameter, and it draws into the same slot a font glyph would.
+    drawMarqueeShape(out, CursorMarqueeShape::Rectangle, scale);
+    inked = true;
   } else if (tool == Tool::EllipseMarquee) {
-    out = drawMarqueeCrosshair(CursorMarqueeShape::Ellipse, scale);
+    drawMarqueeShape(out, CursorMarqueeShape::Ellipse, scale);
+    inked = true;
   } else {
     // The codepoint comes from `toolIconCodepoint()` (ui/AtelierChrome) -- the
     // tool palette's own single source of truth for which Lucide glyph a tool
@@ -706,9 +920,16 @@ CursorBitmap rasterizeToolCursorBitmap(Tool tool, float scale) noexcept {
     // in this file, instead of the two silently drifting apart the way
     // `strokeRouteFor()`'s own comment warns a restated predicate always
     // eventually does.
-    out = rasterizeLucideGlyphCursor(toolIconCodepoint(tool), scale,
-                                     cursorHotspotAnchorFor(tool));
+    inked = drawLucideGlyph(out, toolIconCodepoint(tool), scale);
   }
+  if (!inked) return CursorBitmap{};  // blank, hotspot (0,0): §7's fallback
+
+  // **The crosshair, and with it the hotspot -- for every tool, not five.**
+  // This one call is the answer to "the click point is not always logical or
+  // visible": logical because the hotspot is the crosshair's own centre rather
+  // than a fraction of an icon's bounding box, and visible because there is
+  // now something drawn at it.
+  drawHotspotCrosshair(out, scale);
 
   // The white halo, applied here rather than inside either generator above --
   // see `applyCursorOutline()`'s own comment for why this one call covers
@@ -728,6 +949,51 @@ CursorBitmap rasterizeToolCursorBitmap(Tool tool, float scale) noexcept {
     }
   }
   return out;
+}
+
+CursorBitmap rasterizePreciseCursorBitmap(float scale) noexcept {
+  // The same clamp `rasterizeToolCursorBitmap()` applies, and for the same
+  // reason -- see its comment. Restated rather than shared because there is no
+  // third caller to hang a helper off, and the two are four lines apart.
+  if (!(scale > 0.0f)) scale = 1.0f;
+  scale = std::min(scale, 8.0f);
+
+  CursorBitmap out;
+  out.width = out.height = px(kCursorDesignUnits, scale);
+  out.rgba.assign(static_cast<size_t>(out.width) * out.height * 4, 0);
+
+  // Centred, and the hotspot is the centre. Written here rather than through
+  // `drawHotspotCrosshair()` because this crosshair is a different shape in a
+  // different place -- sharing the function would mean parameterising it on
+  // position and arm length, which is two arguments existing only so two
+  // callers can disagree about both of them.
+  const int t = strokeWidth(scale);
+  const int c = px(kCursorDesignUnits, scale) / 2;
+  const int arm = px(kPreciseArm, scale);
+  drawLine(out.rgba, out.width, out.height, c - arm, c, c + arm, c, t);
+  drawLine(out.rgba, out.width, out.height, c, c - arm, c, c + arm, t);
+  out.hotspotX = out.hotspotY = c;
+
+  applyCursorOutline(out, scale);
+  for (size_t i = 3; i < out.rgba.size(); i += 4)
+    if (out.rgba[i] != 0) {
+      out.nonBlank = true;
+      break;
+    }
+  return out;
+}
+
+bool shouldUsePreciseCursor(bool bitmapsEnabled, bool capsLock, std::optional<Tool> toolRequest,
+                            bool hasPreciseBitmap) noexcept {
+  // **Only over the canvas.** `toolRequest` is `nullopt` whenever the pointer
+  // is over a panel, a menu or a window border, and Caps Lock must not turn
+  // the I-beam in the LAYERS filter box into a crosshair -- Photoshop's own
+  // override is a painting-cursor override, not a global one.
+  //
+  // Gated on `bitmapsEnabled` as well, because that flag means "this
+  // platform's rasterisation is wrong"; a build that has fallen back to system
+  // cursors has no business drawing this one either.
+  return bitmapsEnabled && capsLock && toolRequest.has_value() && hasPreciseBitmap;
 }
 
 bool shouldUseBitmapCursor(bool bitmapsEnabled, std::optional<Tool> toolRequest,
@@ -787,44 +1053,23 @@ void SystemCursorTable::buildBitmapCursors() noexcept {
     // what it answers for a tool with no bitmap at all, and `apply()` falls
     // back to `sdlCursorFor()`'s system shape -- objection 1's answer.
     if (!bitmap.nonBlank) continue;
-    SDL_Surface* surface =
-        SDL_CreateSurfaceFrom(bitmap.width, bitmap.height, SDL_PIXELFORMAT_RGBA32,
-                              const_cast<uint8_t*>(bitmap.rgba.data()), bitmap.width * 4);
-    if (surface == nullptr) continue;
-
-    // The 2x ALTERNATE representation -- the display backing scale, which is
-    // the ONE axis this file still scales along. SDL adds one
-    // `NSBitmapImageRep` per image to a single `NSImage` sized from the base,
-    // so AppKit picks this one on a 2x display and the base on a 1x display,
-    // and the cursor stays `kCursorBasePoints` points either way. Without it
-    // the base is stretched and the cursor is visibly soft on every Mac made
-    // in the last decade.
-    //
-    // Best-effort: a failure here leaves a perfectly usable 1x cursor rather
-    // than no cursor, which is why nothing below is conditional on it.
-    const CursorBitmap retina = rasterizeToolCursorBitmap(tool, cursorBaseScale() * 2.0f);
-    if (retina.nonBlank) {
-      SDL_Surface* alt =
-          SDL_CreateSurfaceFrom(retina.width, retina.height, SDL_PIXELFORMAT_RGBA32,
-                                const_cast<uint8_t*>(retina.rgba.data()), retina.width * 4);
-      if (alt != nullptr) {
-        // `SDL_AddSurfaceAlternateImage()` takes its own reference, so this
-        // surface is destroyed here and the alternate outlives it -- SDL's
-        // own documented ownership for this call.
-        SDL_AddSurfaceAlternateImage(surface, alt);
-        SDL_DestroySurface(alt);
-      }
-    }
-
-    // `SDL_CreateColorCursor()` copies what it needs out of the surface, so
-    // it can be destroyed immediately after -- the same pattern SDL's own
-    // docs show, and there is no reason to keep `bitmap.rgba` alive past
-    // this call either; it goes out of scope with the loop body. The hotspot
-    // is in BASE-surface pixels, which is the same coordinate space as the
-    // NSImage's points, so it does not get a second scaling here.
-    bitmapCursors_[i] = SDL_CreateColorCursor(surface, bitmap.hotspotX, bitmap.hotspotY);
-    SDL_DestroySurface(surface);
+    bitmapCursors_[i] = createColorCursorFrom(
+        bitmap, rasterizeToolCursorBitmap(tool, cursorBaseScale() * 2.0f));
   }
+
+  // §9's one precise cursor, built beside the per-tool ones and under the same
+  // blank-means-fall-back rule. Null here simply means Caps Lock does nothing,
+  // which `shouldUsePreciseCursor()`'s `hasPreciseBitmap` argument is how
+  // `apply()` finds out.
+  if (preciseCursor_ != nullptr) {
+    SDL_DestroyCursor(preciseCursor_);
+    preciseCursor_ = nullptr;
+  }
+  const CursorBitmap precise = rasterizePreciseCursorBitmap(cursorBaseScale());
+  if (precise.nonBlank)
+    preciseCursor_ =
+        createColorCursorFrom(precise, rasterizePreciseCursorBitmap(cursorBaseScale() * 2.0f));
+
   last_ = nullptr;
 }
 
@@ -837,6 +1082,8 @@ void SystemCursorTable::destroy() noexcept {
     if (c != nullptr) SDL_DestroyCursor(c);
     c = nullptr;
   }
+  if (preciseCursor_ != nullptr) SDL_DestroyCursor(preciseCursor_);
+  preciseCursor_ = nullptr;
   // Cleared so a `destroy()`/`create()` pair leaves no pointer to a freed
   // cursor behind for the skip-if-unchanged check to compare against -- that
   // comparison would be against a dangling value, and a freed allocation can
@@ -852,7 +1099,7 @@ SDL_Cursor* SystemCursorTable::bitmapCursorFor(Tool tool) const noexcept {
 }
 
 void SystemCursorTable::apply(std::optional<SDL_SystemCursor> request,
-                              std::optional<Tool> toolRequest) noexcept {
+                              std::optional<Tool> toolRequest, bool capsLock) noexcept {
   // `--selftest` and the demo paths never call `create()`, and must not be made
   // to: several of them make a window but none draws a frame through this.
   if (!created_) return;
@@ -891,7 +1138,16 @@ void SystemCursorTable::apply(std::optional<SDL_SystemCursor> request,
   // running here, not a lookalike.
   SDL_Cursor* chosen = nullptr;
   const bool hasBitmap = toolRequest.has_value() && bitmapCursorFor(*toolRequest) != nullptr;
-  if (shouldUseBitmapCursor(bitmapsEnabled_, toolRequest, hasBitmap)) chosen = bitmapCursorFor(*toolRequest);
+
+  // **§9's override, tested BEFORE the per-tool bitmap**, because that is what
+  // "regardless of what the tool would otherwise show" means. Both decisions
+  // go through their own pure predicate rather than being inlined here, so the
+  // logic `--selftest` proves is the logic that runs -- `apply()` itself needs
+  // live SDL video and is the one function in this file no test can reach.
+  if (shouldUsePreciseCursor(bitmapsEnabled_, capsLock, toolRequest, preciseCursor_ != nullptr))
+    chosen = preciseCursor_;
+  else if (shouldUseBitmapCursor(bitmapsEnabled_, toolRequest, hasBitmap))
+    chosen = bitmapCursorFor(*toolRequest);
 
   // §6's original fallback, byte-for-byte: reached whenever the branch above
   // did not choose a bitmap -- flag off, no tool request this frame, or a

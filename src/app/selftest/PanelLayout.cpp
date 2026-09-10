@@ -23,6 +23,7 @@ constexpr ControlsSection kAllSections[] = {
     ControlsSection::FlatsSegmentation,
     ControlsSection::Grade,        ControlsSection::Histogram, ControlsSection::BrushLibrary,
     ControlsSection::Brush,        ControlsSection::FlatsTools,
+    ControlsSection::Paths,
     ControlsSection::Pigment,      ControlsSection::Medium,
     ControlsSection::BoardTilt,    ControlsSection::Grid,      ControlsSection::Solver,
 };
@@ -116,9 +117,12 @@ bool runPanelLayoutTest() {
       // recording is a deliberate act begun a few times a session, and a
       // permanent grip in the right dock comes straight out of the LAYERS
       // list. Same argument as FLATS TOOLS, same place it is written down
-      // (docs/automation-plan.md step 7).
+      // (docs/automation-plan.md step 7). PATHS is the fifth, and it is FLATS
+      // TOOLS' argument again one layer kind later -- app/PanelLayout.cpp's
+      // `defaultPlacementFor()` says so in those words.
       if (e.section == ControlsSection::Tools || e.section == ControlsSection::Options ||
-          e.section == ControlsSection::FlatsTools || e.section == ControlsSection::Actions)
+          e.section == ControlsSection::FlatsTools || e.section == ControlsSection::Actions ||
+          e.section == ControlsSection::Paths)
         continue;
       // PIGMENT is Simulation-rolled but starts Hidden, not Flyout -- see
       // `defaultPlacementFor()`'s own comment (app/PanelLayout.cpp) and
@@ -145,18 +149,23 @@ bool runPanelLayoutTest() {
     // resolved by picking a side goes green while describing a rail nobody
     // has.
     //
-    // **Eight now**, and the eighth is ACTIONS -- the first `Document`-rolled
-    // panel to start on the rail (docs/automation-plan.md step 7). The count
-    // is asserted rather than the membership for the reason the paragraph
-    // above records: this is exactly the assertion a merge that picked a side
-    // would leave green while describing a rail nobody has.
-    check(layout.sectionsIn(PanelPlacement::Flyout).size() == 8,
-          "panel layout: which is eight panels on the rail -- the four remaining "
-          "View/Simulation sections, GRADE, HISTOGRAM, FLATS TOOLS and ACTIONS -- and the rail "
-          "is not empty on a first run, which is the mode the revamp was asked for by name");
+    // **Nine now, and neither branch that made it nine could see the other.**
+    // `automation` added ACTIONS and said eight; `main` added PATHS and said
+    // eight; both were right alone and both are wrong here. This assertion was
+    // written with the sentence "this is exactly the assertion a merge that
+    // picked a side would leave green while describing a rail nobody has" --
+    // and picking a side would in fact have left it RED, which is better than
+    // green and is why it counts rather than describes. 7 + ACTIONS + PATHS.
+    check(layout.sectionsIn(PanelPlacement::Flyout).size() == 9,
+          "panel layout: which is nine panels on the rail -- the four remaining "
+          "View/Simulation sections, GRADE, HISTOGRAM, FLATS TOOLS, ACTIONS and PATHS -- and "
+          "the rail is not empty on a first run, which is the mode the revamp was asked for "
+          "by name");
     check(layout.placementOf(ControlsSection::Actions) == PanelPlacement::Flyout,
           "panel layout: ACTIONS specifically -- on the rail, not in the right dock its "
           "Document role would otherwise give it");
+    check(layout.placementOf(ControlsSection::Paths) == PanelPlacement::Flyout,
+          "panel layout: and PATHS specifically -- the same exception, one layer kind later");
 
     // Whatever is in the right dock is in `controlsSections()`'s own order --
     // i.e. the outgoing column's order with the flyout sections lifted out.

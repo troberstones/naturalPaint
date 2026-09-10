@@ -53,11 +53,15 @@ bool runControlsLayoutTest() {
               positionIn(kOldOrder, ControlsSection::History) + 1, kOldOrder.size(),
               positionIn(newOrder, ControlsSection::History) + 1, newOrder.size());
 
-  check(sections.size() == 18, "every section has exactly one spec (18)");
-  check(newOrder.size() == kOldOrder.size() + 9,
+  check(sections.size() == 19, "every section has exactly one spec (19)");
+  // +10: six from the dockable-panel revamp, two from the flats panels, then
+  // PATHS and ACTIONS -- one from each of the two branches merged here, both
+  // of which independently made it +9.
+  check(newOrder.size() == kOldOrder.size() + 10,
         "the same sections plus COMPS, COLOR, BRUSH LIBRARY, HISTOGRAM, TOOLS and OPTIONS from "
         "the dockable-panel revamp, FLATS TOOLS and SEGMENTATION from the flats panels "
-        "(ADR-0009), and ACTIONS from docs/automation-plan.md step 7, reordered; none was "
+        "(ADR-0009), PATHS (docs/path-editing-plan.md section 4) and ACTIONS "
+        "(docs/automation-plan.md step 7), reordered; none was "
         "dropped");
   {
     // Every enumerator appears exactly once. Written against the list of
@@ -69,8 +73,8 @@ bool runControlsLayoutTest() {
     // agrees" was ever checked for it; a sabotage that duplicated BRUSH EDITOR
     // in place of BRUSH LIBRARY would have passed this block silently (it
     // would still have failed the ordering/role checks below by accident, but
-    // for the wrong reason). All 13 enumerators, matching the count asserted
-    // just above (C2, docs/reachability-audit.md, added HISTOGRAM).
+    // for the wrong reason). Every enumerator, matching the count asserted
+    // just below -- the two are kept together deliberately.
     const ControlsSection kAll[] = {
         ControlsSection::Tools,      ControlsSection::Options,
         ControlsSection::Color,      ControlsSection::Layers,     ControlsSection::History,
@@ -79,9 +83,16 @@ bool runControlsLayoutTest() {
         ControlsSection::Grade,      ControlsSection::Histogram,
         ControlsSection::BrushLibrary,
         ControlsSection::Brush,      ControlsSection::FlatsTools,
+        ControlsSection::Paths,
         ControlsSection::Pigment,    ControlsSection::Medium,
         ControlsSection::BoardTilt,  ControlsSection::Grid,       ControlsSection::Solver};
-    static_assert(sizeof(kAll) / sizeof(kAll[0]) == 18,
+    // **19, and this line is why the merge that made it 19 was not silent.**
+    // `automation` added ACTIONS and bumped this to 18; `main` added PATHS and
+    // bumped it to 18; `kAll` itself auto-merged and correctly gained BOTH
+    // entries, while the count kept one branch's 18. The list and the number
+    // disagreed, and the build stopped -- which is the entire reason the
+    // number is asserted next to the list rather than trusted to match it.
+    static_assert(sizeof(kAll) / sizeof(kAll[0]) == 19,
                   "kAll must list every ControlsSection enumerator");
     bool eachOnce = true;
     for (const ControlsSection s : kAll) {

@@ -213,4 +213,47 @@ PathBounds pathControlBounds(const Path& path) noexcept;
 // stated cost, paid in one place.
 void moveAnchorTo(Anchor& anchor, PathPoint to) noexcept;
 
+// Reverse a subpath's direction in place.
+//
+// **This is not `std::reverse(anchors)`, and the difference is the whole
+// reason it lives here.** Reversing the anchor order alone leaves every
+// handle attached to the wrong side of its own anchor: `in` controls the
+// segment ARRIVING at `pt` and `out` the one LEAVING it (section 2's field
+// comments), and after a reversal the arriving segment is the one that used
+// to leave. So each anchor's two handles swap as well. Omitting the swap
+// produces a path with the same anchors, the same bounds and a visibly
+// different curve -- which is exactly the kind of defect that survives a
+// count-based assertion, so `app/selftest/PathOps.cpp` asserts the handle
+// positions and not the order.
+//
+// `closed` needs no special case: the closing segment is implied rather than
+// stored (section 3), so reversing the anchors reverses it too. A subpath of
+// fewer than two anchors is left alone -- there is no direction to reverse,
+// and the lone anchor's handles are not read by anything.
+void reverseSubPath(SubPath& sub) noexcept;
+
+// Recompute anchor `i`'s two handles as a smooth tangent through its
+// immediate neighbours, and set `smooth = true`.
+//
+// A uniform (unweighted) Catmull-Rom tangent, converted to a Bezier handle
+// pair by the standard `pt +/- m/3` relation. Both handles come from the SAME
+// `m`, so they are exactly opposite through `pt` **by construction** -- that
+// IS what `smooth = true` means (see `Anchor::smooth`), not a separate
+// invariant a caller has to also enforce afterwards.
+//
+// `closed` wraps neighbour lookup around the ends; open leaves an end
+// anchor's missing neighbour out of the average, so `m` becomes the one-sided
+// secant `next - pt` or `pt - prev`. That is the ordinary open-curve endpoint
+// rule for a Catmull-Rom fit, and the reason a 1- or 2-anchor open subpath
+// still gets a sane answer (a straight corner, and a straight line
+// respectively) rather than a divide against a neighbour that does not exist.
+// `i >= anchors.size()` is a no-op.
+//
+// **This is `Tool::Curve`'s placement tangent and the PATHS panel's SMOOTH
+// button, and it must stay one function.** It began as a file-static in
+// `app/PenTool.cpp` serving only the former; the panel's button is the same
+// operation by definition, and two implementations of "smooth this knot"
+// would be two answers a user could tell apart.
+void fitAnchorTangent(SubPath* sub, size_t i, bool closed) noexcept;
+
 }  // namespace np

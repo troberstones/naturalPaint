@@ -178,6 +178,22 @@ enum class ControlsSection {
   // of a dock that does not scroll for the whole time it has nothing to say
   // -- and app/PanelLayout records that argument beside the exception.
   FlatsTools,
+  // The vector-editing verbs of a Vector layer, as a palette scoped to one
+  // layer kind -- the "named next consumer" the paragraph above promised, and
+  // so the second member of that family rather than a new pattern.
+  //
+  // What it holds that nothing else does: `app/PathOps`' eleven verbs (close,
+  // open, join, reverse, compound, release, smooth, corner, break, insert,
+  // delete) and `app/PathConsumers`' three (path to selection, fill it,
+  // stroke it). The consumers were built, selftested and listed in
+  // docs/vector-editing.md section 8 under "not on screen yet", with this
+  // panel named as their home; this is where they stop being unreachable.
+  //
+  // `Tool` role and a flyout placement, for FLATS TOOLS' reasons exactly --
+  // see `defaultPlacementFor()`. The role sequence must stay non-decreasing
+  // (app/selftest/ControlsLayout.cpp asserts it), so it sits beside its
+  // sibling rather than beside the vector controls on the options band.
+  Paths,
   Pigment,
   Medium,
   BoardTilt,

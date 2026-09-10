@@ -1,5 +1,7 @@
 #include "app/PenTool.hpp"
 
+#include "app/VectorStyle.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <iterator>
@@ -10,7 +12,20 @@
 
 namespace np {
 
-bool toolEditsPath(Tool t) noexcept { return t == Tool::Pen || t == Tool::Curve; }
+bool toolEditsPath(Tool t) noexcept {
+  // Three tools, not two -- and widening this predicate is the RIGHT move
+  // here rather than an instance of the "wired by widening an existing
+  // predicate" failure app/selftest/Eyedropper.cpp watches for. The test that
+  // tells the two apart: does the widened predicate hand this tool's gestures
+  // to a handler written for something else? `toolSamplesCanvas()` widened
+  // for Measure would have handed every ruler drag to `applyEyedropperPick()`
+  // -- a concrete wrong behaviour. Here all three tools edit the same anchor
+  // model and want the same canvas block; that block then routes on
+  // `pathToolPlacesAnchors()` below, so no tool inherits another's gesture.
+  return t == Tool::Pen || t == Tool::Curve || t == Tool::PathSelect;
+}
+
+bool pathToolPlacesAnchors(Tool t) noexcept { return t == Tool::Pen || t == Tool::Curve; }
 
 bool operator==(const ComponentRef& a, const ComponentRef& b) noexcept {
   return a.shapeId == b.shapeId && a.subPath == b.subPath && a.anchor == b.anchor &&
@@ -537,57 +552,10 @@ std::vector<ComponentRef> allAnchorsOf(const std::vector<VectorShape>& shapes,
   return out;
 }
 
-// Curve mode's tangent, at anchor `i` of `sub`, from its immediate
-// neighbours -- a uniform (unweighted) Catmull-Rom tangent, converted to a
-// Bezier handle pair by the standard `pt +/- m/3` relation. Both `in` and
-// `out` come from the SAME `m`, so they are exactly opposite through `pt` by
-// construction: that IS what `smooth = true` means (`core/Path.hpp`), not a
-// separate invariant this function has to also enforce.
-//
-// `closed` wraps neighbour lookup around the ends (bullet 3's "a closed path
-// fits across the seam"); open leaves an end anchor's missing neighbour out
-// of the average, i.e. `m` becomes the one-sided secant `next - pt` or
-// `pt - prev` -- the ordinary open-curve endpoint rule for a Catmull-Rom
-// fit, and the reason a 1- or 2-anchor open subpath still gets a sane answer
-// (a straight corner, and a straight line, respectively) rather than a
-// divide against a neighbour that does not exist.
-void fitAnchorTangent(SubPath* sub, size_t i, bool closed) noexcept {
-  const size_t n = sub->anchors.size();
-  if (i >= n) return;
-  Anchor& anchor = sub->anchors[i];
-  if (n == 1) {
-    anchor.in = anchor.pt;
-    anchor.out = anchor.pt;
-    anchor.smooth = false;
-    return;
-  }
-
-  bool hasPrev = false, hasNext = false;
-  PathPoint prev{}, next{};
-  if (closed) {
-    hasPrev = hasNext = true;
-    prev = sub->anchors[(i + n - 1) % n].pt;
-    next = sub->anchors[(i + 1) % n].pt;
-  } else {
-    hasPrev = i > 0;
-    hasNext = i + 1 < n;
-    if (hasPrev) prev = sub->anchors[i - 1].pt;
-    if (hasNext) next = sub->anchors[i + 1].pt;
-  }
-
-  PathPoint m{0.0f, 0.0f};
-  if (hasPrev && hasNext) {
-    m = PathPoint{(next.x - prev.x) * 0.5f, (next.y - prev.y) * 0.5f};
-  } else if (hasNext) {
-    m = PathPoint{next.x - anchor.pt.x, next.y - anchor.pt.y};
-  } else if (hasPrev) {
-    m = PathPoint{anchor.pt.x - prev.x, anchor.pt.y - prev.y};
-  }
-
-  anchor.out = PathPoint{anchor.pt.x + m.x / 3.0f, anchor.pt.y + m.y / 3.0f};
-  anchor.in = PathPoint{anchor.pt.x - m.x / 3.0f, anchor.pt.y - m.y / 3.0f};
-  anchor.smooth = true;
-}
+// `fitAnchorTangent()` -- Curve mode's per-anchor tangent -- used to live
+// here as a file-static. It moved to `core/Path` when the PATHS panel's
+// SMOOTH button needed the identical operation: see that header's comment on
+// it for why "smooth this knot" must have exactly one implementation.
 
 }  // namespace
 
@@ -646,6 +614,92 @@ void pathEditSetSelectMode(PathEditState* state, PathSelectMode mode,
   }
 
   state->selection.mode = mode;
+  state->componentPivotIsUserPlaced = false;
+  pathEditRefreshPivot(state, shapes);
+}
+
+void pathEditPruneSelection(PathEditState* state, const std::vector<VectorShape>& shapes) {
+  if (state == nullptr) return;
+
+  // One resolver for all four questions below, so "does this reference exist?"
+  // has one answer rather than four spellings of it.
+  auto findShape = [&shapes](uint64_t id) -> const VectorShape* {
+    for (const VectorShape& s : shapes)
+      if (s.id == id) return &s;
+    return nullptr;
+  };
+  auto resolves = [&](const ComponentRef& c) {
+    const VectorShape* s = findShape(c.shapeId);
+    if (s == nullptr) return false;
+    if (c.subPath >= s->path.subpaths.size()) return false;
+    return c.anchor < s->path.subpaths[c.subPath].anchors.size();
+  };
+
+  bool pruned = false;
+
+  std::vector<uint64_t> keptShapes;
+  keptShapes.reserve(state->selection.shapes.size());
+  for (uint64_t id : state->selection.shapes)
+    if (findShape(id) != nullptr) keptShapes.push_back(id);
+  pruned = pruned || keptShapes.size() != state->selection.shapes.size();
+  state->selection.shapes = std::move(keptShapes);
+
+  std::vector<ComponentRef> keptComponents;
+  keptComponents.reserve(state->selection.components.size());
+  for (const ComponentRef& c : state->selection.components)
+    if (resolves(c)) keptComponents.push_back(c);
+  pruned = pruned || keptComponents.size() != state->selection.components.size();
+  state->selection.components = std::move(keptComponents);
+
+  // The open placement session. `openPathSubPath` is an INDEX, so a shape
+  // that survived a verb which removed one of its subpaths dangles here just
+  // as surely as an erased shape does -- both are checked, and both end
+  // placement through the one function that knows what that means.
+  if (state->openPathActive) {
+    const VectorShape* open = findShape(state->openPathShapeId);
+    if (open == nullptr || state->openPathSubPath >= open->path.subpaths.size())
+      pathEditEndOpenPath(state);
+  }
+
+  // A live drag, when anything at all was pruned. Tested on `pruned` rather
+  // than on the drag's own component because `Manipulator` and `PivotMove`
+  // name no component: they act on the whole selection, which is exactly what
+  // just shrank, and `shapesAtDragStart` still describes it as it was.
+  if (pruned && state->drag != PathDragKind::None) pathEditCancel(state);
+
+  // The pivot follows the selection it is derived from, exactly as it does
+  // after any other selection change.
+  pathEditRefreshPivot(state, shapes);
+}
+
+void pathEditSelectShapes(PathEditState* state, const std::vector<uint64_t>& ids,
+                          SelectionCombine how, const std::vector<VectorShape>& shapes) {
+  if (state == nullptr) return;
+
+  // Before the selection moves underneath it -- `pathEditSetSelectMode()`'s
+  // reason, and the same one.
+  pathEditCancel(state);
+
+  std::vector<uint64_t> live;
+  live.reserve(ids.size());
+  for (uint64_t id : ids)
+    for (const VectorShape& s : shapes)
+      if (s.id == id) {
+        live.push_back(id);
+        break;
+      }
+
+  // Leaving Component mode drops the anchors rather than carrying them across
+  // the way `pathEditSetSelectMode()` does: this is not a mode switch, it is
+  // a selection the user just made in a list of whole shapes, and carrying
+  // the old anchors in would add shapes they did not click.
+  state->selection.components.clear();
+  if (state->selection.mode != PathSelectMode::Shape) {
+    state->selection.mode = PathSelectMode::Shape;
+    state->selection.shapes.clear();
+  }
+  combineShapeSelection(&state->selection.shapes, live, how);
+
   state->componentPivotIsUserPlaced = false;
   pathEditRefreshPivot(state, shapes);
 }
@@ -900,13 +954,18 @@ void pathEditTrackCursor(PathEditState* state, PathPoint at) noexcept {
 
 PenPressResult pathEditBeginPen(PathEditState* state, std::vector<VectorShape>* shapes,
                                 uint64_t* nextShapeId, PathPoint at, float pickRadiusPx,
-                                bool gnomonSuppressed, SelectionCombine how,
-                                uint64_t documentId, bool curveMode, float gnomonReachPx) {
+                                uint64_t documentId, bool curveMode,
+                                const VectorStyle& style) {
   if (state == nullptr || shapes == nullptr || nextShapeId == nullptr)
-    return PenPressResult::Selecting;
+    return PenPressResult::Inert;
 
-  const PathHit hit = hitTestPath(*shapes, state->selection, at, pickRadiusPx, gnomonSuppressed,
-                                  /*pivotMoveModeActive=*/false, gnomonReachPx);
+  // `gnomonSuppressed = true`, unconditionally and not as a caller's choice:
+  // the Pen draws no gnomon, so hit-testing one would make a target that is
+  // hit but never drawn. The reach argument is then moot, which is why both
+  // parameters are gone from the signature.
+  const PathHit hit = hitTestPath(*shapes, state->selection, at, pickRadiusPx,
+                                  /*gnomonSuppressed=*/true,
+                                  /*pivotMoveModeActive=*/false);
 
   const bool hitsOpenFirstAnchor =
       state->openPathActive && hit.kind == PathHitKind::Anchor &&
@@ -963,6 +1022,14 @@ PenPressResult pathEditBeginPen(PathEditState* state, std::vector<VectorShape>* 
 
     if (!state->openPathActive) {
       VectorShape s;
+      // **The paint, before anything else.** A default-constructed
+      // `VectorShape` has `fill.on == false` AND `stroke.on == false`, so the
+      // shape this branch used to build rasterised to nothing --
+      // `core/VectorRaster.cpp` gates on exactly those two flags. The editing
+      // overlay drew the path regardless, which is why the defect was
+      // invisible right up until the tool changed. app/VectorStyle.hpp
+      // section 1.
+      setVectorStyle(&s, style);
       s.id = (*nextShapeId)++;
       SubPath sub;
       sub.closed = false;
@@ -982,7 +1049,7 @@ PenPressResult pathEditBeginPen(PathEditState* state, std::vector<VectorShape>* 
         // session and treat the press as a miss rather than fabricate a new
         // shape silently in its place.
         pathEditEndOpenPath(state);
-        return PenPressResult::Selecting;
+        return PenPressResult::Inert;
       }
       SubPath& sub = s->path.subpaths[state->openPathSubPath];
       sub.anchors.push_back(placed);
@@ -1037,15 +1104,76 @@ PenPressResult pathEditBeginPen(PathEditState* state, std::vector<VectorShape>* 
     return PenPressResult::Placed;
   }
 
-  // Existing geometry that is not the open path's own first anchor: today's
-  // gestures, unchanged, via `pathEditBegin()` (bullet 2). And this press
-  // "clicked away" from placement (docs/vector-editing.md section 8) -- the
-  // open path ends, keeping whatever was already placed.
+  // ---- RESUME: the loose end of some other open subpath ------------------
+  //
+  // docs/path-editing-plan.md section 6, decided 2026-09-09: resuming IS
+  // drawing points, and it is how a path is picked back up after a tool
+  // switch. Without it, an open path abandoned by pressing Escape could never
+  // be continued -- only redrawn.
+  //
+  // Reached only for a press on an ANCHOR, which is the one hit kind the Pen
+  // still reads on existing geometry. The close case above has already
+  // claimed the open session's own first anchor.
+  if (hit.kind == PathHitKind::Anchor) {
+    VectorShape* s = findShapeMut(shapes, hit.component.shapeId);
+    if (s != nullptr && hit.component.subPath < s->path.subpaths.size()) {
+      SubPath& sub = s->path.subpaths[hit.component.subPath];
+      const size_t n = sub.anchors.size();
+      const bool loose = !sub.closed && n > 0 &&
+                         (hit.component.anchor == 0 || hit.component.anchor == n - 1);
+      // The open session's own LAST anchor is the point just placed. Pressing
+      // it again means nothing -- it is neither a close (that is anchor 0)
+      // nor a resume of anything not already open.
+      const bool isOwnTail = state->openPathActive &&
+                             hit.component.shapeId == state->openPathShapeId &&
+                             hit.component.subPath == state->openPathSubPath;
+      if (loose && !isOwnTail) {
+        // **Reversed so the pressed end is at the BACK.** Placement appends,
+        // and `anchors.push_back()` above is deliberately the only writer of
+        // a new anchor -- teaching it to prepend as well would double every
+        // index calculation in this function for a case one reversal answers.
+        const bool reversed = hit.component.anchor == 0 && n > 1;
+        if (reversed) reverseSubPath(sub);
+
+        state->openPathActive = true;
+        state->openPathShapeId = hit.component.shapeId;
+        state->openPathSubPath = hit.component.subPath;
+
+        const uint32_t tail = static_cast<uint32_t>(sub.anchors.size() - 1);
+        state->selection.mode = PathSelectMode::Component;
+        std::vector<ComponentRef> one{
+            ComponentRef{hit.component.shapeId, hit.component.subPath, tail,
+                         AnchorPart::Point}};
+        combineComponentSelection(&state->selection.components, one,
+                                  SelectionCombine::Replace);
+        pathEditRefreshPivot(state, *shapes);
+
+        state->drag = PathDragKind::None;
+        state->dragComponent = ComponentRef{};
+        state->geometryEditOpened = false;
+        state->shapesAtDragStart.clear();
+        state->shapesAtDragStart.shrink_to_fit();
+        state->documentId = documentId;
+        state->dragStart = at;
+        state->dragNow = at;
+        // Two results, because a reversal is a real document change (it moves
+        // a dashed stroke's phase and a marker's order) and a resume that did
+        // not reverse changed nothing. Recording an undo entry for the second
+        // would be the empty entry this file refuses to open elsewhere.
+        return reversed ? PenPressResult::ResumedReversed : PenPressResult::Resumed;
+      }
+    }
+  }
+
+  // ---- INERT --------------------------------------------------------------
+  //
+  // A tangent handle, a segment, an interior anchor, the closed path's
+  // anchors: all things `Tool::PathSelect` acts on and the Pen does not. The
+  // press still "clicks away" from placement (docs/vector-editing.md section
+  // 8), ending the session and keeping whatever was already placed -- that
+  // was always this branch's other job, and it is the half that survives.
   if (state->openPathActive) pathEditEndOpenPath(state);
-  const bool changesGeometry =
-      pathEditBegin(state, *shapes, at, pickRadiusPx, gnomonSuppressed, how, documentId,
-                    gnomonReachPx);
-  return changesGeometry ? PenPressResult::Editing : PenPressResult::Selecting;
+  return PenPressResult::Inert;
 }
 
 }  // namespace np
