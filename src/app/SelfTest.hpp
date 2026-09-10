@@ -1575,6 +1575,25 @@ bool runPsdBlendKeysTest();
 // Section's framing IS asserted as a round trip -- through decodePackBits(),
 // which two real importers already depend on against real files.
 bool runPsdExportTest();
+// io/PsdLayerSection -- PSD's Layer and Mask Information section, WRITTEN
+// (docs/psd-export.md tier 2): one PSD layer record per naturalPaint layer,
+// its channel image data, both of Photoshop's name encodings, and the
+// opacity/clipping/visibility bytes.
+//
+// Asserted by round trip through `importPsd()` -- the reader that was
+// checked layer-for-layer against three real Photoshop files with psd-tools
+// as an oracle -- comparing count, order, name, opacity, visibility,
+// clipping, blend mode, occupied-tile rect and the **mean straight linear
+// RGBA** over covered pixels. The mean is what catches a channel swap or a
+// missing sRGB encode; geometry and alpha counts alone cannot.
+//
+// **What this shape cannot see, and does not claim to:** the channel
+// table's ORDER (io/PsdImport.cpp dispatches on the channel id, never on
+// its position, so `0,1,2,-1` round-trips as happily as the `-1,0,1,2` real
+// Photoshop files carry). That one needs an external reader; see this
+// section's own doc comment.
+bool runPsdLayerSectionTest();
+
 bool runTransformCompositeSplitTest();
 bool runTransformPreviewTextureTest();
 
