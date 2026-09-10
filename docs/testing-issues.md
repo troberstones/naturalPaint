@@ -1704,12 +1704,24 @@ one below-left would say the click lands somewhere it does not.
 That does not reopen the argument. The exception is a named tool rather than a
 policy, and its tip is a coordinate the file **chooses** rather than a fraction
 of a picture it has to infer — which is exactly where the anchor table went
-wrong. The arrow is drawn procedurally rather than taken from Lucide for the
-same reason: `mouse-pointer-2` is a hollow stroked outline whose apex is one or
-two pixels of partial-alpha ink, so hanging a hotspot on it would have meant
-weakening the "fully opaque" assertion back to "some ink" — the trap that let
-the original fifteen ship. The Pen's nib is the next plausible candidate and is
-deliberately not taken: a nib is a pointy end, not a pointer.
+wrong.
+
+**The Pen followed**, and §10 now has two members. Both shapes are drawn
+procedurally rather than taken from Lucide, for a reason that was measured
+rather than assumed: `mouse-pointer-2` and `pen-tool` are both hollow stroked
+outlines, and at the shipping 24×24 each one's point is two or three rows of
+partial-alpha ink with the first fully opaque pixel well inside it. The choice
+was therefore a hotspot on an anti-aliased fringe (§8's own measured defect), a
+hotspot two pixels back from the point the user aims with, or weakening the
+"fully opaque" assertion for these tools — and the third is exactly how the
+original fifteen shipped. A drawn shape has no apex problem: the tip is vertex
+zero and the boundary stroke stamps it.
+
+`Tool::Curve` is the line that makes §10's bar concrete. It places anchors
+exactly as the Pen does, shares its flyout and its whole gesture, and stays on
+the composite — because `spline` is a curve through control points and there is
+nothing on it to point with. The bar is what the cursor **is**, not what the
+tool does.
 
 **And `Caps Lock` works.** `docs/shortcuts.md` §2 has promised "precise
 crosshair cursor" since it was written; nothing implemented it. §9 does, over

@@ -349,6 +349,21 @@ void setPixel(std::vector<uint8_t>& rgba, int w, int h, int x, int y, uint8_t a)
   p[3] = a;
 }
 
+// The inverse of `setPixel()`: makes a texel transparent again. Used only to
+// carve §10's nib slit out of a filled shape, and kept next to `setPixel()` so
+// the two ways this file writes a texel are read together.
+//
+// The carved texels do not stay empty: `applyCursorOutline()` dilates the
+// surrounding ink into every transparent neighbour, so a one-unit slit comes
+// out WHITE rather than showing the canvas through it -- which is what a nib's
+// slit looks like and is why nothing here has to composite a second colour.
+void clearPixel(std::vector<uint8_t>& rgba, int w, int h, int x, int y) {
+  if (x < 0 || y < 0 || x >= w || y >= h) return;
+  uint8_t* p = &rgba[(static_cast<size_t>(y) * w + x) * 4];
+  p[0] = p[1] = p[2] = 0;
+  p[3] = 0;
+}
+
 // One design unit, in pixels, for this bitmap. Rounded rather than truncated
 // so a scale of 2.07 does not systematically pull every coordinate toward the
 // top-left of where it was drawn.
@@ -493,6 +508,49 @@ constexpr int kArrow[7][2] = {
     {17, 17},                  // out to the wing, and closed back to the tip
 };
 
+// Fills a closed polygon and then strokes its own boundary. Shared by §10's
+// two shapes, which is why it is a function rather than a loop inside one of
+// them: the arrow and the nib both taper to the vertex their hotspot sits on,
+// and they must taper the same way.
+//
+// Scanline fill sampling each row's centre. Even-odd is the same as non-zero
+// for both of these -- neither self-intersects -- so the cheaper rule is the
+// honest one.
+//
+// **The boundary stroke is not decoration.** Sampling row centres means a
+// shape tapering to a point can lose its last row or two entirely, which is
+// exactly what happens at the vertex a §10 hotspot hangs on. Stroking puts
+// them back, and `drawLine()` stamps at its start coordinate, so vertex 0 is
+// opaque black by construction rather than by luck.
+void fillClosedPolygon(CursorBitmap& out, const int* xs, const int* ys, int n, int t) {
+  int minY = ys[0], maxY = ys[0];
+  for (int i = 1; i < n; ++i) {
+    minY = std::min(minY, ys[i]);
+    maxY = std::max(maxY, ys[i]);
+  }
+  for (int y = minY; y <= maxY; ++y) {
+    const float sy = static_cast<float>(y) + 0.5f;
+    float xsAt[16];
+    int hits = 0;
+    for (int i = 0; i < n && hits < 16; ++i) {
+      const int j = (i + 1) % n;
+      const float y0 = static_cast<float>(ys[i]), y1 = static_cast<float>(ys[j]);
+      if ((sy >= y0) == (sy >= y1)) continue;  // this edge does not cross the row
+      const float u = (sy - y0) / (y1 - y0);
+      xsAt[hits++] = static_cast<float>(xs[i]) + u * static_cast<float>(xs[j] - xs[i]);
+    }
+    std::sort(xsAt, xsAt + hits);
+    for (int k = 0; k + 1 < hits; k += 2)
+      for (int x = static_cast<int>(std::lround(xsAt[k]));
+           x <= static_cast<int>(std::lround(xsAt[k + 1])); ++x)
+        setPixel(out.rgba, out.width, out.height, x, y, 255);
+  }
+  for (int i = 0; i < n; ++i) {
+    const int j = (i + 1) % n;
+    drawLine(out.rgba, out.width, out.height, xs[i], ys[i], xs[j], ys[j], t);
+  }
+}
+
 void drawPointerArrow(CursorBitmap& out, float scale) {
   const int t = strokeWidth(scale);
   int xs[7], ys[7];
@@ -501,42 +559,68 @@ void drawPointerArrow(CursorBitmap& out, float scale) {
     ys[i] = px(kArrow[i][1], scale);
   }
 
-  // Scanline fill, sampling at each row's centre. Even-odd is the same as
-  // non-zero for this polygon -- it is simple and does not self-intersect --
-  // so the cheaper rule is the honest one to use.
-  int minY = ys[0], maxY = ys[0];
-  for (int i = 1; i < 7; ++i) {
-    minY = std::min(minY, ys[i]);
-    maxY = std::max(maxY, ys[i]);
-  }
-  for (int y = minY; y <= maxY; ++y) {
-    const float sy = static_cast<float>(y) + 0.5f;
-    float xsAt[8];
-    int n = 0;
-    for (int i = 0; i < 7 && n < 8; ++i) {
-      const int j = (i + 1) % 7;
-      const float y0 = static_cast<float>(ys[i]), y1 = static_cast<float>(ys[j]);
-      if ((sy >= y0) == (sy >= y1)) continue;  // this edge does not cross the row
-      const float u = (sy - y0) / (y1 - y0);
-      xsAt[n++] = static_cast<float>(xs[i]) + u * static_cast<float>(xs[j] - xs[i]);
-    }
-    std::sort(xsAt, xsAt + n);
-    for (int k = 0; k + 1 < n; k += 2)
-      for (int x = static_cast<int>(std::lround(xsAt[k])); x <= static_cast<int>(std::lround(xsAt[k + 1]));
-           ++x)
-        setPixel(out.rgba, out.width, out.height, x, y, 255);
-  }
+  fillClosedPolygon(out, xs, ys, 7, t);
+  out.hotspotX = xs[0];
+  out.hotspotY = ys[0];
+}
 
-  // **The outline, stroked on top of the fill, and it is not decoration.** A
-  // scanline fill samples row centres, so a shape that tapers to a point --
-  // which is exactly what an arrow does at the vertex this file is about to
-  // hang the hotspot on -- can lose its last row or two entirely. Stroking the
-  // boundary puts them back, and `drawLine()` stamps at its start coordinate,
-  // so vertex 0 is opaque black by construction rather than by luck.
-  for (int i = 0; i < 7; ++i) {
-    const int j = (i + 1) % 7;
-    drawLine(out.rgba, out.width, out.height, xs[i], ys[i], xs[j], ys[j], t);
+// §10's second member: a pen nib, tip first.
+//
+// **Why this is drawn rather than taken from Lucide, measured rather than
+// assumed.** `pen-tool` -- the palette's own Pen icon -- is a hollow stroked
+// outline whose nib points up and left. Probed at the shipping scale, the
+// apex is three rows of PARTIAL-alpha ink and the first fully opaque pixel is
+// two rows inside it. So the choice would have been a hotspot on an
+// anti-aliased fringe (§8's measured defect, Brush at alpha 1) or a hotspot
+// two pixels back from the nib the user is aiming with. Neither is "point
+// from the nib", and the third option -- relaxing §8's opacity assertion for
+// this one tool -- is how the original fifteen shipped.
+//
+// A drawn nib has no apex problem: the tip is vertex zero and `drawLine()`
+// stamps it. Same trade the arrow above makes, and taken the same way on
+// purpose -- two members of one exception behaving differently would be worse
+// than either rule alone.
+//
+// **`Tool::Curve` deliberately stays on §8's composite.** Its icon is
+// `spline`, a curve through control points, which has no nib and no tip; it
+// places anchors exactly as the Pen does but it does not LOOK like a thing
+// that points, and §10's bar is what the icon is, not what the tool does.
+constexpr int kNibTipX = 2, kNibTipY = 2;
+
+// The nib, clockwise from the tip, symmetric about the tip's own diagonal --
+// reflecting (x, y) to (y, x) maps this list onto itself, which is what makes
+// it read as a nib rather than as a leaf leaning one way.
+constexpr int kNib[5][2] = {
+    {kNibTipX, kNibTipY},  // the tip, and the hotspot
+    {19, 10},              // the right shoulder
+    {25, 19},              // the widest point, right
+    {19, 25},              // the back, where a holder would meet it
+    {10, 19},              // the widest point, left, and closed back to the tip
+};
+
+void drawPenNib(CursorBitmap& out, float scale) {
+  const int t = strokeWidth(scale);
+  int xs[5], ys[5];
+  for (int i = 0; i < 5; ++i) {
+    xs[i] = px(kNib[i][0], scale);
+    ys[i] = px(kNib[i][1], scale);
   }
+  fillClosedPolygon(out, xs, ys, 5, t);
+
+  // The slit and the vent, carved out of the fill rather than drawn into it.
+  // They start four units back from the tip so the hotspot's own pixel is
+  // never one of them -- a nib whose slit reached the point would put the
+  // hotspot on a transparent texel, which is the entire defect §8 is about.
+  // `applyCursorOutline()` fills both with white afterwards, which is what a
+  // slit looks like.
+  const int slitFrom = px(6, scale), slitTo = px(15, scale);
+  for (int d = slitFrom; d <= slitTo; ++d)
+    for (int w = 0; w < t; ++w) clearPixel(out.rgba, out.width, out.height, d + w, d);
+  const int ventX = px(18, scale), ventY = px(18, scale), ventR = std::max(1, px(2, scale));
+  for (int dy = -ventR; dy <= ventR; ++dy)
+    for (int dx = -ventR; dx <= ventR; ++dx)
+      if (dx * dx + dy * dy <= ventR * ventR)
+        clearPixel(out.rgba, out.width, out.height, ventX + dx, ventY + dy);
 
   out.hotspotX = xs[0];
   out.hotspotY = ys[0];
@@ -760,11 +844,12 @@ float cursorBaseScale() noexcept { return kCursorBaseScale; }
 
 
 bool toolCursorPointsFromItsTip(Tool tool) noexcept {
-  // One member, and §10 argues why it is one rather than a policy. A tool
-  // added here loses §8's crosshair, so the bar is "this icon is itself a
-  // pointing thing" -- not "this icon has a pointy end", which is most of
-  // them.
-  return tool == Tool::PathSelect;
+  // Two members, and §10 argues why it is a short list rather than a policy.
+  // A tool added here loses §8's crosshair, so the bar is "this cursor IS a
+  // pointing thing" -- an arrow, a nib -- not "this icon has a pointy end",
+  // which is most of them. `Tool::Curve` places anchors exactly as the Pen
+  // does and is deliberately not here: `spline` is a curve, not a nib.
+  return tool == Tool::PathSelect || tool == Tool::Pen;
 }
 
 bool toolHasBitmapCursor(Tool tool) noexcept {
@@ -801,11 +886,14 @@ CursorBitmap rasterizeToolCursorBitmap(Tool tool, float scale) noexcept {
   // bitmap `create()` refuses to install, not a crosshair with no tool on it.
   bool inked = false;
   if (toolCursorPointsFromItsTip(tool)) {
-    // §10: no glyph slot and no crosshair. The arrow occupies the canvas and
-    // the hotspot is its own tip -- `drawPointerArrow()` sets it, so the
+    // §10: no glyph slot and no crosshair. The shape occupies the canvas and
+    // the hotspot is its own tip -- both generators set it, so the
     // `drawHotspotCrosshair()` call below must be skipped rather than merely
     // producing a mark nobody looks at: it would overwrite the hotspot.
-    drawPointerArrow(out, scale);
+    if (tool == Tool::Pen)
+      drawPenNib(out, scale);
+    else
+      drawPointerArrow(out, scale);
     applyCursorOutline(out, scale);
     for (size_t i = 3; i < out.rgba.size(); i += 4)
       if (out.rgba[i] != 0) {

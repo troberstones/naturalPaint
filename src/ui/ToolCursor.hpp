@@ -351,13 +351,18 @@
 // Uniformity was chosen over that deliberately, because per-tool judgement is
 // what produced the fifteen.
 //
-// **Path Select was the entry that proved it, and §10 is the exception.** The
-// arrow now aims from its own tip. That does not reopen §8: the exception is a
-// named tool rather than a policy, and -- the part that matters -- its tip is a
-// coordinate this file CHOOSES rather than a fraction of a picture it has to
-// infer, which is precisely where the anchor table went wrong. The Pen's nib
-// is the next plausible candidate and is deliberately NOT taken: a nib is a
-// pointy end, not a pointer, and §10's bar is the second thing.
+// **§10 is the exception, and it has two members: Path Select and the Pen.**
+// The arrow aims from its tip, the nib from its point. That does not reopen
+// §8: the exception is a named LIST rather than a policy, and -- the part that
+// matters -- each tip is a coordinate this file CHOOSES rather than a fraction
+// of a picture it has to infer, which is precisely where the anchor table went
+// wrong.
+//
+// The bar is "this cursor IS a pointing thing", not "this icon has a pointy
+// end", which is most of them. `Tool::Curve` is the line that makes that
+// concrete: it places anchors exactly as the Pen does, shares its flyout and
+// its whole gesture, and stays on the composite -- because `spline` is a curve
+// through control points, and there is nothing on it to point WITH.
 //
 // ==========================================================================
 // 9. Caps Lock: the precise cursor
@@ -487,13 +492,15 @@ int cursorBasePoints() noexcept;
 float cursorBaseScale() noexcept;
 
 // §10: does this tool's cursor point from its own tip instead of wearing §8's
-// composite? True for `Tool::PathSelect` and nothing else today.
+// composite? True for `Tool::PathSelect` and `Tool::Pen`; false for everything
+// else, `Tool::Curve` included and deliberately.
 //
-// A tool that answers true gets a filled pointer occupying the whole canvas,
-// with the hotspot at its tip and NO crosshair -- an arrow tip is the click
+// A tool that answers true gets a filled shape occupying the whole canvas,
+// with the hotspot at its tip and NO crosshair -- a tip is already the click
 // mark, and adding a second one below-left would say the click lands somewhere
-// it does not. See the .cpp's §10 for why the exception is this narrow and why
-// the arrow is drawn rather than taken from the palette's own Lucide glyph.
+// it does not. See the .cpp's §10 for why the exception is this narrow, and
+// for the measurement behind drawing both shapes rather than taking them from
+// the palette's own Lucide glyphs.
 bool toolCursorPointsFromItsTip(Tool tool) noexcept;
 
 // Which tools have a bitmap cursor: the two marquees (§7's procedural

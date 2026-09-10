@@ -779,12 +779,22 @@ bool runToolCursorTest() {
       int tipTools = 0;
       for (int i = 0; i < static_cast<int>(Tool::Count); ++i)
         if (toolCursorPointsFromItsTip(static_cast<Tool>(i))) ++tipTools;
-      check(tipTools == 1 && toolCursorPointsFromItsTip(Tool::PathSelect),
-            "arrow: §10 has exactly ONE member and it is Path Select -- the exception is a "
-            "named tool, not a policy that could quietly grow back into the per-tool "
-            "placement §8 deleted");
+      check(tipTools == 2 && toolCursorPointsFromItsTip(Tool::PathSelect) &&
+                toolCursorPointsFromItsTip(Tool::Pen) && !toolCursorPointsFromItsTip(Tool::Curve),
+            "arrow: §10 has exactly TWO members, Path Select and the Pen, and Curve is NOT "
+            "one -- the exception is a named list, not a policy that could quietly grow back "
+            "into the per-tool placement §8 deleted. Curve places anchors exactly as the Pen "
+            "does, so its exclusion is the line that says §10's bar is the icon's shape");
 
-      const CursorBitmap a = rasterizeToolCursorBitmap(Tool::PathSelect);
+      // Every §10 member, not the one this section was written for. Without
+      // the loop, adding the Pen to the predicate would have inherited exactly
+      // nothing from these three claims -- the shape that catches a regression
+      // is the one that iterates the same predicate the rasteriser branches on.
+      bool everyTipIsATip = true, everyTipOutlined = true;
+      for (int ti = 0; ti < static_cast<int>(Tool::Count); ++ti) {
+      const Tool tipTool = static_cast<Tool>(ti);
+      if (!toolCursorPointsFromItsTip(tipTool)) continue;
+      const CursorBitmap a = rasterizeToolCursorBitmap(tipTool);
       // **"From its tip", stated so a regression cannot satisfy it.** The
       // hotspot must be the topmost row that carries any of the arrow's own
       // ink, and the leftmost inked pixel on that row. Nothing above it, and
@@ -797,13 +807,10 @@ bool runToolCursorTest() {
           if (y < a.hotspotY) nothingAbove = false;
           if (y == a.hotspotY && x < a.hotspotX) nothingLeftOnItsRow = false;
         }
-      std::printf("    Path Select           hotspot (%d,%d) topmost=%s leftmost-on-row=%s\n",
-                  a.hotspotX, a.hotspotY, nothingAbove ? "yes" : "NO",
+      std::printf("    %-22s hotspot (%d,%d) topmost=%s leftmost-on-row=%s\n",
+                  toolName(tipTool), a.hotspotX, a.hotspotY, nothingAbove ? "yes" : "NO",
                   nothingLeftOnItsRow ? "yes" : "NO");
-      check(nothingAbove && nothingLeftOnItsRow,
-            "arrow: Path Select's hotspot is the TIP -- no ink of its own above it, none to "
-            "its left on its own row. A hotspot anywhere further into the body of the arrow "
-            "fails this, and so does a regression to §8's composite");
+      if (!(nothingAbove && nothingLeftOnItsRow)) everyTipIsATip = false;
 
       // **Orthogonal neighbours, not the diagonal one, and that is a fact
       // about `applyCursorOutline()` rather than a convenience.** Its halo is
@@ -821,8 +828,15 @@ bool runToolCursorTest() {
         const size_t d = (static_cast<size_t>(y) * a.width + x) * 4;
         return a.rgba[d + 3] != 0 && a.rgba[d] == 255;
       };
-      check(haloAt(a.hotspotX - 1, a.hotspotY) && haloAt(a.hotspotX, a.hotspotY - 1),
-            "arrow: ...and the two pixels just outside that tip, left and above, are white "
+      if (!(haloAt(a.hotspotX - 1, a.hotspotY) && haloAt(a.hotspotX, a.hotspotY - 1)))
+        everyTipOutlined = false;
+      }
+      check(everyTipIsATip,
+            "arrow: every §10 cursor's hotspot is its TIP -- no ink of its own above it, none "
+            "to its left on its own row. A hotspot further into the body of the arrow or the "
+            "nib fails this, and so does a regression to §8's composite");
+      check(everyTipOutlined,
+            "arrow: ...and the two pixels just outside each tip, left and above, are white "
             "halo -- the tip is outlined, and it is not sitting on the canvas edge where the "
             "outline would have nowhere to go");
     }
