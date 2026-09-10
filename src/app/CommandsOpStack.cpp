@@ -673,6 +673,36 @@ std::string readChannelName(const JsonValue& params, const char* commandId, std:
   return {};
 }
 
+// **A name already taken is refused here, and that is a COMMAND-level policy
+// laid over an engine that deliberately does something else.**
+//
+// `saveSelectionAsChannel()` appends under a uniquified name and never
+// replaces, and core/Channels.hpp argues that properly: destroying a saved
+// selection has to be a delete, with its own confirmation, not a side effect
+// of typing a name twice. For a user at a keyboard that is exactly right --
+// they see "Mask 2" appear in the panel and can act on it.
+//
+// An action has nobody watching, and uniquifying makes a step's meaning depend
+// on how many times it has already run:
+//
+//   1. `save_selection_as_channel "Mask"` lands as "Mask" the first time,
+//      "Mask 2" the second, "Mask 3" the third;
+//   2. `load_channel_as_selection "Mask"` loads the FIRST run's channel every
+//      time;
+//   3. every selection-bounded step after that is bounded to a region from a
+//      previous run -- and reports success.
+//
+// That is docs/automation-plan.md §7's silent wrong answer in its purest form,
+// and a warning does not fix it: a thirty-file batch that warns thirty times
+// is a batch whose warnings nobody reads. So the *precondition* refuses, which
+// is where a replayer asks before it has run a single destructive step, and
+// the sentence names the fix. The applier keeps its warning as well, because
+// `applyCommand()` is not the only possible future caller of an applier.
+//
+// Replacing was the other candidate, and is rejected for core/Channels.hpp's
+// reason unchanged: an action that silently overwrote a channel the document
+// *arrived* with would destroy data the input file had before the run started,
+// and not destroying the input is the whole of PRD P4.
 std::string saveSelectionUnavailable(const OpenDocument& doc, const JsonValue& params) {
   std::string name;
   const std::string why = readChannelName(params, "save_selection_as_channel", &name);
@@ -681,6 +711,14 @@ std::string saveSelectionUnavailable(const OpenDocument& doc, const JsonValue& p
     return "refused: save_selection_as_channel needs an active selection, and this document has "
            "none. An absent selection means \"no restriction\" rather than \"everything\", so "
            "there is no coverage to write into a channel.";
+  if (findChannel(doc.document, name) != nullptr)
+    return "refused: this document already has a channel named \"" + name +
+           "\". Saving would append a second channel under a uniquified name, and a later step "
+           "loading \"" +
+           name +
+           "\" would bind itself to the OLDER one -- so every step after that would cover a "
+           "region this run did not choose, and report success. Delete the existing channel "
+           "first, or save under a name this document does not already carry.";
   return {};
 }
 

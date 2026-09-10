@@ -666,16 +666,40 @@ bool runCommandsOpStackTest() {
     check(!noLive.ok && contains(noLive.status, "no restriction"),
           "channels: saving with nothing selected refuses rather than inventing coverage");
 
-    // The uniquify trap: a second save under a name already taken lands under
-    // a DIFFERENT name, and an action that then loaded the requested name
-    // would bound its remaining steps to the older channel. That has to be a
-    // warning, not a silent success.
+    // --- the uniquify trap, and the two answers it gets -------------------
+    //
+    // The ENGINE appends under a uniquified name and never replaces, and
+    // core/Channels.hpp argues why: destroying a saved selection has to be a
+    // delete. The COMMAND refuses instead, because an action is executed
+    // repeatedly and headlessly -- a step that lands as "Mask" the first time
+    // and "Mask 2" the second makes every later `load_channel_as_selection
+    // "Mask"` bind to a previous run's region and report success.
+    //
+    // Both are asserted, because "the command refuses" alone would also pass
+    // if someone had made the engine refuse too, which would be the wrong fix
+    // in the other direction.
     od.selection = selectRectangle(0.0f, 0.0f, 8.0f, 8.0f);
     const CommandResult second = applyCommand(od, Command{"save_selection_as_channel", save});
-    check(second.ok && od.document.channels.size() == 2 && od.document.channels[1].name != "Mask",
-          "channels: a second save under a taken name appends rather than replacing");
-    check(!second.warnings.empty() && contains(second.warnings[0], "Mask"),
-          "channels: and it warns that a later load of that name gets the earlier channel");
+    check(!second.ok && contains(second.status, "Mask"),
+          "channels: a second save under a taken name is refused, naming the channel");
+    check(contains(second.status, "OLDER"),
+          "channels: and the refusal says what would have gone wrong, not just that it did");
+    check(od.document.channels.size() == 1,
+          "channels: the refusal left the document with the one channel it had");
+
+    // The precondition is where a replayer asks, so it has to give the same
+    // answer before anything has run -- that is the whole point of refusing
+    // here rather than warning after.
+    const CommandSpec* spec = findCommand("save_selection_as_channel");
+    check(spec != nullptr && !spec->unavailableReason(od, save).empty(),
+          "channels: and the PRECONDITION says so, before a destructive step has run");
+
+    // The engine, unchanged, called directly. A command-level policy must not
+    // be mistaken for a change to what `saveSelectionAsChannel()` does.
+    const size_t appended = saveSelectionAsChannel(od.document, *od.selection, "Mask");
+    check(od.document.channels.size() == 2 && appended == 1 &&
+              od.document.channels[1].name != "Mask" && od.document.channels[0].name == "Mask",
+          "channels: the engine still appends under a uniquified name rather than replacing");
   }
 
   std::printf("  -- H. PRD E4/E8/E9's five refines, as command rows --\n");

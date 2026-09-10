@@ -224,6 +224,17 @@ std::string uniqueChannelName(const Document& doc, std::string_view desired);
 // short enough not to need wrapping and explicit enough to read at the call
 // site.
 //
+// **One caller adds a third answer on top, and it is not a disagreement with
+// this one.** The `save_selection_as_channel` command row
+// (app/CommandsOpStack.cpp) refuses a name the document already carries. The
+// reason is specific to a recorded action rather than to this function: an
+// action is executed repeatedly and headlessly, so a step that lands under
+// "Mask" the first time and "Mask 2" the second makes every later
+// `load_channel_as_selection "Mask"` bind to a previous run's region -- and
+// report success. A user watching a panel sees the uniquified name and can
+// act on it; a batch cannot. The policy belongs at that call site and not
+// here, because it is a property of replay, not of channels.
+//
 // The selection is **compacted on the way in**: an all-zero tile the caller's
 // booleans happened to leave behind is not worth persisting, and it is exactly
 // what the file reader would drop on the next load anyway, so dropping it here
