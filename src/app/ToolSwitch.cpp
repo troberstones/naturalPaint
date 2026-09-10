@@ -61,6 +61,17 @@ void setActiveTool(AppState& st, Tool next) noexcept {
   cropCancel(st.crop);
 }
 
+bool enterTransformTool(AppState& st) noexcept {
+  // `effectiveTool()`, not `brush.tool`: with Space held the installed tool is
+  // the borrowed Hand and the tool the user is actually in is `springReturn`.
+  // Reporting "changed" off the Hand would be answering about the borrow.
+  // `setActiveTool()` below ends that borrow either way, which is right -- a
+  // gizmo is up, and the pan the user was in the middle of is over.
+  const bool changed = effectiveTool(st) != Tool::Move;
+  setActiveTool(st, Tool::Move);
+  return changed;
+}
+
 bool hasPreviousTool(const AppState& st) noexcept { return st.tools.hasPrevious; }
 
 Tool previousTool(const AppState& st) noexcept { return st.tools.previous; }

@@ -374,6 +374,71 @@ bool runToolSwitchTest() {
           "carrying its first point into the next gesture");
   }
 
+  // ==========================================================================
+  // 7. The tool a live transform session installs.
+  // ==========================================================================
+  //
+  // A transform session puts a gizmo on the canvas and does NOT disable the
+  // active tool's own click handling, so whatever gesture the user was in the
+  // middle of is still armed underneath it. With the Text tool that gesture
+  // CREATES A LAYER: press Cmd+T while editing a caption, click anywhere off
+  // the block, and a second text layer appeared behind the gizmo. Measured in
+  // the running app before this existed -- four layers before the stray
+  // click, five after.
+  {
+    std::printf("  -- 7. the tool a transform session installs --\n");
+
+    AppState t;
+    setActiveTool(t, Tool::Text);
+    const bool changed = enterTransformTool(t);
+    check(t.brush.tool == Tool::Move && changed,
+          "toolswitch: REQUIRED -- beginning a transform leaves the pointer on the MOVE tool. "
+          "Whatever tool was active keeps its canvas gesture armed under the gizmo, and the "
+          "Text tool's gesture on empty canvas is 'make a new text layer'");
+    check(hasPreviousTool(t) && previousTool(t) == Tool::Text,
+          "toolswitch: and the tool it took over from is in the ledger like any deliberate "
+          "pick, so `previousTool()` still names what the user was actually using");
+
+    // Already on Move -- the Move tool's own drag begins a session this way,
+    // and re-picking the tool you already have must not overwrite the ledger
+    // with itself (the same rule `setActiveTool()` states for a palette
+    // click on the selected cell).
+    AppState m;
+    setActiveTool(m, Tool::Pen);
+    setActiveTool(m, Tool::Move);
+    const bool movedAgain = enterTransformTool(m);
+    check(!movedAgain && m.brush.tool == Tool::Move && previousTool(m) == Tool::Pen,
+          "toolswitch: beginning one while ALREADY on Move reports no change and leaves the "
+          "ledger alone -- it is not a switch");
+
+    // Space held: the installed tool is the borrowed Hand and the tool the
+    // user is in is `springReturn`. The borrow ends -- a gizmo is up and the
+    // pan is over -- and the ledger records the tool they were really in,
+    // never the Hand they never picked (header section 1).
+    AppState h;
+    setActiveTool(h, Tool::Text);
+    beginSpringHand(h);
+    check(h.brush.tool == Tool::Hand, "toolswitch: (setup) the Hand is borrowed");
+    enterTransformTool(h);
+    check(h.brush.tool == Tool::Move && !springHandHeld(h) && previousTool(h) == Tool::Text,
+          "toolswitch: REQUIRED -- with Space held it ends the borrow and records TEXT as the "
+          "previous tool. Recording the Hand would put a tool the user never chose into the "
+          "ledger, which is exactly what `effectiveTool()` exists to prevent");
+
+    // Flatting mode is a second answer to "what does a click mean", and it
+    // has to go for the same reason the tool does -- a bridge stroke under a
+    // live gizmo is the same defect wearing ADR-0009's hat. This comes free
+    // from routing through `setActiveTool()`, and is asserted so that it
+    // stays true if this ever stops doing so.
+    AppState f;
+    setFlatsTool(f, FlatsTool::BridgePen);
+    check(f.flatsTool == FlatsTool::BridgePen, "toolswitch: (setup) flatting mode is on");
+    enterTransformTool(f);
+    check(f.flatsTool == FlatsTool::None && f.brush.tool == Tool::Move,
+          "toolswitch: and it leaves flatting mode too -- a flatting gesture is a second "
+          "meaning for a click, and one armed under a gizmo is the same hole");
+  }
+
   std::printf("[selftest] tool switch %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

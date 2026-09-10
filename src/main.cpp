@@ -4585,6 +4585,16 @@ int main(int argc, char** argv) {
                     np::documentCanvasRegion(od->document));
                 st.transform.beginLayer(*od, *dropped.transformableLayer,
                                         initialPending);
+                // The same tool change Cmd+T's begin makes -- a dropped
+                // picture lands with a LIVE gizmo over it, so whatever tool
+                // was active still has its canvas gesture armed underneath.
+                // Drop a photo while the Text tool is selected and the first
+                // click meant to nudge the picture made a text layer instead.
+                // Conditioned on the session actually starting, which is what
+                // `active()` reports here -- this call site does not read the
+                // begin's own result (a drop that refuses has already been
+                // reported by the open itself).
+                if (st.transform.active()) np::enterTransformTool(st);
                 // T14: the SAME live-pixel-preview upload drawUI()'s own
                 // Free Transform handler makes -- this is the session's
                 // other begin*() call site (docs/testing-issues.md T14's own

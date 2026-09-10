@@ -10229,6 +10229,12 @@ void drawNumericTransformDialog(AppState& st, GpuContext& gpu) {
         if (!began.ok) {
           status = began.error;
         } else {
+          // The same tool change Cmd+T's begin makes, for the same reason and
+          // on the same condition -- this dialog leaves a live gizmo on the
+          // canvas behind it, so the tool underneath it matters just as much.
+          // After `transformSeedAngleDeg()` below, never before: that seed
+          // asks which tool is active, and Measure is the answer it is
+          // looking for.
           // T24: "when the transform panel is open, and the measure was the
           // last tool, the angle from the measure is put into the transform
           // angle field; if it wasn't the last tool the angle should be
@@ -10238,6 +10244,8 @@ void drawNumericTransformDialog(AppState& st, GpuContext& gpu) {
           // carries why the predicate is the tool the user is IN rather than
           // the previous one.
           rotateDeg = transformSeedAngleDeg(st, od->id);
+          // AFTER the seed above has read the tool, never before.
+          enterTransformTool(st);
           scaleXPercent = 100.0f;
           scaleYPercent = 100.0f;
           translateX = 0.0f;
@@ -14074,6 +14082,20 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // a menu item that appeared enabled and then did nothing at all is
         // the defect docs/reachability-audit.md is named after.
         if (!began.ok) g_docStatus = began.error;
+        // The gizmo is up, so the pointer stops being whatever tool was
+        // making content and becomes the Move tool -- app/ToolSwitch.hpp's
+        // `enterTransformTool()` carries the argument. Only on success: a
+        // refused begin (a locked layer, an empty one) leaves no session, and
+        // changing the tool for a command that did nothing would be a second
+        // surprise on top of the refusal.
+        //
+        // This is also what puts a live Text caret away, on the paths that
+        // have not already: the Text block accepts its session the moment
+        // `toolEditsText()` stops being true, so Edit > Free Transform from
+        // the menu bar -- which raises this same flag without going through
+        // the keymap's own session-ending step -- ends up in the same state
+        // as the Cmd+T chord.
+        if (began.ok) enterTransformTool(st);
         // T14: the live pixel preview's ONE upload for this whole session --
         // never from the drag loop below, which only ever moves WHERE this
         // already-uploaded texture is drawn (`pending()` changing the quad's

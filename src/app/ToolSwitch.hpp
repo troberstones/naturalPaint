@@ -132,6 +132,41 @@ namespace np {
 // Ends a spring-loaded borrow if one is in flight -- see the header's §2.
 void setActiveTool(AppState& st, Tool next) noexcept;
 
+// **Install the tool a LIVE TRANSFORM SESSION is driven with: `Tool::Move`.**
+// Returns true if that actually changed the tool.
+//
+// Called when a session BEGINS from a command -- Cmd+T, Edit > Free
+// Transform, Image > Transform... -- and never from the Move tool's own drag,
+// which is already in it and whose `beginMove()` is guarded on there being no
+// session anyway.
+//
+// **Why the tool has to change at all.** A transform session puts a gizmo on
+// the canvas; it does NOT disable the active tool's own click handling. So
+// whatever the user was doing when they pressed Cmd+T, its canvas gesture is
+// still armed underneath the gizmo -- and for the tools that make content,
+// that gesture makes content. The Text tool's rule for a click on empty
+// canvas is CREATE A NEW POINT TEXT LAYER (ui/MacPaintUI.cpp's Text block),
+// so: type a caption, press Cmd+T to turn it, click anywhere off the block to
+// re-aim, and a second text layer appeared behind the gizmo. Measured before
+// this existed -- four layers before the stray click, five after, with the
+// session still live. The Pen, the Shape tool and the flatting gestures all
+// have handlers of the same shape.
+//
+// The alternative was a `!st.transform.active()` term on the Text block's own
+// gate. Rejected: it fixes the one tool that was reported and leaves the same
+// hole under every other content-making tool, and it is a rule about what a
+// transform means written into a place that knows only about text. Changing
+// the tool says the same thing once, in the file that owns "what does a click
+// mean", and it is visible -- the palette highlight moves, so the user can
+// see why their clicks stopped drawing.
+//
+// The outgoing tool goes into the ledger like any deliberate pick, so
+// `previousTool()` still names what they were using. Nothing restores it when
+// the session ends: that is Photoshop's behaviour after Cmd+T, and a tool
+// that silently changed back would undo a pick the user may have made
+// deliberately while the gizmo was up.
+bool enterTransformTool(AppState& st) noexcept;
+
 // Pick a flatting tool (or `FlatsTool::None` to leave flatting mode), and
 // install the host tool ADR-0009's table gives it. The single writer of
 // `AppState::flatsTool`, for the reason this header gives about
