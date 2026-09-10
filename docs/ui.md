@@ -987,6 +987,31 @@ multi-year part of a text engine, and none of them serve annotation.
   originating tool, and clicking one moves the history cursor — which for Media layers is a
   single replay from the nearest keyframe, not N replays.
 
+## 5a. Modal dialogs
+
+**This document does not describe them, and until now nothing did.** §1's tokens,
+§2's layout and §4a's palette rules all stop at the chrome; the thirty-four modal
+dialogs behind the File, Edit, Image, Filter and Select menus were built one at a
+time against no shared spec, and it shows — nine different commit-button labels,
+labels on the wrong side of their controls in 33 of 34, no Escape key anywhere,
+and one dialog 1766 px wide because a single unwrapped sentence citing a header
+file path set its width.
+
+[modal-screenshots/README.md](modal-screenshots/README.md) photographs all
+thirty-four, says what each one is for, evaluates them against desktop convention
+in ten numbered findings, and proposes a nine-item dialog standard (S1–S9) to
+build against. Regenerate the images with `tools/modal-shots/capture_modals.sh`.
+
+Two of that document's conclusions belong here rather than there, because they
+are constraints on any restyling this file's design language would drive:
+
+- **The modal scrim dims the chrome and deliberately not the canvas**
+  (`ui/AtelierTheme.hpp`), so a live adjustment preview stays legible under its
+  dialog. Any new dialog treatment has to keep that.
+- **The token table in §1 has no error or warning role**, so nineteen call sites
+  invent their own red and amber. Adding `kWarning` and `kError` to that table is
+  S6 of the proposed standard.
+
 ## 6. Naming
 
 **Decided: the project keeps the name naturalPaint.** The wireframe's "ATELIER 2D"
