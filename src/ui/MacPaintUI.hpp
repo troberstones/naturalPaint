@@ -235,7 +235,18 @@ void moveHistoryCursor(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext&
 // counted against `toolImplemented()`, never a literal number, so the
 // assertion stays true as tools ship -- and `app/selftest/ToolSurface.cpp` can
 // call it with `documentOpen = false` to prove the same of the second axis.
-std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen);
+//
+// **`modalWhy` is the THIRD axis (app/ToolSwitch.hpp section 5): a live
+// transform gizmo**, and it is here for the identical A4 reason the second
+// one is. The palette and the flyout both refuse every cell while a gizmo is
+// up; a Goodies menu that did not would be the third live route to the tool
+// change the other two correctly disable, and the report that started this
+// ("I can select a tool while transforming") named the palette only because
+// that is the one the user reached for first. `nullptr` when nothing is
+// refusing -- the sentence itself, not a bool, so the greyed entry can say
+// why, which is `toolChangeRefusal()`'s own argument.
+std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen,
+                                            const char* modalWhy);
 
 // The foreground colour as STRAIGHT LINEAR RGBA -- what the paint bucket (PRD
 // D25/D26) and the gradient (D24) both need, and what neither can be handed

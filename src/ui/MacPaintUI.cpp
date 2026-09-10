@@ -588,8 +588,14 @@ bool toolButton(AppState& st, Tool t, float cellSize) {
   // do rather than a neighbouring one that could differ.
   const bool documentOpen = st.documents.active() != nullptr;
   const bool onSurface = toolActsWithoutDocument(t) || documentOpen;
-  // Both axes, and a cell is live only if it clears both.
-  const bool live = implemented && onSurface;
+  // The THIRD axis (app/ToolSwitch.hpp section 5): a live transform gizmo is
+  // modal, and while one is up every cell in the palette is refused -- not
+  // just the content-making ones. Asked here as well as inside
+  // `setActiveTool()` because these are two different jobs: the setter makes
+  // the refusal true, and this makes it visible before the user aims at it.
+  const char* modalWhy = toolChangeRefusal(st);
+  // All three axes, and a cell is live only if it clears every one.
+  const bool live = implemented && onSurface && modalWhy == nullptr;
   const bool clickedRaw = ImGui::InvisibleButton("##tool", size);
   const bool clicked = clickedRaw && live;
   const bool selected = implemented && st.brush.tool == t;
@@ -629,8 +635,20 @@ bool toolButton(AppState& st, Tool t, float cellSize) {
       tip += "\n";
       tip += why;
     }
+    // Never stacked on the surface sentence above, and it cannot be: a
+    // transform session belongs to a document, `toolChangeRefusal()` only
+    // answers for the ACTIVE one, so `documentOpen` is true whenever this is
+    // non-null and `toolSurfaceRefusal()` has already answered nullptr. Two
+    // axes, two sentences, never both at once -- app/ToolSurface.hpp's own
+    // rule, still true with a third axis in the room.
+    if (modalWhy != nullptr) {
+      tip += "\n";
+      tip += modalWhy;
+    }
     ImGui::SetTooltip("%s", tip.c_str());
   }
+  // The setter refuses this on its own while the gizmo is up; `live` above has
+  // already made `clicked` false, so this never even asks.
   if (clicked) setActiveTool(st, t);
   ImGui::PopID();
   return clicked;
@@ -704,9 +722,15 @@ constexpr float kFlyoutPadX = 10.0f;
 // place a document-scoped tool can be SEEN while the palette cell above it
 // shows a different member of the group, so leaving the axis out here would
 // have left one live-looking route to every tool it disables.
-bool toolFlyoutRow(Tool member, bool isCurrent, bool documentOpen, float rowW) {
+bool toolFlyoutRow(Tool member, bool isCurrent, bool documentOpen, const char* modalWhy,
+                   float rowW) {
   const bool implemented = toolImplemented(member);
-  const bool live = implemented && (toolActsWithoutDocument(member) || documentOpen);
+  // `modalWhy` is the third axis toolButton() takes above -- a live transform
+  // gizmo (app/ToolSwitch.hpp section 5). Passed in rather than read off an
+  // `AppState` this function deliberately does not take: it is handed the two
+  // facts it needs about the session, exactly as `documentOpen` already is.
+  const bool live =
+      implemented && (toolActsWithoutDocument(member) || documentOpen) && modalWhy == nullptr;
   ImGui::PushID(static_cast<int>(member));
   const ImVec2 p = ImGui::GetCursorScreenPos();
   const ImVec2 size(rowW, kFlyoutRowH);
@@ -762,6 +786,12 @@ bool toolFlyoutRow(Tool member, bool isCurrent, bool documentOpen, float rowW) {
     if (const char* why = toolSurfaceRefusal(member, documentOpen)) {
       tip += "\n";
       tip += why;
+    }
+    // Disjoint from the sentence above by construction -- toolButton()'s own
+    // comment on this same append carries the argument.
+    if (modalWhy != nullptr) {
+      tip += "\n";
+      tip += modalWhy;
     }
     ImGui::SetTooltip("%s", tip.c_str());
   }
@@ -847,19 +877,31 @@ void toolGroupButton(AppState& st, int groupIndex, float cellSize, bool forceOpe
       rowW += kFlyoutIconGutter + kFlyoutPadX;
 
       const bool documentOpen = st.documents.active() != nullptr;
+      const char* modalWhy = toolChangeRefusal(st);
       for (int m = 0; m < group.memberCount; ++m) {
         const Tool member = group.members[m];
-        if (toolFlyoutRow(member, member == current, documentOpen, rowW)) {
-          current = member;  // display state always updates
-          // Selection only if the member clears BOTH axes -- built, and able
-          // to act on the surface that is actually in front of the user
-          // (app/ToolSurface, T5). `current` above is deliberately outside the
-          // gate: which member a group is showing is display state, and a user
-          // who picks the Marquee with no document open should still find the
-          // group on the Marquee once they open one.
-          if (toolImplemented(member) &&
-              (toolActsWithoutDocument(member) || documentOpen))
-            setActiveTool(st, member);
+        if (toolFlyoutRow(member, member == current, documentOpen, modalWhy, rowW)) {
+          // **A dead row is still a CLICKABLE row.** `toolFlyoutRow()`
+          // returns its `InvisibleButton`'s raw result -- dimming a row
+          // changes how it draws, not whether ImGui reports the press -- so
+          // this whole body has to be gated, not just the setter inside it.
+          // Under a live gizmo (app/ToolSwitch.hpp section 5) that matters
+          // for `current` in particular: the setter refuses on its own, but
+          // `current` is written right here, and a modal state in which the
+          // palette cell silently changed which glyph it shows would be the
+          // gizmo failing at the one thing modality promises.
+          if (modalWhy == nullptr) {
+            current = member;  // display state always updates
+            // Selection only if the member clears BOTH axes -- built, and able
+            // to act on the surface that is actually in front of the user
+            // (app/ToolSurface, T5). `current` above is deliberately outside the
+            // gate: which member a group is showing is display state, and a user
+            // who picks the Marquee with no document open should still find the
+            // group on the Marquee once they open one.
+            if (toolImplemented(member) &&
+                (toolActsWithoutDocument(member) || documentOpen))
+              setActiveTool(st, member);
+          }
           ImGui::CloseCurrentPopup();
         }
       }
@@ -10729,7 +10771,8 @@ MenuContext menuContextFromState(AppState& st) {
   // so `--selftest` can call the exact predicate the menu uses without
   // needing an `AppState` or touching the recent-documents file this
   // function's own first line reads.
-  ctx.tools = toolMenuFamily(st.brush.tool, st.documents.active() != nullptr);
+  ctx.tools = toolMenuFamily(st.brush.tool, st.documents.active() != nullptr,
+                             toolChangeRefusal(st));
   ctx.paused = st.paused;
 
   // --- View ---------------------------------------------------------------
@@ -10892,7 +10935,8 @@ void moveHistoryCursor(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext&
 // external linkage `menuContextFromState()` and `app/selftest/MenuBasics.cpp`
 // both need -- the former to assign `ctx.tools`, the latter to assert the
 // A4 fix directly.
-std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen) {
+std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen,
+                                            const char* modalWhy) {
   std::vector<MenuFamilyEntry> tools;
   for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
     const Tool t = static_cast<Tool>(i);
@@ -10907,7 +10951,8 @@ std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen) {
     // list one panel over") arriving through the second axis instead of the
     // first.
     const char* surfaceWhy = toolSurfaceRefusal(t, documentOpen);
-    const bool live = implemented && (toolActsWithoutDocument(t) || documentOpen);
+    const bool live =
+        implemented && (toolActsWithoutDocument(t) || documentOpen) && modalWhy == nullptr;
     // A disabled entry always carries its reason, and never two: the two
     // predicates are disjoint by construction -- `toolSurfaceRefusal()`
     // answers nullptr for every not-built cell -- so this is a choice between
@@ -10915,6 +10960,13 @@ std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen) {
     std::string why;
     if (!implemented) why = toolTooltip(t);          // "... Not built yet."
     else if (surfaceWhy != nullptr) why = surfaceWhy;  // "... no document is open."
+    // Last, and still never a concatenation: a session belongs to a document,
+    // so `modalWhy` and `surfaceWhy` cannot both be non-null (toolButton()'s
+    // own comment on the same pairing carries the argument). It is tested
+    // last only because the two above are properties of the tool and this one
+    // is a property of the moment -- "Not built yet." is the more useful
+    // sentence about a cell that will still be dead when the gizmo is gone.
+    else if (modalWhy != nullptr) why = modalWhy;
     tools.push_back(familyEntry(toolName(t), live, current == t, false, std::move(why)));
   }
   return tools;
@@ -11994,7 +12046,13 @@ void drawFlatsSegmentationSection(AppState& st) {
 
 void drawFlatsToolsSection(AppState& st) {
   const FlatsPanelSubject sub = flatsPanelSubject(st);
-  const bool live = sub.layer != nullptr && !sub.locked;
+  // A live transform gizmo locks these for the reason it locks the tool
+  // palette (app/ToolSwitch.hpp section 5): a flatting tool is a second answer
+  // to "what does a click mean", and one armed under a gizmo is the same hole
+  // the Text tool put a stray layer through. `setFlatsTool()` refuses it
+  // anyway -- this is what makes the refusal visible before the click.
+  const char* modalWhy = toolChangeRefusal(st);
+  const bool live = sub.layer != nullptr && !sub.locked && modalWhy == nullptr;
 
   std::shared_ptr<const FlatEvaluation> eval;
   if (sub.layer != nullptr) eval = flatsPeekEvaluation(sub.od->document, sub.index);
@@ -12075,7 +12133,13 @@ void drawFlatsToolsSection(AppState& st) {
     ImGui::PopStyleColor();
     textDisabledWrapped("Click the fill it should merge into. Escape cancels.");
   }
-  if (sub.layer == nullptr) {
+  if (modalWhy != nullptr) {
+    // Ahead of the three below: while the gizmo is up this is the reason the
+    // panel is grey, and naming a layer problem instead would send the user
+    // to LAYERS to fix something that is not what stopped them.
+    ImGui::Separator();
+    textDisabledWrapped("%s", modalWhy);
+  } else if (sub.layer == nullptr) {
     ImGui::Separator();
     flatsPanelIdleNote(st);
   } else if (sub.locked) {
@@ -12118,7 +12182,19 @@ void drawPanelBody(AppState& st, ControlsSection section, std::unique_ptr<PaintS
       // wrong one for vertical centring, which has to be measured against the
       // panel's full height or the content lands half the padding too high.
       // That is a 6 px lift, and the golden `toolbar` view is what named it.
-      drawAtelierOptionsBarContent(st, ImGui::GetWindowHeight(), g_strokeRefusal);
+      // **A live gizmo's sentence displaces the stroke refusal.** The band
+      // draws exactly one of these (ui/AtelierChrome.cpp), and under a
+      // transform the stroke refusal is necessarily stale -- no stroke can be
+      // made while the tool is pinned to Move -- whereas the two keys that end
+      // the session are the only thing the user needs from this band. This is
+      // also what makes the canvas block's Return/Escape comment true: it has
+      // claimed "both are stated in the status line for as long as the session
+      // is live" since that gizmo was written, and until now nothing stated
+      // them anywhere.
+      if (const char* modalWhy = toolChangeRefusal(st))
+        drawAtelierOptionsBarContent(st, ImGui::GetWindowHeight(), modalWhy);
+      else
+        drawAtelierOptionsBarContent(st, ImGui::GetWindowHeight(), g_strokeRefusal);
       break;
     // PLAN.md Phase 5 step 1 ("Multiple layers in `Document`, with reorder,
     // visibility, lock, opacity"; PRD C4).
@@ -14425,6 +14501,23 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // drawn twice.
     const bool transformActive = transformOnThisDoc;
     if (transformActive) {
+      // **While the gizmo is up, the tool is Move** -- re-asserted here, every
+      // frame, not just at the begin that first installed it.
+      //
+      // app/ToolSwitch.hpp section 5 locks the palette while a session is live
+      // ON THE ACTIVE DOCUMENT, and it is scoped that way because a lock over
+      // a document showing no gizmo would have no Escape key to lift it. The
+      // cost of that scoping is this gap: transform document A, tab to B, pick
+      // the Text tool there (correctly allowed -- B has no gizmo), tab back to
+      // A. The gizmo is up again and the tool is Text, which is the exact
+      // stray-layer hole `enterTransformTool()` was written to close, reached
+      // by the long way round.
+      //
+      // Idempotent by construction: `enterTransformTool()` reports no change
+      // and touches no ledger when Move is already installed, which is every
+      // frame but the one the user comes back on. It cannot fight a deliberate
+      // pick either -- there is no way to make one while this is true.
+      if (effectiveTool(st) != Tool::Move) enterTransformTool(st);
       // Handle sizes are fixed on SCREEN and converted to document space by
       // the view's own zoom, so a handle stays the same size under the finger
       // at 12% and at 1600%. `st.view.zoom` is the transform's uniform length
@@ -14444,7 +14537,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // deliberately: a mis-aimed click that bakes a resample the user was
         // still adjusting is unrecoverable in the way an extra keystroke
         // never is. Return commits, Escape cancels, and both are stated in
-        // the status line for as long as the session is live.
+        // the options band for as long as the session is live -- see the
+        // `toolChangeRefusal()` branch at this file's `ControlsSection::Options`
+        // arm, which is what finally made that sentence true.
         if (grabbed != TransformHandle::None) st.transform.beginDrag(grabbed, Point2{tx, ty});
       }
       if (st.transform.dragging()) {

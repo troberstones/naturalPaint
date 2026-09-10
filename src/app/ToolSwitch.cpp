@@ -5,7 +5,19 @@
 
 namespace np {
 
-void setActiveTool(AppState& st, Tool next) noexcept {
+namespace {
+
+// `setActiveTool()` with the gizmo's refusal (ToolSwitch.hpp section 5) already
+// answered -- the whole of the old `setActiveTool()`, unchanged.
+//
+// It exists so that `enterTransformTool()` can reach the ledger, the crop
+// cancel and the flats clear WITHOUT going through the check, which it must:
+// by the time it is called the session it belongs to is already live, so the
+// public setter would refuse the one switch that is not the user changing
+// their mind. Putting the exemption in a private entry point rather than in a
+// `bool force` argument keeps a caller from ever asking for it by accident --
+// there is exactly one, in this file, four lines below.
+void installTool(AppState& st, Tool next) noexcept {
   // The tool the user is *leaving*, which is not always `brush.tool`: while
   // Space is held `brush.tool` is the borrowed Hand and the tool the user
   // actually has selected is `springReturn` (header §2). Recording the Hand
@@ -61,14 +73,40 @@ void setActiveTool(AppState& st, Tool next) noexcept {
   cropCancel(st.crop);
 }
 
+}  // namespace
+
+const char* toolChangeRefusal(const AppState& st) noexcept {
+  if (!st.transform.active()) return nullptr;
+  // The document scoping ToolSwitch.hpp section 5 argues for, spelled the same
+  // way `ui/MacPaintUI.cpp`'s `transformOnThisDoc` spells it. A session on a
+  // document the user has tabbed away from draws no gizmo and offers no key
+  // that ends it, and locking the palette from behind it would be a modal
+  // state with no visible dialog and no way out.
+  const OpenDocument* od = st.documents.active();
+  if (od == nullptr || st.transform.documentId() != od->id) return nullptr;
+  // The wording is `ui/MacPaintUI.cpp`'s own, from the numeric Transform
+  // dialog's refusal of a second session -- the same state, already given a
+  // sentence, and a second phrasing for it would be two voices for one fact.
+  return "A transform is in progress. Press Return to apply it or Escape to cancel it.";
+}
+
+bool setActiveTool(AppState& st, Tool next) noexcept {
+  if (toolChangeRefusal(st) != nullptr) return false;
+  installTool(st, next);
+  return true;
+}
+
 bool enterTransformTool(AppState& st) noexcept {
   // `effectiveTool()`, not `brush.tool`: with Space held the installed tool is
   // the borrowed Hand and the tool the user is actually in is `springReturn`.
   // Reporting "changed" off the Hand would be answering about the borrow.
-  // `setActiveTool()` below ends that borrow either way, which is right -- a
+  // `installTool()` below ends that borrow either way, which is right -- a
   // gizmo is up, and the pan the user was in the middle of is over.
   const bool changed = effectiveTool(st) != Tool::Move;
-  setActiveTool(st, Tool::Move);
+  // `installTool()`, not `setActiveTool()`: the session is already live by the
+  // time this is called (every call site checks the begin succeeded first), so
+  // the public setter would refuse it. See `installTool()`'s own comment.
+  installTool(st, Tool::Move);
   return changed;
 }
 
@@ -204,13 +242,17 @@ float transformSeedAngleDeg(const AppState& st, uint64_t activeDocumentId) noexc
   return measureReadout(st.measure).angleDeg;
 }
 
-void setFlatsTool(AppState& st, FlatsTool next) noexcept {
+bool setFlatsTool(AppState& st, FlatsTool next) noexcept {
+  // Its own check rather than `setActiveTool()`'s, because the switch at the
+  // bottom of this function writes `brush.tool` directly -- ToolSwitch.hpp
+  // section 5's second paragraph on this function says why it has to.
+  if (toolChangeRefusal(st) != nullptr) return false;
   st.flatsTool = next;
   // Picking a flatting tool cancels a half-finished two-click merge: the
   // armed point belongs to the gesture being abandoned, and carrying it into
   // the next one would merge two fills the user never paired.
   st.flatsMergeFirst.reset();
-  if (next == FlatsTool::None) return;
+  if (next == FlatsTool::None) return true;
 
   // **The host tool, per ADR-0009's table.** The flatting gestures are the
   // existing tools scoped to a layer kind, not a parallel set: a bridge IS
@@ -242,6 +284,7 @@ void setFlatsTool(AppState& st, FlatsTool next) noexcept {
     case FlatsTool::SelectEdits:
     case FlatsTool::None:         break;
   }
+  return true;
 }
 
 }  // namespace np

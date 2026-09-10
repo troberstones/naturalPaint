@@ -116,21 +116,72 @@
 // header-inline setter would also put the ledger rules in a file every UI
 // source already includes, where the next `st.brush.tool = ...` is one line
 // away from the rule forbidding it rather than one file away.
+//
+// ==========================================================================
+// 5. A LIVE GIZMO IS MODAL: while one is on screen the tool cannot change
+// ==========================================================================
+//
+// `enterTransformTool()` below puts the pointer on Move when a session
+// begins, so that the tool the user was holding stops making content under
+// the gizmo. That fixed the gesture and left the door open: **the palette was
+// still live.** Pick the Text tool out of it while the box is up and the hole
+// is back, byte for byte -- a click off the block makes a second text layer
+// behind a gizmo that is still waiting for Return. Reported as "I can select
+// a tool while transforming".
+//
+// So a transform is modal, in the sense a dialog is: it has to be finished
+// before anything else is chosen. Return applies it, Escape cancels it, and
+// until one of those the tool is Move.
+//
+// **Enforced HERE, not at the four controls that ask for a switch.** The
+// palette cell, the flyout row, the Goodies > Tools menu item and the flats
+// palette are four places, and Â§0's whole argument is that a rule spread over
+// four call sites is a rule the fifth one will not have. The controls still
+// draw themselves disabled -- a refusal the user cannot see coming is its own
+// defect -- but drawing is what they do, and the refusing is done once, in
+// the writer, where a control added next year inherits it without being told.
+//
+// **Scoped to the document the gizmo is ON, deliberately.** A session outlives
+// a document switch (`app/TransformSession.hpp`), and the canvas block's
+// Return/Escape keys are themselves scoped to the active document -- so a
+// lock keyed on `active()` alone would freeze the whole palette over a
+// document that shows no gizmo and offers no key that ends it. That is a
+// dead end with no exit, which is worse than the hole it closes. The
+// predicate below is the same `active() && documentId() == the active
+// document's` the gizmo, the Escape key and the three-way composite are all
+// already drawn from: the tool is locked exactly when the box is visible.
+//
+// The other half of that scoping is in `ui/MacPaintUI.cpp`: returning to a
+// document with a live session re-installs Move, because the palette is
+// unlocked while you are away and the tool can have drifted before you come
+// back. The rule is "while the gizmo is up the tool is Move", and it is worth
+// nothing if it holds only at the moment the gizmo appears.
+//
+// **Space still pans.** `beginSpringHand()` does not go through
+// `setActiveTool()` (Â§1) and is deliberately not gated: borrowing the Hand to
+// see the far end of what you are transforming is not choosing a tool, it
+// changes nothing about what a click means when you let go, and Photoshop's
+// Free Transform allows it too. The Eyedropper's borrow is already impossible
+// here without a line being written -- `springEyedropperEligible(Tool::Move)`
+// is false, and Move is the only tool a live session can be in.
 
 namespace np {
 
 // **The only writer of `AppState::brush.tool` outside this file.** Records
-// the outgoing tool and installs `next`.
+// the outgoing tool and installs `next`. Returns false, changing nothing at
+// all, when §5's live gizmo refuses the switch.
 //
 // A switch to the tool that is already active does not move the ledger: it is
 // not a switch, and treating it as one would overwrite the real previous tool
 // with itself. Reachable in the palette (clicking the cell that is already
 // selected), in the flyout (picking the member already shown) and from the
 // menu (`MenuAction::ToolItem` for the current tool), and a Hand -> Hand
-// switch losing the real previous is the concrete loss.
+// switch losing the real previous is the concrete loss. That case returns
+// TRUE: the request was honoured, and the ledger not moving is what honouring
+// it means. False is reserved for a refusal.
 //
 // Ends a spring-loaded borrow if one is in flight -- see the header's §2.
-void setActiveTool(AppState& st, Tool next) noexcept;
+bool setActiveTool(AppState& st, Tool next) noexcept;
 
 // **Install the tool a LIVE TRANSFORM SESSION is driven with: `Tool::Move`.**
 // Returns true if that actually changed the tool.
@@ -167,12 +218,34 @@ void setActiveTool(AppState& st, Tool next) noexcept;
 // deliberately while the gizmo was up.
 bool enterTransformTool(AppState& st) noexcept;
 
+// **The sentence a tool control shows while Â§5's live gizmo refuses to let the
+// tool change**, or `nullptr` when nothing is refusing and the palette is
+// ordinary.
+//
+// A `const char*` refusal rather than a `bool`, matching
+// `app/ToolSurface.hpp`'s `toolSurfaceRefusal()` exactly: the palette, the
+// flyout and the menu each need a reason to put in front of the user, and a
+// bool would have each of them inventing its own wording for the same state.
+// One string, three controls, and the writer below tests the same function
+// for nullptr -- so what the palette says and what the setter does cannot
+// drift apart.
+//
+// Takes no `Tool`. This axis is a property of the session, not of the tool:
+// every cell is refused, including the Move cell that is already lit.
+const char* toolChangeRefusal(const AppState& st) noexcept;
+
 // Pick a flatting tool (or `FlatsTool::None` to leave flatting mode), and
 // install the host tool ADR-0009's table gives it. The single writer of
 // `AppState::flatsTool`, for the reason this header gives about
 // `brush.tool`: two writers of "what does a click mean" is how a gesture
 // ends up meaning two things at once.
-void setFlatsTool(AppState& st, FlatsTool next) noexcept;
+//
+// Refused, changing nothing, under Â§5's live gizmo -- and it needs its own
+// check rather than inheriting `setActiveTool()`'s, because the switch
+// statement at the bottom of it writes `brush.tool` DIRECTLY (that function
+// would clear the very `flatsTool` this one is setting). Two writers of
+// `brush.tool` in this file means two places the gizmo has to be asked about.
+bool setFlatsTool(AppState& st, FlatsTool next) noexcept;
 
 // Whether any tool switch has happened yet this session. False at launch, and
 // `previousTool()` means nothing until it is true.

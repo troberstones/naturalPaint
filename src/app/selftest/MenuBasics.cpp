@@ -285,7 +285,7 @@ bool runMenuBasicsTest() {
     // separated rather than one masking the other. The second axis is asserted
     // over this same function in app/selftest/ToolSurface.cpp, with
     // `documentOpen = false`.
-    const std::vector<MenuFamilyEntry> tools = toolMenuFamily(Tool::Brush, true);
+    const std::vector<MenuFamilyEntry> tools = toolMenuFamily(Tool::Brush, true, nullptr);
     check(tools.size() == static_cast<size_t>(Tool::Count),
           "A4: the Goodies tool family offers every tool -- disabled, not hidden");
 

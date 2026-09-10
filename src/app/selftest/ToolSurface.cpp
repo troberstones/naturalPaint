@@ -305,8 +305,8 @@ bool runToolSurfaceTest() {
   // available on the second axis, and this is the assertion that closes it.
   // `app/selftest/MenuBasics.cpp` owns the `documentOpen = true` half.
   {
-    const std::vector<MenuFamilyEntry> closed = toolMenuFamily(Tool::Brush, false);
-    const std::vector<MenuFamilyEntry> open = toolMenuFamily(Tool::Brush, true);
+    const std::vector<MenuFamilyEntry> closed = toolMenuFamily(Tool::Brush, false, nullptr);
+    const std::vector<MenuFamilyEntry> open = toolMenuFamily(Tool::Brush, true, nullptr);
     check(closed.size() == static_cast<size_t>(Tool::Count) && closed.size() == open.size(),
           "menu: the Goodies tool family still offers every tool in both states -- "
           "disabled, not hidden");
@@ -336,6 +336,38 @@ bool runToolSurfaceTest() {
     check(everyDisabledCarriesOneReason,
           "menu: every disabled entry carries exactly one reason and every enabled one "
           "carries none");
+
+    // The THIRD axis (app/ToolSwitch.hpp section 5). Same defect shape, one
+    // axis further on: the palette and the flyout both refuse every cell
+    // while a transform gizmo is up, and a Goodies menu that did not would be
+    // A4 a third time -- a live route to the tool change the other two
+    // correctly disable. The sentence is passed in rather than read from an
+    // `AppState` so this stays the pure, disk-free function the header
+    // promises.
+    const char* kModal = "A transform is in progress. Press Return to apply it or Escape to "
+                         "cancel it.";
+    const std::vector<MenuFamilyEntry> modal = toolMenuFamily(Tool::Brush, true, kModal);
+    size_t enabledModal = 0;
+    size_t carryingModalReason = 0;
+    for (const MenuFamilyEntry& e : modal) {
+      if (e.enabled) ++enabledModal;
+      if (e.tooltip.find("transform is in progress") != std::string::npos)
+        ++carryingModalReason;
+    }
+    check(modal.size() == open.size() && enabledModal == 0,
+          "menu: REQUIRED -- with a transform gizmo live the Goodies menu enables NOT ONE "
+          "tool, where the same call with no gizmo enables the built ones. This axis is a "
+          "property of the session, so it takes every entry rather than a subset");
+    // Every BUILT tool: the unbuilt cells keep "Not built yet.", which stays
+    // the more useful sentence about a cell that is still dead once the gizmo
+    // has gone.
+    size_t builtCount = 0;
+    for (int i = 0; i < static_cast<int>(Tool::Count); ++i)
+      if (toolImplemented(static_cast<Tool>(i))) ++builtCount;
+    check(carryingModalReason == builtCount,
+          "menu: and every BUILT entry carries the gizmo's own sentence, so a user who "
+          "reaches past the greyed palette to the menu is told the same thing there -- the "
+          "unbuilt ones keep \"Not built yet.\", which outlives the session");
   }
 
   std::printf("[selftest] tool surface %s\n", ok ? "PASS" : "FAIL");
