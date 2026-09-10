@@ -338,7 +338,7 @@ requirements — the tool palette drew them and the specification lost them.
 | **Eraser** | — | **P0** | see below |
 | Dodge / burn | C | **P1** | a brush painting an adjustment mask — §1.3 |
 | Eyedropper | — | **P0** | picks into the foreground colour; sample size, sample-all-layers |
-| Clone / heal | C | **P1** | the Strokes layer, phase 8 |
+| Clone / heal | C | **P1** | **both built, DESTRUCTIVELY** — `brush/CloneStamp`, `brush/Heal` + `ops/Poisson`, one `StrokeRoute` each onto the target layer's rgb tiles. The class-C reading (a recorded op on the Strokes layer, re-evaluated on demand) is still the destination and is still phase 8's; what shipped first is the stroke, because it needs no layer kind that does not exist yet. Heal is a gradient-domain solve per dab: the source's texture under the destination's illumination. |
 
 ### 6.1 The eraser is not an op
 

@@ -179,6 +179,18 @@ Worth recording, because it changes what the next wave costs:
   `kToolMeta`, and `kImplementedTools[]` in the selftest. That is fine for one
   tool and expensive for six at once; a future wave should either pick tracks
   whose seams do not collide or widen those seams first.
+* **Adding a `Tool` VALUE costs four more on top of those five**, measured on
+  `Tool::Heal` (PRD D6, Phase 8) — the only value added since the palette was
+  drawn. They are: `enum class Tool` itself, where declaration order is
+  load-bearing because `kToolMeta` is positional; `kToolGroups`, or the tool is
+  unreachable from the palette; `cursorForTool()` and
+  `cursorHotspotAnchorFor()` in `ui/ToolCursor.cpp`; and
+  `springEyedropperEligible()` in `app/ToolSwitch.cpp`. The last three are
+  `-Wswitch`-enforced and therefore free to find; the first two are **tables**,
+  and a table takes a row without complaining. The pinned set in
+  `app/selftest/Smudge.cpp` — `toolBeginsStroke()` accepts exactly these tools —
+  is the tripwire that makes a new stroke tool a decision rather than an
+  accident, and it fired as designed.
 
 ## 3. PLAN phases with no code
 

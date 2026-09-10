@@ -354,14 +354,16 @@ bool runAtelierChromeTest() {
     }
     check(namesOk, "every tool has a distinct non-empty name");
     // The tripwire that makes the walk above complete rather than merely long,
-    // the same shape app/selftest/Fonts.cpp uses for LayerKind. 28 now, from
-    // 27, from an original 7: the palette rebuild added twenty slot-only
-    // cells, and PRD E3's elliptical marquee then added one more. It is a
-    // separate Tool value rather than a mode on Marquee because
-    // docs/shortcuts.md reserves `M` for "rectangle | ellipse" and a flyout
-    // member IS a Tool value (ui/AtelierChrome's kToolGroups).
-    check(std::string(toolName(static_cast<Tool>(28))) == "?",
-          "Tool still has exactly 28 values, so the walk above covers all of them");
+    // the same shape app/selftest/Fonts.cpp uses for LayerKind. 29 now, from
+    // 28, from 27, from an original 7: the palette rebuild added twenty
+    // slot-only cells, PRD E3's elliptical marquee then added one, and PRD D6's
+    // Heal (PLAN.md Phase 8) added this one. Each of the recent two is a
+    // separate Tool value rather than a mode on the tool it varies, for one
+    // reason: docs/shortcuts.md gives each its own letter row (`M` for
+    // "rectangle | ellipse", `J` for Heal) and a flyout member IS a Tool value
+    // (ui/AtelierChrome's kToolGroups).
+    check(std::string(toolName(static_cast<Tool>(29))) == "?",
+          "Tool still has exactly 29 values, so the walk above covers all of them");
   }
 
   // --- Part F: the tool palette's icons ------------------------------------
@@ -442,11 +444,11 @@ bool runAtelierChromeTest() {
                                       Tool::Eraser,      Tool::PaintBucket,
                                       Tool::Gradient,    Tool::Pencil,
                                       Tool::Dodge,       Tool::Burn,
-                                      Tool::CloneStamp,  Tool::Smudge,
-                                      Tool::Hand,        Tool::Zoom,
-                                      Tool::Move,        Tool::Crop,
-                                      Tool::Pen,         Tool::Curve,
-                                      Tool::Text};
+                                      Tool::CloneStamp,  Tool::Heal,
+                                      Tool::Smudge,      Tool::Hand,
+                                      Tool::Zoom,        Tool::Move,
+                                      Tool::Crop,        Tool::Pen,
+                                      Tool::Curve,       Tool::Text};
     bool implementedOk = true;
     for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
       const Tool t = static_cast<Tool>(i);
@@ -456,7 +458,7 @@ bool runAtelierChromeTest() {
       if (toolImplemented(t) != shouldBe) implementedOk = false;
     }
     check(implementedOk,
-          "toolImplemented() is true for exactly the twenty-five tools with real behaviour");
+          "toolImplemented() is true for exactly the twenty-six tools with real behaviour");
 
     // Every tool has an icon, and toolIconCodepoints() is the deduplicated,
     // sorted union of all of them plus the "More" cell's own ellipsis --

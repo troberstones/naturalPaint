@@ -228,14 +228,20 @@ struct ToolGroup {
 
 // Display order matches the user's own table exactly (Move+Frame,
 // Marquee, Lasso+PolygonLasso, MagicWand, Crop+Slice, Eyedropper+Measure,
-// CloneStamp, Eraser, PaintBucket+Gradient, Brush+Pencil+Water+DryBrush,
+// CloneStamp+Heal, Eraser, PaintBucket+Gradient, Brush+Pencil+Water+DryBrush,
 // Smudge, Dodge+Burn, Pen+Curve, Text, Shape, Hand, Zoom) -- derived from
 // Photoshop's real tool groups, not arbitrary, which is why a group of one
-// today (MagicWand, CloneStamp, Eraser, Smudge, Text, Shape, Hand, Zoom)
+// today (MagicWand, Eraser, Smudge, Text, Shape, Hand, Zoom)
 // still gets its own slot rather than being folded into a neighbour: those
 // are where not-yet-built variants land once they exist, per the user's
 // own instruction to "keep the pairings even where a group currently has
 // one member."
+//
+// **That claim has now been cashed once rather than merely asserted.** Slot 7
+// was `{CloneStamp}` alone for the whole life of this table and Heal landed
+// straight into it (PRD D6), needing no palette rebuild and no re-numbering of
+// the slots below it -- which is exactly what keeping the empty pairings was
+// for.
 constexpr ToolGroup kToolGroups[] = {
     {{Tool::Move, Tool::Frame}, 2, false},
     {{Tool::Marquee, Tool::EllipseMarquee}, 2, false},
@@ -243,7 +249,14 @@ constexpr ToolGroup kToolGroups[] = {
     {{Tool::MagicWand}, 1, false},
     {{Tool::Crop, Tool::Slice}, 2, false},
     {{Tool::Eyedropper, Tool::Measure}, 2, true},
-    {{Tool::CloneStamp}, 1, false},
+    // Slot 7, and no longer a group of one. The paragraph above says these
+    // single-member slots "are where not-yet-built variants land once they
+    // exist"; Heal is the first one to land, and Photoshop's own grouping puts
+    // the healing brush exactly here. Clone Stamp stays FIRST so
+    // `toolGroupDefaultMember()` keeps drawing it in the cell -- a palette a
+    // user already knows must not silently change which icon slot 7 shows
+    // because a sibling arrived.
+    {{Tool::CloneStamp, Tool::Heal}, 2, false},
     {{Tool::Eraser}, 1, false},
     {{Tool::Gradient, Tool::PaintBucket}, 2, true},
     {{Tool::Brush, Tool::Pencil, Tool::Water, Tool::DryBrush}, 4, false},

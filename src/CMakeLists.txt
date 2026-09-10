@@ -145,6 +145,7 @@ add_executable(naturalPaint
   app/selftest/Gradient.cpp
   app/selftest/GuidesGridSnap.cpp
   app/selftest/Half.cpp
+  app/selftest/Heal.cpp
   app/selftest/Histogram.cpp
   app/selftest/History.cpp
   app/selftest/HistoryPanel.cpp
@@ -281,6 +282,7 @@ add_executable(naturalPaint
   brush/BrushModelIo.cpp
   brush/BrushModelDiff.cpp
   brush/CloneStamp.cpp
+  brush/Heal.cpp
   brush/CoverageBlend.cpp
   brush/Deposit.cpp
   brush/Dynamics.cpp
@@ -368,6 +370,7 @@ add_executable(naturalPaint
   ops/Filters.cpp
   ops/FloodFill.cpp
   ops/Gradient.cpp
+  ops/Poisson.cpp
   ops/MonoOps.cpp
   ops/PointOpTiles.cpp
   ops/PointOps.cpp

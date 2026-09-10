@@ -4181,6 +4181,97 @@ bool runPigmentSelectionTest();
 // Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
 // it reads no file at all. Headless and GPU-free; writes no files.
 bool runCloneStampTest();
+// **The Heal tool** (PRD D6, PLAN.md Phase 8): the gradient-domain solve
+// (`ops/Poisson`), the stroke that drives it (`brush/Heal`), the route that
+// makes it reachable (app/StrokeSession §1c), and the registration a new `Tool`
+// value has to reach.
+//
+// **This section exists because a heal that is only a clone passes almost every
+// test a clone passes.** The two tools share a source, an Option+click gesture,
+// a snapshot, a composite and a footprint; the single thing that separates them
+// is what happens to the copied values on the way. So the load-bearing
+// assertions here are *comparative*: the same fixture, the same offset and the
+// same tip run through both engines, with the clone's answer printed beside the
+// heal's, so an implementation that had quietly become a second clone stamp
+// cannot pass.
+//
+// What this section proves:
+//
+//  - **The solver is checked against analytic answers rather than a recorded
+//    fixture.** A constant rim comes back as that constant on every interior
+//    cell, bit for bit; a rim carrying a linear ramp is reproduced across the
+//    interior, because a linear function is harmonic; and over a rim that is
+//    neither, the interior comes back with a five-point Laplacian of zero --
+//    which is the equation itself. This is the standard `app/selftest/Flats.cpp`
+//    holds `flats/Membrane` to with its strip and disc.
+//  - **Two of the patch's claims are EXACT, and that is the point** (`ops/Poisson`
+//    §1). Healing from a region identical to the destination changes not one
+//    bit -- a tool that perturbed the picture by a rounding error per dab would
+//    dirty tiles and re-upload textures through a drag that changed nothing.
+//    Healing from a source that differs by a pure *constant* restores the
+//    destination bit for bit: the one property that separates this tool from
+//    the clone stamp, asserted at zero tolerance rather than within a
+//    convergence bound a cycle count could move.
+//  - **Both halves of the gradient-domain promise, separated.** Over a source
+//    with a different texture *and* a different mean, the answer carries the
+//    SOURCE's Laplacian everywhere inside (the half a clone also keeps) and
+//    sits at the DESTINATION's level (the half it does not) -- the second
+//    measured against the copy's own seam. The border ring comes back as the
+//    destination bit for bit because it is the Dirichlet condition, and a 2x2
+//    patch with no interior at all is a legitimate input rather than an error.
+//  - **What the solve may hand back is not what may be stored**: an alpha
+//    driven above 1 is clamped, negative light is clamped while light above 1
+//    is left alone (a working-space value over 1 IS a measurement), and a texel
+//    driven to zero coverage carries no colour -- premultiplied storage means
+//    leaving it behind would manufacture the malformed texel the clone's own
+//    rule refuses to launder.
+//  - **One dab over a linear ramp at a horizontal offset leaves the layer
+//    bit-identical**, because a shifted ramp differs from the original by a
+//    constant and there is nothing to repair -- with the clone stamp on the
+//    identical fixture at the identical offset moving every one of those
+//    texels, which is what makes the first claim about the solve rather than
+//    about a stroke that failed to run.
+//  - **The source is the PRE-STROKE SNAPSHOT** (`brush/Heal` §2), proven
+//    directly: the live store's source region is overwritten *after*
+//    `begin()`, and the dab is unaffected -- with the negative half asserted
+//    too, since "identical" over two untouched fixtures is no claim at all.
+//  - **The selection bounds what is WRITTEN and not what is SOLVED** (PRD E1):
+//    a texel outside the ants is bit-identical after a dab that crossed it,
+//    while one inside was healed -- the gate is a gate and not an off switch.
+//  - **Healing nothing costs nothing, and healing FROM nothing does not** --
+//    `brush/Heal` §4, the one place this tool deliberately parts company with
+//    `brush/CloneStamp` §4. Forty dabs of blank-on-blank allocate not one tile
+//    (the correction over an all-zero rim is exactly zero, so this is
+//    arithmetic and not an optimisation), but an empty source *into* paint
+//    fills the hole with that paint: an inpaint, which is the answer the
+//    equation actually gives and what a spot heal over featureless paint does.
+//  - **Opacity is a per-stroke ceiling** -- thirty scrubbed dabs stop exactly
+//    at it, asserted on the accumulator rather than on the binary16 texel it
+//    produced -- and **the paper tooth reaches this route**, asserted by
+//    running the grain rather than by reading the table that says it should.
+//  - **The routing table's Heal rows**, including the ones that are decisions:
+//    its own route rather than a flag on the clone's, a Pigment layer refusing
+//    by name while still taking the brush, no layer at all being None and not
+//    PaintSim, a locked layer refusing, an ALPHA-LOCKED one not, a mask target
+//    refusing, and a history label that is its own noun -- two tools sharing a
+//    source, a gesture and a composite must not share a row in the panel.
+//  - **The registration a new `Tool` value has to reach** (docs/spec §2):
+//    implemented *through* the canvas-handler probe with no recorded exception,
+//    carrying docs/shortcuts.md's reserved `J`, sharing palette slot 7 with the
+//    Clone Stamp as a flyout sibling whose cell still draws the Clone Stamp,
+//    the cursor derived beside the clone's rather than from a second opinion,
+//    and the Option+click gesture reaching it through `toolUsesCloneSource()`
+//    -- a predicate, not a list at the three call sites that read it.
+//  - **The gesture end to end**: a heal with no source refuses out loud and
+//    names ITSELF rather than the clone stamp it shares an anchor with, moving
+//    no texel and recording no undo step; and with a source set, the whole
+//    stroke is one entry labelled "heal", the offset is latched into the heal
+//    engine with the clone engine left holding nothing, and the snapshot is
+//    dropped at pen-up.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
+// it reads no file at all. Headless and GPU-free; writes no files.
+bool runHealTest();
 
 // PLAN.md Phase 5 step 11 ("Multi-select, align and distribute, colour labels,
 // linking, panel filtering"; PRD C12 (P0), C13 (P1), C15 (P2)).

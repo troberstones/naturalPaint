@@ -140,6 +140,12 @@ bool springEyedropperEligible(Tool t, BucketFill fill) noexcept {
     case Tool::Measure:
     case Tool::Frame:
     case Tool::CloneStamp:
+    // Heal is here for the clone's reason, asked rather than inherited: it
+    // reads the same `CloneSourceState` through the same Option+click
+    // (`toolUsesCloneSource()`), so a bare Alt is already spent. Lending it to
+    // the eyedropper would take the source gesture away from the one tool that
+    // cannot paint at all without it -- a heal with no source refuses out loud.
+    case Tool::Heal:
     case Tool::Gradient:
     case Tool::Pen:
     case Tool::Curve:

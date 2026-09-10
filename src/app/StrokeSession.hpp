@@ -10,6 +10,7 @@
 #include "brush/BrushModel.hpp"
 #include "brush/CloneStamp.hpp"
 #include "brush/Deposit.hpp"
+#include "brush/Heal.hpp"
 #include "brush/MaskPaint.hpp"
 #include "brush/PencilDeposit.hpp"
 #include "brush/PigmentErase.hpp"
@@ -77,6 +78,14 @@
 //                                                               name, §1b
 //   CloneStamp  **no target at all**             None        <- and NOT
 //                                                               PaintSim, §1b
+//   Heal        RGB, with tiles, writable        Heal        <- new; §1c
+//   Heal        RGB, with tiles, ALPHA-locked    Heal        <- and NOT a
+//                                                               refusal, for the
+//                                                               clone's reason
+//   Heal        Pigment, with tiles, writable    None        <- a refusal by
+//                                                               name, §1c
+//   Heal        **no target at all**             None        <- and NOT
+//                                                               PaintSim, §1c
 //   Smudge      RGB, with tiles, writable        Smudge      <- new; the rows
 //                                                               below it are
 //                                                               this tool's
@@ -104,6 +113,8 @@
 //   Dodge/Burn  Adjustment / Media / Text / ...  None
 //   CloneStamp  Adjustment / Media / Text / ...  None
 //   CloneStamp  **any layer, locked**            None
+//   Heal        Adjustment / Media / Text / ...  None
+//   Heal        **any layer, locked**            None
 //   Brush       **no target at all**             PaintSim
 //   DryBrush    **no target at all**             PaintSim
 //   Water       anything                         PaintSim     (unchanged)
@@ -349,6 +360,53 @@
 // RGB layer can take a clone", and `begin()` says "but this one has no source
 // yet", in the same `errorOut` sentence every other refusal uses and in the
 // same band. `cloneSourceRefusal()` below is that sentence.
+//
+// ==========================================================================
+// 1c. The Heal rows -- §1b's table with one argument sharpened
+// ==========================================================================
+//
+// PRD D6, PLAN.md Phase 8. `brush/Heal` is the engine and `ops/Poisson` is the
+// arithmetic; what belongs here is which (tool, target) pairs reach them. Three
+// of the four rows are the clone's answers reached by the clone's arguments,
+// and they are restated only where the argument differs.
+//
+//   * **A writable RGB layer is the one destination**, unchanged: the solve is
+//     over four premultiplied linear channels, which is exactly what
+//     `core::TileStore` holds.
+//
+//   * **A Pigment layer refuses BY NAME, and the reason is one step past the
+//     clone's.** §1b refuses a Pigment *clone* because a cloned dab's soft edge
+//     is a Kubelka-Munk mixture rather than a lerp of four channels. A heal
+//     fails earlier than its soft edge: the whole correction is a **Laplacian**
+//     of the source and a linear interpolation of *differences*, and neither is
+//     defined on a latent premultiplied by mass. `depositTexel()` mixes
+//     latents; it does not subtract them, and nothing in this build has decided
+//     what the second difference of a latent means. Inventing that meaning
+//     inside a deposit loop would be deciding it for the whole codebase from
+//     the least visible place. **Not** a silent no-op, and **not** a solve run
+//     over four of the seven channels, which would look plausible and drift
+//     hue -- the version nobody would report.
+//
+//   * **`nullptr` is `None`**, for §1b's reason with nothing added: there is no
+//     tile store to sample and `sim::PaintSim`'s dense canvas texture is not
+//     one, so a heal sent there would run the paint path and lay down the
+//     FOREGROUND COLOUR -- a different tool wearing this one's name.
+//
+//   * **A locked layer refuses; alpha lock does NOT** -- both the clone's rows,
+//     and the second was re-asked rather than inherited, because this route
+//     solves for alpha as well as for colour (`ops/Poisson` §3). It still
+//     belongs on the permitted side: the *solve* computes an alpha correction,
+//     the *composite* is `cloneStampTexel()`'s alpha-locked colour-only form,
+//     and that form copies `dst[3]` through untouched rather than recomputing
+//     it. The lock is honoured by the same line that honours it for the clone.
+//
+// **The unset source is a refusal in `begin()`, not a row here** -- exactly as
+// in §1b, for the identical reason, and it is the SAME refusal because it is
+// the same anchor: `AppState::CloneSourceState` is shared by both tools (that
+// member's own comment argues why one anchor serves two). `cloneSourceRefusal()`
+// takes the tool's own label so the sentence names the tool the user has
+// selected rather than the one the struct is named after.
+//
 // **The Smudge rows, and why five of the six are refusals.** `brush/Smudge` is
 // the engine; `Tool::Smudge` sat in the not-built list below beside the rest of
 // the name/icon/slot-only cells, so a drag with it reached nothing at all. It
@@ -565,6 +623,14 @@ enum class StrokeRoute {
                  // route of its own and not a source mode on RgbDeposit,
                  // because the "ink" is a different value at every texel and
                  // is read out of the store being written (that header's §0)
+  Heal,          // brush/Heal, compositing texels read from that same PRE-STROKE
+                 // SNAPSHOT after a GRADIENT-DOMAIN solve has matched them to
+                 // the destination's own illumination -- §1c. A route of its own
+                 // and not a flag on CloneStamp because the healed value at a
+                 // texel is not a function of that texel: the whole dab is
+                 // solved as a PATCH before its first texel can be written
+                 // (brush/Heal §0), which is a different shape of computation
+                 // rather than a different arithmetic inside the same loop
   Smudge,        // brush/Smudge, moving colour that is ALREADY in the target
                  // layer's rgb tiles along the stroke -- the tip carries no ink
                  // and the layer is both source and destination. The first
@@ -670,6 +736,12 @@ LayerEditTarget resolveLayerEditTarget(bool maskRequested, const Layer* layer) n
 // accent it. A clone unshares a copy-on-write tile, moves the revision,
 // dirties tiles for the incremental composite and owes exactly one history
 // entry, same as a deposit.
+// **The heal route is in here for the clone's reason and one of its own.** It
+// reads a layer twice over -- the source out of the snapshot and the whole
+// destination surround out of the live store, to solve against -- but the four
+// questions this predicate answers are all about the WRITE, and its answers are
+// the clone's: one unshared copy-on-write tile, one revision bump, dirty tiles
+// for the incremental composite, one history entry.
 // **Smudge is in here too, and "writes" is if anything more literal for it.**
 // It neither adds nor removes paint on balance -- it moves it -- but every one
 // of the four call sites is asking about the mechanics, not the intent: it
@@ -702,8 +774,9 @@ inline bool strokeRouteWritesLayer(StrokeRoute route) noexcept {
   return route == StrokeRoute::CpuDeposit || route == StrokeRoute::RgbDeposit ||
          route == StrokeRoute::RgbErase || route == StrokeRoute::PigmentErase ||
          route == StrokeRoute::PencilDeposit || route == StrokeRoute::TonalBrush ||
-         route == StrokeRoute::CloneStamp || route == StrokeRoute::Smudge ||
-         route == StrokeRoute::MaskPaint || route == StrokeRoute::StrokesErase;
+         route == StrokeRoute::CloneStamp || route == StrokeRoute::Heal ||
+         route == StrokeRoute::Smudge || route == StrokeRoute::MaskPaint ||
+         route == StrokeRoute::StrokesErase;
 }
 
 // Reachability audit B2: `BrushState::wetness` (the WET slider, drawn in both
@@ -748,6 +821,17 @@ inline bool wetnessReachesSolver(StrokeRoute route) noexcept {
 // the answer to the question was yes, not because nobody asked it. `app/selftest/StrokeSession.cpp` asserts
 // the agreement route by route, so adding a route means answering the
 // question for grain rather than inheriting an answer.
+//
+// **`StrokeRoute::Heal` is the next route to arrive, and the answer is yes
+// again -- asked, not inherited.** `brush/Heal.cpp` calls `grainCoverageAt()`
+// on the same line of its per-texel loop the other five do, at the DESTINATION
+// texel's absolute canvas position, and the value it modifies is the same
+// CPU-computed coverage. Worth writing down because the heal is the first route
+// where "is there a CPU coverage for grain to modify" and "is there a CPU
+// computation at all" could have come apart: its per-dab Poisson solve runs
+// over the whole patch whatever the grain says, so a reader could reasonably
+// have expected grain to be folded into the solve. It is not -- paper tooth is
+// how much of the mark reaches the paper, not what the mark is.
 //
 // The solver route is the real exclusion and keeps the group honest: it has
 // no CPU coverage for grain to modify at all (brush/BrushModel.hpp on the
@@ -811,7 +895,16 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target, LayerEditTarget editT
 // and the route together.
 const char* strokeEditLabel(Tool tool) noexcept;
 
-// --- the Clone Stamp's source gesture (§1b, AppState::CloneSourceState) -----
+// --- the source gesture shared by Clone Stamp and Heal ---------------------
+//     (§1b, §1c, AppState::CloneSourceState)
+//
+// **One gesture, two tools.** Everything below is written about "the clone"
+// because that is the tool it was built for, and every word of it holds for the
+// heal unchanged: same anchor, same aligned latch, same discard-on-reanchor,
+// same refusal. `toolUsesCloneSource()` is the predicate that says which tools
+// those are, and it exists so that `ui/MacPaintUI`'s canvas block asks a
+// question rather than carrying a list of two `Tool` values that would agree
+// with this table only on the day it was typed.
 //
 // Two free functions rather than methods on `CloneSourceState`, for the reason
 // `toolWritesRgbPixels()` below is a free function: `app/AppState.hpp` is a
@@ -855,7 +948,33 @@ bool latchCloneOffset(AppState::CloneSourceState& clone, Vec2 penDown) noexcept;
 // `ui/AtelierChrome`'s `toolHasCanvasHandler()` tripwire exists to prevent one
 // tier up. In the same voice and shape as the other refusals: what is wrong,
 // and what to do about it.
-std::string cloneSourceRefusal(const AppState::CloneSourceState& clone);
+// `toolLabel` names the tool in the sentence -- "clone stamp: no source set",
+// "heal: no source set". A parameter rather than a second function, because the
+// *rule* is one rule about one shared anchor and duplicating the sentence is
+// how the two tools would end up describing the gesture differently. Defaulted
+// so that every existing caller keeps saying exactly what it said before, and
+// so that the one thing this parameter can get wrong -- naming the other tool
+// -- has to be typed on purpose.
+std::string cloneSourceRefusal(const AppState::CloneSourceState& clone,
+                               const char* toolLabel = "clone stamp");
+
+// Which tools drive `CloneSourceState` -- the Option+click that sets an anchor,
+// the marker drawn over the source, and the pen-down that latches the offset.
+//
+// **A predicate rather than a list at the call site**, for exactly the reason
+// `strokeRouteWritesLayer()` was extracted: `ui/MacPaintUI.cpp`'s canvas block
+// asked "is this the clone stamp" with its own `== Tool::CloneStamp`, and the
+// same expression is read three times there (the anchoring gate, the offset
+// latch, and the source marker two thousand lines further down). A third tool
+// sharing the anchor would have had to find all three, and the one it missed
+// would be a gesture that half worked.
+//
+// This is deliberately NOT derived from `strokeRouteFor()` the way
+// `toolBeginsStroke()` is. A route says where texels go; needing a source
+// anchor is a property of the *gesture*, and the two are independent -- a
+// future route could read the anchor without being a stroke at all, and a
+// future stroke route certainly will not need one.
+bool toolUsesCloneSource(Tool tool) noexcept;
 
 // ==========================================================================
 // 6. The pixel-writing ops that are NOT strokes -- the bucket and the gradient
@@ -1326,6 +1445,16 @@ class StrokeSession {
   int32_t cloneOffsetX() const noexcept { return clone_.offsetX(); }
   int32_t cloneOffsetY() const noexcept { return clone_.offsetY(); }
 
+  // The same two observations for the heal route, which makes the same two
+  // claims about its own snapshot and its own rounded offset (brush/Heal §§2-3).
+  // Separate accessors rather than one pair that reads whichever engine is
+  // live: "both are 0 on every other route" is exactly what the assertion about
+  // the *other* engine's cleanup needs to be able to see, and a pair that
+  // switched on the route could not say it.
+  size_t healSnapshotTiles() const noexcept { return heal_.snapshotTiles(); }
+  int32_t healOffsetX() const noexcept { return heal_.offsetX(); }
+  int32_t healOffsetY() const noexcept { return heal_.offsetY(); }
+
   bool active() const noexcept { return doc_ != nullptr; }
 
   // Replace the tip mid-stroke, which is how **pressure** reaches a CPU
@@ -1497,6 +1626,14 @@ class StrokeSession {
   // that took any other route, which `--selftest` measures rather than
   // assumes.
   CloneStampStroke clone_;
+  // The heal route's own snapshot, offset, ceiling and accumulator (brush/Heal
+  // §2). A *second* whole `TileStore` sharing tiles with the layer, which is
+  // why its `begin()`/`end()` pairing below matters as much as the clone's: a
+  // heal stroke followed by a clone stroke that left this one live would hold
+  // the previous target at twice its size for as long as the application ran.
+  // `snapshotTiles()` is 0 for a stroke that took any other route, which
+  // `--selftest` measures rather than assumes.
+  HealStroke heal_;
   // The smudge route's carried colour and latched strength (brush/Smudge §1).
   // A fourth member for the same reason there are three above -- exactly one of
   // them is ever live, and each `begin()`'s `else` branch is what leaves the
