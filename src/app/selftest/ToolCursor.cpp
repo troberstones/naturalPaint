@@ -724,6 +724,51 @@ bool runToolCursorTest() {
           "shared by design, so the glyph is the only thing that can differ and this is what "
           "says it does");
 
+    // -- G1c. the crosshair is clear of the canvas edge -------------------
+    //
+    // **Found by eye, not by this suite, which is why it is now a line.**
+    // `applyCursorOutline()` draws the white halo INSIDE the existing canvas,
+    // so a shape whose ink reaches an edge simply has no halo on that side.
+    // The marquee pair shipped its crosshair at (6, 26) with 5-unit arms --
+    // bottom pixel on row 31 of 31 -- and against a dark canvas that lower arm
+    // ended in nothing. Harmless for two cursors; not harmless once the
+    // crosshair is the click-point affordance on all twenty-nine.
+    //
+    // Checked at BOTH scales `create()` actually installs, because the margin
+    // is in design units and the rounding to pixels is where it would be lost.
+    // A pixel beyond each of the four arm tips must be halo: alpha above zero
+    // and white, which is `applyCursorOutline()`'s own colour and nothing
+    // else's.
+    auto haloBeyondEveryArm = [](const CursorBitmap& b, int arm) {
+      const int probes[4][2] = {{b.hotspotX - arm - 1, b.hotspotY},
+                                {b.hotspotX + arm + 1, b.hotspotY},
+                                {b.hotspotX, b.hotspotY - arm - 1},
+                                {b.hotspotX, b.hotspotY + arm + 1}};
+      for (const auto& pt : probes) {
+        if (pt[0] < 0 || pt[1] < 0 || pt[0] >= b.width || pt[1] >= b.height) return false;
+        const size_t idx = (static_cast<size_t>(pt[1]) * b.width + pt[0]) * 4;
+        if (b.rgba[idx + 3] == 0 || b.rgba[idx] != 255) return false;
+      }
+      return true;
+    };
+    bool everyArmOutlined = true;
+    for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
+      const Tool t = static_cast<Tool>(i);
+      if (!toolHasBitmapCursor(t)) continue;
+      // The arm length is `px(6, scale)` -- §8's `kCrossArm` through the same
+      // rounding the generator used. Written out rather than shared, because a
+      // test that computed it from the same constant the code did would agree
+      // with a wrong constant.
+      if (!haloBeyondEveryArm(rasterizeToolCursorBitmap(t, 1.0f), 6)) everyArmOutlined = false;
+      if (!haloBeyondEveryArm(rasterizeToolCursorBitmap(t, cursorBaseScale()), 5))
+        everyArmOutlined = false;
+    }
+    check(everyArmOutlined,
+          "hotspot: all four of the crosshair's arms end in a WHITE HALO pixel, at 1x and at "
+          "the shipping scale -- an arm that reached the canvas edge would lose its outline "
+          "there and vanish against a dark canvas, which is what the marquee's own lower arm "
+          "used to do");
+
     // -- G2. the coarse version of G1b, and the bounds report ------------
     //
     // This was hpp §7's answer to "a hotspot nothing in --selftest could
