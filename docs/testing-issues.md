@@ -1651,6 +1651,76 @@ line of `--frame-trace`, which is why that line now carries `pacing=`.
 
 ---
 
+## T28 — A live transform is modal for the TOOLS only; the menu bar and the layer panel are still live · open
+
+**Reported.** "I can select a tool while transforming, prevent this from
+happening, the transform needs to be committed before another action can be
+performed. it should behave kind of like a modal dialog, need to hit esc or
+enter to confirm." Closed for the tools by `1e8fca2`. Held open here, at the
+reporter's request, for the two routes that were named but not scoped into
+that change: **the menu bar and the LAYERS panel.**
+
+**Verified — no transform guard exists anywhere outside the canvas block.**
+Ten sites read `st.transform.active()` in the whole build
+(`grep -rn 'transform\.active()' src/ui/ src/main.cpp`); every one is in the
+canvas block, the numeric-Transform dialog, or the preview upload.
+`menuContextFromState()` has no transform term at all, and neither of the two
+`setActiveLayer()` calls behind a LAYERS row click
+(`ui/MacPaintUI.cpp:3335`, `:3349`) is gated.
+
+So both routes are open, and **they are not the same severity.**
+
+**The layer panel is confusing, not corrupting.** `TransformSession` stores
+`layerIndex_` at `begin*()` and nothing re-reads the document's active layer,
+so selecting a different row while the gizmo is up leaves the commit aimed
+where it was. The composite hides the *session's* layer either way
+(`transformOnThisDoc` reads `st.transform.layerIndex()`), so the picture stays
+right. What is wrong is only that the highlight and the box disagree about
+which layer is being worked on, with nothing on screen saying so.
+
+**The menu bar can silently transform the wrong layer, and this was measured,
+not reasoned.** `commit()` guards `od.id != documentId_` by name — that guard
+exists because beginning in document A and committing in B once resampled B's
+layer at A's index — but it does **not** guard the layer's identity. A plain
+index does not survive the list moving under it. Driven headlessly on a
+four-layer document, session begun on the layer named `L0` sitting at index 1:
+
+```
+PROBE: begin ok=1
+PROBE: after deleting layer 0, index 1 now names 'L1'
+PROBE: commit ok=1 err=''
+```
+
+The resample landed on `L1`, a layer the user was never transforming, and the
+commit reported success. `Layer > Delete Layer` while a gizmo is up is the
+reachable gesture. Deleting *above* the transformed layer is harmless (indices
+below do not move) and deleting enough to put the index out of range is
+refused by name (`"index 3 is out of range; this document has 3 layer(s).
+Nothing was changed."`) — it is the middle case that is silent. Reorder,
+merge and group are the same shape (all index-based against the same stored
+`layerIndex_`) but were not driven; only the deletion was.
+
+**Work.** Two pieces, and the second is not just "more of the first":
+
+1. **Scope the menu.** `toolChangeRefusal()` (`app/ToolSwitch.hpp` §5) is
+   already the one predicate the palette, the flyout, the Goodies tool family
+   and the flats panel all grey themselves from, and it already returns the
+   sentence a disabled entry needs. The open question is *which* menu actions
+   it should cover — blanket-disabling the menu bar would take `Edit > Undo`
+   and `File > Save` with it, and neither is a reason to lose a gizmo. The
+   defensible line is the actions that move a layer's index or its pixels;
+   naming that set is the actual work, not the wiring.
+2. **Make the session name the layer it owns, not merely its slot.** The
+   `documentId_` guard is the precedent and the argument is identical one
+   level down: the pair that identifies the pixels a session owns should be
+   checkable at commit, so a list that moved underneath produces a refusal
+   with a sentence instead of a successful resample of the wrong thing. That
+   is worth doing **even if the menu is scoped**, because it is what makes the
+   corruption unrepresentable rather than merely unreachable through the one
+   route that was closed.
+
+---
+
 ## Re-reported 2026-09-02, against entries already open
 
 * **T3 (gradient)** — reported again as "the gradient tool does nothing."
