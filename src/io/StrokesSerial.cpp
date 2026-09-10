@@ -162,14 +162,24 @@ bool deserializeStrokesContent(std::string_view value, StrokesContent* contentOu
     d.flow = r.f32("a dab flow");
     for (float& ch : d.rgba) ch = r.f32("a dab colour channel");
     // An unrecognised source byte reads as `Ink`, which is the value that
-    // makes the dab draw its OWN colour. The alternative -- reading it as
-    // `Below` -- would make a dab from a newer build reproduce whatever
-    // happens to lie under it at an offset it may not carry, which is a
-    // picture nobody authored. Not a refusal, because one unknown enumerator
-    // is exactly what PRD I10's "carry what you cannot interpret" is for and
-    // the rest of the record is perfectly readable.
+    // makes the dab draw its OWN colour. The alternative -- reading it as one
+    // of the below-sampling policies -- would make a dab from a newer build
+    // reproduce whatever happens to lie under it at an offset it may not
+    // carry, which is a picture nobody authored. Not a refusal, because one
+    // unknown enumerator is exactly what PRD I10's "carry what you cannot
+    // interpret" is for and the rest of the record is perfectly readable.
+    //
+    // **Every known value is listed, and a new one has to be added here.**
+    // `DabColorSource::BelowHealed` (a recorded heal) is the second entry;
+    // leaving it out would have made every recorded heal reopen as an
+    // ordinary painted dab drawing its default black `rgba`, which is a
+    // silent, total loss of the record's meaning on the round trip that
+    // exists to preserve it.
     const uint8_t src = r.u8("a dab source");
-    d.source = src == static_cast<uint8_t>(DabColorSource::Below) ? DabColorSource::Below : DabColorSource::Ink;
+    d.source = src == static_cast<uint8_t>(DabColorSource::Below) ? DabColorSource::Below
+               : src == static_cast<uint8_t>(DabColorSource::BelowHealed)
+                   ? DabColorSource::BelowHealed
+                   : DabColorSource::Ink;
     d.sourceDx = r.f32("a dab source dx");
     d.sourceDy = r.f32("a dab source dy");
     if (r.ok) c.dabs.push_back(d);

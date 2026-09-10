@@ -338,7 +338,7 @@ requirements — the tool palette drew them and the specification lost them.
 | **Eraser** | — | **P0** | see below |
 | Dodge / burn | C | **P1** | a brush painting an adjustment mask — §1.3 |
 | Eyedropper | — | **P0** | picks into the foreground colour; sample size, sample-all-layers |
-| Clone / heal | C | **P1** | **both built, DESTRUCTIVELY** — `brush/CloneStamp`, `brush/Heal` + `ops/Poisson`, one `StrokeRoute` each onto the target layer's rgb tiles. The class-C reading (a recorded op on the Strokes layer, re-evaluated on demand) is still the destination and is still phase 8's; what shipped first is the stroke, because it needs no layer kind that does not exist yet. Heal is a gradient-domain solve per dab: the source's texture under the destination's illumination. |
+| Clone / heal | C | **P1** | **built both ways.** Destructive on an RGB layer — `brush/CloneStamp`, `brush/Heal` + `ops/Poisson`, one `StrokeRoute` each onto the target layer's rgb tiles. **Class C on a `LayerKind::Strokes` layer** — one shared `StrokeRoute::StrokesRecord` appends a `DabRecord` carrying `DabColorSource::Below` (clone) or `BelowHealed` (heal) instead of writing a texel, and `brush/StrokesLayer` re-evaluates it against the composite beneath the layer on demand, which is PRD D6's "stays correct when layers beneath it are regraded". Heal is a gradient-domain solve per dab either way: the source's texture under the destination's illumination — read from the live layer for the destructive route, and from what lies beneath for the recorded one (`brush/StrokesLayer` §1b argues why). |
 
 ### 6.1 The eraser is not an op
 

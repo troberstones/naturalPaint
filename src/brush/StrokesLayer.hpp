@@ -29,7 +29,8 @@
 // 1. Samples-only-from-below
 // ==========================================================================
 //
-// A dab whose `source` is `DabColorSource::Below` reproduces the composite of the
+// A dab whose `source` is `DabColorSource::Below` (or `BelowHealed`, section
+// 1b) reproduces the composite of the
 // layers BENEATH its own layer -- indices `[0, index)`, in the document's own
 // stack order -- sampled at the dab's centre plus its `sourceDx`/`sourceDy`.
 // core/StrokesContent section 2 argues why "below" rather than "the whole
@@ -45,6 +46,40 @@
 // it**. A layer of ordinary recorded paint (`DabColorSource::Ink` throughout) pays
 // nothing at all for this section -- not the composite, and not the
 // signature that would key it.
+//
+// ==========================================================================
+// 1b. A recorded HEAL, and the one decision its evaluation makes
+// ==========================================================================
+//
+// `DabColorSource::BelowHealed` is section 1 with the source corrected before
+// it is laid down: `ops/Poisson::healPatch()` over the dab's own bounding box
+// grown by one texel of Dirichlet skin, exactly the patch `brush/Heal` §1
+// solves and for its stated reasons. The SOURCE half of the patch is the
+// below-composite read at `sourceDx`/`sourceDy`, which is section 1 unchanged.
+//
+// **The DESTINATION half -- the illumination the texture is corrected to -- is
+// the below-composite read STRAIGHT DOWN, and that is the decision.** The live
+// tool reads its Dirichlet rim out of the layer it is writing, so that dab N is
+// lit against dab N-1's output and a stroke is not a row of independently-lit
+// patches (`brush/Heal` §2). This evaluation has no such layer to read: the
+// marks it is producing ARE the layer, so reading its own partial output back
+// would be section 1's feedback loop arriving through the rim instead of
+// through the sample, and a dab's value would then depend on how much of the
+// prefix a checkpoint happened to have replayed.
+//
+// Reading straight down is strictly better here rather than merely safer, and
+// this is why: every dab is then corrected against ONE consistent field, so
+// every dab agrees with the below-composite at its own rim and therefore with
+// every other dab at every rim they share. The seam `brush/Heal` §2 answers
+// with dab ORDER is answered here by construction, and evaluation stays a pure
+// function of the records and of what lies beneath -- which is the property
+// core/StrokesContent §2 says is the only one under which this kind works at
+// all.
+//
+// **The cost is a multigrid solve per recorded heal dab per replay**, which is
+// why section 2's checkpoints matter more for this policy than for any other:
+// appending one heal dab to a long stroke must not re-solve the stroke.
+// `brush/Heal` §5 has the measured numbers for one patch.
 //
 // ==========================================================================
 // 2. Checkpoint tiles
@@ -122,7 +157,7 @@ std::vector<float> strokesSourceComposite(const Document& doc, size_t index);
 // `content` composited into linear premultiplied tiles, in paint order.
 //
 // `below` is the buffer `strokesSourceComposite()` returns and may be empty,
-// in which case every `DabColorSource::Below` dab contributes nothing -- which is
+// in which case every below-sampling dab contributes nothing -- which is
 // the honest answer for a layer at the bottom of the stack, where there IS
 // nothing beneath to reproduce, and the answer a one-shot caller with no
 // document (a test, a fixture) gets.
