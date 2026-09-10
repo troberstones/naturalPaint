@@ -1538,6 +1538,19 @@ bool runPackBitsTest();
 // Kyle Webster brush packs and real Photoshop files, so agreeing with it is a
 // stronger claim than agreeing with this project's own reading of the spec.
 bool runPsdWriteTest();
+
+// io/PsdExport's container and flattened composite -- PSD export tier 1
+// (PLAN.md phase 15, docs/psd-export.md). Headless and GPU-free.
+//
+// Three of its claims are checked against numbers computed in the section
+// itself rather than captured from the writer: the file header's 40 bytes,
+// the sRGB byte a known linear value must quantise to, and the
+// un-premultiplied bytes a half-transparent texel must produce. Those are
+// exactly the ones a round trip cannot see, because an encoder and a decoder
+// can be wrong in the same direction and still agree. The Image Data
+// Section's framing IS asserted as a round trip -- through decodePackBits(),
+// which two real importers already depend on against real files.
+bool runPsdExportTest();
 bool runTransformCompositeSplitTest();
 bool runTransformPreviewTextureTest();
 
