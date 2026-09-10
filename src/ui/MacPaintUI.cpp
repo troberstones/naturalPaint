@@ -7114,7 +7114,15 @@ void drawActionsSection(AppState& st) {
   // is inside the file and titling fifty rows would mean opening fifty files
   // (app/ActionsPanel.hpp's `ActionLibraryRow`).
   if (g_actionsLibrary.empty()) {
-    textDisabledWrapped("No saved actions in %s.", actionsDirectoryPath().c_str());
+    // **No path in this line, though it used to carry one.** Two reasons, and
+    // the second is the one that mattered: an absolute Application Support
+    // path wraps to two lines in a panel this narrow and crowds out the take,
+    // and Refresh's tooltip immediately above already names the directory --
+    // so nothing is lost by moving it one hover away. It also stopped the
+    // golden view photographing this machine's `$HOME`, which no reference
+    // image can be allowed to depend on.
+    textDisabledWrapped("No saved actions yet -- record one, name it and press Save.");
+    ImGui::SetItemTooltip("%s", actionsDirectoryPath().c_str());
   } else {
     const char* preview = g_actionsLibrarySelected < g_actionsLibrary.size()
                               ? g_actionsLibrary[g_actionsLibrarySelected].name.c_str()
@@ -7293,6 +7301,7 @@ void drawActionsSection(AppState& st) {
 //     `8140912` and is the canonical statement now.
 bool g_exportAsRequested = false;
 bool g_exportStatesRequested = false;
+bool g_batchRequested = false;
 
 namespace {
 
@@ -7997,6 +8006,233 @@ void drawExportStatesDialog(AppState& st) {
   }
   ImGui::EndPopup();
 }
+
+// The BATCH dialog (docs/automation-plan.md step 7). Chrome only: which button
+// is live, what each grey one says, and the preview/run distinction are all
+// app/BatchDialog's, so that `--selftest` can ask about them without a frame.
+// Nothing below decides anything.
+void drawBatchDialog(AppState& st) {
+  static ExportPresetStore presets;
+  static bool presetsLoaded = false;
+  static std::string loadedPresetName;
+  static char dirBuf[512] = "";
+  static char templateBuf[256] = "{name}";
+  static std::vector<char> sourcesBuf(4096, '\0');
+  static std::string presetStatus;
+  static bool bufsSeeded = false;
+
+  // The rising-edge latch, copied from `drawExportStatesDialog()` and for its
+  // reason: `st.openBatchDialog` stays true until Close clears it, so a
+  // level-triggered test would re-run the on-open work on *every* frame of an
+  // `--open-batch` run -- which is the run the golden views photograph.
+  static bool openLatched = false;
+  const bool wantOpen = g_batchRequested || st.openBatchDialog;
+  if (wantOpen && !openLatched) {
+    openLatched = true;
+    presetsLoaded = false;
+    bufsSeeded = false;
+    ImGui::OpenPopup("Batch");
+  }
+  if (!wantOpen) openLatched = false;
+  g_batchRequested = false;
+  // A width bound, not just AlwaysAutoResize. Auto-resize grows the popup to
+  // the widest unwrapped line in it, and this dialog carries whole sentences --
+  // without the bound one refusal message stretches the window past the screen
+  // and every control in it goes with it.
+  ImGui::SetNextWindowSizeConstraints(ImVec2(720.0f, 0.0f), ImVec2(760.0f, FLT_MAX));
+  if (!ImGui::BeginPopupModal("Batch", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+  BatchDialogState& model = st.batchDialog;
+  if (!bufsSeeded) {
+    bufsSeeded = true;
+    // Seed the edit buffers from the model, not the other way round, so a
+    // state `--open-batch` filled in is what the dialog shows.
+    std::snprintf(dirBuf, sizeof(dirBuf), "%s", model.outputDirectory.c_str());
+    std::snprintf(templateBuf, sizeof(templateBuf), "%s", model.nameTemplate.c_str());
+    sourcesBuf.assign(4096, '\0');
+    std::snprintf(sourcesBuf.data(), sourcesBuf.size(), "%s", model.sourcesText.c_str());
+  }
+  if (!presetsLoaded) {
+    presetsLoaded = true;
+    presets.loadFromFile(defaultExportPresetsPath());
+  }
+
+  const ImVec4 kError(0.95f, 0.45f, 0.40f, 1.0f);
+  const ImVec4 kWarn(0.92f, 0.78f, 0.35f, 1.0f);
+  const ImVec4 kGood(0.55f, 0.85f, 0.55f, 1.0f);
+  const ImVec4 kDim(0.62f, 0.62f, 0.62f, 1.0f);
+
+  const BatchDialogView v = batchDialogView(model);
+  ImGui::TextDisabled("%s", v.headline.c_str());
+  ImGui::Separator();
+
+  // --- The action ---------------------------------------------------------
+  ImGui::TextUnformatted("Action");
+  ImGui::SameLine();
+  if (v.actionName.empty()) {
+    ImGui::TextDisabled("(none chosen)");
+  } else {
+    ImGui::TextUnformatted(v.actionName.c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("-- %zu step%s", v.actionSteps.size(),
+                        v.actionSteps.size() == 1 ? "" : "s");
+  }
+  {
+    const std::vector<ActionLibraryRow> library = actionsPanelLibrary(actionsDirectoryPath());
+    ImGui::SetNextItemWidth(420.0f);
+    if (ImGui::BeginCombo("##batchaction",
+                          v.actionName.empty() ? "Choose an action..." : v.actionName.c_str())) {
+      if (library.empty())
+        ImGui::TextDisabled("No actions saved yet. Record one in the ACTIONS panel.");
+      for (const ActionLibraryRow& row : library) {
+        const bool selected = row.path == model.actionPath;
+        if (ImGui::Selectable(row.name.c_str(), selected)) batchDialogLoadAction(model, row.path);
+      }
+      ImGui::EndCombo();
+    }
+  }
+  // The steps, in labels. A user who picked the wrong action recognises it
+  // here rather than in the report.
+  for (const std::string& step : v.actionSteps) ImGui::BulletText("%s", step.c_str());
+
+  // --- The inputs ---------------------------------------------------------
+  ImGui::Separator();
+  ImGui::TextUnformatted("Input files, one per line");
+  ImGui::SameLine();
+  ImGui::TextDisabled("-- %zu file%s", v.sourceCount, v.sourceCount == 1 ? "" : "s");
+  if (ImGui::InputTextMultiline("##batchsources", sourcesBuf.data(), sourcesBuf.size(),
+                                ImVec2(560.0f, 90.0f)))
+    model.sourcesText = sourcesBuf.data();
+  ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+  ImGui::TextWrapped("These files are only ever read. An output path that names one of them "
+                     "refuses the whole run before anything is opened.");
+  ImGui::PopStyleColor();
+
+  // --- Format, preset, destination ---------------------------------------
+  ImGui::Separator();
+  drawExportPresetCombo("Preset", presets, model.format, loadedPresetName, presetStatus);
+  ImGui::SameLine();
+  ImGui::TextDisabled("(saved in File > Export As...)");
+  drawExportSettingsControls(model.format);
+
+  ImGui::Separator();
+  ImGui::SetNextItemWidth(420.0f);
+  if (ImGui::InputText("Output folder", dirBuf, sizeof(dirBuf))) model.outputDirectory = dirBuf;
+  ImGui::SetNextItemWidth(420.0f);
+  if (ImGui::InputText("Name template", templateBuf, sizeof(templateBuf)))
+    model.nameTemplate = templateBuf;
+  // **Not `exportNameTemplateHelp()`, and the difference is not cosmetic.**
+  // That sentence says `{name}` is "the comp's or layer's name", which is true
+  // where it is written and false here: in a batch the item IS the document,
+  // so both `{name}` and `{doc}` render the source file's stem
+  // (app/Batch.hpp's `nameTemplate` argues why the two are kept). A user
+  // reading the export-states wording here would be told this dialog iterates
+  // something it does not.
+  ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+  ImGui::TextWrapped(
+      "{name} and {doc} both give the input file's name without its extension -- in a batch "
+      "the file and the document are the same thing. {index} is its 1-based position (two "
+      "digits). The extension comes from the format above; do not write one.");
+  ImGui::PopStyleColor();
+
+  // --- The two buttons ----------------------------------------------------
+  //
+  // PREVIEW first, and it is the wider of the two. Both carry the same
+  // precondition (app/BatchDialog.hpp §1), so the safe one is never the one a
+  // user cannot press.
+  ImGui::Separator();
+  ImGui::BeginDisabled(!v.preview.enabled);
+  if (ImGui::Button("Preview", ImVec2(140.0f, 0.0f))) batchDialogPreview(model);
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!v.run.enabled);
+  if (ImGui::Button("Run", ImVec2(100.0f, 0.0f))) batchDialogRun(model);
+  ImGui::EndDisabled();
+  if (!v.run.enabled) {
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
+    ImGui::TextWrapped("%s", v.run.disabledReason.c_str());
+    ImGui::PopStyleColor();
+  }
+
+  // --- The report ---------------------------------------------------------
+  if (v.haveReport) {
+    ImGui::Separator();
+    // §2: which button produced this. "were written" and "would be written"
+    // is the whole meaning of the table, and it is not left to memory.
+    if (v.reportWasPreview) {
+      ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
+      ImGui::TextUnformatted("PREVIEW -- nothing has been written.");
+      ImGui::PopStyleColor();
+    } else {
+      ImGui::PushStyleColor(ImGuiCol_Text, kGood);
+      ImGui::TextUnformatted("RUN -- these files were written.");
+      ImGui::PopStyleColor();
+    }
+    if (!v.error.empty()) {
+      ImGui::PushStyleColor(ImGuiCol_Text, kError);
+      ImGui::TextWrapped("%s", v.error.c_str());
+      ImGui::PopStyleColor();
+    }
+    // Sized to its rows, capped at twelve. A fixed height leaves a four-row
+    // report sitting in a box of empty lines and pushes the summary -- which
+    // is the line naming the unchanged files -- off the bottom of the window.
+    const float rowH = ImGui::GetTextLineHeightWithSpacing();
+    const size_t shown = v.rows.size() < 12 ? v.rows.size() : 12;
+    if (!v.rows.empty() &&
+        ImGui::BeginTable("##batchreport", 4,
+                          ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+                              ImGuiTableFlags_ScrollY,
+                          ImVec2(0.0f, rowH * static_cast<float>(shown + 1) + 8.0f))) {
+      ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 34.0f);
+      ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn("Output", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn("Outcome", ImGuiTableColumnFlags_WidthFixed, 210.0f);
+      ImGui::TableHeadersRow();
+      for (const BatchReportRow& row : v.rows) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::Text("%zu", row.ordinal);
+        ImGui::TableSetColumnIndex(1);
+        ImGui::TextUnformatted(row.sourcePath.c_str());
+        ImGui::TableSetColumnIndex(2);
+        ImGui::TextUnformatted(row.filename.empty() ? "--" : row.filename.c_str());
+        ImGui::TableSetColumnIndex(3);
+        // §3: an unchanged file is written and is NOT a plain success. It gets
+        // the warning colour and says so in the outcome cell, because a flag
+        // a reader has to notice in a thirty-row table is not a flag.
+        if (row.conspicuous) {
+          ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
+          ImGui::TextUnformatted("Written, UNCHANGED");
+          ImGui::PopStyleColor();
+        } else if (row.outcome == exportItemOutcomeName(ExportItemOutcome::Written)) {
+          ImGui::PushStyleColor(ImGuiCol_Text, kGood);
+          ImGui::TextUnformatted(row.outcome.c_str());
+          ImGui::PopStyleColor();
+        } else {
+          ImGui::PushStyleColor(ImGuiCol_Text, kError);
+          ImGui::TextUnformatted(row.outcome.c_str());
+          ImGui::PopStyleColor();
+          if (!row.reason.empty() && ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", row.reason.c_str());
+        }
+      }
+      ImGui::EndTable();
+    }
+    if (!v.summary.empty()) ImGui::TextWrapped("%s", v.summary.c_str());
+  }
+
+  if (!v.status.empty()) ImGui::TextDisabled("%s", v.status.c_str());
+  if (!presetStatus.empty()) ImGui::TextDisabled("%s", presetStatus.c_str());
+
+  ImGui::Separator();
+  if (ImGui::Button("Close")) {
+    st.openBatchDialog = false;
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndPopup();
+}
+
 
 // ------------------------------------------------------- Document lifecycle
 //
@@ -11393,6 +11629,10 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
       g_exportStatesRequested = true;
       break;
 
+    case MenuAction::Batch:
+      g_batchRequested = true;
+      break;
+
     // **`requestQuit`, not `quit`.**
     //
     // This one line is the whole reason ui/MenuModel.hpp has a `MenuEffect`
@@ -14033,6 +14273,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // PLAN.md Phase 5 step 13 ("Export comps to files, and layers to files"),
   // out here for the same ID-stack reason.
   drawExportStatesDialog(st);
+  drawBatchDialog(st);
 
   // PLAN.md Phase 4 step 8 ("Document lifecycle"), out here for the same
   // reason: a modal opened from a menu item must be begun outside the menu
@@ -14110,6 +14351,53 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // their populated state), and dock SEGMENTATION expanded where a crop can
     // frame it. FLATS TOOLS is left on the rail and opened as the flyout,
     // because floating-on-reveal is the behaviour being photographed.
+    // --actions-demo. The panel's default placement is the flyout rail
+    // (`defaultPlacementFor()` argues why), and a flyout floats over the canvas
+    // at whatever position the rail button sits -- a crop aimed at it would be
+    // aimed at the canvas. So the demo DOCKS it, expanded, the way
+    // --panel-stack-demo rearranges panels it needs to photograph: applied
+    // after the layout load and never written back.
+    //
+    // The take is built by *running commands through `applyCommand()`* rather
+    // than by assigning `panel.action.steps` directly, so the view photographs
+    // what a recording actually produces -- the step labels, the `select_layer`
+    // the recorder emits for itself, the ordering. A hand-assigned list would
+    // photograph what somebody believed a recording looks like.
+    if (st.actionsDemo) {
+      // The FIRST slot in the right dock, with its neighbours collapsed.
+      // Appending it put it last, where the dock had already spent its height
+      // on COLOR and LAYERS and the panel's own list and button row fell off
+      // the bottom of the window -- a crop of a panel whose content is clipped
+      // photographs the clipping.
+      st.panels.setPlacementAt(ControlsSection::Actions, PanelPlacement::Right, 0);
+      st.panels.setCollapsed(ControlsSection::Actions, false);
+      for (const ControlsSection other :
+           {ControlsSection::Color, ControlsSection::Layers, ControlsSection::History,
+            ControlsSection::Comps, ControlsSection::FlatsSegmentation})
+        if (st.panels.placementOf(other) == PanelPlacement::Right)
+          st.panels.setCollapsed(other, true);
+      Recorder& rec = sessionRecorder();
+      ActionsPanelState& panel = st.actionsPanel;
+      if (OpenDocument* ad = st.documents.active()) {
+        actionsPanelRecord(panel, rec, *ad);
+        auto run = [&](const char* id, const char* key, double value) {
+          JsonValue p = JsonValue::object();
+          if (key != nullptr) p.set(key, JsonValue::number(value));
+          applyCommand(*ad, Command{id, std::move(p)});
+        };
+        run("filter_gaussian_blur", "sigma", 4.0);
+        run("adjust_exposure", "stops", 0.5);
+        run("adjust_threshold", "threshold", 0.5);
+        if (!st.actionsDemoRecording) {
+          // The idle view: stopped, with the take adopted. That is the state
+          // SAVE and PLAY are live in, which is what makes the button row
+          // worth photographing at all.
+          actionsPanelStop(panel, rec);
+          panel.action.name = "Height prep 512";
+          panel.selected = 1;
+        }
+      }
+    }
     if (st.flatsDemo) {
       if (OpenDocument* fd = st.documents.active()) {
         // **Its own line art, rather than whatever --demo-document happens to

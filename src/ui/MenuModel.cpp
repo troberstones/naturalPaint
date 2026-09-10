@@ -52,6 +52,7 @@ const MenuItemSpec* specTable() {
     set(MenuAction::CloseDocument, "Close Document", "");
     set(MenuAction::ExportAs, "Export As...", "");
     set(MenuAction::ExportStates, "Export Comps / Layers To Files...", "");
+    set(MenuAction::Batch, "Batch...", "");
 
     // **Quit.** No key equivalent and omitted from File on a platform whose
     // own menu bar carries an application menu -- both for the same reason,
@@ -410,6 +411,7 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::CloseDocument: return "CloseDocument";
     case MenuAction::ExportAs: return "ExportAs";
     case MenuAction::ExportStates: return "ExportStates";
+    case MenuAction::Batch: return "Batch";
     case MenuAction::Quit: return "Quit";
     case MenuAction::Undo: return "Undo";
     case MenuAction::FreeTransform: return "FreeTransform";
@@ -509,6 +511,7 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     // opened inside `BeginMenu()` is opened against the menu's own ID stack.
     case MenuAction::ExportAs:
     case MenuAction::ExportStates:
+    case MenuAction::Batch:
     case MenuAction::RecoverDocuments:
     case MenuAction::AddGuide:
       return MenuEffect::Deferred;
@@ -656,6 +659,11 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     f.push_back(separator());
     f.push_back(item(MenuAction::ExportAs));
     f.push_back(item(MenuAction::ExportStates));
+    // **No `ctx.hasDocument` guard, unlike every other item in this group.**
+    // A batch reads its inputs off disk and never touches the open document --
+    // it is the one File item that means exactly as much with nothing open,
+    // and greying it would be the app refusing a job it can do.
+    f.push_back(item(MenuAction::Batch));
 
     // See MenuItemSpec::omitWhenNativeAppMenu. Under a native menu bar the
     // separator goes with the item, otherwise the File menu ends on a rule.

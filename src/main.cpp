@@ -1541,6 +1541,10 @@ int main(int argc, char** argv) {
   const char* controlsScrollTo = nullptr;
   bool openLayerMenu = false;
   bool openExportStates = false;
+  bool openBatch = false;
+  bool actionsDemo = false;
+  bool actionsDemoRecording = false;
+  bool openBatchReport = false;
   const char* exportStatesFolder = nullptr;
   bool openExportAs = false;
   const char* exportAsPath = nullptr;
@@ -2153,6 +2157,24 @@ int main(int argc, char** argv) {
       // UI detour step 3: hold the `Layer` menu open so --screenshot can
       // photograph it. See AppState::openLayerMenu.
       openLayerMenu = true;
+    } else if (a == "--actions-demo") {
+      // docs/automation-plan.md step 7: the ACTIONS panel lives on the flyout
+      // rail, so a launch has to open it -- no panel arrangement reaches the
+      // state where its list and its buttons can be photographed.
+      actionsDemo = true;
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "recording") {
+        actionsDemoRecording = true;
+        ++i;
+      }
+    } else if (a == "--open-batch") {
+      // docs/automation-plan.md step 7: hold File > Batch... open so
+      // --screenshot can photograph it. `report` additionally fills the report
+      // half. See AppState::openBatchDialog.
+      openBatch = true;
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "report") {
+        openBatchReport = true;
+        ++i;
+      }
     } else if (a == "--open-export-states") {
       // Phase 5 step 13: hold File > Export Comps / Layers To Files... open so
       // --screenshot can photograph it. See AppState::openExportStatesDialog.
@@ -3978,6 +4000,82 @@ int main(int argc, char** argv) {
     st.brushSettingsDemoTab = brushSettingsDemoTab;
   }
   st.openExportStatesDialog = openExportStates;
+  st.actionsDemo = actionsDemo;
+  st.actionsDemoRecording = actionsDemoRecording;
+  st.openBatchDialog = openBatch;
+  if (openBatch) {
+    // A known state for the golden views, built from literals.
+    //
+    // **Nothing here touches the disk, and that is the point.** A view whose
+    // content came from a real run would photograph this machine's temp paths
+    // and this machine's file sizes, and would differ on the next one. The
+    // chrome's job is to render a `BatchDialogView`; app/selftest/BatchDialog
+    // is what asserts that a real `BatchReport` maps onto one correctly, and
+    // the two halves are better checked apart than photographed together.
+    np::Action demo;
+    demo.name = "Height prep 512";
+    {
+      np::JsonValue p = np::JsonValue::object();
+      p.set("sigma", np::JsonValue::number(4.0));
+      demo.steps.push_back(np::Command{"filter_gaussian_blur", std::move(p)});
+    }
+    {
+      np::JsonValue p = np::JsonValue::object();
+      p.set("threshold", np::JsonValue::number(0.5));
+      p.set("amount", np::JsonValue::number(1.0));
+      demo.steps.push_back(np::Command{"adjust_threshold", std::move(p)});
+    }
+    {
+      np::JsonValue p = np::JsonValue::object();
+      p.set("width", np::JsonValue::number(512));
+      p.set("height", np::JsonValue::number(512));
+      demo.steps.push_back(np::Command{"image_size", std::move(p)});
+    }
+    st.batchDialog.action = demo;
+    st.batchDialog.actionPath = "height-prep-512.npaction";
+    st.batchDialog.sourcesText =
+        "plates/bark01.exr\nplates/bark02.exr\nplates/bark03.exr\nplates/stone01.exr\n";
+    st.batchDialog.outputDirectory = "plates/height";
+    st.batchDialog.nameTemplate = "{name}_h";
+    if (openBatchReport) {
+      // One of each outcome, including the one this whole feature exists to
+      // make visible: a file written UNCHANGED.
+      np::BatchReport report;
+      report.ok = false;
+      auto row = [](size_t n, const char* src, const char* out, np::ExportItemOutcome outcome,
+                    const char* reason, size_t bytes, bool unchanged) {
+        np::BatchItem item;
+        item.ordinal = n;
+        item.sourcePath = src;
+        item.sourceName = src;
+        item.filename = out;
+        item.outputPath = std::string("plates/height/") + out;
+        item.outcome = outcome;
+        item.reason = reason;
+        item.bytesWritten = bytes;
+        item.unchangedByAction = unchanged;
+        item.stepsRun = 3;
+        return item;
+      };
+      report.items.push_back(
+          row(1, "plates/bark01.exr", "bark01_h.png", np::ExportItemOutcome::Written, "", 41233, false));
+      report.items.push_back(
+          row(2, "plates/bark02.exr", "bark02_h.png", np::ExportItemOutcome::Written, "", 39880, true));
+      report.items.push_back(row(3, "plates/bark03.exr", "bark03_h.png",
+                                 np::ExportItemOutcome::Failed,
+                                 "refused: step 2 (\"adjust_threshold\") refused, so the action "
+                                 "was not applied and the document is unchanged.",
+                                 0, false));
+      report.items.push_back(row(4, "plates/stone01.exr", "stone01_h.png",
+                                 np::ExportItemOutcome::NotAttempted,
+                                 "not attempted: the action was refused by "
+                                 "'plates/bark03.exr' first", 0, false));
+      st.batchDialog.report = std::move(report);
+      st.batchDialog.haveReport = true;
+      st.batchDialog.reportWasPreview = false;
+      st.batchDialog.status = "Run finished.";
+    }
+  }
   st.openExportAsDialog = openExportAs;
   st.openLayerProperties = openLayerProperties;
   st.showAdvancedDynamics = advancedDynamics;

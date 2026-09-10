@@ -14,6 +14,7 @@
 #include "app/CloseDecision.hpp"
 #include "app/CropTool.hpp"
 #include "app/ActionsPanel.hpp"
+#include "app/BatchDialog.hpp"
 #include "app/PanelLayout.hpp"
 #include "app/PenTool.hpp"
 #include "app/TextTool.hpp"
@@ -1270,6 +1271,14 @@ struct AppState {
   // the user was doing.
   ActionsPanelState actionsPanel;
 
+  // The BATCH dialog's model (docs/automation-plan.md step 7,
+  // app/BatchDialog.hpp). Here rather than `static` inside the drawer for the
+  // reason the ACTIONS panel's state is: `--open-batch` has to be able to fill
+  // it in before the first frame so a golden view can photograph a known
+  // state, and function-local statics are reachable only from inside the
+  // function that owns them.
+  BatchDialogState batchDialog;
+
   // --- Selection and clipboard commands, consumed in ui/MacPaintUI ---------
   //
   // Request flags rather than direct action, for the reason the zoom commands
@@ -1497,6 +1506,10 @@ struct AppState {
   // Comps / Layers To Files... modal open, so a `--screenshot` can photograph
   // it. `openLayerMenu`'s justification exactly -- a modal is opened by a
   // click and the screenshot path has no input.
+  bool openBatchDialog = false;
+  // `--open-batch report` also fills `batchDialog.report` with a synthetic one,
+  // so the report half can be photographed without a run. See main.cpp.
+
   bool openExportStatesDialog = false;
   // --open-export-states <FOLDER>: prefills that dialog's output folder, so a
   // `--screenshot` can photograph the plan table -- the list of exact
