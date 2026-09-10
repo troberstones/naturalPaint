@@ -375,4 +375,22 @@ ExportResult exportDocumentWithRequest(const Document& doc, const ExportRequest&
 bool exportDocumentWithRequestToFile(const Document& doc, const std::string& path,
                                      const ExportRequest& request, std::string* errorOut);
 
+// The writer half of the call above, on its own: `bytes` to `path`, with
+// `exportDocumentToFile()`'s guarantee that nothing is opened until the bytes
+// exist in full.
+//
+// **Hoisted at the third consumer, which is the rule io/ExportStates.cpp's own
+// copy of it wrote down**: "this is the second consumer, and a third is when
+// the writer should be hoisted". app/Batch is the third. It cannot call
+// `exportDocumentWithRequestToFile()` instead, for the same reason
+// io/ExportStates could not -- it already holds the encoded bytes and the
+// encoder's warnings from `exportDocumentWithRequest()`, and re-flattening a
+// document to recover a byte count is not a trade worth making.
+//
+// io/ExportStates.cpp's inline copy is **not** yet ported to this; it is the
+// one remaining duplicate and it is left alone deliberately, because that file
+// is held by another branch in this wave. Four lines, when it is free.
+bool writeEncodedExportToFile(const std::string& path, const std::vector<uint8_t>& bytes,
+                              std::string* errorOut);
+
 }  // namespace np

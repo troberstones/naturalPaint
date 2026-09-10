@@ -805,15 +805,22 @@ bool exportDocumentWithRequestToFile(const Document& doc, const std::string& pat
     if (errorOut) *errorOut = encoded.error;
     return false;
   }
+  return writeEncodedExportToFile(path, encoded.bytes, errorOut);
+}
+
+bool writeEncodedExportToFile(const std::string& path, const std::vector<uint8_t>& bytes,
+                              std::string* errorOut) {
   std::FILE* f = std::fopen(path.c_str(), "wb");
   if (!f) {
     if (errorOut) *errorOut = "export failed: could not open '" + path + "' for writing.";
     return false;
   }
-  const size_t written = std::fwrite(encoded.bytes.data(), 1, encoded.bytes.size(), f);
+  const size_t written = std::fwrite(bytes.data(), 1, bytes.size(), f);
   const bool closedOk = std::fclose(f) == 0;
-  if (written != encoded.bytes.size() || !closedOk) {
-    if (errorOut) *errorOut = "export failed: '" + path + "' was opened but not fully written.";
+  if (written != bytes.size() || !closedOk) {
+    if (errorOut)
+      *errorOut = "export failed: '" + path + "' was opened but not fully written (" +
+                  std::to_string(written) + " of " + std::to_string(bytes.size()) + " bytes).";
     return false;
   }
   return true;
