@@ -84,7 +84,8 @@ std::string unrenderableRefusal(const std::string& path, const Document& doc, co
 
 }  // namespace
 
-OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* recent) {
+OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* recent,
+                                    PsdLayerPolicy psdLayers) {
   if (path.empty()) return refuse("Open refused: no file name was given.");
 
   // `is_regular_file` before opening, for app/ImportImage's own reason: on
@@ -357,8 +358,10 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
   std::vector<std::string> psdWarnings;
   std::optional<Document> decoded;
   bool psdDecided = false;
+  bool flattenRetry = false;
 
-  if (sniff.format == ImageFormat::Psd) {
+  bool flattenedOnRequest = false;
+  if (sniff.format == ImageFormat::Psd && psdLayers == PsdLayerPolicy::Layered) {
     PsdImportResult psd = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
     if (psd.ok) {
       decoded = std::move(psd.document);
@@ -367,9 +370,24 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
     } else if (!psd.noLayerData) {
       decodeError = psd.error;
       psdDecided = true;  // refuse outright -- see this comment's own argument
+      // ...but say that there is a second thing to try. The refusal above
+      // stands: this call opens nothing. `flattenRetryAvailable` only tells
+      // the caller that asking again with `PsdLayerPolicy::Flattened` is a
+      // question worth putting to the user, which is how the silent flatten
+      // this branch refuses to perform becomes a flatten the user chose.
+      // It is not a promise that the retry will succeed -- the composite may
+      // be absent (Maximize Compatibility off) or the fallback reader may
+      // decline the file too, and both of those are the retry's own refusal
+      // to report.
+      flattenRetry = true;
     }
     // else: `noLayerData` -- fall through to the flattened path below,
     // unchanged, exactly as if io/PsdImport did not exist for this file.
+  } else if (sniff.format == ImageFormat::Psd) {
+    // The user was asked and said flatten. io/PsdImport is skipped entirely
+    // rather than run-and-ignored: its refusal is already known, and the
+    // whole point of this policy is to reach the composite.
+    flattenedOnRequest = true;
   }
 
   if (!psdDecided) decoded = openImageAsDocument(bytes.data(), bytes.size(), &decodeError);
@@ -382,9 +400,20 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
     const std::string because =
         decodeError.empty() ? std::string() : std::string(" -- ") + decodeError;
 
+    // Every refusal below carries `flattenRetryAvailable`, not just the
+    // damaged-file one the PSD path reaches today: which refusal a PSD
+    // lands on depends on what this build can read, and a flag that was
+    // only stamped on one of them would go missing in the build where the
+    // fallback matters most.
+    auto refuseHere = [&](std::string status, FileKind kind) {
+      OpenAnyResult out = refuse(std::move(status), kind);
+      out.flattenRetryAvailable = flattenRetry;
+      return out;
+    };
+
     if (sniff.kind == FileKind::Unknown) {
       const std::string readable = readableFormatList();
-      return refuse(named + " is not a naturalPaint document and its contents match no image "
+      return refuseHere(named + " is not a naturalPaint document and its contents match no image "
                             "format this build reads" +
                         because + ". This build reads: " +
                         (readable.empty() ? std::string("nothing") : readable) + ".",
@@ -396,13 +425,13 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
       // io/Capabilities' own sentence and already says whether the cause is the
       // NP_USE_OIIO build option or a plugin this OpenImageIO does not have --
       // which is the difference between "rebuild it" and "you cannot".
-      return refuse(named + " is a " + sniff.signature +
+      return refuseHere(named + " is a " + sniff.signature +
                         " file, and this build has no " + imageFormatName(*sniff.format) +
                         " reader: " + formatCapability(*sniff.format).unavailableReason,
                     FileKind::Image);
     }
 
-    return refuse(named + " is a " + sniff.signature +
+    return refuseHere(named + " is a " + sniff.signature +
                       " file this build does read, so the file itself is damaged or "
                       "truncated" +
                       because + ".",
@@ -453,6 +482,17 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
   // produces, and it is exactly io/PsdImport landing that makes it possible.
   if (doc.layers.size() != 1)
     r.status += " (" + std::to_string(doc.layers.size()) + " layers.)";
+  // Said in the status line, not only in a warning: "flattened" is the whole
+  // difference between this document and the one the user asked for, and the
+  // moment to be clear about it is while they can still close it again.
+  if (flattenedOnRequest) {
+    r.status += " Flattened: its layers were not imported.";
+    r.warnings.push_back(
+        "'" + fileNameOf(path) +
+        "' was opened as its flattened composite, so it has one layer. Every layer, mask, "
+        "group and blend mode in the original file is absent from this document -- they are "
+        "still in the PSD, which this open did not modify.");
+  }
   // io/PsdImport's own notes -- today, an unmapped blend mode naming the PSD
   // key and the layer -- carried through unchanged, the same "say what was
   // dropped" shape `warnings` already carries for every other non-fatal

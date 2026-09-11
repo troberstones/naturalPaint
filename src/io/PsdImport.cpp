@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cstring>
+
+#include "stb_image.h"  // stbi_zlib_decode_buffer(); paint/Palette.cpp compiles the bodies
 
 #include "color/Space.hpp"
 #include "core/Blend.hpp"
@@ -717,10 +720,63 @@ bool readLayerRecord(Cursor& c, ParsedLayer& layer, std::string& error) {
   return true;
 }
 
+// Inflates one channel's zlib stream into exactly `expected` bytes.
+//
+// The inflater is stb_image's, already compiled into this binary by
+// paint/Palette.cpp for PNG -- so ZIP costs this module no new dependency,
+// and the "no zlib in this tree" premise io/PsdImport.hpp's compression
+// section was written on has not been true since PNG decoding landed.
+//
+// A short stream is a failure, not a partial decode: the caller sizes its
+// sample buffer from the layer rect, and a channel that inflates to fewer
+// bytes than that rect claims is a disagreement about the geometry, not
+// about the pixels.
+bool inflateChannel(std::span<const uint8_t> body, size_t expected,
+                    std::vector<uint8_t>& rawSamples) {
+  // stb_image's zlib API is int-sized on both ends.
+  if (expected == 0 || expected > static_cast<size_t>(INT_MAX)) return false;
+  if (body.empty() || body.size() > static_cast<size_t>(INT_MAX)) return false;
+  rawSamples.assign(expected, 0);
+  const int written = stbi_zlib_decode_buffer(reinterpret_cast<char*>(rawSamples.data()),
+                                              static_cast<int>(expected),
+                                              reinterpret_cast<const char*>(body.data()),
+                                              static_cast<int>(body.size()));
+  return written >= 0 && static_cast<size_t>(written) == expected;
+}
+
+// Undoes ZIP-with-prediction's per-row delta encoding, in place.
+//
+// Each row is a running sum, restarted at every row, and it runs over
+// SAMPLES rather than bytes: a 16-bit channel accumulates big-endian
+// uint16s, not the two halves of each one separately. Verified against
+// psd-tools on all eight ZIP-with-prediction channels of a real 16-bit
+// Photoshop file (Apple's App Icon Template), byte for byte.
+//
+// Arithmetic wraps, deliberately -- the encoder took differences modulo the
+// sample width, so the decoder must add modulo it too.
+void undoPrediction(std::vector<uint8_t>& rawSamples, uint32_t width, uint32_t height,
+                    int bytesPerSample) {
+  if (width < 2) return;  // a one-sample row is its own value
+  for (uint32_t y = 0; y < height; ++y) {
+    uint8_t* row = rawSamples.data() + static_cast<size_t>(y) * width * bytesPerSample;
+    if (bytesPerSample == 1) {
+      for (uint32_t x = 1; x < width; ++x) row[x] = static_cast<uint8_t>(row[x] + row[x - 1]);
+    } else {
+      uint16_t running = static_cast<uint16_t>((row[0] << 8) | row[1]);
+      for (uint32_t x = 1; x < width; ++x) {
+        uint8_t* s = row + static_cast<size_t>(x) * 2;
+        running = static_cast<uint16_t>(running + ((s[0] << 8) | s[1]));
+        s[0] = static_cast<uint8_t>(running >> 8);
+        s[1] = static_cast<uint8_t>(running & 0xFF);
+      }
+    }
+  }
+}
+
 // Decodes one channel's own byte span (already sliced to exactly its
 // declared length by the caller) into `expected` raw samples (1 or 2 bytes
-// each, per `bytesPerSample`), honouring only the two compressions this
-// module reads.
+// each, per `bytesPerSample`), honouring every compression PSD defines for
+// layer channels.
 bool decodeChannelData(std::span<const uint8_t> channelSpan, uint32_t width, uint32_t height,
                        int bytesPerSample, std::vector<uint8_t>& rawSamples,
                        std::string& error) {
@@ -750,13 +806,17 @@ bool decodeChannelData(std::span<const uint8_t> channelSpan, uint32_t width, uin
     }
     return true;
   }
-  // ZIP (2) or ZIP-with-prediction (3): refused by name, for the whole
-  // file -- io/PsdImport.hpp's header states why (no zlib dependency in
-  // this tree) and why this is total rather than per-layer.
+  if (compression == 2 || compression == 3) {  // ZIP, ZIP with prediction
+    if (!inflateChannel(body, expected, rawSamples)) {
+      error = "channel data: ZIP stream did not inflate to the expected " +
+              std::to_string(expected) + " bytes";
+      return false;
+    }
+    if (compression == 3) undoPrediction(rawSamples, width, height, bytesPerSample);
+    return true;
+  }
   error = "channel data: compression mode " + std::to_string(compression) +
-          " (ZIP" + std::string(compression == 3 ? " with prediction" : "") +
-          ") is not supported -- this build has no zlib dependency, and a ZIP-compressed "
-          "PSD layer is refused rather than decoded into garbage or silently dropped";
+          " is not one of raw (0), RLE (1), ZIP (2) or ZIP with prediction (3)";
   return false;
 }
 
