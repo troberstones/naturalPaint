@@ -75,6 +75,18 @@ before.
 
 ## The finding that scopes the first landing to 8-bit
 
+> **Update, 2026-09-10: the reader half of this is closed.** `io/PsdImport`
+> now reads `Lr16` (`findLayerInfoBlock16()`), corroborated against
+> psd-tools on a hand-built file that both readers parse identically --
+> names, order, hidden flag and every sample. A 16-bit layered PSD opens
+> layered instead of silently flat.
+>
+> **16-bit export is still refused, for a different reason now.** Writing it
+> means choosing a 16-bit full-scale, and that is disputed: PLAN.md:640 says
+> 0-32768, psd-tools divides by 65535. The reader uses 65535 and records it as
+> open. One real 16-bit Photoshop file settles it; without one, writing
+> 16-bit would bake a guess into every file this build produces.
+
 **A 16-bit layered PSD does not put its layers in the layer info section.**
 Photoshop writes them into an `Lr16` additional-layer-info block inside the
 Layer and Mask Information section and leaves the ordinary layer info length

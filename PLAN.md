@@ -636,16 +636,22 @@ Text on a path, vertical text and rich-text runs are non-goals.
 **Landed.** `io/PsdWrite` · `io/PsdExport` · `io/PsdLayerSection` · `io/PsdLayerExtras` ·
 `io/PsdBlendKeys`. Both tiers, masks, groups, and one blend-key table read in both
 directions. Plan and verification: [docs/psd-export.md](docs/psd-export.md).
-**8-bit only, by refusal**: a 16-bit layered PSD carries its records in an `Lr16` block
-`io/PsdImport` has no case for, so writing one would produce a file Photoshop reads as
-corrupt or our own reader opens flat. That is an *import* gap this work found.
+**8-bit only, by refusal.** A 16-bit layered PSD carries its records in an `Lr16` block.
+The reader had no case for it (an *import* gap this work found) — **it does now**, so the
+reading side no longer blocks 16-bit export. What still does: the 16-bit full-scale above
+is disputed, and writing 16-bit would bake one answer into every file.
 
 Not the save path — native save shipped in phase 4. Flattened PSD first (small), then
 simply-layered: one PSD layer per naturalPaint layer, blend modes mapped where they
 exist, latents dropped with a warning naming what was lost.
 
 > ⚠️ Photoshop's 16-bit range is **0–32768**, not 0–65535, and its 32-bit mode is IEEE
-> float. Never emit native `curv`/`levl` blocks — our curves are in the shaper log domain
+> float. **DISPUTED (2026-09-10):** psd-tools, this project's PSD oracle, divides 16-bit
+> file samples by **65535** and contains no 32768 anywhere. 0–32768 is Photoshop's
+> *internal* working range; whether it rescales on write is unsettled because no real
+> 16-bit Photoshop file has been available. `io/PsdImport` uses 65535 and says so as an
+> open question — see its header's "Depth" section. Settle it with one real file before
+> writing 16-bit PSD. Never emit native `curv`/`levl` blocks — our curves are in the shaper log domain
 > and would be silently wrong. Spec:
 > [docs/document-format.md](docs/document-format.md).
 

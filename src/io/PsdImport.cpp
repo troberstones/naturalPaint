@@ -899,6 +899,76 @@ const std::array<float, 256>& srgb8DecodeTable() {
 // checks the real thing rather than a hand-duplicated copy of it.
 const std::array<float, 256>& srgb8DecodeTableForSelftest() { return srgb8DecodeTable(); }
 
+
+// Finds the `Lr16` block's BODY inside the Layer and Mask Information
+// section's own tagged-block list, for a 16-bit file.
+//
+// **Why this exists at all, and it is the whole reason a 16-bit layered PSD
+// used to open flat.** Photoshop does not put a 16-bit file's layer records
+// in the ordinary Layer info section. It writes them into an `Lr16`
+// additional-layer-information block that follows the (zero-length) layer
+// info section and the global layer mask info, and leaves the ordinary
+// length at zero. A reader with no `Lr16` case therefore sees
+// `layerInfoLen == 0`, concludes "a flat composite only", and opens the
+// file with correct pixels, one layer, and no error of any kind -- which is
+// exactly the confidently-wrong shape this module's header warns about, and
+// it was this module's own behaviour until this function existed.
+//
+// **The layout was corroborated, not recalled.** psd-tools
+// (`psd/document.py`'s `_get_layer_info()`) prefers `Tag.LAYER_16` /
+// `Tag.LAYER_32` over the ordinary layer info whenever either is present,
+// and `psd/layer_and_mask.py` registers both as a plain `LayerInfo` -- the
+// same "count, records, channel data" body the ordinary section carries,
+// with no outer length of its own because the block's `u32` length is it.
+// That is the same independently-maintained reader whose *behaviour*
+// settled this module's stacking order and its inverted visible bit.
+//
+// **The section-level blocks pad to 4; the per-record ones do not.**
+// psd-tools reads this list with `padding=4` (`layer_and_mask.py:177`) and
+// a layer record's own list with `padding=1` (`:647`) -- which is why
+// `readLayerRecord()`'s walk above advances by the declared length alone and
+// this one rounds up. Getting that backwards does not read out of bounds; it
+// simply fails to find the block, and the file opens flat again.
+//
+// Returns false when there is no such block, which is not an error: an 8-bit
+// file has none, and the caller falls back to the ordinary section.
+bool findLayerInfoBlock16(Cursor& c, size_t searchStart, size_t sectionEnd, size_t& bodyStart,
+                          size_t& bodyEnd) {
+  if (!c.seek(searchStart)) return false;
+
+  // The global layer mask info sits between the layer info section and the
+  // tagged blocks. Skipped by its own length -- this module has no use for
+  // its overlay colour space, and io/PsdImport.hpp says why it does not
+  // invent one.
+  uint32_t globalMaskLen = 0;
+  if (!c.u32(globalMaskLen) || !c.skip(globalMaskLen)) return false;
+
+  while (c.pos() + 12 <= sectionEnd) {
+    std::array<char, 4> sig{};
+    std::array<char, 4> key{};
+    uint32_t blockLen = 0;
+    if (!(c.fourcc(sig) && c.fourcc(key) && c.u32(blockLen))) return false;
+    if (!fourccEquals(sig, "8BIM") && !fourccEquals(sig, "8B64")) return false;
+
+    const size_t dataStart = c.pos();
+    size_t dataEnd = 0;
+    if (!checkedAdd(dataStart, blockLen, dataEnd) || dataEnd > sectionEnd) return false;
+
+    if (fourccEquals(key, "Lr16")) {
+      bodyStart = dataStart;
+      bodyEnd = dataEnd;
+      return true;
+    }
+
+    // Advance by the declared length rounded up to a multiple of 4.
+    size_t next = dataEnd;
+    const size_t remainder = blockLen % 4u;
+    if (remainder != 0 && !checkedAdd(dataEnd, 4u - remainder, next)) return false;
+    if (next > sectionEnd || !c.seek(next)) return false;
+  }
+  return false;
+}
+
 PsdImportResult importPsd(std::span<const uint8_t> bytes) {
   PsdImportResult result;
   Cursor c(bytes);
@@ -1008,6 +1078,33 @@ PsdImportResult importPsd(std::span<const uint8_t> bytes) {
   if (!checkedAdd(layerInfoStart, layerInfoLen, layerInfoEnd) || layerInfoEnd > layerMaskInfoEnd)
     return fail("PSD Layer info section length (" + std::to_string(layerInfoLen) +
                ") runs past its own Layer and Mask Information section.");
+
+  // --- `Lr16`: where a 16-bit file actually keeps its layers ------------
+  //
+  // Consulted BEFORE the "empty layer info" conclusion below, because for a
+  // 16-bit file that section being empty is the normal case rather than a
+  // flat file. Preferred over a non-empty ordinary section too, matching
+  // psd-tools' own precedence (`_get_layer_info()` returns the tagged block
+  // whenever it exists). Only for `depth == 16`: an 8-bit file has no such
+  // block, and looking for one would be a walk with nothing to find.
+  //
+  // **`Lr32` is deliberately not handled here, and cannot be reached.** It
+  // carries a 32-bit float file's layers, and this module refuses `depth ==
+  // 32` at the FILE HEADER (see the depth check above), long before this
+  // point -- so a 32-bit file is refused by name rather than reaching a
+  // half-supported layer walk. That ordering is asserted in
+  // app/selftest/PsdImport.cpp rather than left to be read off this comment.
+  if (depth == 16) {
+    size_t body16Start = 0;
+    size_t body16End = 0;
+    if (findLayerInfoBlock16(c, layerInfoEnd, layerMaskInfoEnd, body16Start, body16End)) {
+      if (!c.seek(body16Start)) return fail("PSD 'Lr16' block body is not reachable.");
+      layerInfoEnd = body16End;
+      layerInfoLen = static_cast<uint32_t>(body16End - body16Start);
+    } else if (!c.seek(layerInfoStart)) {
+      return fail("PSD layer info section is not reachable after the 'Lr16' search.");
+    }
+  }
 
   if (layerInfoLen < 2) {
     result.ok = false;

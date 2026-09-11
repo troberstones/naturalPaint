@@ -139,6 +139,38 @@
 // **Depth.** 8- and 16-bit integer only, per this brief's minimum. 1-bit
 // (Bitmap) and 32-bit (float) are refused by name.
 //
+// **A 16-bit file keeps its layers somewhere else, and for a long time this
+// module did not look there.** Photoshop does not put a 16-bit file's layer
+// records in the ordinary Layer info section. It leaves that section EMPTY
+// and writes the same count-records-channel-data body into an `Lr16`
+// additional-layer-information block after the global layer mask info. With
+// no `Lr16` case, a 16-bit layered file read `layerInfoLen == 0`, reported
+// `noLayerData`, and app/OpenAnyFile.cpp -- correctly, given what it was
+// told -- opened it through the flattened path: right pixels, ONE layer, and
+// no error or warning of any kind. `findLayerInfoBlock16()` in the .cpp now
+// reads it, preferring it over the ordinary section exactly as psd-tools'
+// `_get_layer_info()` does. Its layout was corroborated against psd-tools,
+// which registers `Lr16`/`Lr32` as a plain `LayerInfo` body, and a
+// hand-built `Lr16` file reads identically in both readers (names, order,
+// hidden flag, and every sample) -- see app/selftest/PsdImport.cpp's B2.
+//
+// **`Lr32` is not handled, and cannot be reached**: `depth == 32` is refused
+// at the file header, before any block walk, so a 32-bit file is refused by
+// name rather than reaching a half-supported layer read. Asserted, not
+// assumed.
+//
+// **The 16-bit full-scale is 65535 here, and that is an OPEN QUESTION, not
+// a settled one.** PLAN.md:640 says Photoshop's 16-bit range is 0-32768.
+// psd-tools, this module's oracle, divides by 65535 and contains no 32768
+// anywhere. The two cannot both be right about the bytes in a file, and no
+// real 16-bit Photoshop file has been available to settle it -- the three
+// this module is verified against are all 8-bit. The likeliest reconciliation
+// is that 0-32768 is Photoshop's INTERNAL working range and it rescales on
+// write, which would make 65535 correct for files; but that is an
+// inference, and it is recorded as one. One real 16-bit PSD with a known
+// pure-white region settles it: under the wrong divisor white reads as
+// either 0.5 or clips at 2.0.
+//
 // **Colour space.** PSD's integer samples are sRGB-encoded; this
 // application is linear rgba16float end to end (PRD B6). Every RGB sample
 // this module decodes is linearised through `srgbDecode()`
@@ -280,7 +312,10 @@
 //     round would have reported 86 and 41.
 //
 // **What is still unverified**, and is not covered by any of the three:
-// PSB (version 2), 16-bit and 32-bit depth, ZIP-compressed layer data,
+// PSB (version 2), 16-bit depth against a REAL file (the `Lr16` layout is
+// corroborated against psd-tools on a hand-built file, and the 65535-vs-32768
+// full-scale is open -- see "Depth" above), 32-bit depth, ZIP-compressed
+// layer data,
 // non-RGB colour modes, astral-plane (surrogate-pair) `luni` names, and the
 // odd-row-padding reading of the spec's ambiguous prose -- every one of
 // which is either refused by name above or exercised only by this
