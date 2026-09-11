@@ -313,12 +313,11 @@ at their own site, naming each other.
   > **What an OLDER build does with an `npdabs2` payload.** Every build that reads only
   > `npdabs1` refuses the payload **by name**, before decoding a byte, and opens the
   > Strokes layer with no dab records and a load warning -- the layer does not render
-  > there. Whether that build then preserves the payload on save is **not** uniform, and
-  > it is stated here because it was found to be false for the builds that shipped the
-  > kind: their writer emits the (empty) Strokes content it holds unconditionally, and
-  > its carry replay drops a carried `np:dabs` whenever it has written its own, so
-  > **saving from such a build replaces the `npdabs2` records with an empty `npdabs1`
-  > list** despite the load warning's promise. This build fixes that for the next bump:
+  > there. **It does not preserve the payload on save**, despite the load warning's
+  > promise -- measured against the pre-bump writer (`cd614c9`), not inferred: that writer
+  > emits the (empty) Strokes content it holds unconditionally, and its carry replay drops
+  > a carried `np:dabs` whenever it has written its own, so **saving from such a build
+  > replaces the `npdabs2` records with an empty `npdabs1` list**. This build fixes that for the next bump:
   > a Strokes layer that opened empty because its `np:dabs` could not be decoded, and has
   > recorded nothing since, writes the carried attribute back verbatim instead of its own
   > (`io/NpaintFile.cpp`, `writesOwnStrokes`; `--selftest` saves an `npdabs3:` file twice

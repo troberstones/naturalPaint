@@ -65,13 +65,23 @@
 // compatibility cost below. An empty dab list writes `npdabs1`.
 //
 // **What an OLDER build does with an `npdabs2` payload** -- one that reads
-// `npdabs1` only, which is every build before this carrier's bump: it refuses
+// `npdabs1` only, which is every build before this carrier's bump. It refuses
 // the payload BY NAME, before decoding a byte (its reader checks the prefix
-// first), opens the Strokes layer with no dab records and a warning naming the
-// payload, and carries the `np:dabs` attribute through io/NpaintFile's
-// verbatim carry -- so the layer does not RENDER there, but saving from that
-// build writes the attribute back unchanged and the records are not
-// destroyed (PRD I10). This build meets a future `npdabs3:` the same way.
+// first), and opens the Strokes layer with no dab records and a load warning
+// saying the attribute is carried -- so the layer does not RENDER there.
+// **But it does not keep that promise on save, and this is measured, not
+// read:** those builds' io/NpaintFile writes a Strokes part's own content
+// unconditionally and its carry replay drops a carried `np:dabs` whenever it
+// has written its own, so saving from such a build replaces the `npdabs2`
+// records with an EMPTY `npdabs1` list. (`--selftest`'s strokes layer
+// section F2 carries a future-tagged payload through two saves; with
+// io/NpaintFile.cpp reverted to the pre-bump writer that assertion is red.)
+// This build fixes the writer for the NEXT bump -- an `npdabs3:` payload it
+// cannot read is written back verbatim while the layer stays as it opened
+// (`writesOwnStrokes` in io/NpaintFile.cpp) -- but it cannot fix a build that
+// already shipped. The content-decided version rule above is what keeps the
+// exposure to documents that actually carry a rim: an `npdabs1` document
+// round-tripped through this build is still `npdabs1`.
 //
 // **What is deliberately NOT carried: the rasterised pixels.** They are
 // derived -- from the records AND from the composite beneath the layer, which
