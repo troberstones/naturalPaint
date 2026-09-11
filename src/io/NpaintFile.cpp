@@ -2020,17 +2020,50 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     // has no equivalent, because a shape list with no shapes carries no
     // settings.
     //
-    // The mutual exclusion with a carried `np:text` is handled where the carry
-    // is replayed, a few lines below, rather than by a predicate here: an
-    // empty `TextContent` is a legitimate value and therefore is NOT evidence
-    // that a decode failed, so `shapes.empty()`'s trick has no analogue.
-    const bool writesOwnText = layer.kind == LayerKind::Text;
+    // **Except when the load CARRIED an `np:text` it could not decode and the
+    // layer is still exactly as the loader left it** -- `np:dabs`' rule below,
+    // which has the full argument. The loader opens such a layer with a
+    // default `TextContent` and keeps the attribute in the carry (PRD I10);
+    // the carry replay below skips a carried `np:text` whenever this build
+    // wrote its own, so until this test the next save replaced a newer
+    // build's text -- an `nptext3:` here -- with an empty default, and the
+    // result reopened WITHOUT a warning, because that payload is one this
+    // build reads. Measured by `--selftest`'s VectorLayer section 13.
+    //
+    // An empty `TextContent` alone is not evidence that a decode failed (it is
+    // the state above), which is why this is not `np:vector`'s
+    // `shapes.empty()`; the carried attribute is that evidence, because the
+    // loader files a recognised name there only when it could not decode it.
+    // "As the loader left it" is judged on the bytes this build would write:
+    // equal to a default-constructed `TextContent`'s, the loader's own state
+    // on a failed decode (io/TextSerial leaves `*textOut` untouched), so any
+    // edit at all -- a typed character, a font choice -- makes the user's
+    // content win, because this build cannot merge it into a payload it
+    // cannot read.
+    auto carriesLayerAttr = [&](const char* name) {
+      if (!carry || i >= carry->layerAttributes.size()) return false;
+      for (const NpaintAttribute& a : carry->layerAttributes[i])
+        if (a.name == name) return true;
+      return false;
+    };
+    const bool writesOwnText =
+        layer.kind == LayerKind::Text &&
+        !(carriesLayerAttr(kAttrText) &&
+          serializeTextContent(layer.text) == serializeTextContent(TextContent{}));
     if (writesOwnText)
       part.attributes.push_back(stringAttr(kAttrText, serializeTextContent(layer.text)));
     // **Flats parts, unconditionally, for `np:text`'s reason**: default
     // parameters with no repairs is the state a fresh Flats layer is in, and
-    // it is a state that flats the drawing -- so it must round-trip.
-    const bool writesOwnFlats = layer.kind == LayerKind::Flats;
+    // it is a state that flats the drawing -- so it must round-trip. **And
+    // with `np:text`'s exception, on `np:text`'s test**: a carried `np:flats`
+    // (an `npflats2:` here) goes back out verbatim while the layer would
+    // serialise exactly as a default-constructed `FlatsContent` does, which is
+    // what the loader leaves when io/FlatsSerial refuses the payload.
+    // Measured by `--selftest`'s VectorLayer section 13b.
+    const bool writesOwnFlats =
+        layer.kind == LayerKind::Flats &&
+        !(carriesLayerAttr(kAttrFlats) &&
+          serializeFlatsContent(layer.flats) == serializeFlatsContent(FlatsContent{}));
     if (writesOwnFlats)
       part.attributes.push_back(stringAttr(kAttrFlats, serializeFlatsContent(layer.flats)));
     // **Strokes parts, unconditionally, for `np:text`'s and `np:flats`'
@@ -2053,13 +2086,10 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     // and a fresh allocator -- which is `np:vector`'s `layer.shapes.empty()`
     // rule: once the user records into the layer, their own records win,
     // because this build cannot merge them into a payload it cannot read.
-    bool carriesUnreadDabs = false;
-    if (carry && i < carry->layerAttributes.size())
-      for (const NpaintAttribute& a : carry->layerAttributes[i])
-        if (a.name == kAttrStrokes) carriesUnreadDabs = true;
+    // `np:text` and `np:flats` above apply the same rule to their own kinds.
     const bool writesOwnStrokes =
         layer.kind == LayerKind::Strokes &&
-        !(carriesUnreadDabs && layer.strokes.dabs.empty() &&
+        !(carriesLayerAttr(kAttrStrokes) && layer.strokes.dabs.empty() &&
           layer.strokes.nextDabId == StrokesContent{}.nextDabId);
     if (writesOwnStrokes)
       part.attributes.push_back(stringAttr(kAttrStrokes, serializeStrokesContent(layer.strokes)));
@@ -2108,9 +2138,10 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
             !(a.name == kAttrVector && layer.shapes.empty()) &&
             // A carried `np:text` this build could not parse is written back
             // verbatim, but only when this build did not just write one of its
-            // own -- which, per the block above, is exactly when the layer is
-            // not a Text layer. Two `np:text` attributes on one part would
-            // leave OpenImageIO's last-write-wins to pick between them.
+            // own -- which, per the block above, is when the Text layer is
+            // still in the state the loader opened it in. Two `np:text`
+            // attributes on one part would leave OpenImageIO's last-write-wins
+            // to pick between them. `np:flats` and `np:dabs`, likewise.
             !(a.name == kAttrText && !writesOwnText) &&
             !(a.name == kAttrFlats && !writesOwnFlats) &&
             !(a.name == kAttrStrokes && !writesOwnStrokes))
@@ -2788,10 +2819,12 @@ NpaintLoadResult loadNpaint(const std::string& path) {
         maskIdx = 0;
         hasMaskChannel = true;
       }
-      // The text block, on `np:vector`'s rules: a future `nptext2:` or a
+      // The text block, on `np:vector`'s rules: a future `nptext3:` or a
       // corrupt payload is NOT an error and is NOT guessed at, the layer comes
       // back with a default `TextContent`, and the attribute stays in the
-      // carry so saving writes it back verbatim (PRD I10).
+      // carry so saving writes it back verbatim (PRD I10) -- which the writer
+      // honours only because `writesOwnText` stands down while the layer
+      // still serialises exactly as that default does (see it).
       //
       // **`textCarried` is set on the ABSENT case too, unlike `np:vector`.**
       // A Text part with no `np:text` at all is a part this build wrote in an
@@ -2833,8 +2866,9 @@ NpaintLoadResult loadNpaint(const std::string& path) {
       // `np:text`'s rules exactly: a future `npflats2:` or a corrupt payload
       // is not guessed at, the layer opens with default content (which still
       // flats the drawing), and the attribute stays in the carry so saving
-      // writes it back verbatim (PRD I10). A missing attribute is warned
-      // about, since this build always writes one.
+      // writes it back verbatim (PRD I10) -- honoured by `writesOwnFlats`
+      // standing down, on `writesOwnText`'s test. A missing attribute is
+      // warned about, since this build always writes one.
       if (const NpaintAttribute* f = findAttr(part.attributes, kAttrFlats);
           f != nullptr && f->type == NpaintAttribute::Type::String) {
         std::string why;
