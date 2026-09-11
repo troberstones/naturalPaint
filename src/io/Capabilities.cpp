@@ -103,7 +103,29 @@ FormatCapability psdCapability() {
   cap.format = ImageFormat::Psd;
   cap.backend = FormatBackend::Native;
   cap.canRead = true;
-  cap.canWrite = false;
+  // **Writable since PLAN.md phase 15 landed** (io/PsdExport, docs/
+  // psd-export.md), and writable in EVERY build configuration for the same
+  // reason reading is: neither direction goes through OpenImageIO, which has
+  // a `psd` reader and no `psd` writer at all.
+  cap.canWrite = true;
+  // **8-bit only, and this is a refusal rather than a gap.** A 16-bit
+  // layered PSD does not put its layer records in the layer info section at
+  // all -- Photoshop writes them into an `Lr16` additional-layer-info block
+  // and leaves the ordinary length at zero. That was the first reason for
+  // the refusal, and it is closed: io/PsdImport reads `Lr16`
+  // (`findLayerInfoBlock16()`), so a 16-bit file this build wrote would now
+  // open with its layers.
+  //
+  // What still refuses it is the 16-bit **full scale**. PLAN.md says
+  // Photoshop's 16-bit range is 0-32768; psd-tools, this project's PSD
+  // oracle, divides 16-bit samples by 65535 and has no 32768 anywhere.
+  // io/PsdImport reads 65535 and states it as an open question (its header's
+  // "Depth" section). Writing 16-bit would bake one answer into every file
+  // before a real 16-bit Photoshop file has settled which one is right, so
+  // the depth is simply not writable and io/Export refuses it by name. See
+  // docs/psd-export.md, "The finding that scopes the first landing to
+  // 8-bit", and its 2026-09-10 update.
+  cap.writableDepths[static_cast<std::size_t>(ExportBitDepth::UInt8)] = true;
   // A layer's own alpha channel (id -1) is read when present -- see
   // io/PsdImport.cpp's channel walk.
   cap.hasAlpha = true;

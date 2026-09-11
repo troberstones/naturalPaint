@@ -31,6 +31,7 @@ add_executable(naturalPaint
   app/PenTool.cpp
   app/VectorStyle.cpp
   app/TextTool.cpp
+  app/PsdExportCli.cpp
   app/PsdReport.cpp
   app/SvgReport.cpp
   app/ProfileToggle.cpp
@@ -218,6 +219,11 @@ add_executable(naturalPaint
   app/selftest/PencilDeposit.cpp
   app/selftest/Probe.cpp
   app/selftest/PackBits.cpp
+  app/selftest/PsdWrite.cpp
+  app/selftest/PsdBlendKeys.cpp
+  app/selftest/PsdExport.cpp
+  app/selftest/PsdLayerSection.cpp
+  app/selftest/PsdLayerExtras.cpp
   app/selftest/PsdImport.cpp
   app/selftest/QuitGuard.cpp
   app/selftest/RecoveryJournal.cpp
@@ -227,6 +233,7 @@ add_executable(naturalPaint
   app/selftest/RgbErase.cpp
   app/selftest/Smudge.cpp
   app/selftest/SmudgeOptions.cpp
+  app/selftest/PigmentSmudge.cpp
   app/selftest/SaveReadback.cpp
   app/selftest/Scatter.cpp
   app/selftest/ScatterCount.cpp
@@ -335,6 +342,7 @@ add_executable(naturalPaint
   brush/NativeBrush.cpp
   brush/PencilDeposit.cpp
   brush/PigmentErase.cpp
+  brush/PigmentSmudge.cpp
   brush/RgbDeposit.cpp
   brush/RgbErase.cpp
   brush/Smudge.cpp
@@ -384,6 +392,7 @@ add_executable(naturalPaint
   io/AbrBrushes.cpp
   io/Capabilities.cpp
   io/ClipboardImage.cpp
+  io/ClipboardText.cpp
   io/CompSerial.cpp
   io/Descriptor.cpp
   io/Export.cpp
@@ -399,6 +408,11 @@ add_executable(naturalPaint
   io/NpaintFile.cpp
   io/OpSerial.cpp
   io/PackBits.cpp
+  io/PsdWrite.cpp
+  io/PsdBlendKeys.cpp
+  io/PsdExport.cpp
+  io/PsdLayerSection.cpp
+  io/PsdLayerExtras.cpp
   io/PathSerial.cpp
   io/PsPatterns.cpp
   io/PsdImport.cpp
@@ -703,9 +717,11 @@ endif()
 # io/OiioBackend.hpp, which is what made this reversal a CMake change rather
 # than a source-wide one.
 #
-# NP_USE_OIIO is still defined, unconditionally, so the ~230 `#if
-# defined(NP_USE_OIIO)` sites across src/ keep telling the truth. Removing
-# those guards and their now-dead `#else` branches is a separate change.
+# NP_USE_OIIO is still defined, unconditionally. It was kept so the ~230
+# `#if defined(NP_USE_OIIO)` sites across src/ kept telling the truth until
+# their now-dead `#else` branches were removed; that has since happened
+# (5b28695, 8f4aa1e), no source file tests the macro any more, and the
+# define below is inert.
 #
 # Both OpenImageIO::OpenImageIO and OpenImageIO::OpenImageIO_Util are linked
 # explicitly. The config package's imported target does chain the Util

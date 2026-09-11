@@ -4,6 +4,8 @@
 #include <utility>
 
 #include "app/AppState.hpp"
+#include "app/DocumentLifecycle.hpp"
+#include "app/TransformSession.hpp"
 #include "ui/MenuModel.hpp"
 
 namespace np {
@@ -532,6 +534,146 @@ bool runMenuModelTest() {
               menuActionEffect(MenuAction::ToolItem) == MenuEffect::Inline,
           "modal: the plain state flips are still Inline -- marking everything deferred "
           "would put a frame between every click and its own check mark");
+  }
+
+  std::printf("  -- E2. which menu actions END a live transform --\n");
+  {
+    // docs/testing-issues.md T29. The tool palette is GREYED while a gizmo is
+    // up; the menu bar deliberately is not, because greying it would take
+    // Undo, Save and Quit with it. It resolves the transform instead.
+    //
+    // The classification is what `--selftest` can hold: `performMenuAction()`
+    // reads it once, ahead of its own switch, so this function is where the
+    // decision actually lives.
+
+    // **A safety net, not the rule.** The Layer menu is GREYED under a gizmo
+    // rather than cancelling it (`app/selftest/ToolSurface.cpp` section H
+    // holds that half), so neither of these can arrive while a session is up.
+    // They stay classified as ending it because if one ever did arrive,
+    // cancelling first is the safe direction and there is no writer-level
+    // refusal underneath -- unlike `ToolItem`, which `setActiveTool()` refuses
+    // on its own.
+    check(menuActionEndsTransform(MenuAction::LayerCommandItem) &&
+              menuActionEndsTransform(MenuAction::LayerSetCommandItem),
+          "transform: the two LAYER command families would end a live transform if one ever "
+          "reached the dispatch -- a safety net under the greyed menu, since nothing refuses "
+          "these at the writer the way `setActiveTool()` refuses a tool change");
+
+    // The other four shapes of "this document is about to change underneath a
+    // matrix aimed at it".
+    check(menuActionEndsTransform(MenuAction::Undo) && menuActionEndsTransform(MenuAction::Redo),
+          "transform: undo and redo end it -- both replace the whole Document from a "
+          "snapshot, so every index the session holds is about to mean something else");
+    check(menuActionEndsTransform(MenuAction::Paste) &&
+              menuActionEndsTransform(MenuAction::DeleteSelection),
+          "transform: so do the clipboard edits -- Paste inserts a layer");
+    check(menuActionEndsTransform(MenuAction::ImageSize) &&
+              menuActionEndsTransform(MenuAction::CropToSelection),
+          "transform: and the document-geometry commands, which move every layer at once");
+    check(menuActionEndsTransform(MenuAction::AdjustLevels) &&
+              menuActionEndsTransform(MenuAction::GaussianBlur),
+          "transform: and the Filter/Adjustment dialogs, which rewrite the pixels the "
+          "pending matrix was aimed at");
+
+    // **The exemptions, each of which would be a real cost to get wrong.**
+    check(!menuActionEndsTransform(MenuAction::ZoomIn) &&
+              !menuActionEndsTransform(MenuAction::ZoomOut) &&
+              !menuActionEndsTransform(MenuAction::FitToWindow),
+          "transform: REQUIRED -- zooming does NOT end it. Zooming in to place something "
+          "precisely is a mid-transform gesture, and Cmd+= ending the gizmo would be the "
+          "feature fighting the one thing it exists to support");
+    check(!menuActionEndsTransform(MenuAction::Save) &&
+              !menuActionEndsTransform(MenuAction::SaveAs) &&
+              !menuActionEndsTransform(MenuAction::ExportAs),
+          "transform: REQUIRED -- writing a FILE does not end it. The document is unchanged, "
+          "and Cmd+S is muscle memory; losing a transform to it is the worst surprise "
+          "available here");
+    check(!menuActionEndsTransform(MenuAction::ActivateDocument),
+          "transform: switching documents does not end it -- a session outlives a document "
+          "switch on purpose, and cancelling here would undo that through the back door");
+    check(!menuActionEndsTransform(MenuAction::Quit),
+          "transform: nor does the quit REQUEST, which the user can still back out of once "
+          "per dirty document");
+    check(!menuActionEndsTransform(MenuAction::ToolItem),
+          "transform: nor the tool item, which the OTHER rule owns -- it is drawn disabled "
+          "and `setActiveTool()` refuses it, so the two rules must not contradict");
+
+    // Neither blanket answer passes: count both directions rather than
+    // trusting the spot checks above to have covered a `return true;`.
+    size_t ends = 0;
+    size_t exempt = 0;
+    for (int i = 0; i < static_cast<int>(MenuAction::Count); ++i) {
+      if (menuActionEndsTransform(static_cast<MenuAction>(i))) ++ends;
+      else ++exempt;
+    }
+    check(ends > 0 && exempt > 0 && ends > exempt,
+          "transform: the classification is a real split with a majority that ENDS -- a "
+          "blanket answer in either direction fails here, and the exemptions are the "
+          "argued minority rather than the rule");
+
+    // **And the dispatch really reads it.** `performMenuAction()` is declared
+    // at the bottom of ui/MenuModel.hpp behind a forward-declared `AppState`,
+    // which is what lets this run with no window and no ImGui frame -- the
+    // same property the Quit-routing assertions above rely on. Without this,
+    // the classification could be perfect and the one line that consults it
+    // could be missing, and nothing would notice.
+    auto inkedDoc = [](AppState& st) -> OpenDocument* {
+      OpenDocument* od = st.documents.add(makeBlankOpenDocument(32, 24, WorkingSpace{}));
+      if (od == nullptr || od->document.layers.empty()) return nullptr;
+      TileStore& tiles = *od->document.layers[0].rgbTiles;
+      for (int32_t y = 0; y < 6; ++y)
+        for (int32_t x = 0; x < 6; ++x)
+          tiles.getOrCreate(tileCoordAt(PixelCoord{x, y}))
+              .writePixel(tileLocalOffset(PixelCoord{x, y}), {1.0f, 0.5f, 0.25f, 1.0f});
+      od->recordEdit("ink", EditKind::Content);
+      return od;
+    };
+
+    {
+      AppState st;
+      OpenDocument* od = inkedDoc(st);
+      check(od != nullptr && st.transform.beginLayer(*od, 0).ok && st.transform.active(),
+            "transform: (setup) a live session on the active document");
+      // `Deselect` only raises `st.requestDeselect`, so this exercises the
+      // hook and nothing else -- no dialog, no engine call, no GPU.
+      performMenuAction(st, MenuAction::Deselect, 0, 0, 0);
+      check(!st.transform.active(),
+            "transform: REQUIRED -- performing a menu action that ends a transform actually "
+            "CANCELS the session. The classification above is worth nothing if the dispatch "
+            "never consults it");
+      check(st.requestDeselect,
+            "transform: ...and the command itself still ran. Cancelling is what clears the "
+            "way for it, not what replaces it");
+    }
+
+    {
+      AppState st;
+      OpenDocument* od = inkedDoc(st);
+      check(od != nullptr && st.transform.beginLayer(*od, 0).ok,
+            "transform: (setup) a second live session");
+      performMenuAction(st, MenuAction::ZoomIn, 0, 0, 0);
+      check(st.transform.active(),
+            "transform: REQUIRED -- and an EXEMPT action leaves it alone. Zoom must survive "
+            "the hook, or the exemption list is decoration");
+    }
+
+    {
+      // The document scoping, the same one `transformModalRefusal()` uses: a gizmo
+      // parked on a document the user has tabbed away from is not in this
+      // command's way, and cancelling it would destroy work on a document the
+      // command never touches.
+      AppState st;
+      OpenDocument* a = inkedDoc(st);
+      check(a != nullptr && st.transform.beginLayer(*a, 0).ok,
+            "transform: (setup) a session on document A");
+      OpenDocument* b = inkedDoc(st);
+      check(b != nullptr && st.documents.active() == b,
+            "transform: (setup) document B is now active");
+      performMenuAction(st, MenuAction::Deselect, 0, 0, 0);
+      check(st.transform.active() && st.transform.documentId() == a->id,
+            "transform: REQUIRED -- a menu command run on document B does NOT cancel a "
+            "session parked on A. It is not in the way, and A's work is not B's to discard");
+    }
   }
 
   std::printf("  -- F. key equivalents: what a native menu CONSUMES --\n");

@@ -2,6 +2,9 @@
 
 #include <cstring>
 
+#include "core/Half.hpp"
+#include "core/TextContent.hpp"
+#include "text/Shaper.hpp"
 #include "ui/TransformPreviewTexture.hpp"
 
 namespace np {
@@ -228,6 +231,69 @@ bool runTransformPreviewTextureTest() {
           "SABOTAGE: the source layer's tiles are BIT-IDENTICAL before and after "
           "transformPreviewStraightHalf() -- proof this file's read never became a write, whether "
           "or not a selection was passed");
+  }
+
+  // --- a Text layer previews, though it holds no tiles ----------------------
+  //
+  // The defect this pins: a `LayerKind::Text` layer is parametric, so
+  // `copyThroughSelection()` finds no `rgbTiles`, the packer returned empty,
+  // `upload()` returned false, and dragging a caption showed an empty box
+  // with the text nowhere on screen. Not an approximate preview -- the thing
+  // being dragged was invisible while you dragged it.
+  //
+  // Guarded on `shaperAvailable()` like every other assertion that shapes
+  // real text: a build with no CoreText has no glyphs to rasterise and must
+  // see a skipped check, not a red one.
+  if (shaperAvailable()) {
+    Layer text;
+    text.kind = LayerKind::Text;
+    text.name = "caption";
+    text.text = makeTextContent("Handgloves", PathPoint{4.0f, 30.0f});
+
+    const DocumentRegion bounds{0, 0, 200u, 60u};
+    const std::vector<uint16_t> half = transformPreviewStraightHalf(text, nullptr, bounds);
+    check(half.size() == 200u * 60u * 4u,
+          "text: REQUIRED -- a Text layer packs a full-sized preview. Empty here is the bug "
+          "itself: it is what made a dragged caption invisible for the whole drag");
+
+    // Non-empty is not enough -- a correctly-sized block of transparent
+    // black would pass the size check and still show nothing. So: some texel
+    // is actually opaque.
+    bool anyInk = false;
+    for (size_t i = 3; i < half.size(); i += 4)
+      if (halfToFloat(half[i]) > 0.5f) {
+        anyInk = true;
+        break;
+      }
+    check(anyInk,
+          "text: REQUIRED -- and at least one texel of it is OPAQUE, so the glyphs were really "
+          "rasterised rather than a correctly-sized sheet of nothing being handed back");
+
+    // The crop is honoured. A region past every glyph must come back empty of
+    // ink -- this is what fails if the rasteriser is handed the crop's SIZE
+    // instead of the document's, which would clip the glyphs to the wrong
+    // rectangle and slide the preview against the box during the drag.
+    const DocumentRegion faraway{400, 400, 20u, 20u};
+    const std::vector<uint16_t> off = transformPreviewStraightHalf(text, nullptr, faraway);
+    bool inkFarAway = false;
+    for (size_t i = 3; i < off.size(); i += 4)
+      if (halfToFloat(off[i]) > 0.5f) {
+        inkFarAway = true;
+        break;
+      }
+    check(!inkFarAway,
+          "text: a crop far from the block comes back with no ink -- the glyphs are placed in "
+          "DOCUMENT space, not redrawn at the crop's own origin");
+
+    // A Vector layer is deliberately NOT previewed, because
+    // `transformLayer()` still moves nothing for one: a preview that slid and
+    // then snapped back on mouse-up would be a worse lie than the empty box.
+    Layer vec;
+    vec.kind = LayerKind::Vector;
+    vec.name = "shapes";
+    check(transformPreviewStraightHalf(vec, nullptr, bounds).empty(),
+          "vector: still previews nothing, deliberately -- its commit is still a no-op, and a "
+          "preview promises what the commit will do");
   }
 
   return ok;

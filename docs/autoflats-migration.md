@@ -29,7 +29,8 @@ a Flats layer is the model, and the paint bucket's `FILL: Flats` mode is the ent
 | Paint bucket `FILL: Flats` — recolour / Option carve / Shift same-colour on a Flats layer; bake of the sag basin on an RGB layer; SHEET / GAP / DECLUTTER in the options row | built (ui/AtelierChrome, ui/MacPaintUI) |
 | Flats-scoped keys: `K` delete, `M` two-click merge, `,` `.` `Return` gap review, `⌘⇧K` cluster small; suggestion and bridge overlay | built; `main.cpp` now resolves chords against the active layer's kind |
 | Bridge pen / eraser, draw-merge, lasso → group / shape, select-edits (`flats/Tool` has each as a one-call function) | **wired.** Each is a cell in the FLATS TOOLS palette and a branch of the flats canvas route; the lasso commit moved out of `case Tool::Lasso:` so the flats route owns it. Select-edits went further than autoFlats: it selects and box-selects **all seven** recorded kinds, where autoFlats' own picker covers four and leaves barriers unselectable |
-| Fills panel; `FLATS · N FILLS` sub-line; expand to layers (N9); PSD group export | not built |
+| Fills panel; `FLATS · N FILLS` sub-line; expand to layers (N9) | not built |
+| PSD group export | **unblocked** — `io/PsdLayerExtras` writes `lsct` group records; what is missing is the flats-side caller, not the writer |
 | GPU membrane on `jacobi.wgsl` (N8), GPU growth kernel, capped-resolution preview | not built; the CPU port is the fixed answer they are held to |
 | Wash via a Media layer (N12) | not built |
 
@@ -109,7 +110,7 @@ it was always meant to be.
 | `core/membrane.ts` | 246 | **to WGSL** — re-parameterise `jacobi.wgsl` (§1.2) |
 | | **406** | **to GPU** |
 | `core/watercolor.ts` | 409 | **delete** — superseded by the real sim (§4) |
-| `core/psd.ts` | 217 | **delete** — OIIO plus the existing PSD export tiers |
+| `core/psd.ts` | 217 | **delete** — `io/PsdExport` (PLAN.md phase 15, landed). **NOT OIIO**: its `psd` plugin is input-only, and `io/Capabilities` probes `output_format_list` at run time and finds no `psd` entry |
 | | **626** | **deleted** |
 | `main.ts` | 2,294 | **split**: ~800 lines of algorithm extracted (§3), the rest replaced by ImGui |
 | `ui/canvasView.ts` | 423 | **replaced** — naturalPaint's viewport, pan/zoom and rulers |
@@ -319,7 +320,9 @@ Line Art*, Williams & Jacobs stochastic completion fields, Kellman–Shipley rel
 Euler elastica, Zhang–Suen thinning, Deegan et al. on the coffee-ring effect. No
 encumbrance and no ADR-0006 equivalent needed; credit them in the design doc.
 
-The two dependencies both drop out: `ag-psd` (MIT) is replaced by OIIO, and the
+The two dependencies both drop out: `ag-psd` (MIT) is replaced by this project's own
+`io/PsdExport` — **not by OIIO, which has no PSD writer at all** (see
+[docs/psd-export.md](psd-export.md)) — and the
 pixel-art icon sets (MIT, CC BY 4.0) go with the browser UI.
 
 ---

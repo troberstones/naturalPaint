@@ -4,8 +4,58 @@
 #include <cmath>
 
 #include "core/LayerGeometry.hpp"
+#include "core/LayerOps.hpp"
 
 namespace np {
+namespace {
+
+// `core/TextContent`'s `PathBounds` (float, min/max, `valid`) as the
+// `LayerBounds` (integer texels, `empty`) the rest of this file speaks. The
+// block is shaped to get them, which is why this is not a member of anything
+// hot: it runs once, at pen-down.
+LayerBounds boundsFromTextContent(const TextContent& text) {
+  LayerBounds b;
+  PathBounds pb = textContentBounds(text);
+  if (!pb.valid) {
+    // No ink -- but that is not the same as nothing to transform. A paragraph
+    // frame is dragged out BEFORE a word of it is typed, and from that moment
+    // it is a real object on screen: an outline and eight resize handles, at a
+    // size and place the user chose. Refusing Cmd+T on it said "nothing to
+    // transform" about a box they were looking at.
+    //
+    // So the fallback is the block's own drawn box -- `textFrameQuad()`, the
+    // same function the overlay outlines and the handles are built from, so
+    // the gizmo cannot appear anywhere but around the frame the user sees.
+    // Its corners come back already mapped through `TextContent::transform`,
+    // which is why the extent is taken over all four rather than from two:
+    // an empty frame that has ALREADY been rotated has no axis-aligned pair.
+    //
+    // Still refused, and rightly, for an empty POINT block: `textFrameQuad()`
+    // returns false there because point text has no frame at all and no ink
+    // to stand in for one, so there is no box on screen either -- only a
+    // caret. Handles around a zero-width nothing would be a gizmo the user
+    // could not aim, and the region maths behind it is degenerate.
+    TextQuad q;
+    if (!textFrameQuad(text, &q)) return b;
+    pb.valid = true;
+    pb.minX = pb.maxX = q.corner[0].x;
+    pb.minY = pb.maxY = q.corner[0].y;
+    for (const PathPoint& c : q.corner) {
+      pb.minX = std::min(pb.minX, c.x);
+      pb.minY = std::min(pb.minY, c.y);
+      pb.maxX = std::max(pb.maxX, c.x);
+      pb.maxY = std::max(pb.maxY, c.y);
+    }
+  }
+  b.empty = false;
+  b.minX = static_cast<int32_t>(std::floor(pb.minX));
+  b.minY = static_cast<int32_t>(std::floor(pb.minY));
+  b.maxX = static_cast<int32_t>(std::ceil(pb.maxX));
+  b.maxY = static_cast<int32_t>(std::ceil(pb.maxY));
+  return b;
+}
+
+}  // namespace
 
 namespace {
 
@@ -285,7 +335,7 @@ void TransformSession::endDrag() noexcept { drag_.active = false; }
 
 void TransformSession::cancel() noexcept { *this = TransformSession{}; }
 
-TransformBeginResult TransformSession::beginLayer(const OpenDocument& od, size_t layerIndex,
+TransformBeginResult TransformSession::beginLayer(OpenDocument& od, size_t layerIndex,
                                                   const Mat3& initialPending) {
   const Document& doc = od.document;
   TransformBeginResult r;
@@ -301,24 +351,52 @@ TransformBeginResult TransformSession::beginLayer(const OpenDocument& od, size_t
              " is locked. Unlock it first.";
     return r;
   }
-  if (!layer.rgbTiles.has_value() && !layer.pigmentTiles.has_value()) {
+  // A Text layer is the one kind with no pixels that a transform still means
+  // something for: `TextContent::origin` is its geometry, and `ops/
+  // DocumentTransform`'s `transformLayer()` moves that point (and refuses a
+  // scale or rotation by name, since a `TextContent` has nowhere to put one).
+  // Without this exemption the refusal below fired first and the Move tool
+  // did nothing at all on a caption -- both the drag and the arrow-key nudge,
+  // since `nudgeMove()` comes through here too.
+  //
+  // The same gap is still open for `LayerKind::Vector`, which also holds no
+  // tiles: its geometry is `layer.shapes`, every anchor of which would have
+  // to be mapped. That is a bigger change than this one and nobody has asked
+  // for it, so it is named here rather than half-done.
+  const bool geometryOnlyText = layer.kind == LayerKind::Text;
+  if (!geometryOnlyText && !layer.rgbTiles.has_value() && !layer.pigmentTiles.has_value()) {
     r.error = "transform refused: " + layerLabel(doc, layerIndex) + " is a " +
              layerKindName(layer.kind) + " layer, which holds no pixels to transform.";
     return r;
   }
-  const LayerBounds bounds = layerContentBounds(layer);
+  // `layerContentBounds()` scans tile stores and finds nothing on a Text
+  // layer, so its bounds come from the shaped block instead. Deliberately not
+  // widened inside `layerContentBounds()` itself: that function is read by
+  // thumbnails, fitting and several layer ops, and quietly giving Text layers
+  // bounds everywhere is a change with a much larger blast radius than the
+  // one thing needed here.
+  const LayerBounds bounds =
+      geometryOnlyText ? boundsFromTextContent(layer.text) : layerContentBounds(layer);
   if (bounds.empty) {
     r.error = "transform refused: " + layerLabel(doc, layerIndex) +
              " has no content -- nothing to transform.";
     return r;
   }
 
+  // **Stamped before the reset below wipes the session**, and read back out of
+  // the document rather than remembered from above: `ensureLayerId()` is what
+  // assigns one when the layer has none, and the number it returns is the one
+  // `commit()` will compare against. See the header's `layerId()` for the
+  // defect this closes.
+  const uint64_t layerId = ensureLayerId(od.document, layerIndex);
+
   *this = TransformSession{};
   sourceBounds_ = regionFromBounds(bounds);
-  // Set together with `layerIndex_`, and never apart from it: the pair is what
-  // identifies the pixels this session owns. See the header's beginLayer().
+  // Set together with `layerIndex_`, and never apart from it: the three are
+  // what identify the pixels this session owns. See the header's beginLayer().
   documentId_ = od.id;
   layerIndex_ = layerIndex;
+  layerId_ = layerId;
   target_ = TransformTarget::Layer;
   pending_ = initialPending;
   active_ = true;
@@ -326,7 +404,7 @@ TransformBeginResult TransformSession::beginLayer(const OpenDocument& od, size_t
   return r;
 }
 
-TransformBeginResult TransformSession::beginSelectionPixels(const OpenDocument& od,
+TransformBeginResult TransformSession::beginSelectionPixels(OpenDocument& od,
                                                              const Selection& selection,
                                                              size_t layerIndex) {
   const Document& doc = od.document;
@@ -372,11 +450,17 @@ TransformBeginResult TransformSession::beginSelectionPixels(const OpenDocument& 
     return r;
   }
 
+  const uint64_t layerId = ensureLayerId(od.document, layerIndex);
+
   *this = TransformSession{};
   sourceBounds_ = region;
   selectionSnapshot_ = selection;
   documentId_ = od.id;
   layerIndex_ = layerIndex;
+  // A selection-pixels transform is bounded by the selection but still lands
+  // on ONE layer, at `layerIndex_`, so it goes stale in exactly the same way
+  // and gets the identical stamp.
+  layerId_ = layerId;
   target_ = TransformTarget::SelectionPixels;
   active_ = true;
   r.ok = true;
@@ -403,6 +487,33 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
     return out;
   }
 
+  // **The same guard, one level down: the LAYER this session began on.**
+  // `documentId_` above stops a commit landing in the wrong document;
+  // `layerIndex_` is an index into THIS document's layer list and does not
+  // survive that list moving. `Layer > Delete Layer` is reachable from the menu
+  // bar while a gizmo is up (docs/testing-issues.md T29), and deleting a layer
+  // BELOW the transformed one shifts every index above it down by one --
+  // measured on a four-layer document, a session begun on the layer named `L0`
+  // at index 1 committed onto `L1` and reported success.
+  //
+  // Refused rather than clamped or re-found by searching for the id: the
+  // matrix was dragged against a layer at a position that no longer holds it,
+  // and silently applying it somewhere else is the defect, not the fix.
+  // `active_` stays true, matching the document guard just above -- undo the
+  // reorder and the id lines up again, and Return does what the user meant.
+  //
+  // Out-of-range is folded in here rather than left to `transformLayer()`'s
+  // own bounds check, so that the two halves of one question ("is the layer
+  // still there, and is it still the same layer") answer in one sentence
+  // instead of two written in different files.
+  if (layerIndex_ >= od.document.layers.size() ||
+      od.document.layers[layerIndex_].id != layerId_) {
+    out.error = "transform commit refused: the layer this transform began on is no longer at "
+                "that position in the stack -- it was deleted, reordered or merged, or the "
+                "document was undone past it. Press Escape to discard the transform.";
+    return out;
+  }
+
   // An identity transform is a no-op: nothing is written, nothing is
   // recorded. See this header's section 7 for why that is this file's own
   // decision rather than inherited from TransformStack's "no-op" rule.
@@ -414,7 +525,18 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
   }
 
   if (target_ == TransformTarget::Layer) {
-    const LayerTransformResult r = transformLayer(od.document, layerIndex_, pending_, params);
+    // A Text layer's geometry is `TextContent::origin`, not a tile store, so
+    // it takes the one path that moves a point instead of resampling pixels.
+    // `transformLayer()` would walk it, find no stores and report success
+    // having moved nothing -- which is the right answer for the whole-document
+    // crop/resize that also calls it, and the wrong one here.
+    // ops/DocumentTransform.hpp's `transformTextLayer()` says why those two
+    // callers are kept apart.
+    const bool textLayer = layerIndex_ < od.document.layers.size() &&
+                           od.document.layers[layerIndex_].kind == LayerKind::Text;
+    const LayerTransformResult r =
+        textLayer ? transformTextLayer(od.document, layerIndex_, pending_)
+                  : transformLayer(od.document, layerIndex_, pending_, params);
     if (!r.ok) {
       out.error = r.error;
       return out;

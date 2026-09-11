@@ -1,6 +1,27 @@
 # Blend modes: what Photoshop has that this build doesn't, and what closing that costs
 
-`core/Blend` implements **7** blend modes. Photoshop has **27** (26 real blend
+> **STATUS (2026-09-10): CLOSED. Everything this document scopes is built.**
+> This is the plan as written on 2026-08-31, kept for its derivations and its
+> per-mode arguments; **its present-tense claims about what is missing are
+> stale and are corrected inline below.** `core/Blend` now has **27**
+> `BlendMode` values — the KM `Mix` plus 26 Photoshop modes, i.e. Stages 1, 2
+> and 3 in full. The only Photoshop mode still absent is **Dissolve**, which
+> this document scopes out on purpose (§"Out of scope: Dissolve"). The blend
+> key table those stages fed now lives in **`io/PsdBlendKeys.hpp`**, not in
+> `io/PsdImport.cpp`'s anonymous namespace, and is read in **both**
+> directions — PSD import needs key → mode, PSD export needs mode → key.
+> `app/selftest/PsdBlendKeys.cpp` holds a tripwire that every `BlendMode`
+> enumerator is either in that table or on a named "no PSD key" list (today:
+> `Mix` alone).
+>
+> **What is still open, and always will be**: this codebase composites in
+> premultiplied **linear light** and Photoshop's default is gamma-space, so
+> only `dark`→`Min` and `lite`→`Max` are *exact* (min/max commute with any
+> monotone transfer function). Every other mode is selected correctly and
+> composites approximately. See `io/PsdBlendKeys.hpp`.
+
+`core/Blend` implements **7** blend modes *(as of 2026-08-31; now 27 — see
+STATUS above)*. Photoshop has **27** (26 real blend
 modes plus `pass`, which is a group-compositing flag, not a blend). This
 document scopes closing that gap — which modes are cheap, which are hard, and
 why, so the work can be dispatched the way `docs/psd-import-gaps.md` was.
@@ -18,8 +39,11 @@ which the importer will pick up for free.
 The user's own file, `Peter_confronts_a_small_monster_with_fire.psd`, uses
 `colr` (Color) three times (`Tint`, `Layer 26`, `Layer 58`) and `lddg` (Linear
 Dodge/Add) once. `lddg` now imports correctly (this session's PSD-gap-2 fix).
-`colr` correctly imports as Normal with a named warning, because there is
-nothing in `core::BlendMode` to map it to:
+**As of 2026-08-31**, `colr` imported as Normal with a named warning, because
+there was nothing in `core::BlendMode` to map it to. **That is no longer
+true** — `colr`→`Color` and `lum `→`Luminosity` are both real rows in
+`io/PsdBlendKeys.cpp` and the warnings below no longer appear. The transcript
+is kept because it is the evidence the plan was written from:
 
 ```
 1 x  layer 'Layer 26': PSD blend mode 'colr' has no equivalent in this build and was imported as Normal.
@@ -27,10 +51,15 @@ nothing in `core::BlendMode` to map it to:
 1 x  layer 'Tint':     PSD blend mode 'colr' has no equivalent in this build and was imported as Normal.
 ```
 
-That is the importer behaving exactly as designed. Fixing the look means
-teaching the compositor Color, not teaching the importer anything new.
+That was the importer behaving exactly as designed, and fixing the look meant
+teaching the compositor Color rather than teaching the importer anything new.
+Stage 3 did exactly that; the warning is gone.
 
 ## What's already implemented
+
+*(This table is the 2026-08-31 snapshot. Every Stage 1/2/3 mode below is now
+implemented too, with the PSD keys given in those stages' own tables; the one
+authoritative list of key ↔ mode is `io/PsdBlendKeys.cpp`.)*
 
 | mode | PSD key | `core::BlendMode` | `BlendSpace` |
 |---|---|---|---|
@@ -228,8 +257,12 @@ Checked directly, not assumed:
   and the panel's own list both walk `allBlendModes()` and already append
   `" (display-referred)"` automatically from `BlendModeInfo::space`. A mode
   added to the table appears in the menu, correctly labelled, for free.
-- **`io/PsdImport.cpp`**: one `kBlendKeyMap` row per mode, using the PSD keys
-  in the tables above.
+- **`io/PsdBlendKeys.cpp`** (`io/PsdImport.cpp` when this was written): one
+  `kBlendKeyMap` row per mode, using the PSD keys in the tables above. The
+  table moved out of the importer's anonymous namespace when PSD *export*
+  needed the reverse lookup; a row now serves both directions, and
+  `app/selftest/PsdBlendKeys.cpp` refuses to let a new `BlendMode` skip
+  triage.
 - **`--selftest`**: two hardcoded `allBlendModes().size() == 7` /
   `blendMenuForLayer(...).size() == 7` counts (`app/selftest/Blend.cpp`,
   `app/selftest/LayerPanel2a.cpp`) need bumping per mode added. The existing

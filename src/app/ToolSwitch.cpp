@@ -6,7 +6,19 @@
 
 namespace np {
 
-void setActiveTool(AppState& st, Tool next) noexcept {
+namespace {
+
+// `setActiveTool()` with the gizmo's refusal (ToolSwitch.hpp section 5) already
+// answered -- the whole of the old `setActiveTool()`, unchanged.
+//
+// It exists so that `enterTransformTool()` can reach the ledger, the crop
+// cancel and the flats clear WITHOUT going through the check, which it must:
+// by the time it is called the session it belongs to is already live, so the
+// public setter would refuse the one switch that is not the user changing
+// their mind. Putting the exemption in a private entry point rather than in a
+// `bool force` argument keeps a caller from ever asking for it by accident --
+// there is exactly one, in this file, four lines below.
+void installTool(AppState& st, Tool next) noexcept {
   // The tool the user is *leaving*, which is not always `brush.tool`: while
   // Space is held `brush.tool` is the borrowed Hand and the tool the user
   // actually has selected is `springReturn` (header §2). Recording the Hand
@@ -61,6 +73,43 @@ void setActiveTool(AppState& st, Tool next) noexcept {
   // at it, and arriving with a stale shape from before is the same defect
   // wearing the other hat.
   cropCancel(st.crop);
+}
+
+}  // namespace
+
+const char* transformModalRefusal(const AppState& st) noexcept {
+  if (!st.transform.active()) return nullptr;
+  // The document scoping ToolSwitch.hpp section 5 argues for, spelled the same
+  // way `ui/MacPaintUI.cpp`'s `transformOnThisDoc` spells it. A session on a
+  // document the user has tabbed away from draws no gizmo and offers no key
+  // that ends it, and locking the palette from behind it would be a modal
+  // state with no visible dialog and no way out.
+  const OpenDocument* od = st.documents.active();
+  if (od == nullptr || st.transform.documentId() != od->id) return nullptr;
+  // The wording is `ui/MacPaintUI.cpp`'s own, from the numeric Transform
+  // dialog's refusal of a second session -- the same state, already given a
+  // sentence, and a second phrasing for it would be two voices for one fact.
+  return "A transform is in progress. Press Return to apply it or Escape to cancel it.";
+}
+
+bool setActiveTool(AppState& st, Tool next) noexcept {
+  if (transformModalRefusal(st) != nullptr) return false;
+  installTool(st, next);
+  return true;
+}
+
+bool enterTransformTool(AppState& st) noexcept {
+  // `effectiveTool()`, not `brush.tool`: with Space held the installed tool is
+  // the borrowed Hand and the tool the user is actually in is `springReturn`.
+  // Reporting "changed" off the Hand would be answering about the borrow.
+  // `installTool()` below ends that borrow either way, which is right -- a
+  // gizmo is up, and the pan the user was in the middle of is over.
+  const bool changed = effectiveTool(st) != Tool::Move;
+  // `installTool()`, not `setActiveTool()`: the session is already live by the
+  // time this is called (every call site checks the begin succeeded first), so
+  // the public setter would refuse it. See `installTool()`'s own comment.
+  installTool(st, Tool::Move);
+  return changed;
 }
 
 bool hasPreviousTool(const AppState& st) noexcept { return st.tools.hasPrevious; }
@@ -212,7 +261,19 @@ void clearFlatsEditSelection(AppState& st) noexcept {
   st.flatsEditBoxAdditive = false;
 }
 
-void setFlatsTool(AppState& st, FlatsTool next) noexcept {
+bool setFlatsTool(AppState& st, FlatsTool next) noexcept {
+  // **Its own check, still, even though this no longer writes `brush.tool`.**
+  // It used to install a host tool per ADR-0009's table, and the merge that
+  // brought the two-independent-palettes change in removed that switch -- so
+  // the reason this needs a gate of its own changed with it. It is no longer
+  // "there is a second writer of `brush.tool` in this file"; it is that
+  // `st.flatsTool` is a second answer to *what does a click mean*, and
+  // `flatsToolIsActive()` below makes that answer EXCLUSIVE. Arming a flatting
+  // gesture under a live gizmo hands the canvas to the flats route, which is
+  // the same hole ToolSwitch.hpp section 5 closes for the ordinary tools --
+  // and this function does not route through `setActiveTool()`, so it cannot
+  // inherit that one's check.
+  if (transformModalRefusal(st) != nullptr) return false;
   st.flatsTool = next;
   // **Any tool change drops the selection**, including picking SELECT EDITS
   // again. A selection is a set of `flatEditKey()` values, which mean nothing
@@ -224,7 +285,7 @@ void setFlatsTool(AppState& st, FlatsTool next) noexcept {
   // armed point belongs to the gesture being abandoned, and carrying it into
   // the next one would merge two fills the user never paired.
   st.flatsMergeFirst.reset();
-  if (next == FlatsTool::None) return;
+  if (next == FlatsTool::None) return true;
 
   // **The regular toolbox is deliberately left alone.**
   //
@@ -247,6 +308,7 @@ void setFlatsTool(AppState& st, FlatsTool next) noexcept {
   // while the Lasso was the active tool.
   //
   // So there is nothing left to do here but set the mode.
+  return true;
 }
 
 bool flatsToolIsActive(const AppState& st) {

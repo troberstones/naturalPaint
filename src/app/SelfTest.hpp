@@ -1544,6 +1544,78 @@ bool runGradientToolTest();
 // class (app/selftest/DabPreview.cpp never touches DabPreviewTexture's
 // wgpuQueueWriteTexture() call either).
 bool runPackBitsTest();
+
+// io/PsdWrite's byte primitives and io/PackBits' encoder -- the byte-level
+// half of PSD export (PLAN.md phase 15, docs/psd-export.md). The encoder is
+// asserted as the DECODER's inverse rather than against a hand-written table
+// of expected bytes: `decodePackBits()` is already exercised against real
+// Kyle Webster brush packs and real Photoshop files, so agreeing with it is a
+// stronger claim than agreeing with this project's own reading of the spec.
+bool runPsdWriteTest();
+
+// io/PsdBlendKeys -- the ONE table mapping Photoshop's 4-character blend keys
+// onto `core::BlendMode`, read in both directions. It lived in
+// io/PsdImport.cpp's anonymous namespace until PSD export needed mode -> key
+// too; a second table would have been a second place for `"mul"` to lose its
+// trailing space, which is invisible in a file that opens.
+//
+// Asserts: the table's rows are unique in both key and mode (so neither
+// linear scan is ambiguous); every key is four bytes and no key contains a
+// NUL, with the five space-padded ones named; key -> mode -> key returns the
+// identical four bytes for every row; `mul` + NUL does NOT match `mul `, which
+// is the exact silent failure the padding discipline exists to prevent; an
+// unknown key (`diss`, `pass`) still returns Normal with exactMatch FALSE;
+// and the importer's own mapping for fourteen real keys is unchanged by the
+// move, `colr` and `lddg` among them (the two present in the three genuine
+// Photoshop files io/PsdImport.hpp is verified against).
+//
+// **And a tripwire**: every `core::BlendMode` enumerator is either in the
+// table or in an explicit list of modes with no PSD key -- today exactly
+// `Mix`, this build's Kubelka-Munk latent lerp, which Photoshop has no
+// concept of. The list is written out by name, not checked as a count, so a
+// mode added tomorrow must be triaged rather than exporting as Normal by
+// omission. `psdBlendKeyFor()` returns nullptr for it and the caller warns;
+// never a silent substitution.
+bool runPsdBlendKeysTest();
+// io/PsdExport's container and flattened composite -- PSD export tier 1
+// (PLAN.md phase 15, docs/psd-export.md). Headless and GPU-free.
+//
+// Three of its claims are checked against numbers computed in the section
+// itself rather than captured from the writer: the file header's 40 bytes,
+// the sRGB byte a known linear value must quantise to, and the
+// un-premultiplied bytes a half-transparent texel must produce. Those are
+// exactly the ones a round trip cannot see, because an encoder and a decoder
+// can be wrong in the same direction and still agree. The Image Data
+// Section's framing IS asserted as a round trip -- through decodePackBits(),
+// which two real importers already depend on against real files.
+bool runPsdExportTest();
+// io/PsdLayerSection -- PSD's Layer and Mask Information section, WRITTEN
+// (docs/psd-export.md tier 2): one PSD layer record per naturalPaint layer,
+// its channel image data, both of Photoshop's name encodings, and the
+// opacity/clipping/visibility bytes.
+//
+// Asserted by round trip through `importPsd()` -- the reader that was
+// checked layer-for-layer against three real Photoshop files with psd-tools
+// as an oracle -- comparing count, order, name, opacity, visibility,
+// clipping, blend mode, occupied-tile rect and the **mean straight linear
+// RGBA** over covered pixels. The mean is what catches a channel swap or a
+// missing sRGB encode; geometry and alpha counts alone cannot.
+//
+// **What this shape cannot see, and does not claim to:** the channel
+// table's ORDER (io/PsdImport.cpp dispatches on the channel id, never on
+// its position, so `0,1,2,-1` round-trips as happily as the `-1,0,1,2` real
+// Photoshop files carry). That one needs an external reader; see this
+// section's own doc comment.
+bool runPsdLayerSectionTest();
+
+// io/PsdLayerExtras -- the two things a PSD layer record carries that are not
+// the layer itself: a raster mask (the 20-byte extra-data block plus channel
+// `-2`, sized by the MASK rect and defaulting to 255/reveal outside it) and a
+// group (the `lsct` divider/header pair, divider FIRST because PSD's records
+// run bottom-first). Headless and GPU-free. Its depth-2 nesting case is a
+// hand-written fixture and says so in its own assertion text: every group in
+// every real Photoshop file this project has examined is depth 0.
+bool runPsdLayerExtrasTest();
 bool runTransformCompositeSplitTest();
 bool runTransformPreviewTextureTest();
 
@@ -4381,9 +4453,10 @@ bool runTonalBrushTest();
 //    and record no entry -- while a *loaded* finger over blank canvas does
 //    allocate and write, which is why brush/RgbErase's unconditional skip could
 //    not simply be copied.
-//  - **The routing table's Smudge rows**, including the four that are refusals
-//    with reasons: a Pigment layer refuses by name while still taking the brush
-//    and the eraser, an alpha-locked layer refuses while still taking the brush,
+//  - **The routing table's Smudge rows**, including the refusals with reasons:
+//    a Pigment layer takes its OWN route, `PigmentSmudge`, and never this one
+//    (it refused by name until brush/PigmentSmudge -- `runPigmentSmudgeTest()`
+//    below), an alpha-locked layer refuses while still taking the brush,
 //    no target at all is `None` and not `PaintSim`, and Adjustment/storeless
 //    refuse through the shared body. Plus the route name, the "smudge" history
 //    label, and `toolBeginsStroke()`/`toolImplemented()`/
@@ -4443,6 +4516,41 @@ bool runSmudgeTest();
 // Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
 // it reads no file at all. Headless and GPU-free; writes no files.
 bool runSmudgeOptionsTest();
+// **The smudge on a Pigment layer** (brush/PigmentSmudge; PRD F7's Pigment
+// half) -- a row `strokeRouteFor()` refused by name until someone decided
+// "what the mass-weighted mean of a footprint of latents is and asserts it".
+//
+// What this section proves:
+//
+//  - **The pick-up IS the brush's mixing rule.** A footprint of blue at mass 1
+//    beside yellow at mass 0.25 picks up the latent `depositTexel()` makes of
+//    those two paints in that proportion, within a bound counted from the
+//    footprint's own texels, and nowhere near the unweighted 50/50.
+//  - **Emptiness thins and never bleaches.** Half a footprint of absent tile
+//    picks up exactly half the mass and the hue bit-for-bit; half a footprint
+//    of ERASED yellow (mass 0, stale hue) contributes no hue at all -- with the
+//    rejected arithmetic mean walked over the identical footprint and asserted
+//    to resurrect the yellow.
+//  - **One pigment in, that pigment out, at ZERO tolerance**: after a whole
+//    smudge every painted texel on the layer holds the latent it started with.
+//  - **Two paints meet on the line between them**: blue dragged into yellow
+//    leaves latents strictly between the two and on the segment joining them,
+//    within a per-write binary16 bound, and mass 1 exactly at every texel --
+//    paint moved, none added or removed.
+//  - The write and the finger as pure functions, with both strength endpoints
+//    exact, the first-dab latch, an empty finger thinning paint without moving
+//    its hue, and a loaded finger laying its own hue over an erased texel.
+//  - Direction (carried past the boundary, monotone falloff, nothing when run
+//    backwards), strength 0 as a whole-stroke no-op, PRD E1's selection gate
+//    bit-identical outside the ants, and an empty finger crossing blank canvas
+//    AND an erased patch allocating nothing and recording nothing.
+//  - The routing row (plus locked, storeless and alpha-locked), and the session
+//    end to end: STRENGTH read with OPACITY at 0, the selection read live, one
+//    history entry labelled "smudge".
+//
+// Headless and GPU-free; reads and writes no files, so it runs identically in
+// every build configuration.
+bool runPigmentSmudgeTest();
 // **The active selection on a Pigment layer** (brush/Deposit §4; PRD E1, **P0**)
 // and **the eraser that gate unblocked** (brush/PigmentErase; PRD F9/F10, both
 // **P0**; ADR-0007's Pigment row).
@@ -6308,10 +6416,14 @@ bool runPathConsumersTest();
 // chords still reach the keymap, everything passes with no session),
 // app/TextTool's textSessionActive() transitions (true from either
 // textEditBegin() or textEditFrameDragBegin(), false only from
-// textEditCancel()), and textEditRevert() restoring a session's UTF-8
-// content and caret byte-for-byte on Escape while plain textEditCancel()
-// (every other way a session ends) leaves it untouched. Headless, GPU-free,
-// writes no files. See app/selftest/TextKeyCapture.cpp.
+// textEditCancel()), that EVERY exit from a session keeps the text typed
+// during it (Escape included -- it used to revert, which erased a caption
+// typed into a block the same click had created), which keymap actions end
+// a session and which are kept alive for it (keymapActionEndsTextSession(),
+// undo/redo among the latter), and textEditResyncAfterHistoryMove() putting
+// a surviving session back in step with a document core/History replaced
+// under it. Headless, GPU-free, writes no files. See
+// app/selftest/TextKeyCapture.cpp.
 bool runTextKeyCaptureTest();
 
 // The UI -> command-layer reroute (docs/automation-plan.md step 2) -- that

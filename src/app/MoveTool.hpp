@@ -189,7 +189,7 @@ MoveTarget moveTargetFor(const OpenDocument& od) noexcept;
 // Takes the `OpenDocument` rather than its `Document` for
 // `TransformSession::beginLayer()`'s own stated reason: the session records
 // which document it belongs to, so a commit cannot land in another one.
-TransformBeginResult beginMove(TransformSession& session, const OpenDocument& od);
+TransformBeginResult beginMove(TransformSession& session, OpenDocument& od);
 
 // One frame of a Move drag: `session`'s pending matrix becomes the PURE
 // translation `(dx, dy)`, in document pixels.

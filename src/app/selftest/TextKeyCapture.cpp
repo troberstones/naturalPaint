@@ -17,10 +17,13 @@ namespace np {
 //      active; a Cmd/Ctrl chord must, so Cmd+Z/Cmd+S keep working while
 //      typing a caption; and with no session live every chord must reach it
 //      exactly as it always has.
-//   2. `textEditRevert()` (app/TextTool.cpp) -- Escape's undo-the-session
-//      path restores `TextContent::utf8` byte-for-byte and leaves the caret
-//      on a real boundary, while plain `textEditCancel()` (every OTHER way a
-//      session ends) must leave the content untouched.
+//   2. Ending a session KEEPS what was typed (app/TextTool.cpp) --
+//      `textEditCancel()` is every exit there is now, Escape included, and
+//      none of them may touch `TextContent::utf8`. Escape used to be the
+//      exception via a `textEditRevert()` that has since been removed with
+//      its caller: it restored the block to what the session opened with,
+//      which for a block the same click had just created was the empty
+//      string.
 //   3. `textSessionActive()` -- the predicate main.cpp's key-down handler
 //      actually gates on -- transitions true on `textEditBegin()` AND on
 //      `textEditFrameDragBegin()` ("frame-drag counts", app/TextTool.hpp),
@@ -108,50 +111,295 @@ bool runTextKeyCaptureTest() {
           "textSessionActive(): REQUIRED -- false again after cancelling the drag");
   }
 
-  // --- 3. textEditRevert() vs plain textEditCancel() ------------------------
+  // --- 3. ending a session KEEPS the typed text -----------------------------
+  //
+  // Every way out of a session is an accept, Escape included. Escape used to
+  // be the exception -- it called a `textEditRevert()` that restored the
+  // block to what `textEditBegin()` opened it with -- and that is gone, both
+  // the call and the function, because of how a block is made here: a click
+  // on empty canvas creates the layer AND opens the session in one gesture,
+  // so the state it reverted to was the empty string. The most reflexive key
+  // on the keyboard silently destroying a caption is not a defensible
+  // default. Undo is the discard now (section 5 keeps `undo` on the KEEP
+  // list precisely so it can be).
+  //
+  // **What these two checks can and cannot prove, stated because a green
+  // assertion that cannot fail is worse than no assertion.** `textEditCancel()`
+  // takes no `TextContent*`. It therefore CANNOT erase a caption however it
+  // is written, and sabotaging it does not move these lines -- measured, not
+  // assumed. What they are is a statement of the design in a place that has
+  // to be edited if the design is reversed: reintroducing a revert means
+  // giving cancel access to the content, which means changing its signature,
+  // which lands here. The behavioural guard is one level up, on the Escape
+  // key in `ui/MacPaintUI.cpp`, and it is checked by driving the running
+  // application -- there is no unit-test seam for a key press.
   {
     TextEditState st;
     TextContent content;
-    const std::string eAcute = "\xC3\xA9";  // "e" with an acute accent, 2 UTF-8 bytes
-    content.utf8 = "caf" + eAcute;  // multi-byte tail -- a sloppy revert would corrupt it
+    const std::string eAcute = "\xC3\xA9";  // multi-byte tail: a sloppy edit would corrupt it
+    content.utf8 = "caf" + eAcute;
     textEditBegin(&st, /*documentId=*/1, /*layerIndex=*/0, content);
-    const size_t caretAtBegin = st.caret;
-
-    // Simulate a burst of typing after the session opened.
     textInsertUtf8(&content, &st, "!!!");
     check(content.utf8 == "caf" + eAcute + "!!!",
           "(setup) the simulated typing burst landed in the content");
 
-    textEditRevert(&content, &st);
-    check(content.utf8 == "caf" + eAcute,
-          "textEditRevert(): REQUIRED -- content restored byte-for-byte to the pre-session "
-          "snapshot");
-    check(st.caret == caretAtBegin,
-          "textEditRevert(): REQUIRED -- caret restored to where the session began");
-    check(st.caret <= content.utf8.size(),
-          "textEditRevert(): the restored caret is a valid, in-bounds offset");
+    textEditCancel(&st);
+    check(content.utf8 == "caf" + eAcute + "!!!",
+          "textEditCancel(): REQUIRED -- ending a session KEEPS every character typed. This is "
+          "the assertion that fails if a revert-on-exit is ever reintroduced");
+    check(!textSessionActive(st), "textEditCancel(): and the session is over");
 
-    // Reverting again (nothing new was typed) is a documented no-op on the
-    // content -- callers do not need to guard on undoOpened before calling
-    // it.
-    textEditRevert(&content, &st);
-    check(content.utf8 == "caf" + eAcute,
-          "textEditRevert(): calling it again with no new edits changes nothing further");
+    // The case that made the old behaviour indefensible: a session opened on
+    // a block that was empty because the same gesture had just created it.
+    // Reverting to THAT snapshot threw the whole caption away.
+    TextEditState fresh;
+    TextContent made;  // as makeTextContent() leaves it: no text yet
+    textEditBegin(&fresh, /*documentId=*/1, /*layerIndex=*/0, made);
+    textInsertUtf8(&made, &fresh, "a caption nobody wants to lose");
+    textEditCancel(&fresh);
+    check(made.utf8 == "a caption nobody wants to lose",
+          "REQUIRED -- a session opened on a NEWLY created (empty) block keeps its text when it "
+          "ends; this is the exact case where Escape used to erase everything typed");
+  }
 
-    // Plain textEditCancel() -- every OTHER way a session ends (document
-    // switch, the layer disappearing) -- must NOT revert: it does not even
-    // take a TextContent* to revert with.
+  // --- 4. textInputAction() -- the platform hand-off ------------------------
+  //
+  // The half that made the whole feature inert: `ui/MacPaintUI.cpp`'s typing
+  // loop reads `io.InputQueueCharacters`, ImGui fills that from
+  // `SDL_EVENT_TEXT_INPUT` and nothing else, and SDL generates that event only
+  // while text input has been STARTED for the window. Nothing in this
+  // application called `SDL_StartTextInput()`; ImGui's backend calls it only
+  // for its own `InputText()` widgets, and a Text-tool caret session is not
+  // one. Measured on the running app before this existed: `sdlTextInput=0`
+  // and `chars=0` on every frame of a live session -- the gate in section 1
+  // was correctly keeping bare keys AWAY from the keymap, and there was
+  // nothing on the other side to receive them.
+  //
+  // Pure and headless, which is the point of it being a function rather than
+  // four lines inline in the frame loop (app/TextTool.hpp section 7).
+  {
+    using A = TextInputAction;
+    // A session opens while the platform is off: start, every time.
+    check(textInputAction(/*sessionActive=*/true, /*platformActive=*/false,
+                          /*imguiWantsText=*/false, /*startedHere=*/false) == A::Start,
+          "textInputAction(): REQUIRED -- a live session with text input off must START it");
+    // Already on because we turned it on: nothing to do, every frame, forever.
+    check(textInputAction(true, true, false, true) == A::Leave,
+          "textInputAction(): a live session with text input already on is left alone");
+    // **The re-start.** ImGui's backend stops text input when one of its own
+    // widgets loses focus, and its UpdateIme() will never restart it for a
+    // caret it knows nothing about. Asking SDL every frame is what repairs
+    // that; an edge-triggered version would leave the caret mute for the rest
+    // of the session.
+    check(textInputAction(/*sessionActive=*/true, /*platformActive=*/false,
+                          /*imguiWantsText=*/false, /*startedHere=*/true) == A::Start,
+          "textInputAction(): REQUIRED -- a live session must RE-start after ImGui's backend "
+          "stopped text input behind our back");
+    // Session over, we own it, nobody else wants it: stop, so a CJK input
+    // method does not keep swallowing bare hotkeys.
+    check(textInputAction(/*sessionActive=*/false, /*platformActive=*/true,
+                          /*imguiWantsText=*/false, /*startedHere=*/true) == A::Stop,
+          "textInputAction(): REQUIRED -- the session ending stops the text input we started");
+    // Session over, but ImGui started it: NOT ours to stop. Stopping it here
+    // leaves ImGui_ImplSDL3_UpdateIme()'s `ImeWindow == window` early-return
+    // convinced text input is still on, and it never restarts it -- a
+    // permanently dead layer-rename box.
+    check(textInputAction(/*sessionActive=*/false, /*platformActive=*/true,
+                          /*imguiWantsText=*/false, /*startedHere=*/false) == A::Leave,
+          "textInputAction(): REQUIRED -- text input ImGui started is never stopped by us");
+    // Session over, and a text widget took focus in the same frame: leave it
+    // on, it is being used.
+    check(textInputAction(/*sessionActive=*/false, /*platformActive=*/true,
+                          /*imguiWantsText=*/true, /*startedHere=*/true) == A::Leave,
+          "textInputAction(): REQUIRED -- an ImGui widget wanting text input keeps it on");
+    // Nothing live, nothing on: no call at all.
+    check(textInputAction(false, false, false, false) == A::Leave,
+          "textInputAction(): idle with text input off asks SDL for nothing");
+    check(textInputAction(false, false, false, true) == A::Leave,
+          "textInputAction(): a stop already performed is not repeated");
+    // The session wins over an ImGui widget's flag: they cannot both be
+    // typing, and the session's answer is the one that needs the platform on.
+    check(textInputAction(/*sessionActive=*/true, /*platformActive=*/false,
+                          /*imguiWantsText=*/true, /*startedHere=*/false) == A::Start,
+          "textInputAction(): a live session starts text input regardless of io.WantTextInput");
+  }
+
+  // --- 5. keymapActionEndsTextSession() -- which hotkeys put the caret away --
+  //
+  // The chord already passed `keyChordReachesKeymap()` (section 1) and
+  // resolved to an action; this is the question that comes after it. A KEEP
+  // list with everything else ending -- app/TextTool.hpp section 8 -- so the
+  // assertions that matter most are the two ends of that default.
+  {
+    // The view. Framing a caption while typing it is a real gesture and none
+    // of these can move a byte of the document.
+    check(!keymapActionEndsTextSession("zoom_in") &&
+              !keymapActionEndsTextSession("zoom_out") &&
+              !keymapActionEndsTextSession("zoom_100") &&
+              !keymapActionEndsTextSession("fit_window") &&
+              !keymapActionEndsTextSession("reset_view") &&
+              !keymapActionEndsTextSession("mirror_x") &&
+              !keymapActionEndsTextSession("mirror_y") &&
+              !keymapActionEndsTextSession("reset_rotation") &&
+              !keymapActionEndsTextSession("toggle_grayscale") &&
+              !keymapActionEndsTextSession("toggle_guides") &&
+              !keymapActionEndsTextSession("toggle_snapping") &&
+              !keymapActionEndsTextSession("toggle_grid"),
+          "keymapActionEndsTextSession(): REQUIRED -- every view command keeps the session");
+
+    // **Undo and redo keep it, and this is the assertion that says so.** A
+    // typing burst is a history entry, so Cmd+Z during a session is the user
+    // undoing their own typing; answering it by putting the caret away would
+    // make the burst un-undoable without first clicking back into the block.
+    check(!keymapActionEndsTextSession("undo"),
+          "keymapActionEndsTextSession(): REQUIRED -- undo keeps the session; a typing burst is "
+          "the entry it undoes");
+    check(!keymapActionEndsTextSession("redo"),
+          "keymapActionEndsTextSession(): REQUIRED -- redo keeps the session too");
+
+    // Tool and application state, not document state.
+    check(!keymapActionEndsTextSession("size_up") && !keymapActionEndsTextSession("size_down") &&
+              !keymapActionEndsTextSession("reload_shaders") &&
+              !keymapActionEndsTextSession("screenshot") &&
+              !keymapActionEndsTextSession("toggle_pause"),
+          "keymapActionEndsTextSession(): brush size / reload / screenshot / pause keep it");
+
+    // Everything that can move the document or the selection under a live
+    // caret. `free_transform` is the one this began with -- Cmd+T used to
+    // drop a gizmo on top of a live caption and leave both claiming Return.
+    check(keymapActionEndsTextSession("free_transform"),
+          "keymapActionEndsTextSession(): REQUIRED -- Cmd+T ends the session rather than putting "
+          "a gizmo over a live caret");
+    check(keymapActionEndsTextSession("clear_canvas"),
+          "keymapActionEndsTextSession(): REQUIRED -- clearing the canvas ends the session");
+    check(keymapActionEndsTextSession("adjust_levels") &&
+              keymapActionEndsTextSession("adjust_curves") &&
+              keymapActionEndsTextSession("adjust_invert") &&
+              keymapActionEndsTextSession("adjust_auto_tone") &&
+              keymapActionEndsTextSession("adjust_black_and_white"),
+          "keymapActionEndsTextSession(): REQUIRED -- the adjustment commands end the session");
+    check(keymapActionEndsTextSession("deselect") && keymapActionEndsTextSession("reselect") &&
+              keymapActionEndsTextSession("invert_selection"),
+          "keymapActionEndsTextSession(): REQUIRED -- deselect/reselect/invert end the session; "
+          "none of them has a text meaning to redirect to");
+    // `select_all` is the exception among its own neighbours, and it has to
+    // be: Cmd+A with a caret up means select all the TEXT, and
+    // ui/MacPaintUI.cpp implements that by intercepting `requestSelectAll`
+    // for a live session. Ending the session here would put the caret away
+    // BEFORE that flag was read, making the interception dead code and Cmd+A
+    // silently a canvas command in the middle of typing.
+    check(!keymapActionEndsTextSession("select_all"),
+          "keymapActionEndsTextSession(): REQUIRED -- select_all KEEPS the session, or the "
+          "select-all-the-text interception one layer up can never fire");
+    // The clipboard three KEEP the session, because while a caret is up they
+    // mean the TEXT -- ui/MacPaintUI.cpp intercepts each flag for a live
+    // session and consumes it. On the ending side the session would already
+    // be over by the time the flag was read, so that interception would be
+    // dead code and Cmd+C would silently copy canvas pixels mid-caption.
+    check(!keymapActionEndsTextSession("copy") && !keymapActionEndsTextSession("cut") &&
+              !keymapActionEndsTextSession("paste"),
+          "keymapActionEndsTextSession(): REQUIRED -- copy/cut/paste KEEP the session, or the "
+          "text-clipboard interception one layer up can never fire");
+    // `copy_merged` is the exception in its own family and stays on the
+    // ending side: "every visible layer flattened into pixels" has no text
+    // reading to redirect to, so doing exactly what it says is honest.
+    check(keymapActionEndsTextSession("copy_merged"),
+          "keymapActionEndsTextSession(): REQUIRED -- but copy_merged still ENDS it; there is no "
+          "text meaning of 'flatten every visible layer' to redirect to");
+    check(keymapActionEndsTextSession("delete_selection") && keymapActionEndsTextSession("quit") &&
+              keymapActionEndsTextSession("flats_delete_fill"),
+          "keymapActionEndsTextSession(): delete / quit / the flats commands end it");
+
+    // **The default, which is the whole design.** A binding added to
+    // keymaps/default.json a year from now gets the safe answer without
+    // anyone remembering this file exists -- and this is the assertion that
+    // fails if the list is ever inverted into a list of ENDERS.
+    check(keymapActionEndsTextSession("an_action_nobody_has_written_yet"),
+          "keymapActionEndsTextSession(): REQUIRED -- an unknown action ENDS the session; the "
+          "list is a KEEP list and the default is the safe one");
+    check(keymapActionEndsTextSession(""),
+          "keymapActionEndsTextSession(): the empty action ends it too, same default");
+  }
+
+  // --- 6. textEditResyncAfterHistoryMove() ---------------------------------
+  //
+  // Undo/redo keep the session (section 5) and `core/History` replaces the
+  // whole Document, so the block is a different `TextContent` afterwards
+  // while `TextEditState` still holds the caret and bookkeeping from before
+  // the move. Both hazards are silent; both are asserted here.
+  {
+    // (a) A caret past the end of the restored string.
+    TextEditState st;
+    TextContent content;
+    content.utf8 = "Handgloves";
+    textEditBegin(&st, /*documentId=*/1, /*layerIndex=*/0, content);
+    textInsertUtf8(&content, &st, " and mittens");
+    textEditMarkUndoOpened(&st);
+    check(st.caret == content.utf8.size() && st.undoOpened,
+          "(setup) the burst moved the caret to the end and opened an undo entry");
+
+    // What undo restores: the pre-burst string, which is SHORTER than the
+    // caret's current offset.
+    TextContent restored;
+    restored.utf8 = "Handgloves";
+    textEditResyncAfterHistoryMove(&st, restored);
+    check(st.caret == restored.utf8.size(),
+          "textEditResyncAfterHistoryMove(): REQUIRED -- a caret past the end of the restored "
+          "string is clamped to it, not left addressing bytes that are gone");
+    check(!st.undoOpened,
+          "textEditResyncAfterHistoryMove(): REQUIRED -- undoOpened is cleared, so the next "
+          "keystroke RECORDS a new entry instead of amending over the state just undone to");
+    check(textSessionActive(st),
+          "textEditResyncAfterHistoryMove(): the session itself survives -- that is the point");
+
+    // (b) A caret left INSIDE a multi-byte sequence. Section 3's boundary
+    // invariant is this file's to hold, and a history move is the one way the
+    // content changes without going through any of its own edit functions.
     TextEditState st2;
-    TextContent content2;
-    content2.utf8 = "original";
-    textEditBegin(&st2, /*documentId=*/1, /*layerIndex=*/0, content2);
-    textInsertUtf8(&content2, &st2, " typed");
-    check(content2.utf8 == "original typed", "(setup) the second session's typing landed too");
-    textEditCancel(&st2);
-    check(content2.utf8 == "original typed",
-          "textEditCancel(): REQUIRED -- cancel-on-doc-switch/layer-gone does NOT revert; the "
-          "typed text survives exactly as ui/MacPaintUI.cpp's document-switch and layer-gone "
-          "call sites rely on");
+    TextContent wide;
+    const std::string eAcute = "\xC3\xA9";  // 2 UTF-8 bytes
+    wide.utf8 = "caf" + eAcute + "s";
+    textEditBegin(&st2, /*documentId=*/1, /*layerIndex=*/0, wide);
+    textCaretSetOffset(&st2, wide, 3);
+    // A restored string whose byte 4 is a CONTINUATION byte -- offset 4 is
+    // mid-sequence, which is exactly the state a naive size-only clamp would
+    // leave behind and call fixed.
+    TextContent restored2;
+    restored2.utf8 = "ca" + eAcute + "fes";
+    st2.caret = 3;  // deliberately mid-sequence against restored2
+    textEditResyncAfterHistoryMove(&st2, restored2);
+    check(st2.caret == 2,
+          "textEditResyncAfterHistoryMove(): REQUIRED -- a caret left mid-sequence snaps DOWN to "
+          "the boundary before it; a clamp that only checked the LENGTH would pass this offset "
+          "through unchanged and corrupt the next insert");
+
+    // (c) The session KEEPS RUNNING on the same layer -- the resync puts a
+    // session back in step, it does not end one, and the layer it names must
+    // still be the layer it named. (This used to also assert that a
+    // pre-session `snapshotUtf8` survived the move; those fields went away
+    // with `textEditRevert()` -- see section 3.)
+    TextEditState st3;
+    TextContent orig;
+    orig.utf8 = "before";
+    textEditBegin(&st3, /*documentId=*/7, /*layerIndex=*/3, orig);
+    TextContent restored3;
+    restored3.utf8 = "something else entirely";
+    textEditResyncAfterHistoryMove(&st3, restored3);
+    check(textSessionActive(st3) && st3.documentId == 7 && st3.layerIndex == 3,
+          "textEditResyncAfterHistoryMove(): REQUIRED -- the session survives the move still "
+          "naming the same document and layer; it is a resync, not an exit");
+
+    // (d) A no-op with no session live: undo/redo happen far more often
+    // outside a session than in one, and the caller (moveHistoryCursor())
+    // must not have to guard.
+    TextEditState st4;
+    st4.caret = 999;
+    TextContent tiny;
+    tiny.utf8 = "x";
+    textEditResyncAfterHistoryMove(&st4, tiny);
+    check(st4.caret == 999,
+          "textEditResyncAfterHistoryMove(): REQUIRED -- a no-op when no session is live; it "
+          "touches nothing rather than clamping a caret that names no session");
   }
 
   std::printf("[selftest] text key capture %s\n", ok ? "PASS" : "FAIL");

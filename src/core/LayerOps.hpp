@@ -569,4 +569,40 @@ LayerOpResult setLayerOp(Document& doc, size_t index, size_t opIndex, Op op);
 // `setLayerVisible()`.
 LayerOpResult setLayerOpEnabled(Document& doc, size_t index, size_t opIndex, bool enabled);
 
+// --- A stable identity for ONE layer --------------------------------------
+
+// **Gives `doc.layers[index]` a nonzero `Layer::id` if it does not have one,
+// and returns it.** 0 if `index` is out of range, which is the only failure.
+//
+// `Layer::id` is documented as "a stable identity for this layer within its
+// document -- monotonic, never reused, and **not** an index", handed out
+// lazily because a document that never captures a comp should never acquire
+// one. This is the second caller that needs that identity for something other
+// than a comp, and it takes the shape `Layer::groupTag` established rather
+// than the one `normalizeLayerIds()` does: **this layer alone**, nothing else
+// in the document touched. `groupTag`'s own comment states the rule -- adding
+// a group "must not force every layer in a grouped document to acquire a
+// `Layer::id` merely because two of them were grouped" -- and beginning a
+// transform has no better claim on the rest of the stack than grouping does.
+//
+// Raises `doc.nextLayerId` past every id already present before handing one
+// out, which is `normalizeLayerIds()`'s own first loop and is needed for its
+// reason: a document whose counter was lost -- loaded from a file another tool
+// stripped `np:comps` out of -- would otherwise re-issue an id a live layer
+// still holds.
+//
+// **What it does NOT do, and what that costs.** It does not resolve DUPLICATE
+// ids the way `normalizeLayerIds()` does. A file that gives two layers one id
+// (this build never writes one; `duplicateLayer()` resets the copy's to 0)
+// would leave both answering to the same number, so a caller using this as an
+// identity could be fooled by a swap of exactly those two layers.
+// `restoreLayerComp()` refuses that state by name; this function does not
+// detect it. Resolving it here would mean renumbering a layer this call was
+// not asked about -- the thing the paragraph above exists to avoid -- and
+// would move an id a comp may already refer to.
+//
+// Idempotent: a layer that already holds a nonzero id keeps it, and calling
+// this twice returns the same number and changes nothing.
+uint64_t ensureLayerId(Document& doc, size_t index);
+
 }  // namespace np

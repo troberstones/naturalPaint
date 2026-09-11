@@ -93,50 +93,155 @@ size_t nextBoundary(const std::string& utf8, size_t pos) noexcept {
 
 void textInsertUtf8(TextContent* text, TextEditState* state, std::string_view utf8) {
   if (text == nullptr || state == nullptr) return;
+  // Typing over a selection REPLACES it. Here rather than at the call sites
+  // for the reason the header gives: a caller that forgot would insert into
+  // the middle of a range the user believed they were replacing, which is a
+  // quiet, plausible-looking corruption rather than an obvious failure.
+  textDeleteSelection(text, state);
   state->caret = clampToBoundary(text->utf8, state->caret);
   text->utf8.insert(state->caret, utf8.data(), utf8.size());
   state->caret += utf8.size();
+  state->anchor = state->caret;
 }
 
 bool textBackspace(TextContent* text, TextEditState* state) {
   if (text == nullptr || state == nullptr) return false;
+  // With a range selected, Backspace deletes the RANGE and nothing else --
+  // not the range plus the character before it.
+  if (textDeleteSelection(text, state)) return true;
   state->caret = clampToBoundary(text->utf8, state->caret);
   if (state->caret == 0) return false;
   const size_t start = prevBoundary(text->utf8, state->caret);
   text->utf8.erase(start, state->caret - start);
   state->caret = start;
+  state->anchor = state->caret;
   return true;
 }
 
 bool textDeleteForward(TextContent* text, TextEditState* state) {
   if (text == nullptr || state == nullptr) return false;
+  // Same rule as Backspace: with a range selected, Delete deletes the range.
+  if (textDeleteSelection(text, state)) return true;
   state->caret = clampToBoundary(text->utf8, state->caret);
   if (state->caret >= text->utf8.size()) return false;
   const size_t end = nextBoundary(text->utf8, state->caret);
   text->utf8.erase(state->caret, end - state->caret);
+  state->anchor = state->caret;
   return true;
 }
 
-void textCaretLeft(const TextContent& text, TextEditState* state) noexcept {
+// --- the selection (header section 3b) --------------------------------------
+
+TextSelection textSelection(const TextEditState& state) noexcept {
+  TextSelection sel;
+  sel.lo = std::min(state.caret, state.anchor);
+  sel.hi = std::max(state.caret, state.anchor);
+  return sel;
+}
+
+void textSelectionCollapse(TextEditState* state) noexcept {
+  if (state == nullptr) return;
+  state->anchor = state->caret;
+}
+
+void textSelectAll(TextEditState* state, const TextContent& text) noexcept {
+  if (state == nullptr) return;
+  state->anchor = 0;
+  state->caret = text.utf8.size();
+}
+
+bool textDeleteSelection(TextContent* text, TextEditState* state) {
+  if (text == nullptr || state == nullptr) return false;
+  // Both ends clamped before the range is derived, not after: `caret` and
+  // `anchor` are each subject to section 3's invariant on their own, and a
+  // range built from an unclamped pair could straddle a character even though
+  // neither endpoint does once snapped.
+  state->caret = clampToBoundary(text->utf8, state->caret);
+  state->anchor = clampToBoundary(text->utf8, state->anchor);
+  const TextSelection sel = textSelection(*state);
+  if (sel.empty()) return false;
+  text->utf8.erase(sel.lo, sel.size());
+  state->caret = sel.lo;
+  state->anchor = sel.lo;
+  return true;
+}
+
+std::string textSelectedUtf8(const TextContent& text, const TextEditState& state) {
+  TextEditState clamped = state;
+  clamped.caret = clampToBoundary(text.utf8, clamped.caret);
+  clamped.anchor = clampToBoundary(text.utf8, clamped.anchor);
+  const TextSelection sel = textSelection(clamped);
+  if (sel.empty()) return std::string();
+  return text.utf8.substr(sel.lo, sel.size());
+}
+
+void textSelectionSetCaret(TextEditState* state, const TextContent& text, size_t offset,
+                           bool extend) noexcept {
+  if (state == nullptr) return;
+  state->caret = clampToBoundary(text.utf8, offset);
+  if (!extend) state->anchor = state->caret;
+}
+
+void textSelectDragBegin(TextEditState* state, const TextContent& text, size_t offset) noexcept {
+  if (state == nullptr) return;
+  state->caret = clampToBoundary(text.utf8, offset);
+  state->anchor = state->caret;
+  state->selectDragActive = true;
+}
+
+void textSelectDragUpdate(TextEditState* state, const TextContent& text, size_t offset) noexcept {
+  if (state == nullptr || !state->selectDragActive) return;
+  state->caret = clampToBoundary(text.utf8, offset);
+}
+
+void textSelectDragEnd(TextEditState* state) noexcept {
+  if (state == nullptr) return;
+  // Deliberately does NOT collapse: the range just dragged out is the point.
+  state->selectDragActive = false;
+}
+
+void textCaretLeft(const TextContent& text, TextEditState* state, bool extend) noexcept {
   if (state == nullptr) return;
   state->caret = clampToBoundary(text.utf8, state->caret);
+  state->anchor = clampToBoundary(text.utf8, state->anchor);
+  // Unextended, with a range live: collapse to its near EDGE and stop there,
+  // rather than stepping a character back from wherever the caret end is.
+  // See the header -- it is what every editor does, and the first thing a
+  // user checks after selecting a word.
+  const TextSelection sel = textSelection(*state);
+  if (!extend && !sel.empty()) {
+    state->caret = sel.lo;
+    state->anchor = sel.lo;
+    return;
+  }
   state->caret = prevBoundary(text.utf8, state->caret);
+  if (!extend) state->anchor = state->caret;
 }
 
-void textCaretRight(const TextContent& text, TextEditState* state) noexcept {
+void textCaretRight(const TextContent& text, TextEditState* state, bool extend) noexcept {
   if (state == nullptr) return;
   state->caret = clampToBoundary(text.utf8, state->caret);
+  state->anchor = clampToBoundary(text.utf8, state->anchor);
+  const TextSelection sel = textSelection(*state);
+  if (!extend && !sel.empty()) {
+    state->caret = sel.hi;
+    state->anchor = sel.hi;
+    return;
+  }
   state->caret = nextBoundary(text.utf8, state->caret);
+  if (!extend) state->anchor = state->caret;
 }
 
-void textCaretHome(TextEditState* state) noexcept {
+void textCaretHome(TextEditState* state, bool extend) noexcept {
   if (state == nullptr) return;
   state->caret = 0;
+  if (!extend) state->anchor = 0;
 }
 
-void textCaretEnd(const TextContent& text, TextEditState* state) noexcept {
+void textCaretEnd(const TextContent& text, TextEditState* state, bool extend) noexcept {
   if (state == nullptr) return;
   state->caret = text.utf8.size();
+  if (!extend) state->anchor = state->caret;
 }
 
 // --- hit testing (header section 4) -----------------------------------------
@@ -156,6 +261,12 @@ void textEditCancel(TextEditState* state) noexcept {
   state->frameDragActive = false;
   state->frameDragStart = PathPoint{};
   state->frameDragNow = PathPoint{};
+  state->selectDragActive = false;
+  // A handle drag is a gesture like the other two, so it ends with them. Left
+  // live it would survive an Escape and keep resizing on every mouse move,
+  // with no button held and no session to end it.
+  state->resizeHandle = TextFrameHandle::None;
+  state->anchor = state->caret;  // no session, no selection
   state->undoOpened = false;
   state->active = false;
   // `documentId`/`layerIndex`/`caret` are deliberately left alone -- see this
@@ -166,21 +277,90 @@ void textEditCancel(TextEditState* state) noexcept {
   // ends a session in that sense.
 }
 
-void textEditRevert(TextContent* text, TextEditState* state) noexcept {
-  if (text == nullptr || state == nullptr) return;
-  text->utf8 = state->snapshotUtf8;
-  state->caret = clampToBoundary(text->utf8, state->snapshotCaret);
-}
-
 void textCaretSetOffset(TextEditState* state, const TextContent& text,
                         size_t offset) noexcept {
   if (state == nullptr) return;
   state->caret = clampToBoundary(text.utf8, offset);
+  // Placing the caret is not extending a selection -- `textSelectionSetCaret()`
+  // is the entry point that can do that. Collapsing here keeps every existing
+  // caller (the click-into-a-block path, the history resync) from leaving a
+  // stale anchor pointing into a string that has since changed.
+  state->anchor = state->caret;
 }
 
 void textEditMarkUndoOpened(TextEditState* state) noexcept {
   if (state == nullptr) return;
   state->undoOpened = true;
+}
+
+void textEditClearUndoOpened(TextEditState* state) noexcept {
+  if (state == nullptr) return;
+  state->undoOpened = false;
+}
+
+bool textSanitizePasted(std::string_view in, std::string* out) {
+  if (out == nullptr) return false;
+
+  // --- pass 1: validate, touching nothing ---------------------------------
+  //
+  // Two passes rather than one, so a string that turns out to be invalid
+  // halfway through leaves `*out` untouched rather than partly written --
+  // the caller's refusal has to be able to say "nothing was pasted" and mean
+  // it.
+  size_t i = 0;
+  while (i < in.size()) {
+    const unsigned char lead = static_cast<unsigned char>(in[i]);
+    size_t len = 0;
+    uint32_t cp = 0;
+    if ((lead & 0x80) == 0x00) {
+      len = 1;
+      cp = lead;
+    } else if ((lead & 0xE0) == 0xC0) {
+      len = 2;
+      cp = lead & 0x1Fu;
+    } else if ((lead & 0xF0) == 0xE0) {
+      len = 3;
+      cp = lead & 0x0Fu;
+    } else if ((lead & 0xF8) == 0xF0) {
+      len = 4;
+      cp = lead & 0x07u;
+    } else {
+      return false;  // a continuation byte with no lead, or 0xF5-0xFF
+    }
+    if (i + len > in.size()) return false;  // truncated at the end of the buffer
+    for (size_t k = 1; k < len; ++k) {
+      const unsigned char cont = static_cast<unsigned char>(in[i + k]);
+      if ((cont & 0xC0) != 0x80) return false;
+      cp = (cp << 6) | (cont & 0x3Fu);
+    }
+    // Overlong encodings: the same code point spelled in more bytes than it
+    // needs. Rejected because two spellings of one character is exactly the
+    // ambiguity a byte-offset caret cannot afford, and because they are the
+    // classic way a validator gets walked past.
+    if (len == 2 && cp < 0x80) return false;
+    if (len == 3 && cp < 0x800) return false;
+    if (len == 4 && cp < 0x10000) return false;
+    if (cp >= 0xD800 && cp <= 0xDFFF) return false;  // a lone surrogate (CESU-8/WTF-8)
+    if (cp > 0x10FFFF) return false;
+    i += len;
+  }
+
+  // --- pass 2: normalise ---------------------------------------------------
+  out->clear();
+  out->reserve(in.size());
+  for (size_t j = 0; j < in.size(); ++j) {
+    const unsigned char c = static_cast<unsigned char>(in[j]);
+    if (c == '\r') {
+      // CRLF collapses to one newline; a lone CR becomes one too.
+      out->push_back('\n');
+      if (j + 1 < in.size() && in[j + 1] == '\n') ++j;
+      continue;
+    }
+    if (c == 0x7F) continue;                              // DEL
+    if (c < 0x20 && c != '\n' && c != '\t') continue;     // the other C0 controls
+    out->push_back(static_cast<char>(c));
+  }
+  return true;
 }
 
 void textEditBegin(TextEditState* state, uint64_t documentId, size_t layerIndex,
@@ -194,11 +374,8 @@ void textEditBegin(TextEditState* state, uint64_t documentId, size_t layerIndex,
   state->frameDragNow = PathPoint{};
   state->undoOpened = false;
   state->active = true;
-  // Snapshot for `textEditRevert()` -- the session's own starting point, not
-  // whatever an earlier session (or the default-constructed state) left
-  // behind.
-  state->snapshotUtf8 = content.utf8;
-  state->snapshotCaret = state->caret;
+  state->anchor = state->caret;
+  state->selectDragActive = false;
 }
 
 void textEditFrameDragBegin(TextEditState* state, PathPoint at, uint64_t documentId) noexcept {
@@ -206,21 +383,39 @@ void textEditFrameDragBegin(TextEditState* state, PathPoint at, uint64_t documen
   state->documentId = documentId;
   state->layerIndex = kNoLayer;
   state->caret = 0;
+  // The anchor moves with it. A stale anchor left over from the session
+  // before would make this fresh drag start with a phantom selection running
+  // from 0 to wherever that session's caret end had been -- and the first
+  // character typed into the new block would "replace" it.
+  state->anchor = 0;
+  state->selectDragActive = false;
   state->frameDragActive = true;
   state->frameDragStart = at;
   state->frameDragNow = at;
   state->undoOpened = false;
   // A drag is a candidate session -- `textSessionActive()`'s header comment
-  // says "frame-drag counts" -- even though there is no `TextContent` yet to
-  // snapshot for `textEditRevert()`. That is fine: `textEditRevert()` is
-  // never reached mid-drag (`ui/`'s Escape handler only calls it when an
-  // existing layer's session -- `editing != nullptr` -- is live).
+  // says "frame-drag counts" -- even though there is no `TextContent` yet and
+  // no layer index to name one with.
   state->active = true;
 }
 
 void textEditFrameDragUpdate(TextEditState* state, PathPoint at) noexcept {
   if (state == nullptr || !state->frameDragActive) return;
   state->frameDragNow = at;
+}
+
+void textEditResizeBegin(TextEditState* state, TextFrameHandle handle) noexcept {
+  if (state == nullptr) return;
+  state->resizeHandle = handle;
+}
+
+bool textEditResizeActive(const TextEditState& state) noexcept {
+  return state.resizeHandle != TextFrameHandle::None;
+}
+
+void textEditResizeEnd(TextEditState* state) noexcept {
+  if (state == nullptr) return;
+  state->resizeHandle = TextFrameHandle::None;
 }
 
 bool textEditFrameDragEnd(TextEditState* state, TextContent* out, float minSizeDoc) noexcept {
@@ -243,6 +438,73 @@ bool textEditFrameDragEnd(TextEditState* state, TextContent* out, float minSizeD
   out->frame.width = width;
   out->frame.height = height;
   return true;
+}
+
+bool keymapActionEndsTextSession(std::string_view action) noexcept {
+  // Header section 8: a KEEP list, everything else ends the session. Spelled
+  // as a flat sequence of comparisons rather than a set literal so it stays
+  // greppable from the action names in keymaps/default.json, which is where
+  // anyone adding a binding will be looking.
+  return !(
+      // the view -- none of these can move a byte of the document
+      action == "zoom_in" || action == "zoom_out" || action == "zoom_100" ||
+      action == "fit_window" || action == "reset_view" || action == "mirror_x" ||
+      action == "mirror_y" || action == "reset_rotation" || action == "toggle_grayscale" ||
+      action == "toggle_guides" || action == "toggle_snapping" || action == "toggle_grid" ||
+      // history -- a typing burst IS an entry, so Cmd+Z is the user undoing
+      // their own typing (and see textEditResyncAfterHistoryMove())
+      action == "undo" || action == "redo" ||
+      // the clipboard three, which mean the TEXT while a caret is up:
+      // ui/MacPaintUI.cpp intercepts each of them for a live session and
+      // consumes the flag before the canvas handlers see it. Same reasoning
+      // as select_all below -- on the ending side the session would already
+      // be over by the time the flag was read.
+      //
+      // `copy_merged` (Cmd+Shift+C) is NOT here and stays on the ending
+      // side: it means "every visible layer flattened into pixels", which
+      // has no text reading to redirect to, so putting the caret away and
+      // doing exactly what it says is the honest answer.
+      action == "copy" || action == "cut" || action == "paste" ||
+      // select-all, which means SELECT ALL THE TEXT while a caret is up.
+      // ui/MacPaintUI.cpp intercepts `requestSelectAll` for a live session
+      // and consumes it before the canvas selection sees it; ending the
+      // session here would make that interception unreachable, since the
+      // session would already be over by the time the flag was read. With no
+      // session live it is the canvas command it has always been -- this
+      // function only ever runs while one IS live.
+      //
+      // Its three neighbours (`deselect`, `reselect`, `invert_selection`)
+      // stay on the ending side deliberately: none of them has a text
+      // meaning to redirect to, so they remain canvas commands and putting
+      // the caret away first is the honest answer.
+      action == "select_all" ||
+      // tool and application state, not document state
+      action == "size_up" || action == "size_down" || action == "reload_shaders" ||
+      action == "screenshot" || action == "toggle_pause");
+}
+
+void textEditResyncAfterHistoryMove(TextEditState* state, const TextContent& restored) noexcept {
+  if (state == nullptr || !state->active) return;
+  // The next keystroke opens a NEW entry instead of amending one that is no
+  // longer at the cursor -- header section 9's second hazard, and the one
+  // that would otherwise overwrite the state the user just undid TO.
+  state->undoOpened = false;
+  // Section 3's boundary invariant, restored against the string that is
+  // actually there now. `textCaretSetOffset()` rather than a second clamp:
+  // there is one clamp in this file and this is a caller of it.
+  textCaretSetOffset(state, restored, state->caret);
+}
+
+TextInputAction textInputAction(bool sessionActive, bool platformActive, bool imguiWantsText,
+                                bool startedHere) noexcept {
+  // Re-asserted rather than edge-triggered: `platformActive` is asked of SDL
+  // itself every frame, so a stop performed behind our back (ImGui's backend
+  // does exactly that when one of its own text widgets loses focus) is
+  // repaired on the next frame instead of leaving the caret mute for the rest
+  // of the session.
+  if (sessionActive) return platformActive ? TextInputAction::Leave : TextInputAction::Start;
+  if (startedHere && platformActive && !imguiWantsText) return TextInputAction::Stop;
+  return TextInputAction::Leave;
 }
 
 }  // namespace np

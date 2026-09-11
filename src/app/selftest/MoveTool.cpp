@@ -1,5 +1,6 @@
 #include "app/selftest/Support.hpp"
 
+#include <cmath>
 #include <cstring>
 
 #include "app/MoveTool.hpp"
@@ -338,6 +339,194 @@ bool runMoveToolTest() {
     check(!pigSel.ok && pigSel.error.find("Pigment") != std::string::npos && !ts4.active(),
           "refusal: but a Pigment layer WITH a selection refuses by name -- the moved paint "
           "would have to be re-mixed, not alpha-blended, back onto what is left");
+  }
+
+  // --- a Text layer moves; it is the one pixel-less kind that can ----------
+  //
+  // Reported as "the move tool doesn't work on the text layer", and it did
+  // not: `TransformSession::beginLayer()` refused every layer with neither
+  // `rgbTiles` nor `pigmentTiles` ("holds no pixels to transform"), which is
+  // true of a Text layer and yet beside the point -- its geometry is
+  // `TextContent::origin`, and moving the block means moving that.
+  //
+  // Headless: none of this shapes anything. `transformLayer()`'s Text branch
+  // reads the matrix and writes the origin, and that is the whole operation.
+  {
+    Document doc;
+    doc.width = 256;
+    doc.height = 256;
+    Layer text = makeTextLayer("caption");
+    text.text = TextContent{};
+    text.text.utf8 = "Handgloves";
+    text.text.origin = PathPoint{40.0f, 90.0f};
+    doc.layers.push_back(std::move(text));
+
+    // A whole-number translate, which is what a Move drag and an arrow nudge
+    // both produce.
+    const LayerTransformResult moved =
+        transformTextLayer(doc, 0, transformTranslate(12.0f, -7.0f));
+    check(moved.ok, "text: a translation of a Text layer is accepted, not refused for having "
+                    "no pixels");
+    // The separation that keeps a whole-document resize working: the GENERAL
+    // per-layer entry still walks a Text layer, finds no stores and succeeds
+    // having changed nothing, which is what `transformDocument()` needs from
+    // it (app/selftest/DocumentTransform.cpp section 10 pins that directly).
+    // Folding the text handling into it would have refused every document
+    // resize of a document containing a caption.
+    {
+      Document walked = doc;
+      const PathPoint originBefore = walked.layers[0].text.origin;
+      DocumentTransformParams walkParams;
+      const LayerTransformResult general =
+          transformLayer(walked, 0, transformScale(2.0f, 2.0f), walkParams);
+      check(general.ok && walked.layers[0].text.origin.x == originBefore.x,
+            "text: REQUIRED -- the GENERAL transformLayer() still succeeds-and-does-nothing on a "
+            "Text layer, so a whole-document crop or resize is not refused on a technicality");
+    }
+    check(doc.layers[0].text.origin.x == 52.0f && doc.layers[0].text.origin.y == 83.0f,
+          "text: REQUIRED -- the block's origin moved by exactly the translation (40,90) + "
+          "(12,-7) = (52,83); this is the assertion that fails if the Text branch silently "
+          "returns ok having changed nothing, which is what the tile path did");
+    check(doc.layers[0].text.utf8 == "Handgloves",
+          "text: the content itself is untouched -- a move is not an edit of the string");
+
+    // --- a scale and a rotation are STORED, and the block stays text -------
+    //
+    // Each runs on its own copy of the fixture. Sharing one would make these
+    // order-dependent -- a stored matrix changes which branch the NEXT call
+    // takes (`transformTextLayer()`'s origin-vs-matrix rule) -- and the later
+    // session assertions below would then be measuring a rotated block
+    // without saying so.
+    {
+      Document scaledDoc = doc;
+      const PathPoint originBefore = scaledDoc.layers[0].text.origin;
+      const std::string utf8Before = scaledDoc.layers[0].text.utf8;
+      const float sizeBefore = scaledDoc.layers[0].text.style.sizePx;
+      const PathBounds boundsBefore = textContentBounds(scaledDoc.layers[0].text);
+
+      const LayerTransformResult scaled =
+          transformTextLayer(scaledDoc, 0, transformScale(2.0f, 2.0f));
+      check(scaled.ok,
+            "text: REQUIRED -- a SCALE is ACCEPTED and stored on the block's matrix. This is the "
+            "assertion that fails if a corner handle goes back to being refused");
+      check(scaled.editLabel == "transform text",
+            "text: and it records as 'transform text', not 'move text' -- the history entry says "
+            "which gesture it was");
+
+      // The three that together mean "still live editable text, with the
+      // transform applied" rather than "rasterised at twice the size".
+      check(scaledDoc.layers[0].text.utf8 == utf8Before,
+            "text: REQUIRED -- the STRING is untouched by a scale, so the block can still be "
+            "typed into afterwards; this is the difference between a transform and a rasterise");
+      check(scaledDoc.layers[0].text.style.sizePx == sizeBefore,
+            "text: REQUIRED -- and the type SIZE is untouched. Folding the scale into sizePx "
+            "would lose the distinction between 24pt drawn double and 48pt");
+      check(scaledDoc.layers[0].text.origin.x == originBefore.x &&
+                scaledDoc.layers[0].text.origin.y == originBefore.y,
+            "text: a scale does not move the origin -- the matrix carries the whole change");
+
+      // And it actually reaches the geometry: the rendered bounds double.
+      // Without this the three assertions above would all pass on a function
+      // that stored the matrix and never applied it.
+      const PathBounds boundsAfter = textContentBounds(scaledDoc.layers[0].text);
+      check(boundsBefore.valid && boundsAfter.valid &&
+                std::fabs((boundsAfter.maxX - boundsAfter.minX) -
+                          2.0f * (boundsBefore.maxX - boundsBefore.minX)) < 0.01f,
+            "text: REQUIRED -- the SHAPED geometry is twice as wide afterwards, so the stored "
+            "matrix is actually applied by textContentToShapes() and not merely recorded");
+    }
+
+    // A rotation gets its own case because a rotation matrix has a ZERO
+    // translation part -- a check that only asked whether the block moved
+    // would pass it by accident.
+    {
+      Document rotDoc = doc;
+      const PathBounds boundsBefore = textContentBounds(rotDoc.layers[0].text);
+      const LayerTransformResult rotated =
+          transformTextLayer(rotDoc, 0, transformRotateDegrees(30.0f));
+      check(rotated.ok, "text: REQUIRED -- a ROTATION is accepted and stored");
+      check(rotDoc.layers[0].text.utf8 == "Handgloves",
+            "text: rotated text is still text -- the string survives");
+
+      // A 30-degree rotation of a wide, short block makes its axis-aligned
+      // box TALLER. Asserted on height rather than width because a rotation
+      // shrinks a wide box's width and grows its height, so height moving is
+      // the unambiguous signal; width alone could be explained by a scale.
+      const PathBounds boundsAfter = textContentBounds(rotDoc.layers[0].text);
+      check(boundsBefore.valid && boundsAfter.valid &&
+                (boundsAfter.maxY - boundsAfter.minY) > (boundsBefore.maxY - boundsBefore.minY) + 1.0f,
+            "text: REQUIRED -- and the rotation reaches the geometry: the block's box is taller "
+            "afterwards. This is the assertion that fails if rotate goes back to being a no-op");
+    }
+
+    // A collapsed matrix is refused, because a block with no inverse can
+    // never be clicked again -- see transformTextLayer()'s own comment.
+    {
+      Document flatDoc = doc;
+      const PathPoint originBefore = flatDoc.layers[0].text.origin;
+      const LayerTransformResult flattened =
+          transformTextLayer(flatDoc, 0, transformScale(0.0f, 1.0f));
+      check(!flattened.ok && flattened.error.find("zero width") != std::string::npos,
+            "text: REQUIRED -- a scale to ZERO width is refused by name; storing it would make "
+            "the block invisible and permanently unclickable");
+      check(flatDoc.layers[0].text.origin.x == originBefore.x &&
+                flatDoc.layers[0].text.transform.m == mat3Identity().m,
+            "text: and the refusal changed nothing at all -- not the origin, not the matrix");
+    }
+
+    // A translate applied to an ALREADY-rotated block goes through the matrix,
+    // not through `origin`. The origin is applied BEFORE the matrix, so
+    // shifting it on a rotated block would slide the text off at an angle to
+    // the cursor -- this is the assertion that catches that.
+    {
+      Document rotThenMove = doc;
+      check(transformTextLayer(rotThenMove, 0, transformRotateDegrees(90.0f)).ok,
+            "text: (fixture) the block rotates");
+      const PathPoint originBefore = rotThenMove.layers[0].text.origin;
+      const PathBounds before = textContentBounds(rotThenMove.layers[0].text);
+      const LayerTransformResult moved2 =
+          transformTextLayer(rotThenMove, 0, transformTranslate(10.0f, 0.0f));
+      check(moved2.ok && moved2.editLabel == "move text",
+            "text: a translate of a rotated block is still labelled a move");
+      check(rotThenMove.layers[0].text.origin.x == originBefore.x,
+            "text: REQUIRED -- and it did NOT touch `origin`, which is applied before the matrix "
+            "and would have moved the block by M*d instead of d");
+      const PathBounds after = textContentBounds(rotThenMove.layers[0].text);
+      check(before.valid && after.valid && std::fabs((after.minX - before.minX) - 10.0f) < 0.01f,
+            "text: REQUIRED -- the rotated block moved by exactly the 10px asked for, in DOCUMENT "
+            "space; this is what fails if the translate is composed on the wrong side");
+    }
+
+    // The whole point: the Move tool's own entry reaches all of the above.
+    OpenDocument od;
+    od.id = 91;
+    od.document = doc;
+    od.recordEdit("text fixture", EditKind::Structural);
+    TransformSession ts;
+    const TransformBeginResult began = beginMove(ts, od);
+    check(began.ok && ts.active() && ts.target() == TransformTarget::Layer,
+          "text: REQUIRED -- beginMove() ACCEPTS a Text layer; this is the gate that used to "
+          "refuse it, and the reason the tool did nothing at all");
+
+    const PathPoint originAtBegin = od.document.layers[0].text.origin;
+    setMoveTranslation(ts, 5.0f, 9.0f);
+    const TransformCommitResult done = ts.commit(od);
+    check(done.ok && od.document.layers[0].text.origin.x == originAtBegin.x + 5.0f &&
+              od.document.layers[0].text.origin.y == originAtBegin.y + 9.0f,
+          "text: REQUIRED -- and a committed move through the session moves the origin, so the "
+          "tool's own path works end to end and not just transformLayer()");
+
+    // The keyboard form of the same gesture, which is a second entry point
+    // and was equally dead.
+    OpenDocument nudged;
+    nudged.id = 92;
+    nudged.document = doc;
+    nudged.recordEdit("text fixture", EditKind::Structural);
+    const PathPoint beforeNudge = nudged.document.layers[0].text.origin;
+    const TransformCommitResult nudge = nudgeMove(nudged, -1.0f, 0.0f);
+    check(nudge.ok && nudged.document.layers[0].text.origin.x == beforeNudge.x - 1.0f,
+          "text: REQUIRED -- an arrow-key nudge moves a Text layer too; nudgeMove() comes "
+          "through the same refused gate");
   }
 
   std::printf("[selftest] move tool %s\n", ok ? "PASS" : "FAIL");

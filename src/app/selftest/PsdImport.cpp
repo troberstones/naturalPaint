@@ -1,5 +1,7 @@
 #include "app/selftest/Support.hpp"
 
+#include <cstdlib>
+
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -246,7 +248,8 @@ struct LayerSpec {
 std::vector<uint8_t> buildPsd(uint32_t width, uint32_t height, uint16_t depth,
                               const std::vector<LayerSpec>& layers, uint16_t version = 1,
                               uint16_t colorMode = 3, bool omitLayerSection = false,
-                              std::optional<int16_t> layerCountOverride = std::nullopt) {
+                              std::optional<int16_t> layerCountOverride = std::nullopt,
+                              bool inLr16Block = false, bool blockBeforeLr16 = false) {
   ByteWriter w;
   w.str4("8BPS");
   w.u16(version);
@@ -380,9 +383,38 @@ std::vector<uint8_t> buildPsd(uint32_t width, uint32_t height, uint16_t depth,
   layerInfo.bytes(chdata.b);
 
   ByteWriter layerMaskInfo;
-  layerMaskInfo.u32(static_cast<uint32_t>(layerInfo.b.size()));
-  layerMaskInfo.bytes(layerInfo.b);
-  layerMaskInfo.u32(0);  // Global layer mask info: none
+  if (inLr16Block) {
+    // **What Photoshop actually writes for a 16-bit layered file**, and the
+    // shape this reader used to open flat without a word: the ordinary
+    // layer info section is EMPTY, and the same count-records-channel-data
+    // body goes into an `Lr16` block after the global layer mask info. That
+    // block list pads to 4 at this level (psd-tools reads it with
+    // `padding=4`), which a per-record list does not.
+    layerMaskInfo.u32(0);  // ordinary Layer info: empty, as Photoshop leaves it
+    layerMaskInfo.u32(0);  // Global layer mask info: none
+    if (blockBeforeLr16) {
+      // A section-level block Photoshop really does write here (`Patt`,
+      // `Txt2`, `FMsk` ...), given an ODD declared length on purpose. The
+      // reader must step over it by its length ROUNDED UP TO 4; stepping by
+      // the bare length lands three bytes short, inside the pad, and the
+      // `Lr16` that follows is never found -- so the file opens flat again,
+      // silently, which is the same failure this whole section is about.
+      layerMaskInfo.str4("8BIM");
+      layerMaskInfo.str4("Patt");
+      layerMaskInfo.u32(5);
+      for (int i = 0; i < 5; ++i) layerMaskInfo.u8(0xAB);
+      while (layerMaskInfo.b.size() % 4 != 0) layerMaskInfo.u8(0);
+    }
+    layerMaskInfo.str4("8BIM");
+    layerMaskInfo.str4("Lr16");
+    layerMaskInfo.u32(static_cast<uint32_t>(layerInfo.b.size()));
+    layerMaskInfo.bytes(layerInfo.b);
+    while (layerMaskInfo.b.size() % 4 != 0) layerMaskInfo.u8(0);
+  } else {
+    layerMaskInfo.u32(static_cast<uint32_t>(layerInfo.b.size()));
+    layerMaskInfo.bytes(layerInfo.b);
+    layerMaskInfo.u32(0);  // Global layer mask info: none
+  }
 
   w.u32(static_cast<uint32_t>(layerMaskInfo.b.size()));
   w.bytes(layerMaskInfo.b);
@@ -633,7 +665,117 @@ bool runPsdImportTest() {
       const auto px = pixelAt(r.document.layers[0], 0, 0);
       check(nearf(px[0], srgbDecode(0x8000 / 65535.0f), kTol) &&
                 nearf(px[1], srgbDecode(1.0f), kTol) && nearf(px[2], srgbDecode(0.0f), kTol),
-            "B: 16-bit big-endian samples decode against the 65535 full-scale, not 255");
+            "B: 16-bit big-endian samples decode against the 65535 full-scale psd-tools uses, "
+            "not 255 (65535 vs PLAN.md's 32768 is OPEN -- io/PsdImport.hpp 'Depth')");
+    }
+  }
+
+  // ==========================================================================
+  std::printf("  -- B2. 16-bit layers live in an Lr16 block, not the layer section --\n");
+  // ==========================================================================
+  //
+  // **This whole section is new, and it covers a defect that was silent.**
+  // Photoshop does not put a 16-bit file's layer records in the ordinary
+  // Layer info section; it leaves that EMPTY and writes the same body into an
+  // `Lr16` block after the global layer mask info. Before `Lr16` was read, a
+  // 16-bit layered PSD reported `noLayerData`, and app/OpenAnyFile.cpp -- quite
+  // correctly, given what it was told -- fell through to the flattened path.
+  // Correct pixels, one layer, no error. Section B above never saw it,
+  // because its fixture puts 16-bit records in the ORDINARY section, which is
+  // a shape Photoshop does not write.
+  {
+    std::vector<LayerSpec> specs;
+    for (int i = 0; i < 3; ++i) {
+      LayerSpec l;
+      l.top = 0; l.left = 0; l.bottom = 2; l.right = 2;
+      l.pascalName = std::string("Deep ") + static_cast<char>('A' + i);
+      l.compression = 0;
+      l.hidden = (i == 1);
+      const uint32_t v = 0x2000u * static_cast<uint32_t>(i + 1);
+      l.channels = {{0, std::vector<uint32_t>(4, v)},
+                   {1, std::vector<uint32_t>(4, 0x0000)},
+                   {2, std::vector<uint32_t>(4, 0x0000)},
+                   {-1, std::vector<uint32_t>(4, 0xFFFF)}};
+      specs.push_back(l);
+    }
+    const std::vector<uint8_t> bytes =
+        buildPsd(2, 2, 16, specs, 1, 3, false, std::nullopt, /*inLr16Block=*/true);
+    const PsdImportResult r = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
+
+    check(r.ok, "B2: a 16-bit PSD whose layers are in an Lr16 block imports");
+    check(!r.noLayerData,
+          "B2: it is NOT reported as a flat composite -- the silent failure this section exists for");
+    check(r.ok && r.document.layers.size() == 3,
+          "B2: all three layers come back, not one flattened layer");
+    if (r.ok && r.document.layers.size() == 3) {
+      check(r.document.layers[0].name == "Deep A" && r.document.layers[1].name == "Deep B" &&
+                r.document.layers[2].name == "Deep C",
+            "B2: names and stacking order survive, bottom first, no reversal");
+      check(r.document.layers[0].visible && !r.document.layers[1].visible &&
+                r.document.layers[2].visible,
+            "B2: the inverted hidden flag is read out of Lr16 the same way");
+      // The sample values differ per layer, so a reader that got the right
+      // count but decoded every layer from the same offset would fail this
+      // rather than pass it.
+      const auto a = pixelAt(r.document.layers[0], 0, 0);
+      const auto c = pixelAt(r.document.layers[2], 0, 0);
+      check(nearf(a[0], srgbDecode(0x2000 / 65535.0f), kTol) &&
+                nearf(c[0], srgbDecode(0x6000 / 65535.0f), kTol),
+            "B2: each layer decodes its OWN channel data, not the first layer's");
+    }
+
+    // The stride. In the fixture above `Lr16` is the FIRST block, so the
+    // round-up-to-4 never runs and could be deleted without reddening a
+    // thing -- a sabotage of it was inert, which is how this fixture came to
+    // exist. Here an odd-length block precedes it.
+    const std::vector<uint8_t> padded = buildPsd(2, 2, 16, specs, 1, 3, false, std::nullopt,
+                                                 /*inLr16Block=*/true, /*blockBeforeLr16=*/true);
+    const PsdImportResult rp = importPsd(std::span<const uint8_t>(padded.data(), padded.size()));
+    check(rp.ok && rp.document.layers.size() == 3,
+          "B2: Lr16 is still found behind an odd-length block -- the list pads to 4");
+
+    // The old behaviour, pinned so it cannot quietly come back: an Lr16
+    // file with the block's KEY changed is exactly what this reader used to
+    // see -- an empty ordinary section and nothing it recognised after it.
+    std::vector<uint8_t> unkeyed = bytes;
+    for (size_t i = 0; i + 4 <= unkeyed.size(); ++i) {
+      if (unkeyed[i] == 'L' && unkeyed[i + 1] == 'r' && unkeyed[i + 2] == '1' &&
+          unkeyed[i + 3] == '6') {
+        unkeyed[i + 3] = 'X';
+        break;
+      }
+    }
+    const PsdImportResult u = importPsd(std::span<const uint8_t>(unkeyed.data(), unkeyed.size()));
+    check(!u.ok && u.noLayerData,
+          "B2: with no Lr16 key the same bytes still fall back as a flat file -- nothing else "
+          "is misread as layers");
+
+    // An 8-bit file must never go looking. Same records, depth 8, in the
+    // ordinary section: unchanged behaviour.
+    std::vector<LayerSpec> eight = specs;
+    for (LayerSpec& l : eight)
+      for (ChannelSpec& ch : l.channels)
+        for (uint32_t& v : ch.samples) v >>= 8;
+    const std::vector<uint8_t> e8 = buildPsd(2, 2, 8, eight);
+    const PsdImportResult r8 = importPsd(std::span<const uint8_t>(e8.data(), e8.size()));
+    check(r8.ok && r8.document.layers.size() == 3,
+          "B2: an 8-bit file still reads its layers from the ordinary section");
+
+    // **Lr32 cannot be reached, and that is asserted rather than assumed.**
+    // A 32-bit file's layers would live in Lr32, which this reader does not
+    // handle -- but `depth == 32` is refused at the FILE HEADER, long before
+    // any block walk. So the refusal is by name and total, never a
+    // half-supported layer read.
+    const std::vector<uint8_t> b32 = buildPsd(2, 2, 32, {});
+    const PsdImportResult r32 = importPsd(std::span<const uint8_t>(b32.data(), b32.size()));
+    check(!r32.ok && !r32.noLayerData && r32.error.find("32-bit") != std::string::npos,
+          "B2: a 32-bit file is refused by name at the header, before Lr32 could matter");
+
+    if (const char* dumpPath = std::getenv("NP_PSD_LR16_DUMP")) {
+      std::ofstream out(dumpPath, std::ios::binary);
+      out.write(reinterpret_cast<const char*>(bytes.data()),
+                static_cast<std::streamsize>(bytes.size()));
+      std::printf("  wrote %zu bytes to %s for the psd-tools oracle\n", bytes.size(), dumpPath);
     }
   }
 

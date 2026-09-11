@@ -79,9 +79,11 @@ struct TextStyle {
 };
 
 // A paragraph's box. Point text (`width == 0`) has no wrapping and no
-// alignment -- there is only one line, so `TextAlign` has nothing to align
-// against, matching what every vector tool calls "point text" vs "area
-// text". `height == 0` under paragraph text means "as tall as the shaped
+// alignment -- its box is measured from the text rather than set by the
+// user, so `TextAlign` has nothing to align against, matching what every
+// vector tool calls "point text" vs "area text". It DOES break on the hard
+// breaks the string carries (a newline, CR, CRLF, U+2028, U+2029); "no
+// wrapping" is about width, not about Return. `height == 0` under paragraph text means "as tall as the shaped
 // lines need", not "zero lines": the frame grows to fit rather than
 // clipping, because a caller that wanted clipping would have to re-shape at
 // a different height anyway to know how much text was lost.
@@ -109,6 +111,24 @@ struct ShapedGlyph {
   float x = 0.0f;              // pen position, y DOWN (see the header)
   float y = 0.0f;
   uint32_t cluster = 0;        // byte offset into the source UTF-8
+
+  // How far the pen moves past this glyph -- so `x + advance` is the pen
+  // position the NEXT glyph on this line starts at, and therefore the
+  // trailing edge of this one.
+  //
+  // Here because a caret cannot be placed without it. A caret sits at a
+  // BOUNDARY between characters, and every boundary except the last is some
+  // glyph's `x`; the one at the end of a line is not, and with only pen
+  // positions to work from `core/TextContent.cpp` had to put an end-of-text
+  // caret ON the last glyph instead of after it -- a caret that draws in
+  // front of the letter just typed, which is every caret while typing at the
+  // end of a block, which is nearly all typing. Selecting a range needs it
+  // for the same reason: the highlight's right edge is a trailing edge.
+  //
+  // The horizontal component only. Vertical advances are a CJK
+  // vertical-writing concern this build has no writing mode for, and a
+  // second field nothing reads would be a claim that it is handled.
+  float advance = 0.0f;
 };
 
 // `cluster` on every glyph above is a byte offset into the *original*
@@ -127,6 +147,31 @@ struct ShapedText {
   float widthPx = 0.0f;
   float heightPx = 0.0f;
   int lineCount = 0;
+
+  // Where the FIRST line's baseline sits inside the shaped block, measured
+  // down from the block's own top-left origin described above.
+  //
+  // Reported rather than left to be re-derived from the glyphs, because the
+  // obvious derivation ("the smallest `y` any glyph has") is wrong the moment
+  // a run carries a baseline offset -- a superscript sits above its line's
+  // baseline and would be mistaken for it. This file knows the real number;
+  // a caller guessing at it does not.
+  //
+  // core/TextContent uses it to place a POINT text block by its baseline
+  // rather than by the top of its line box (core/TextContent.hpp section 2b).
+  float firstBaselineY = 0.0f;
+
+  // Baseline-to-baseline distance -- what the NEXT line down would be spaced
+  // by, whether or not this block has one.
+  //
+  // "Whether or not" is the point. A caller that needs to place something on
+  // a line the shaper did not produce -- a caret sitting after a TRAILING
+  // newline, which CoreText's framesetter does not lay out a line for -- has
+  // no pair of baselines to subtract, and guessing `1.2 * sizePx` puts the
+  // caret a fraction of a line off. This is measured: from two real baselines
+  // where the block has them, and from the first line's own metrics where it
+  // does not.
+  float lineHeightPx = 0.0f;
 };
 
 // Shape UTF-8 text. Bidi, cluster breaking and font fallback all come from

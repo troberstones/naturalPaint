@@ -108,6 +108,7 @@ bool runTextToolTest() {
       text.utf8 = built;
       TextEditState st;
       st.caret = text.utf8.size();
+      st.anchor = st.caret;  // no selection: every production writer keeps these in step
 
       const std::vector<size_t> expectedLenAfter = {10, 6, 3, 1, 0};
       bool allValidThroughout = true;
@@ -137,17 +138,18 @@ bool runTextToolTest() {
       text.utf8 = built;
       TextEditState st;
       st.caret = text.utf8.size();
+      st.anchor = st.caret;  // no selection: every production writer keeps these in step
 
       std::vector<size_t> visited = {st.caret};
       for (int i = 0; i < 5; ++i) {
-        textCaretLeft(text, &st);
+        textCaretLeft(text, &st, /*extend=*/false);
         visited.push_back(st.caret);
       }
       const std::vector<size_t> expected = {11, 10, 6, 3, 1, 0};
       check(visited == expected,
             "textCaretLeft(): REQUIRED -- from the end, visits exactly the character "
             "boundaries in order (11, 10, 6, 3, 1, 0), computed from the string built above");
-      textCaretLeft(text, &st);
+      textCaretLeft(text, &st, /*extend=*/false);
       check(st.caret == 0, "textCaretLeft(): already at 0 stays at 0 rather than underflowing");
     }
 
@@ -157,16 +159,17 @@ bool runTextToolTest() {
       text.utf8 = built;
       TextEditState st;
       st.caret = 0;
+      st.anchor = st.caret;  // no selection: every production writer keeps these in step
 
       std::vector<size_t> visited = {st.caret};
       for (int i = 0; i < 5; ++i) {
-        textCaretRight(text, &st);
+        textCaretRight(text, &st, /*extend=*/false);
         visited.push_back(st.caret);
       }
       check(visited == boundaries,
             "textCaretRight(): REQUIRED -- from the start, visits exactly the character "
             "boundaries in order (0, 1, 3, 6, 10, 11)");
-      textCaretRight(text, &st);
+      textCaretRight(text, &st, /*extend=*/false);
       check(st.caret == text.utf8.size(),
             "textCaretRight(): already at the end stays at the end rather than overflowing");
     }
@@ -177,9 +180,10 @@ bool runTextToolTest() {
       text.utf8 = built;
       TextEditState st;
       st.caret = 5;  // an arbitrary interior position, not a boundary claim
-      textCaretHome(&st);
+      st.anchor = st.caret;  // no selection: every production writer keeps these in step
+      textCaretHome(&st, /*extend=*/false);
       check(st.caret == 0, "textCaretHome(): caret goes to 0");
-      textCaretEnd(text, &st);
+      textCaretEnd(text, &st, /*extend=*/false);
       check(st.caret == text.utf8.size(), "textCaretEnd(): caret goes to the byte length");
     }
 
@@ -189,6 +193,7 @@ bool runTextToolTest() {
       text.utf8 = built;
       TextEditState st;
       st.caret = 3;  // boundary between e-acute and euro -- neither end
+      st.anchor = st.caret;  // no selection: every production writer keeps these in step
 
       textInsertUtf8(&text, &st, std::string_view(emoji));
       const std::string expectedBytes = aChar + eAcute + emoji + euro + emoji + zChar;
@@ -207,6 +212,7 @@ bool runTextToolTest() {
       text.utf8 = built;
       TextEditState st;
       st.caret = 3;  // immediately before the 3-byte euro sign
+      st.anchor = st.caret;  // no selection: every production writer keeps these in step
 
       const bool did = textDeleteForward(&text, &st);
       check(did, "textDeleteForward(): reports it deleted something");
@@ -225,6 +231,7 @@ bool runTextToolTest() {
       text.utf8 = built;
       TextEditState st;
       st.caret = text.utf8.size();
+      st.anchor = st.caret;  // no selection: every production writer keeps these in step
       check(!textDeleteForward(&text, &st) && text.utf8 == built,
             "textDeleteForward(): at the end returns false and edits nothing");
     }
@@ -239,7 +246,8 @@ bool runTextToolTest() {
       text.utf8 = built;
       TextEditState st;
       st.caret = 4;
-      textCaretLeft(text, &st);
+      st.anchor = st.caret;  // no selection: every production writer keeps these in step
+      textCaretLeft(text, &st, /*extend=*/false);
       check(st.caret == 1,
             "textCaretLeft(): REQUIRED -- a caret sitting mid-sequence (byte 4, inside the "
             "3-byte euro sign at 3..6) is clamped to boundary 3 and THEN moved left, landing "
@@ -250,6 +258,7 @@ bool runTextToolTest() {
       text.utf8 = built;
       TextEditState st;
       st.caret = 4;  // mid-sequence, inside the euro sign
+      st.anchor = st.caret;  // no selection: every production writer keeps these in step
       const bool did = textBackspace(&text, &st);
       check(did, "textBackspace(): from a mid-sequence caret still deletes something");
       check(isValidUtf8(text.utf8),
@@ -264,7 +273,7 @@ bool runTextToolTest() {
                            "character -- a real boundary");
 
       // The NEXT operation, on the now-clamped state, is still correct.
-      textCaretRight(text, &st);
+      textCaretRight(text, &st, /*extend=*/false);
       check(st.caret == 4,
             "textBackspace(): the next operation after a bogus-caret recovery is correct -- "
             "caret-right from 1 lands on 4, the start of the euro sign in the shortened string");
@@ -275,6 +284,7 @@ bool runTextToolTest() {
       text.utf8 = built;
       TextEditState st;
       st.caret = 9999;
+      st.anchor = st.caret;  // no selection: every production writer keeps these in step
       const bool did = textBackspace(&text, &st);
       check(did && text.utf8 == aChar + eAcute + euro + emoji,
             "textBackspace(): REQUIRED -- a caret far past the end is clamped to the real end "
@@ -384,7 +394,7 @@ bool runTextToolTest() {
     // Advance the caret and start a frame drag mid-session (an odd sequence
     // in practice, but exactly the kind of leftover state a stale session
     // must not carry into a NEW one).
-    textCaretLeft(contentA, &st);
+    textCaretLeft(contentA, &st, /*extend=*/false);
     textEditFrameDragBegin(&st, PathPoint{7, 7}, /*documentId=*/1);
     check(st.frameDragActive, "(setup) a frame drag is live before the document switch");
 
@@ -431,6 +441,290 @@ bool runTextToolTest() {
           "textEditCancel(): REQUIRED -- the content is untouched (this function never "
           "receives a TextContent* to edit in the first place)");
     check(!st.undoOpened, "textEditCancel(): the undo-opened flag is released with the drag");
+  }
+
+  // ==========================================================================
+  // THE SELECTION -- caret + anchor, and every edit that has to respect it
+  // ==========================================================================
+  //
+  // Reported as "I cant select text", and there was nothing to select WITH:
+  // `TextEditState` had a caret and no other end. The model is a second byte
+  // offset, `anchor`; the range is DERIVED from the pair rather than stored
+  // beside them, so it cannot go stale against the caret it is built from.
+  std::printf("  -- the selection --\n");
+  {
+    TextContent text;
+    text.utf8 = "Handgloves";
+    TextEditState st;
+    textEditBegin(&st, /*documentId=*/1, /*layerIndex=*/0, text);
+
+    check(textSelection(st).empty(),
+          "selection: a fresh session has an EMPTY selection -- just a caret, which is the state "
+          "for the whole of ordinary typing");
+
+    textCaretHome(&st, /*extend=*/false);
+    textCaretRight(text, &st, /*extend=*/true);
+    textCaretRight(text, &st, /*extend=*/true);
+    check(textSelection(st).lo == 0 && textSelection(st).hi == 2,
+          "selection: REQUIRED -- Shift+Right twice selects the first two bytes; the anchor stays "
+          "put at 0 while the caret moves");
+    check(textSelectedUtf8(text, st) == "Ha", "selection: and the selected bytes are those two");
+
+    textCaretLeft(text, &st, /*extend=*/true);
+    check(textSelection(st).lo == 0 && textSelection(st).hi == 1,
+          "selection: Shift+Left shrinks the range from the caret end, leaving the anchor");
+
+    // **The caret can end up LEFT of the anchor.** A reader assuming
+    // caret >= anchor produces a backwards, empty or enormous range here.
+    textCaretRight(text, &st, /*extend=*/false);
+    textCaretRight(text, &st, /*extend=*/false);
+    textCaretRight(text, &st, /*extend=*/false);
+    textCaretLeft(text, &st, /*extend=*/true);
+    textCaretLeft(text, &st, /*extend=*/true);
+    check(textSelection(st).lo == 1 && textSelection(st).hi == 3 && st.caret < st.anchor,
+          "selection: REQUIRED -- selecting BACKWARDS gives the same range sorted (1,3) with the "
+          "caret left of the anchor; textSelection() sorts so no reader has to know the order");
+
+    // Unextended Left/Right collapse to the near EDGE, not one step from the
+    // caret end.
+    textCaretHome(&st, /*extend=*/false);
+    textCaretRight(text, &st, /*extend=*/false);
+    for (int i = 0; i < 3; ++i) textCaretRight(text, &st, /*extend=*/true);
+    check(textSelection(st).lo == 1 && textSelection(st).hi == 4, "(setup) bytes 1..4 selected");
+    textCaretLeft(text, &st, /*extend=*/false);
+    check(st.caret == 1 && textSelection(st).empty(),
+          "selection: REQUIRED -- plain Left with a range live collapses to its LEFT edge and "
+          "stops there; stepping one character back from the caret end is the wrong answer that "
+          "every editor agrees about");
+    for (int i = 0; i < 3; ++i) textCaretRight(text, &st, /*extend=*/true);
+    textCaretRight(text, &st, /*extend=*/false);
+    check(st.caret == 4 && textSelection(st).empty(),
+          "selection: and plain Right collapses to the RIGHT edge, symmetrically");
+  }
+
+  // Every edit respects the range, and does so INSIDE the edit functions so
+  // that no call site can forget -- app/TextTool.hpp says why, and these are
+  // the checks.
+  {
+    TextContent t2;
+    t2.utf8 = "Handgloves";
+    TextEditState s2;
+    textEditBegin(&s2, 1, 0, t2);
+    textSelectAll(&s2, t2);
+    check(textSelection(s2).lo == 0 && textSelection(s2).hi == 10,
+          "selection: textSelectAll() covers the whole block");
+    textInsertUtf8(&t2, &s2, "X");
+    check(t2.utf8 == "X" && s2.caret == 1 && textSelection(s2).empty(),
+          "selection: REQUIRED -- typing over a selection REPLACES it. An insert that forgot "
+          "would leave \"XHandgloves\" -- inserting into the middle of a range the user believed "
+          "they were replacing, which looks like corruption rather than a missing feature");
+
+    TextContent t3;
+    t3.utf8 = "Handgloves";
+    TextEditState s3;
+    textEditBegin(&s3, 1, 0, t3);
+    textCaretHome(&s3, false);
+    for (int i = 0; i < 4; ++i) textCaretRight(t3, &s3, /*extend=*/true);
+    check(textBackspace(&t3, &s3) && t3.utf8 == "gloves" && s3.caret == 0,
+          "selection: REQUIRED -- Backspace with a range deletes THE RANGE and nothing else, not "
+          "the range plus the character before it");
+    check(textSelection(s3).empty(), "selection: and the range goes with the bytes");
+
+    TextContent t4;
+    t4.utf8 = "Handgloves";
+    TextEditState s4;
+    textEditBegin(&s4, 1, 0, t4);
+    textSelectAll(&s4, t4);
+    check(textDeleteForward(&t4, &s4) && t4.utf8.empty(),
+          "selection: Delete with a range deletes the range too");
+  }
+
+  // Multi-byte: a range is two offsets, and either can land mid-sequence if
+  // anything clamps only one of them.
+  {
+    const std::string eAcute = "\xC3\xA9";
+    TextContent t5;
+    t5.utf8 = "caf" + eAcute + "s";  // 6 bytes, 5 characters
+    TextEditState s5;
+    textEditBegin(&s5, 1, 0, t5);
+    textCaretHome(&s5, false);
+    for (int i = 0; i < 4; ++i) textCaretRight(t5, &s5, /*extend=*/true);
+    check(textSelection(s5).hi == 5,
+          "selection: REQUIRED -- four CHARACTERS of a string with an accent in it is five "
+          "BYTES; a range counted in characters, or clamped on one end only, splits the accent");
+    check(textSelectedUtf8(t5, s5) == "caf" + eAcute,
+          "selection: and the selected bytes are valid UTF-8, the accent intact");
+    textInsertUtf8(&t5, &s5, "z");
+    check(t5.utf8 == "zs", "selection: replacing that range leaves valid UTF-8 behind");
+  }
+
+  // The pointer gesture: begin, drag, end -- and end does NOT collapse.
+  {
+    TextContent t6;
+    t6.utf8 = "Handgloves";
+    TextEditState s6;
+    textEditBegin(&s6, 1, 0, t6);
+    textSelectDragBegin(&s6, t6, 2);
+    check(s6.selectDragActive && textSelection(s6).empty(),
+          "selection: a drag that has not moved yet is exactly a caret -- both ends at the "
+          "pen-down, so a click that never drags places a caret and selects nothing");
+    textSelectDragUpdate(&s6, t6, 6);
+    check(textSelection(s6).lo == 2 && textSelection(s6).hi == 6,
+          "selection: dragging moves the caret end and leaves the anchor at the pen-down");
+    textSelectDragEnd(&s6);
+    check(!s6.selectDragActive && textSelection(s6).lo == 2 && textSelection(s6).hi == 6,
+          "selection: REQUIRED -- ending the drag KEEPS the range; collapsing on mouse-up would "
+          "make a drag-selection impossible to perform at all");
+    textSelectDragUpdate(&s6, t6, 9);
+    check(textSelection(s6).hi == 6,
+          "selection: and an update after End changes nothing -- a stray move must not keep "
+          "re-selecting after a mouse-up the window never saw");
+  }
+
+  // A fresh gesture starts with no selection, whatever the last one left --
+  // the bug this found in `textEditFrameDragBegin()`, which reset the caret
+  // and not the anchor, so a new block began with a phantom range from 0 to
+  // the previous session's caret and the first character typed "replaced" it.
+  {
+    TextContent t7;
+    t7.utf8 = "Handgloves";
+    TextEditState s7;
+    textEditBegin(&s7, 1, 0, t7);
+    // **A NON-ZERO anchor, and this detail is the whole test.** The obvious
+    // fixture -- `textSelectAll()` -- leaves the anchor at 0, and
+    // `textEditFrameDragBegin()` sets the caret to 0, so the range collapses
+    // whether or not the anchor is reset and the check passes either way.
+    // Sabotaging the fix found exactly that: the assertion below did not
+    // move. A backwards selection puts the anchor at the END, where a failure
+    // to reset it is visible.
+    textCaretHome(&s7, /*extend=*/true);
+    check(s7.anchor == 10 && s7.caret == 0 && !textSelection(s7).empty(),
+          "(setup) a range is live on the old session with its anchor at the far end, which is "
+          "the only arrangement in which the next check can fail");
+
+    textEditFrameDragBegin(&s7, PathPoint{4.0f, 4.0f}, /*documentId=*/1);
+    check(textSelection(s7).empty(),
+          "selection: REQUIRED -- beginning a frame drag clears the range as well as the caret; "
+          "a stale anchor would give the new block a phantom selection for its first keystroke "
+          "to replace");
+
+    textEditBegin(&s7, 1, 0, t7);
+    textSelectAll(&s7, t7);
+    textEditCancel(&s7);
+    check(textSelection(s7).empty(),
+          "selection: REQUIRED -- and ending the session leaves none behind, so nothing draws a "
+          "highlight over a block that is no longer being edited");
+  }
+
+  // ==========================================================================
+  // PASTED TEXT -- what may come in off the system pasteboard
+  // ==========================================================================
+  //
+  // The stakes, and why this is refused rather than repaired: `shapeText()`
+  // fails on invalid UTF-8 and `textContentToShapes()` turns that into NO
+  // SHAPES, so one bad byte does not corrupt one character -- it blanks the
+  // whole block, silently, including everything that was already in it.
+  std::printf("  -- pasted text --\n");
+  {
+    std::string out;
+
+    check(textSanitizePasted("hello", &out) && out == "hello",
+          "paste: plain ASCII passes through unchanged");
+
+    const std::string eAcute = "\xC3\xA9";
+    const std::string euro = "\xE2\x82\xAC";
+    const std::string emoji = "\xF0\x9F\x8E\xA8";  // 4-byte, outside the BMP
+    check(textSanitizePasted(eAcute + euro + emoji, &out) && out == eAcute + euro + emoji,
+          "paste: 2-, 3- and 4-byte characters all survive intact");
+
+    // Line endings, which is what text from another application actually
+    // looks like.
+    check(textSanitizePasted("a\r\nb", &out) && out == "a\nb",
+          "paste: REQUIRED -- CRLF becomes ONE newline, not two; text pasted from Windows or a "
+          "web page would otherwise double-space itself");
+    check(textSanitizePasted("a\rb", &out) && out == "a\nb",
+          "paste: a lone CR becomes a newline too");
+    check(textSanitizePasted("a\r\n\r\nb", &out) && out == "a\n\nb",
+          "paste: and a blank line between two CRLFs stays exactly one blank line");
+    check(textSanitizePasted("a\n\rb", &out) && out == "a\n\nb",
+          "paste: LF followed by CR is two line breaks, not one -- only CR+LF pairs collapse");
+
+    // Controls: the kept set matches what the typing loop admits, so pasting
+    // a character and typing it give the same block.
+    check(textSanitizePasted("a\tb\nc", &out) && out == "a\tb\nc",
+          "paste: tab and newline are kept -- the same two the typing loop admits");
+    check(textSanitizePasted(std::string("a\x01\x1F", 3) + "b", &out) && out == "ab",
+          "paste: the other C0 controls are dropped");
+    check(textSanitizePasted(std::string("a\x7F", 2) + "b", &out) && out == "ab",
+          "paste: DEL is dropped too");
+
+    // --- the refusals, each one a way a block could be blanked -----------
+    const std::string before = "untouched";
+    out = before;
+    check(!textSanitizePasted("\xC3", &out),
+          "paste: REQUIRED -- a truncated multi-byte sequence at the very end is REFUSED; this "
+          "is what a clipboard buffer cut short looks like");
+    check(out == before,
+          "paste: REQUIRED -- and a refusal leaves *out untouched, so the caller can say "
+          "'nothing was pasted' and mean it");
+
+    check(!textSanitizePasted("a\xC3z", &out),
+          "paste: a lead byte followed by a non-continuation byte is refused");
+    check(!textSanitizePasted("\x80\x80", &out),
+          "paste: a continuation byte with no lead is refused");
+    check(!textSanitizePasted("\xFF\xFE", &out),
+          "paste: 0xFF/0xFE -- the bytes a UTF-16 BOM arrives as -- are refused");
+
+    // Overlong: the same code point in more bytes than it needs. Two
+    // spellings of one character is exactly the ambiguity a byte-offset
+    // caret cannot afford.
+    check(!textSanitizePasted("\xC0\xAF", &out),
+          "paste: REQUIRED -- an OVERLONG encoding of '/' is refused, not silently accepted as a "
+          "second spelling of a character the caret already has one offset for");
+    check(!textSanitizePasted("\xE0\x80\xAF", &out), "paste: a 3-byte overlong is refused too");
+
+    // A lone surrogate. CESU-8 and WTF-8 both spell one as three
+    // plausible-looking bytes, and it is the exact input the typing loop
+    // already skips rather than encodes -- for the same reason.
+    check(!textSanitizePasted("\xED\xA0\x80", &out),
+          "paste: REQUIRED -- a lone surrogate (U+D800 as CESU-8) is refused; three bytes that "
+          "pass a shape-only check and blank the block at shapeText()");
+    check(!textSanitizePasted("\xF4\x90\x80\x80", &out),
+          "paste: a code point past U+10FFFF is refused");
+
+    // The boundaries themselves, so the refusals above are not just "anything
+    // unusual fails".
+    check(textSanitizePasted("\xED\x9F\xBF", &out),
+          "paste: U+D7FF -- the character immediately BELOW the surrogate range -- is accepted, "
+          "so the surrogate check is a range and not a blanket refusal of 3-byte sequences");
+    check(textSanitizePasted("\xEE\x80\x80", &out),
+          "paste: U+E000, immediately above it, is accepted");
+    check(textSanitizePasted("\xF4\x8F\xBF\xBF", &out),
+          "paste: U+10FFFF exactly -- the last legal code point -- is accepted");
+
+    check(textSanitizePasted("", &out) && out.empty(),
+          "paste: the empty string is valid and yields nothing");
+    check(!textSanitizePasted("hello", nullptr),
+          "paste: a null out pointer is refused rather than dereferenced");
+  }
+
+  // The undo bookkeeping a paste or a cut has to do -- app/TextTool.hpp
+  // section 3c. Without it, the next character typed amends straight over the
+  // paste's own history entry and undo has nothing to stop at between them.
+  {
+    TextContent t;
+    t.utf8 = "abc";
+    TextEditState s;
+    textEditBegin(&s, 1, 0, t);
+    textEditMarkUndoOpened(&s);
+    check(s.undoOpened, "(setup) a typing burst has an entry open");
+    textEditClearUndoOpened(&s);
+    check(!s.undoOpened,
+          "textEditClearUndoOpened(): REQUIRED -- releases the burst's entry so a paste's own "
+          "entry is not amended over by the next keystroke");
+    check(textSessionActive(s) && s.caret == 3,
+          "textEditClearUndoOpened(): and it does NOT end the session or move the caret -- it is "
+          "the counterpart to markUndoOpened(), not a second cancel");
   }
 
   return ok;

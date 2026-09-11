@@ -134,8 +134,15 @@ CTTextAlignment mapAlign(TextAlign align) {
 
 // One attributed string, one font attribute (over the whole range -- PRD
 // K2's "rich-text runs" is explicitly out of scope, see text/Shaper.hpp),
-// optional tracking, and -- only for paragraph text -- an alignment and
-// line-height paragraph style.
+// optional tracking, and a paragraph style carrying the alignment and the
+// line height.
+//
+// The paragraph style is attached for POINT text too, which it did not used
+// to be, because point text now goes through the framesetter to get its hard
+// line breaks (see `shapeText()`) and both of those settings decide what that
+// lays out: the alignment because point text's box is wider than its text,
+// and the line height because `style.leading` is the spacing BETWEEN lines
+// and point text never had two before.
 //
 // **`tracking == 0.0f` deliberately does not set `kCTKernAttributeName` at
 // all.** CoreText treats an explicit `0.0` there as "disable kerning
@@ -157,8 +164,19 @@ CFMutableAttributedStringRef makeAttributedString(CFStringRef str, CTFontRef fon
     CFRelease(tracking);
   }
 
-  if (paragraph) {
-    CTTextAlignment ctAlign = mapAlign(align);
+  {
+    // **Point text pins its alignment to the left rather than leaving
+    // CoreText's own default.** Left looks like a no-op and is not: the
+    // default is NATURAL alignment, which right-aligns a right-to-left
+    // paragraph inside its box -- and point text's box is deliberately wider
+    // than its text (see `shapeText()`), so natural alignment would push a
+    // Hebrew or Arabic line right by all of that slack. Measured, with a
+    // 64px-wider box: natural puts the line origin at x = 64.04, explicit
+    // left at x = 0.00, and the old `CTLineCreateWithAttributedString` path
+    // this replaced put it at 0 too. `align` itself is still ignored for
+    // point text, which is text/Shaper.hpp's own rule -- there is nothing to
+    // align a line against when the box is not the user's.
+    CTTextAlignment ctAlign = paragraph ? mapAlign(align) : kCTTextAlignmentLeft;
     CTLineBreakMode breakMode = kCTLineBreakByWordWrapping;
     std::vector<CTParagraphStyleSetting> settings = {
         {kCTParagraphStyleSpecifierAlignment, sizeof(ctAlign), &ctAlign},
@@ -227,9 +245,17 @@ void appendRunGlyphs(CTRunRef run, double lineOriginX, double lineBaselineYDown,
   std::vector<CGGlyph> glyphs(static_cast<size_t>(count));
   std::vector<CGPoint> positions(static_cast<size_t>(count));
   std::vector<CFIndex> indices(static_cast<size_t>(count));
+  // Advances come from the run rather than from differencing consecutive pen
+  // positions, which is the tempting shortcut and is wrong twice: the last
+  // glyph of a run has no successor to difference against (and the caret at
+  // the end of a line is exactly the case this field exists for), and under
+  // bidi the neighbouring glyph in run order can sit to the LEFT, which would
+  // make the advance negative.
+  std::vector<CGSize> advances(static_cast<size_t>(count));
   CTRunGetGlyphs(run, CFRangeMake(0, 0), glyphs.data());
   CTRunGetPositions(run, CFRangeMake(0, 0), positions.data());
   CTRunGetStringIndices(run, CFRangeMake(0, 0), indices.data());
+  CTRunGetAdvances(run, CFRangeMake(0, 0), advances.data());
 
   addFontUsed(&out->fontsUsed, runFontName(run));
 
@@ -239,6 +265,8 @@ void appendRunGlyphs(CTRunRef run, double lineOriginX, double lineBaselineYDown,
     g.x = static_cast<float>(lineOriginX + positions[static_cast<size_t>(i)].x);
     g.y = static_cast<float>(lineBaselineYDown - positions[static_cast<size_t>(i)].y);
     g.cluster = static_cast<uint32_t>(clusterMap.byteOffset(indices[static_cast<size_t>(i)]));
+    // Horizontal only -- text/Shaper.hpp says why there is no vertical field.
+    g.advance = static_cast<float>(advances[static_cast<size_t>(i)].width);
     out->glyphs.push_back(g);
   }
 }
@@ -408,82 +436,216 @@ ShapedText shapeText(std::string_view utf8, const TextStyle& style,
 
   const bool paragraph = frame.width > 0.0f;
   CFMutableAttributedStringRef attr = makeAttributedString(str, font, style, paragraph, align);
-  CFRelease(font);
-  CFRelease(str);
+  // `str` and `font` are released at the END of this function, not here.
+  // `attr` holds its own references so an early release was correct when it
+  // was written -- but the paragraph branch below re-frames the string to
+  // measure a line CoreText omitted, and needs both alive to do it. Freeing
+  // them here and using them 60 lines later is a use-after-free that shows up
+  // as a garbage objc dispatch, nowhere near the line that caused it.
 
   const Utf16ToUtf8Map clusterMap(utf8);
   CTFramesetterRef framesetter = CTFramesetterCreateWithAttributedString(attr);
 
-  if (!paragraph) {
-    // Point text: one CTLine, no wrapping box, no alignment (there is
-    // nothing to align a single line against -- text/Shaper.hpp's own
-    // comment on `TextFrame`).
-    CTLineRef line = CTLineCreateWithAttributedString(attr);
-    CGFloat ascent = 0, descent = 0, leadingOut = 0;
-    const double width = CTLineGetTypographicBounds(line, &ascent, &descent, &leadingOut);
-
-    // A single line has no second line to space against, so `style.leading`
-    // (a line-to-line override) does not apply here -- the font's own
-    // metrics are the only defined answer, matching the header comment on
-    // `TextFrame`.
-    const double baselineYDown = ascent;
-    out.heightPx = static_cast<float>(ascent + descent + leadingOut);
-    out.widthPx = static_cast<float>(width);
-    out.lineCount = 1;
-
-    CFArrayRef runs = CTLineGetGlyphRuns(line);
-    for (CFIndex r = 0; r < CFArrayGetCount(runs); ++r) {
-      CTRunRef run = static_cast<CTRunRef>(const_cast<void*>(CFArrayGetValueAtIndex(runs, r)));
-      appendRunGlyphs(run, 0.0, baselineYDown, clusterMap, &out);
-    }
-    CFRelease(line);
-  } else {
-    // Paragraph text: let the framesetter say how tall the text needs to be
-    // when the caller did not pin a height, so `H` below is the real
-    // content height rather than an arbitrarily oversized box whose slack
-    // would otherwise leak into every line's y-down origin (see
-    // text/Shaper.hpp's header comment on the coordinate space).
+  // --- how wide the box CoreText lays these lines into is ------------------
+  //
+  // Point text and paragraph text differ in exactly one thing here: who
+  // chooses the width. Paragraph text is given one and wraps to it; point
+  // text is measured and then handed a box too wide to wrap in, so the only
+  // breaks it can have are the ones the TEXT contains.
+  //
+  // Point text used to take a different road entirely --
+  // `CTLineCreateWithAttributedString`, one line, no frame -- and that call
+  // does not break lines at ALL. Not "does not wrap": does not break. A
+  // point block holding "Hi\nYo" drew "HiYo" on one line, with the newline
+  // sitting in the string as a zero-width glyph, so pressing Return in point
+  // text typed a character that could never become visible. Going through
+  // the framesetter is what fixes that, and it also picks up every OTHER
+  // hard break CoreText knows about -- CR, CRLF, U+2028 LINE SEPARATOR,
+  // U+2029 PARAGRAPH SEPARATOR -- which a hand-rolled split on '\n' would
+  // have missed one by one.
+  //
+  // **The two paths were measured against each other before this replaced
+  // one with the other**: for single-line point text -- Latin, accented,
+  // Hebrew, CJK, ligatures, leading and trailing spaces, at 24 and 48px --
+  // every glyph id, order, pen position and advance is bit-identical between
+  // `CTLineCreateWithAttributedString` and this. The change adds lines; it
+  // does not move the ones that were already there.
+  double layoutWidth = frame.width;
+  double H = 0.0;
+  if (paragraph) {
+    // Let the framesetter say how tall the text needs to be when the caller
+    // did not pin a height, so `H` is the real content height rather than an
+    // arbitrarily oversized box whose slack would otherwise leak into every
+    // line's y-down origin (see text/Shaper.hpp's header comment on the
+    // coordinate space).
     CFRange fitRange;
     const CGSize suggested = CTFramesetterSuggestFrameSizeWithConstraints(
         framesetter, CFRangeMake(0, 0), nullptr,
         CGSizeMake(frame.width, CGFLOAT_MAX), &fitRange);
-    const double H = frame.height > 0.0f
-                         ? static_cast<double>(frame.height)
-                         : std::max(1.0, std::ceil(suggested.height));
+    H = frame.height > 0.0f ? static_cast<double>(frame.height)
+                            : std::max(1.0, std::ceil(suggested.height));
+  } else {
+    // The natural size: the width of the widest line the text breaks itself
+    // into, and the height all of those need. Asked with both constraints
+    // unbounded, which is how CoreText is told "do not wrap, just measure".
+    CFRange fitRange;
+    const CGSize natural = CTFramesetterSuggestFrameSizeWithConstraints(
+        framesetter, CFRangeMake(0, 0), nullptr,
+        CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX), &fitRange);
+    // Padded, so that a line exactly as wide as the box cannot be wrapped by
+    // a rounding error -- which would turn one of the user's lines into two
+    // and look exactly like the bug this function just stopped having. The
+    // pad cannot shift anything, because point text pins its alignment to
+    // the left (see `makeAttributedString()`); with CoreText's NATURAL
+    // alignment instead, this pad would push a right-to-left line right by
+    // the whole width of it, which is measured in that function's comment.
+    layoutWidth = std::ceil(natural.width) + 4.0 * style.sizePx + 8.0;
+    H = std::max(1.0, std::ceil(natural.height));
+  }
 
-    CGMutablePathRef path = CGPathCreateMutable();
-    CGPathAddRect(path, nullptr, CGRectMake(0, 0, frame.width, H));
-    CTFrameRef ctFrame = CTFramesetterCreateFrame(framesetter, CFRangeMake(0, 0), path, nullptr);
-    CGPathRelease(path);
+  CGMutablePathRef path = CGPathCreateMutable();
+  CGPathAddRect(path, nullptr, CGRectMake(0, 0, layoutWidth, H));
+  CTFrameRef ctFrame = CTFramesetterCreateFrame(framesetter, CFRangeMake(0, 0), path, nullptr);
+  CGPathRelease(path);
 
-    CFArrayRef lines = CTFrameGetLines(ctFrame);
-    const CFIndex lineCount = CFArrayGetCount(lines);
-    std::vector<CGPoint> origins(static_cast<size_t>(std::max<CFIndex>(lineCount, 0)));
-    if (lineCount > 0) CTFrameGetLineOrigins(ctFrame, CFRangeMake(0, 0), origins.data());
+  CFArrayRef lines = CTFrameGetLines(ctFrame);
+  const CFIndex lineCount = CFArrayGetCount(lines);
+  std::vector<CGPoint> origins(static_cast<size_t>(std::max<CFIndex>(lineCount, 0)));
+  if (lineCount > 0) CTFrameGetLineOrigins(ctFrame, CFRangeMake(0, 0), origins.data());
 
-    out.lineCount = static_cast<int>(lineCount);
-    out.widthPx = static_cast<float>(frame.width);
-    out.heightPx = static_cast<float>(H);
+  out.lineCount = static_cast<int>(lineCount);
+  out.widthPx = static_cast<float>(frame.width);
+  out.heightPx = static_cast<float>(H);
 
-    for (CFIndex li = 0; li < lineCount; ++li) {
-      CTLineRef line = static_cast<CTLineRef>(const_cast<void*>(CFArrayGetValueAtIndex(lines, li)));
-      const CGPoint origin = origins[static_cast<size_t>(li)];
-      // The one flip in this whole file (see text/Shaper.hpp's header
-      // comment): CTFrame's path is y-up with (0,0) at its own lower-left
-      // corner, and this expresses every line's baseline as a distance DOWN
-      // from the top of that same box.
-      const double baselineYDown = H - origin.y;
-      CFArrayRef runs = CTLineGetGlyphRuns(line);
-      for (CFIndex r = 0; r < CFArrayGetCount(runs); ++r) {
-        CTRunRef run = static_cast<CTRunRef>(const_cast<void*>(CFArrayGetValueAtIndex(runs, r)));
-        appendRunGlyphs(run, origin.x, baselineYDown, clusterMap, &out);
-      }
+  // Where the block's own top-left sits relative to the first baseline, which
+  // is the one thing the two kinds still answer differently.
+  //
+  // Paragraph text's block top IS the frame's top, so this is the distance
+  // down to the first baseline inside that frame. Point text has no frame:
+  // core/TextContent.hpp section 2b pins it by the first baseline itself, and
+  // its block top is one ASCENT above that -- which is what the old CTLine
+  // path reported and what that header's prose says. Those are not the same
+  // number (Helvetica at 48px: an ascent of 36.961 against a framesetter
+  // first baseline of 47.000), so taking the frame's answer for point text
+  // would quietly redefine what `origin` means.
+  //
+  // It cancels out for point text either way -- `shapedOrigin()` subtracts
+  // exactly what the first line's glyphs add back -- but only the ascent
+  // leaves the block's reported BOX where the header says it is.
+  const double frameFirstBaseline = lineCount > 0 ? H - origins[0].y : 0.0;
+  double blockFirstBaseline = frameFirstBaseline;
+  if (!paragraph && lineCount > 0) {
+    CTLineRef first = static_cast<CTLineRef>(const_cast<void*>(CFArrayGetValueAtIndex(lines, 0)));
+    CGFloat ascent = 0, descent = 0, leadingOut = 0;
+    CTLineGetTypographicBounds(first, &ascent, &descent, &leadingOut);
+    blockFirstBaseline = static_cast<double>(ascent);
+  }
+  out.firstBaselineY = static_cast<float>(blockFirstBaseline);
+
+  double widestLine = 0.0;
+  double lastLineBaseline = blockFirstBaseline;
+  double lastLineHeight = 0.0;
+
+  for (CFIndex li = 0; li < lineCount; ++li) {
+    CTLineRef line = static_cast<CTLineRef>(const_cast<void*>(CFArrayGetValueAtIndex(lines, li)));
+    const CGPoint origin = origins[static_cast<size_t>(li)];
+    // The one flip in this whole file (see text/Shaper.hpp's header
+    // comment): CTFrame's path is y-up with (0,0) at its own lower-left
+    // corner, and this expresses every line's baseline as a distance DOWN
+    // from the top of that same box -- then re-anchors it onto the block's
+    // own top, which for point text is the ascent above line 0 rather than
+    // the frame's edge. Only the DIFFERENCE between baselines is taken from
+    // the frame, so this is immune to where CoreText chose to put line 0.
+    const double baselineYDown =
+        blockFirstBaseline + ((H - origin.y) - frameFirstBaseline);
+
+    CGFloat ascent = 0, descent = 0, leadingOut = 0;
+    const double lineWidth = CTLineGetTypographicBounds(line, &ascent, &descent, &leadingOut);
+    widestLine = std::max(widestLine, lineWidth);
+    lastLineBaseline = baselineYDown;
+    lastLineHeight = ascent + descent + leadingOut;
+
+    if (li == 1) {
+      // Two real baselines beat any computation from metrics: this is the
+      // spacing CoreText actually used, whatever rule it applied.
+      out.lineHeightPx = static_cast<float>(baselineYDown - blockFirstBaseline);
     }
-    CFRelease(ctFrame);
+    CFArrayRef runs = CTLineGetGlyphRuns(line);
+    for (CFIndex r = 0; r < CFArrayGetCount(runs); ++r) {
+      CTRunRef run = static_cast<CTRunRef>(const_cast<void*>(CFArrayGetValueAtIndex(runs, r)));
+      appendRunGlyphs(run, origin.x, baselineYDown, clusterMap, &out);
+    }
+  }
+  CFRelease(ctFrame);
+
+  if (!paragraph) {
+    // Point text has no frame to report a size from, so its box is what the
+    // lines came to. `widthPx` is the widest line's TYPOGRAPHIC bounds, not
+    // the natural width suggested above, and that difference is load-bearing:
+    // the suggestion drops trailing whitespace, and io/SvgImport advances its
+    // pen between consecutive `<tspan>` runs by exactly this number -- so a
+    // run ending in a space would have its neighbour slide left onto it.
+    // Measured: for every single-line string the widest line's bounds equal
+    // what `CTLineCreateWithAttributedString` used to report, to the bit,
+    // trailing spaces included.
+    out.widthPx = static_cast<float>(widestLine);
+    out.heightPx = static_cast<float>((lastLineBaseline - blockFirstBaseline) + lastLineHeight);
+  }
+
+  // --- the spacing of a line CoreText declined to lay out -------------------
+  //
+  // A newline that ENDS the text gets no line of its own: "Hi\n" frames as
+  // one line. A caret sitting after that newline still has to be drawn
+  // somewhere, and with only one baseline there is no pair to subtract for
+  // the spacing.
+  //
+  // Computing it from metrics does not work, and that is measured rather
+  // than assumed: for Helvetica at 48px the line's ascent + descent +
+  // leading is exactly 48.000 and CoreText's own baseline spacing is
+  // exactly 58.000, and the same 10px gap is there in the FONT's metrics
+  // too. Whatever rule the framesetter applies, it is not one this file
+  // should be re-deriving.
+  //
+  // So it is asked instead: frame the same string with ONE more newline,
+  // which turns the previously-omitted line into a real one, and measure
+  // the two baselines. Exact by construction, and it costs a second layout
+  // only in this one state -- a block whose text ends in a newline and
+  // which has not wrapped to a second line yet.
+  //
+  // Point text reaches this too, now that it has lines at all. Before, it
+  // could not: it had one line by construction whatever the string said, so
+  // there was no "line CoreText declined to lay out" to space against.
+  if (out.lineCount < 2 && CFStringGetLength(str) > 0 &&
+      CFStringGetCharacterAtIndex(str, CFStringGetLength(str) - 1) == '\n') {
+    CFMutableStringRef probeStr = CFStringCreateMutableCopy(kCFAllocatorDefault, 0, str);
+    CFStringAppendCString(probeStr, "\n", kCFStringEncodingUTF8);
+    CFAttributedStringRef probeAttr =
+        makeAttributedString(probeStr, font, style, paragraph, align);
+    CTFramesetterRef probeSetter = CTFramesetterCreateWithAttributedString(probeAttr);
+    CGMutablePathRef probePath = CGPathCreateMutable();
+    // Tall enough that the second line cannot be dropped for want of room,
+    // which would silently put us back where we started.
+    CGPathAddRect(probePath, nullptr,
+                  CGRectMake(0, 0, layoutWidth, H + 4.0 * style.sizePx + 8.0));
+    CTFrameRef probeFrame =
+        CTFramesetterCreateFrame(probeSetter, CFRangeMake(0, 0), probePath, nullptr);
+    CFArrayRef probeLines = CTFrameGetLines(probeFrame);
+    if (CFArrayGetCount(probeLines) >= 2) {
+      CGPoint po[2];
+      CTFrameGetLineOrigins(probeFrame, CFRangeMake(0, 2), po);
+      out.lineHeightPx = static_cast<float>(po[0].y - po[1].y);
+    }
+    CFRelease(probeFrame);
+    CGPathRelease(probePath);
+    CFRelease(probeSetter);
+    CFRelease(probeAttr);
+    CFRelease(probeStr);
   }
 
   CFRelease(framesetter);
   CFRelease(attr);
+  CFRelease(font);
+  CFRelease(str);
   out.ok = true;
   return out;
 }

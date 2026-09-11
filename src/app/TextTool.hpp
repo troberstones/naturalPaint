@@ -157,11 +157,128 @@ bool textDeleteForward(TextContent* text, TextEditState* state);
 
 // Move the caret by one character, or to either end. The `TextContent` is
 // the only source of truth for where the boundaries are, which is why these
-// take it by const-reference even though they mutate only `state->caret`.
-void textCaretLeft(const TextContent& text, TextEditState* state) noexcept;
-void textCaretRight(const TextContent& text, TextEditState* state) noexcept;
-void textCaretHome(TextEditState* state) noexcept;
-void textCaretEnd(const TextContent& text, TextEditState* state) noexcept;
+// take it by const-reference even though they mutate only the caret.
+//
+// **`extend`** is Shift held. False collapses any selection; true drags the
+// caret end of one and leaves the anchor, which is how a range grows from the
+// keyboard.
+//
+// With `extend == false` AND a selection live, Left/Right do NOT step by a
+// character: they collapse to the near EDGE of the selection (`lo` for Left,
+// `hi` for Right) and stop. That is what every text editor does, and it is
+// the behaviour a user checks first -- select a word, press Left, and the
+// caret belongs before the word rather than one character back from wherever
+// the drag happened to end.
+void textCaretLeft(const TextContent& text, TextEditState* state, bool extend) noexcept;
+void textCaretRight(const TextContent& text, TextEditState* state, bool extend) noexcept;
+void textCaretHome(TextEditState* state, bool extend) noexcept;
+void textCaretEnd(const TextContent& text, TextEditState* state, bool extend) noexcept;
+
+// ==========================================================================
+// 3b. THE SELECTION
+// ==========================================================================
+//
+// A range of the block's bytes, `[lo, hi)`, both on UTF-8 boundaries. It is
+// DERIVED from `caret` and `anchor` rather than stored, so it cannot go stale
+// against them, and `textSelection()` sorts the pair so no caller has to know
+// which end the gesture started from.
+//
+// **Empty is a real answer, not an error.** `lo == hi` means "just a caret",
+// which is the state for the whole of ordinary typing, so every consumer
+// below does nothing rather than refusing.
+struct TextSelection {
+  size_t lo = 0;
+  size_t hi = 0;
+  bool empty() const noexcept { return lo >= hi; }
+  size_t size() const noexcept { return empty() ? 0 : hi - lo; }
+};
+
+TextSelection textSelection(const TextEditState& state) noexcept;
+
+// Throw the selection away, keeping the caret where it is. Every caret move
+// that is not extending goes through this, which is why the movers above take
+// an `extend` flag rather than callers remembering to collapse.
+void textSelectionCollapse(TextEditState* state) noexcept;
+
+// Select the whole block: anchor at 0, caret at the end. Cmd+A while a
+// session is live means this rather than "select the whole canvas" -- `ui/`
+// routes it, and the keymap's `select_all` still means the canvas everywhere
+// else.
+void textSelectAll(TextEditState* state, const TextContent& text) noexcept;
+
+// Erase the selected range and leave the caret where it began. Returns false
+// and changes nothing when the selection is empty, so a caller can read the
+// return as "was there anything to delete".
+//
+// **Callers rarely need this directly.** `textInsertUtf8()`, `textBackspace()`
+// and `textDeleteForward()` all call it themselves -- typing over a selection
+// replaces it, which is behaviour no caller should be able to forget, and a
+// forgotten call would insert INTO the middle of a range the user believed
+// they were replacing.
+bool textDeleteSelection(TextContent* text, TextEditState* state);
+
+// The selected bytes, empty when nothing is selected. A copy, not a view: the
+// caller's next edit invalidates the buffer it would have pointed into.
+std::string textSelectedUtf8(const TextContent& text, const TextEditState& state);
+
+// ==========================================================================
+// 3c. TEXT ARRIVING FROM OUTSIDE THE APPLICATION
+// ==========================================================================
+//
+// Clean a string taken off the system pasteboard into something a
+// `TextContent` can safely hold, writing it to `*out`. Returns **false, and
+// writes nothing**, when the input is not valid UTF-8.
+//
+// **Refusing rather than repairing, and this is the part that matters.**
+// `text/Shaper.hpp`'s `shapeText()` fails on an invalid UTF-8 string, and
+// `textContentToShapes()` turns that failure into NO SHAPES -- so a single
+// bad byte pasted into a caption does not corrupt one character, it blanks
+// the entire block, silently, including everything that was already there.
+// That is the same reasoning `ui/MacPaintUI.cpp`'s typing loop gives for
+// skipping lone surrogates rather than encoding them, applied to a source
+// that can deliver megabytes of anything: another application's idea of
+// "text", a file dragged onto the pasteboard, a truncated UTF-16 buffer.
+//
+// **What it does repair, because these are not corruption:**
+//
+//   * `\r\n` and a lone `\r` both become `\n`. Text copied from Windows,
+//     from a web page, or out of an old file arrives this way constantly,
+//     and a stray CR is not a character this build's shaper has any use for
+//     -- it would be one more thing in the string that draws as nothing.
+//   * Every other C0 control (and DEL) is dropped, keeping only `\n` and
+//     `\t`. That is exactly the set the typing loop already admits, so
+//     pasting a character and typing it produce the same block.
+//
+// Strict about what "valid" means: continuation bytes must be present and
+// well formed, overlong encodings are rejected, and so are the surrogate
+// range and anything past U+10FFFF -- CESU-8 and WTF-8 both encode lone
+// surrogates as three plausible-looking bytes, and both would reach
+// `shapeText()` as the invalid input this exists to catch.
+bool textSanitizePasted(std::string_view in, std::string* out);
+
+// Release this session's open undo entry WITHOUT ending the session, so the
+// next keystroke RECORDS a new one instead of amending.
+//
+// The counterpart to `textEditMarkUndoOpened()`, and it exists for exactly
+// one situation: an edit that is not typing happening in the middle of a
+// typing burst -- a paste, or a cut. Those record their own history entry, and
+// if the burst's flag were left set the next character typed would `amendEdit()`
+// straight over that entry, folding the paste and the character into one state
+// and leaving nothing for undo to stop at between them.
+void textEditClearUndoOpened(TextEditState* state) noexcept;
+
+// A click at `offset`: placing the caret (`extend == false`, which collapses)
+// or dragging the far end of a selection to it (`extend == true`, which
+// leaves the anchor). Shift+click passes true.
+void textSelectionSetCaret(TextEditState* state, const TextContent& text, size_t offset,
+                           bool extend) noexcept;
+
+// The click-drag over glyphs. `Begin` puts both ends at `offset`, `Update`
+// drags the caret end, and `End` deliberately does NOT collapse -- the range
+// just dragged out is the whole point of the gesture.
+void textSelectDragBegin(TextEditState* state, const TextContent& text, size_t offset) noexcept;
+void textSelectDragUpdate(TextEditState* state, const TextContent& text, size_t offset) noexcept;
+void textSelectDragEnd(TextEditState* state) noexcept;
 
 // ==========================================================================
 // 4. HIT TESTING
@@ -211,12 +328,42 @@ struct TextEditState {
   // for the boundary invariant every transition maintains.
   size_t caret = 0;
 
+  // The OTHER end of a selected range, and subject to the same boundary
+  // invariant as `caret`. A selection exists exactly when `anchor != caret`;
+  // there is no separate "has a selection" flag, because one would be a
+  // second copy of a fact these two already carry and could disagree with.
+  //
+  // Which end is which matters: `anchor` is where the gesture STARTED and
+  // stays put, `caret` is the end that moves. Shift+Left from a click drags
+  // the caret to the LEFT of the anchor, so `anchor > caret` is an ordinary
+  // state -- every reader goes through `textSelection()`, which sorts them,
+  // rather than assuming an order.
+  size_t anchor = 0;
+
+  // A live click-drag over the glyphs, selecting as it goes -- the pointer
+  // gesture that produces a range, as opposed to Shift+arrow which produces
+  // one from the keyboard. Its own flag rather than "is the left button
+  // down", for `frameDragActive`'s reason below: the button being down says
+  // nothing about whether THIS gesture is the one that claimed it.
+  bool selectDragActive = false;
+
   // A paragraph-frame drag: pen-down on empty canvas with `Tool::Text`,
   // drag, pen-up -> either a paragraph frame (drag exceeded the minimum
   // size) or nothing, a click meaning point text instead (section 6 below).
   bool frameDragActive = false;
   PathPoint frameDragStart{};  // pen-down, document coordinates
   PathPoint frameDragNow{};    // current pointer, document coordinates
+
+  // A live RESIZE of an existing paragraph frame, by one of its eight
+  // handles (core/TextContent.hpp section 4b). Distinct from
+  // `frameDragActive` above, which drags a NEW frame out of empty canvas:
+  // that one may end in no layer at all, this one always has a block under
+  // it and only ever changes that block's `frame`/`origin`.
+  //
+  // `resizeHandle != None` is the flag -- one field rather than a bool
+  // beside it, because "which handle" and "is a resize live" cannot then
+  // disagree.
+  TextFrameHandle resizeHandle = TextFrameHandle::None;
 
   // Whether this session has already opened an undo entry. Owned here for
   // the same reason `PathEditState::geometryEditOpened` is: the caller never
@@ -237,17 +384,6 @@ struct TextEditState {
   // those three functions, same single-writer rule as every other field here.
   bool active = false;
 
-  // The `TextContent::utf8` and caret this session started from, captured by
-  // `textEditBegin()`. Exists for exactly one reader, `textEditRevert()`
-  // (Escape's undo-the-whole-session path) -- everywhere else that needs
-  // "what was here before" already has it, either from `core/History` (a
-  // structural edit) or because it never needed it (a frame drag has no
-  // `TextContent` yet). Not touched by `textEditFrameDragBegin()`: a drag
-  // has no block to snapshot until it finishes, and `textEditRevert()` is
-  // never called while one is live (Escape mid-drag has no `editing` layer
-  // for `ui/` to pass it, so it takes the plain-cancel path instead).
-  std::string snapshotUtf8;
-  size_t snapshotCaret = 0;
 };
 
 inline constexpr size_t kNoLayer = static_cast<size_t>(-1);
@@ -274,23 +410,6 @@ bool textSessionActive(const TextEditState& state) noexcept;
 // `layerIndex`/`caret` are existing fields whose callers already depend on
 // them surviving a cancelled drag.
 void textEditCancel(TextEditState* state) noexcept;
-
-// Restore `text->utf8` (and the caret) to the snapshot `textEditBegin()` took
-// when this session started, undoing every edit the session has made so far.
-// Used ONLY by the Escape-while-editing-an-existing-layer path in `ui/` --
-// every other way a session ends (document switch, the layer disappearing,
-// a tool change, clicking away, Cmd+Return) keeps the typed text, which is
-// what `textEditCancel()` alone already does with no help from this
-// function. `ui/` calls this FIRST, then `textEditCancel()` to end the
-// session itself -- this function touches only `text` and the snapshot
-// fields, never `active`/`frameDragActive`/`undoOpened`.
-//
-// A no-op on the content when nothing was typed this session (the snapshot
-// already equals `text->utf8`), so callers do not need to guard on
-// `undoOpened` before calling it -- only before deciding whether a
-// now-redundant top-of-history entry needs folding away, which is `ui/`'s
-// job (it owns `core::History`, this file does not).
-void textEditRevert(TextContent* text, TextEditState* state) noexcept;
 
 // Put the caret at `offset`, clamped to a UTF-8 boundary of `text.utf8`.
 //
@@ -341,6 +460,22 @@ void textEditFrameDragBegin(TextEditState* state, PathPoint at, uint64_t documen
 // `frameDragActive` itself.
 void textEditFrameDragUpdate(TextEditState* state, PathPoint at) noexcept;
 
+// --- resizing an EXISTING frame by a handle -------------------------------
+//
+// The single-writer rule (this header's own, greppable as
+// `textEdit\.[a-zA-Z]+ *=`) applies to `resizeHandle` exactly as it does to
+// the caret, which is why these three exist rather than the UI setting the
+// field: a resize that began in one place and ended in another is how a drag
+// gets stuck live and every subsequent mouse move keeps resizing.
+void textEditResizeBegin(TextEditState* state, TextFrameHandle handle) noexcept;
+
+// True while a handle drag is live.
+bool textEditResizeActive(const TextEditState& state) noexcept;
+
+// Ends it. Safe to call when none is active, so the caller can end the
+// gesture unconditionally on pen-up.
+void textEditResizeEnd(TextEditState* state) noexcept;
+
 // ==========================================================================
 // 6. THE FRAME DRAG -- a click is point text, a drag is a paragraph
 // ==========================================================================
@@ -368,5 +503,140 @@ void textEditFrameDragUpdate(TextEditState* state, PathPoint at) noexcept;
 // caller can choose `minSizeDoc` to mean "at least this big" without a
 // separate off-by-one to reason about.
 bool textEditFrameDragEnd(TextEditState* state, TextContent* out, float minSizeDoc) noexcept;
+
+// ==========================================================================
+// 7. THE PLATFORM'S TEXT INPUT -- who asks SDL to deliver characters
+// ==========================================================================
+//
+// `ui/MacPaintUI.cpp`'s typing loop reads `io.InputQueueCharacters`, which
+// ImGui fills from `SDL_EVENT_TEXT_INPUT` and from nothing else. SDL does not
+// send that event unless text input has been STARTED for the window
+// (`SDL_StartTextInput()`): on macOS, `SDL_cocoakeyboard.m` runs the key
+// event through `interpretKeyEvents:` -- the only producer of the event, and
+// the thing that decodes dead keys, Option-accents and IME composition --
+// only while `SDL_TextInputActive()` is true.
+//
+// Nothing in this application used to call it. ImGui's SDL3 backend calls it
+// for ImGui's OWN text widgets, from the platform IME hook, which fires only
+// when `io.WantTextInput` is set by an active `InputText()` -- and a Text
+// tool session is not an ImGui widget, so that flag is false for the whole of
+// it. **The measured result was that `InputQueueCharacters` was empty on
+// every frame of every session: not one typed character could ever reach a
+// Text layer.** This function is the missing half.
+//
+// Pure, so `--selftest` can prove the table without a window. The caller
+// (`main.cpp`'s frame loop) holds `startedHere` -- "the last Start below was
+// ours" -- and updates it from what it does:
+//
+//   sessionActive && !platformActive          -> Start   (also RE-starts: an
+//       ImGui text field that took focus mid-session and then lost it stops
+//       text input on the way out, and the backend will not restart it for a
+//       caret it knows nothing about)
+//   !sessionActive && startedHere && platformActive && !imguiWantsText
+//                                             -> Stop
+//   otherwise                                 -> Leave
+//
+// The two conditions on Stop are each a thing that must not be taken away:
+// `startedHere` because text input ImGui started belongs to ImGui (stopping
+// it behind the backend's back leaves `ImGui_ImplSDL3_UpdateIme()`'s
+// `ImeWindow == window` early-return convinced it is still on, and it never
+// restarts it -- a permanently dead rename box), and `!imguiWantsText`
+// because a widget may have taken focus in the same frame the session ended.
+//
+// Stopping at all, rather than simply leaving text input on forever, is what
+// keeps a CJK input method from swallowing every bare hotkey in the
+// application once the caret is put away.
+enum class TextInputAction { Leave, Start, Stop };
+TextInputAction textInputAction(bool sessionActive, bool platformActive, bool imguiWantsText,
+                                bool startedHere) noexcept;
+
+// ==========================================================================
+// 8. WHICH HOTKEYS PUT THE CARET AWAY
+// ==========================================================================
+//
+// `keyChordReachesKeymap()` (app/Keymap.hpp) decides whether a chord reaches
+// `Keymap::resolve()` at all while a session is live: bare and Shift/Alt-only
+// chords do not (they are characters), Cmd/Ctrl chords do. This function
+// answers the question that comes AFTER that one -- given that a Cmd chord
+// did resolve to an action, does the session survive it?
+//
+// **The default is that it does not.** This is a KEEP list, and everything
+// not on it ends the session, because the two mistakes are not symmetrical: a
+// session ended when it needed not to be is an annoyance the user fixes by
+// clicking back into the block, while a session left alive over a document
+// that has just been transformed, cleared, adjusted or pasted into leaves a
+// caret pointing into a `TextContent` that may no longer be there -- and a
+// binding added to `keymaps/default.json` a year from now gets the safe
+// answer without anyone remembering this file exists.
+//
+// Ending means ACCEPT, never revert: `ui/` calls `textEditCancel()`, which
+// keeps every character typed and only stops the session owning the keyboard.
+// That is the same meaning switching tools, clicking away and Escape all
+// have (section 5) -- there is no longer any gesture that silently discards
+// a session's typing, and undo is the way to throw it away.
+//
+// **What is on the KEEP list, and why each is there:**
+//
+//   * The view -- zoom, fit, 100%, reset, mirror, rotation reset, grayscale,
+//     guides, snapping, grid. Framing a caption while typing it is a real
+//     gesture, and none of these can move a byte of the document.
+//   * `undo` / `redo`. **Explicitly requested**, and the reason is that a
+//     typing burst IS a history entry (`ui/MacPaintUI.cpp` opens one per
+//     burst and amends it per keystroke), so Cmd+Z during a session is the
+//     user undoing their own typing and must not be answered by putting the
+//     caret away first. What it DOES need is
+//     `textEditResyncAfterHistoryMove()` below -- see there.
+//   * Brush size, shader reload, screenshot, pause. Tool and application
+//     state, not document state. (All four are bare or F-key chords that
+//     `keyChordReachesKeymap()` already stops before they ever reach here;
+//     they are classified anyway so this function answers for the whole
+//     keymap rather than for the part that happens to be reachable today.)
+//
+// Everything else -- `clear_canvas`, `free_transform`, the eleven `adjust_*`
+// commands, the four selection commands, the clipboard four, the `flats_*`
+// commands, `delete_selection`, `quit` -- ends it. `copy`/`copy_merged` are
+// on that side despite writing nothing: they are the same Edit-menu clipboard
+// family as `cut`/`paste`, they act on the CANVAS selection rather than on
+// the text (this build's caret has no anchor, so there is no text selection
+// for them to mean), and a rule that split the four would be a worse rule to
+// explain than the one that keeps them together.
+//
+// Takes the action string `Keymap::resolve()` returns, so the classification
+// lives beside the session it protects rather than being spelled out a second
+// time in `main.cpp`'s dispatch chain. An unknown action ends the session,
+// per the default above.
+bool keymapActionEndsTextSession(std::string_view action) noexcept;
+
+// ==========================================================================
+// 9. PUTTING A LIVE SESSION BACK IN STEP WITH A HISTORY MOVE
+// ==========================================================================
+//
+// Undo and redo keep the session alive (section 8), and `core/History`
+// replaces the whole `Document` when the cursor moves -- so the block being
+// typed into is a DIFFERENT `TextContent` afterwards, with a different length,
+// while `TextEditState` still holds the caret and the bookkeeping from before
+// the move. Two things are then wrong, and both are silent:
+//
+//   * `caret` can sit past the end of the restored string, or inside a
+//     multi-byte sequence. Section 3's invariant ("the caret is always at a
+//     UTF-8 boundary of the content it belongs to") is stated as this file's
+//     to hold, and a history move is the one way the content changes without
+//     going through any of this file's own edit functions.
+//   * `undoOpened` still says "this session already has an entry open, amend
+//     it". After a move it names an entry that is no longer at the cursor, so
+//     the next keystroke would `amendEdit()` over whatever the user just
+//     undid TO -- rewriting a state they asked to go back to, instead of
+//     pushing a new one after it.
+//
+// Call this from wherever the cursor actually moves, not from the keymap
+// dispatch: Cmd+Z is only one of four routes (the Edit menu, the History
+// panel and the title bar's buttons are the others) and they all have to
+// resync or three quarters of the fix is missing.
+//
+// A no-op when no session is live. Does not decide whether the session
+// should end at all -- undoing past the layer's own creation leaves
+// `layerIndex` naming something that is not a Text layer, and `ui/`'s canvas
+// block already cancels on exactly that.
+void textEditResyncAfterHistoryMove(TextEditState* state, const TextContent& restored) noexcept;
 
 }  // namespace np

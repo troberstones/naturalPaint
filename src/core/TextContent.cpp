@@ -77,6 +77,89 @@ void translateInPlace(Path& path, float dx, float dy) noexcept {
   }
 }
 
+// Map every anchor and BOTH handles of `path` through `m`.
+//
+// The handles are not optional. `in`/`out` are absolute positions, not
+// offsets from the anchor (core/Path.hpp), so a transform that moved only
+// `pt` would leave every curve's control points behind and turn a rotated
+// "S" inside out. That failure is silent on straight-edged glyphs and
+// obvious on round ones, which is the worst way for it to be wrong -- hence
+// one helper both callers share rather than a loop at each site.
+void mapInPlace(Path& path, const Mat3& m) noexcept {
+  auto map = [&](PathPoint& p) {
+    const Point2 q = mat3MapPoint(m, Point2{p.x, p.y});
+    p.x = q.x;
+    p.y = q.y;
+  };
+  for (SubPath& sub : path.subpaths) {
+    for (Anchor& a : sub.anchors) {
+      map(a.pt);
+      map(a.in);
+      map(a.out);
+    }
+  }
+}
+
+// `transform` is identity for every block nobody has scaled or rotated, which
+// is nearly all of them -- so the mapping pass is skipped rather than run as
+// nine multiplies per control point. Exact equality, not a tolerance: this
+// only has to catch the default-constructed case, and a matrix that is
+// almost identity must still be applied or the block would drift.
+bool isIdentity(const Mat3& m) noexcept {
+  static const Mat3 kId = mat3Identity();
+  return m.m == kId.m;
+}
+
+// `transform` mapped the other way, for turning a document-space click back
+// into text space. False (leaving `*out` untouched) when the matrix is
+// degenerate -- see textOffsetAtPoint()'s header.
+bool inverseOf(const TextContent& text, Mat3* out) noexcept {
+  if (isIdentity(text.transform)) {
+    *out = mat3Identity();
+    return true;
+  }
+  return mat3Invert(text.transform, out);
+}
+
+// Where the SHAPED block's own (0,0) sits in document space -- i.e. what to
+// add to a `ShapedGlyph`'s pen position to put it on the page.
+//
+// This is the whole of core/TextContent.hpp section 2b in code. For point
+// text `origin` is the first BASELINE's left end, so the shaped block's top
+// sits an ascent ABOVE it and this subtracts that ascent. For paragraph text
+// `origin` is the frame's top-left, which is already the shaped block's own
+// top-left, so there is nothing to subtract.
+//
+// **One helper, four callers** -- the shapes, the caret, the selection quads
+// and the hit test. Spelling the subtraction at each site instead is the
+// silent partial fan-out this codebase keeps getting bitten by: three of the
+// four agreeing and the fourth not is a caret that sits an ascent away from
+// its own text, which reads as a rendering bug rather than a missed edit.
+PathPoint shapedOrigin(const TextContent& text, const ShapedText& shaped) noexcept {
+  if (text.frame.width > 0.0f) return text.origin;  // paragraph: origin IS the block top-left
+  return PathPoint{text.origin.x, text.origin.y - shaped.firstBaselineY};
+}
+
+// Where a line with NO glyphs on it begins, in text space -- which is its
+// alignment point, since there is nothing on it to align.
+//
+// Two callers, and they are the two states a text block spends its first
+// moments in: a block just created and not yet typed into, and a block whose
+// text ends in the newline you just pressed. Justified starts at the left
+// edge like Left does; there is nothing to stretch on an empty line.
+float emptyLineStartX(const TextContent& text) noexcept {
+  if (text.frame.width <= 0.0f) return 0.0f;  // point text: no frame to align within
+  if (text.align == TextAlign::Center) return text.frame.width * 0.5f;
+  if (text.align == TextAlign::Right) return text.frame.width;
+  return 0.0f;
+}
+
+// The conventional ascent/descent split of a line box around the baseline,
+// shared by the caret and the selection highlight so the two cannot disagree
+// -- core/TextContent.hpp's `TextCaretSegment` says why that matters.
+constexpr float kAscentFraction = 0.8f;
+constexpr float kDescentFraction = 0.2f;
+
 }  // namespace
 
 TextContent makeTextContent(std::string utf8, PathPoint origin) {
@@ -109,6 +192,12 @@ uint64_t textContentHash(const TextContent& text) noexcept {
   hashU64(h, static_cast<uint64_t>(text.align));
   hashF32(h, text.origin.x);
   hashF32(h, text.origin.y);
+  // Every one of the nine, by bit pattern like every other float here. The
+  // header's "every field above is in it" is not a style rule: this hash is
+  // core/VectorRaster's cache key, so a matrix left out of it means rotating
+  // a block redraws the block exactly as it was, which reads as the rotate
+  // handle being dead rather than as a stale cache.
+  for (float v : text.transform.m) hashF32(h, v);
   hashPaint(h, text.fill);
   hashPaint(h, text.stroke);
   hashF32(h, text.strokeStyle.width);
@@ -174,7 +263,13 @@ std::vector<VectorShape> textContentToShapes(const TextContent& text, std::strin
     // `ShapedGlyph::{x, y}` is that glyph's pen position within the shaped
     // block. `text.origin` is the block's own place in document space
     // (TextContent.hpp). All three add.
-    translateInPlace(path, text.origin.x + g.x, text.origin.y + g.y);
+    const PathPoint blockAt = shapedOrigin(text, shaped);
+    translateInPlace(path, blockAt.x + g.x, blockAt.y + g.y);
+    // Section 4: `document = transform * (origin + penPosition)`. Applied
+    // per glyph, after the two translations above, so the block scales and
+    // rotates as one piece -- the shaping that produced `g` has already
+    // happened and is not disturbed by it.
+    if (!isIdentity(text.transform)) mapInPlace(path, text.transform);
 
     VectorShape shape;
     shape.path = std::move(path);
@@ -231,17 +326,53 @@ float caretHeightFor(const TextStyle& style) noexcept {
 
 }  // namespace
 
-PathPoint textCaretPosition(const TextContent& text, size_t caretByte, float* height) {
-  if (height) *height = caretHeightFor(text.style);
+namespace {
 
-  // An empty block's caret is at the origin, one line down from nothing.
-  // Shaping an empty string would go through `shapeText()`'s stub-refusal
-  // path (see `textContentToShapes()`'s own comment on why that matters), so
-  // it is short-circuited here for the same reason.
-  if (text.utf8.empty()) return text.origin;
+// The caret's text-space pen position and the line height there, before any
+// mapping. Split out because `textCaretSegment()` needs both, and keeping the
+// glyph scan in one place stops the bidi rules below being re-derived.
+struct CaretPen {
+  PathPoint pen{0.0f, 0.0f};
+  float height = 0.0f;
+};
+
+CaretPen caretPenFor(const TextContent& text, size_t caretByte) {
+  CaretPen c;
+  c.height = caretHeightFor(text.style);
+
+  // An empty block has nothing to shape, and shaping an empty string would go
+  // through `shapeText()`'s stub-refusal path (see `textContentToShapes()`'s
+  // own comment on why that matters), so it is answered here instead.
+  if (text.utf8.empty()) {
+    // Point text: `origin` IS the baseline (section 2b), so the caret is
+    // already in the right place and nothing needs measuring.
+    c.pen = text.origin;
+
+    // Paragraph text: `origin` is the frame's TOP-LEFT, and a caret whose
+    // baseline sits on the top edge draws almost entirely ABOVE the box --
+    // which is what a freshly dragged text frame looked like, until the first
+    // character was typed and the type appeared a whole ascent lower down.
+    //
+    // The first baseline is an ascent below the frame top, and that ascent is
+    // a property of the font at this size, so it is MEASURED rather than
+    // guessed: one character is shaped in this block's own style and frame,
+    // and its first baseline is where this block's would be. A fraction of
+    // `sizePx` would be wrong by a few pixels in a way that reads as the
+    // caret being misaligned with its own text.
+    if (text.frame.width > 0.0f) {
+      const ShapedText probe = shapeText("x", text.style, text.frame, text.align);
+      if (probe.ok)
+        c.pen = PathPoint{text.origin.x + emptyLineStartX(text),
+                          text.origin.y + probe.firstBaselineY};
+    }
+    return c;
+  }
 
   const ShapedText shaped = shapeText(text.utf8, text.style, text.frame, text.align);
-  if (!shaped.ok || shaped.glyphs.empty()) return text.origin;
+  if (!shaped.ok || shaped.glyphs.empty()) {
+    c.pen = text.origin;
+    return c;
+  }
 
   // The first glyph at or after the caret. Scanned rather than indexed
   // because `cluster` is NOT monotonic in glyph order -- a right-to-left run
@@ -254,24 +385,288 @@ PathPoint textCaretPosition(const TextContent& text, size_t caretByte, float* he
     if (best == nullptr || g.cluster < best->cluster) best = &g;
   }
 
-  if (best != nullptr)
-    return PathPoint{text.origin.x + best->x, text.origin.y + best->y};
+  const PathPoint blockAt = shapedOrigin(text, shaped);
+  if (best != nullptr) {
+    c.pen = PathPoint{blockAt.x + best->x, blockAt.y + best->y};
+    return c;
+  }
 
   // Past every cluster: the caret is at the end of the text. Its x is the
   // trailing edge of the LAST GLYPH IN PEN ORDER, which is the largest x --
   // not `glyphs.back()`, which under bidi is the last glyph in logical order
   // and can sit at the left end of the line.
   //
-  // The advance past that glyph is not something `ShapedGlyph` carries, so
-  // the caret sits ON the last glyph's pen position rather than after it.
-  // That is a known half-a-character offset at the end of a line, and it is
-  // the price of `ShapedGlyph` not carrying advances; adding one to that
-  // struct is the fix, and it is a change to text/Shaper.hpp's contract
-  // rather than something this file can paper over.
+  // **`x + advance`, not `x`.** This used to return the pen position itself,
+  // because `ShapedGlyph` carried no advance -- which drew the caret in front
+  // of the last character rather than after it. Since the caret is at the end
+  // of the block for the whole of ordinary typing, that was not a "known
+  // half-a-character offset": it was the caret being wrong on essentially
+  // every keystroke. `advance` now exists on `ShapedGlyph` (text/Shaper.hpp
+  // says why it lives there), and this is the reader it exists for.
   const ShapedGlyph* last = &shaped.glyphs.front();
   for (const ShapedGlyph& g : shaped.glyphs)
     if (g.y > last->y || (g.y == last->y && g.x > last->x)) last = &g;
-  return PathPoint{text.origin.x + last->x, text.origin.y + last->y};
+
+  // --- the caret after a TRAILING newline -----------------------------------
+  //
+  // CoreText's framesetter does not lay out a line for a newline that ends the
+  // text: "Hi\n" is ONE line, and "Hi\n\n" is two. So the glyphs stop a line
+  // short of where the caret belongs, and the code above -- which can only
+  // point at a glyph -- left the caret at the end of the previous line.
+  //
+  // What that looked like: you pressed Return and the caret did not move.
+  // Pressing it again and then typing put you two lines down, because both
+  // newlines were in the string all along and only the caret was lying about
+  // it. The insertion point has to be the one thing that never does that.
+  //
+  // So the caret is placed on the line the shaper declined to produce: one
+  // `lineHeightPx` below the last glyph's baseline, at the line's own start.
+  // Only ONE line is added however many newlines trail, because CoreText lays
+  // out every one of them except the last.
+  const bool endsWithNewline = caretByte > 0 && caretByte <= text.utf8.size() &&
+                               text.utf8[caretByte - 1] == '\n';
+  // Point text reaches this too. It used to be excluded, and not for want of
+  // a trailing newline to handle: `CTLineCreateWithAttributedString` did not
+  // break lines at all, so a point block drew "Hi\nYo" on one line and a
+  // caret dropped to a second would have stood under type that was not there
+  // -- moving the caret alone would have disguised the gap rather than fixed
+  // it. Point text is shaped through the framesetter now (text/CoreTextShaper
+  // .mm says why), so the second line is real and the caret belongs on it.
+  if (endsWithNewline) {
+    c.pen = PathPoint{blockAt.x + emptyLineStartX(text),
+                      blockAt.y + last->y + shaped.lineHeightPx};
+    return c;
+  }
+
+  c.pen = PathPoint{blockAt.x + last->x + last->advance, blockAt.y + last->y};
+  return c;
+}
+
+// One text-space point through `transform`.
+PathPoint mapped(const TextContent& text, PathPoint p) noexcept {
+  if (isIdentity(text.transform)) return p;
+  const Point2 q = mat3MapPoint(text.transform, Point2{p.x, p.y});
+  return PathPoint{q.x, q.y};
+}
+
+
+// The frame in TEXT space -- before the transform -- which is what a resize
+// has to work in. `textFrameQuad()` gives the mapped corners for drawing;
+// this gives the numbers `frame`/`origin` are actually made of.
+//
+// Returns false for point text, which has no frame (header section 4b).
+bool textFrameRectLocal(const TextContent& text, float* x0, float* y0, float* x1, float* y1) {
+  if (text.frame.width <= 0.0f) return false;
+  *x0 = text.origin.x;
+  *y0 = text.origin.y;
+  *x1 = text.origin.x + text.frame.width;
+  if (text.frame.height > 0.0f) {
+    *y1 = text.origin.y + text.frame.height;
+    return true;
+  }
+  // `height == 0` is "as tall as the lines need" (section 2), so the bottom
+  // edge -- and the handles on it -- have to ASK how tall that came out.
+  // Measured on a copy with no transform, because this is text space.
+  TextContent flat = text;
+  flat.transform = mat3Identity();
+  const PathBounds ink = textContentBounds(flat);
+  if (ink.valid) {
+    *y1 = std::max(ink.maxY, *y0 + 1.0f);
+    return true;
+  }
+  // Nothing typed yet. The box is still one line tall -- that is what an
+  // empty frame is: room for the line you are about to type -- and the
+  // height of that line is ASKED FOR rather than guessed, exactly as the
+  // empty block's caret asks for its own first baseline. `caretHeightFor()`
+  // stood here and is `sizePx * 1.2`, which is the same arithmetic the
+  // shaper's own measurements have already contradicted once (57.6 against a
+  // real 59.0 at 48px). It matters more now than it did when only a handle
+  // sat on it: this edge is also the bottom of the box a transform gizmo is
+  // built from.
+  const ShapedText probe = shapeText("x", text.style, text.frame, text.align);
+  *y1 = *y0 + (probe.ok && probe.heightPx > 0.0f ? probe.heightPx
+                                                 : caretHeightFor(text.style));
+  return true;
+}
+
+}  // namespace
+
+TextCaretSegment textCaretSegment(const TextContent& text, size_t caretByte) {
+  const CaretPen c = caretPenFor(text, caretByte);
+  // The caret hangs from the pen position UP by the ascent and DOWN by the
+  // descent, because the pen position is on the BASELINE and a bar drawn
+  // downward from it would sit entirely under the text.
+  //
+  // Both endpoints are mapped INDIVIDUALLY rather than one being mapped and
+  // the other derived by stepping down in y: under a rotation those are
+  // different answers, and the derived one is the bug this segment API
+  // exists to remove -- a vertical caret standing in turned text.
+  TextCaretSegment seg;
+  seg.top = mapped(text, PathPoint{c.pen.x, c.pen.y - c.height * kAscentFraction});
+  seg.bottom = mapped(text, PathPoint{c.pen.x, c.pen.y + c.height * kDescentFraction});
+  return seg;
+}
+
+std::vector<TextQuad> textSelectionQuads(const TextContent& text, size_t loByte, size_t hiByte) {
+  std::vector<TextQuad> out;
+  if (loByte >= hiByte || text.utf8.empty()) return out;
+
+  const ShapedText shaped = shapeText(text.utf8, text.style, text.frame, text.align);
+  if (!shaped.ok || shaped.glyphs.empty()) return out;
+
+  const float h = caretHeightFor(text.style);
+
+  // One accumulator per baseline. A linear scan keyed on `y` rather than a
+  // map: a block has a handful of lines, and the glyphs of one line arrive
+  // together, so this is a couple of comparisons per glyph.
+  struct Line {
+    float y = 0.0f;
+    float minX = 0.0f;
+    float maxX = 0.0f;
+  };
+  std::vector<Line> lines;
+  for (const ShapedGlyph& g : shaped.glyphs) {
+    if (g.cluster < loByte || g.cluster >= hiByte) continue;
+    const float left = g.x;
+    const float right = g.x + g.advance;  // the trailing edge -- see the header
+    Line* line = nullptr;
+    for (Line& l : lines)
+      if (l.y == g.y) {
+        line = &l;
+        break;
+      }
+    if (line == nullptr) {
+      lines.push_back(Line{g.y, left, right});
+    } else {
+      line->minX = std::min(line->minX, left);
+      line->maxX = std::max(line->maxX, right);
+    }
+  }
+
+  out.reserve(lines.size());
+  for (const Line& l : lines) {
+    const PathPoint blockAt = shapedOrigin(text, shaped);
+    const float x0 = blockAt.x + l.minX;
+    const float x1 = blockAt.x + l.maxX;
+    // The same split the caret uses, from the same two constants.
+    const float y0 = blockAt.y + l.y - h * kAscentFraction;
+    const float y1 = blockAt.y + l.y + h * kDescentFraction;
+    TextQuad q;
+    q.corner[0] = mapped(text, PathPoint{x0, y0});
+    q.corner[1] = mapped(text, PathPoint{x1, y0});
+    q.corner[2] = mapped(text, PathPoint{x1, y1});
+    q.corner[3] = mapped(text, PathPoint{x0, y1});
+    out.push_back(q);
+  }
+  return out;
+}
+
+bool textFrameQuad(const TextContent& text, TextQuad* out) {
+  if (out == nullptr) return false;
+
+  float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+  if (text.frame.width > 0.0f) {
+    // Paragraph text: the frame the user set, in text space, so it does not
+    // breathe as lines wrap.
+    //
+    // **`textFrameRectLocal()`, not a second copy of its arithmetic.** This
+    // block used to compute the same rectangle itself, and the two had already
+    // drifted: for an EMPTY frame with an automatic height this one produced
+    // `y1 == y0`, a zero-height outline, while the handle positions -- which
+    // do go through that helper -- sat a full line lower. Measured on a
+    // 520-wide empty block at 48px: the outline's bottom edge at y = 300.00
+    // and the bottom row of handles at y = 357.60, on the same box. One
+    // function answers "where is this frame" now.
+    if (!textFrameRectLocal(text, &x0, &y0, &x1, &y1)) return false;
+  } else {
+    TextContent flat = text;
+    flat.transform = mat3Identity();
+    const PathBounds ink = textContentBounds(flat);
+    if (!ink.valid) return false;
+    x0 = ink.minX;
+    y0 = ink.minY;
+    x1 = ink.maxX;
+    y1 = ink.maxY;
+  }
+
+  out->corner[0] = mapped(text, PathPoint{x0, y0});
+  out->corner[1] = mapped(text, PathPoint{x1, y0});
+  out->corner[2] = mapped(text, PathPoint{x1, y1});
+  out->corner[3] = mapped(text, PathPoint{x0, y1});
+  return true;
+}
+
+
+bool textFrameHandles(const TextContent& text, TextFrameHandles* out) {
+  if (out == nullptr) return false;
+  float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+  if (!textFrameRectLocal(text, &x0, &y0, &x1, &y1)) return false;
+  const float xm = (x0 + x1) * 0.5f;
+  const float ym = (y0 + y1) * 0.5f;
+  // Enum order, so `at[static_cast<int>(h) - 1]` is that handle.
+  const PathPoint local[8] = {{x0, y0}, {xm, y0}, {x1, y0}, {x0, ym},
+                              {x1, ym}, {x0, y1}, {xm, y1}, {x1, y1}};
+  for (int i = 0; i < 8; ++i) out->at[i] = mapped(text, local[i]);
+  return true;
+}
+
+TextFrameHandle textFrameHandleAt(const TextContent& text, PathPoint atDoc, float radiusDoc) {
+  TextFrameHandles h;
+  if (!textFrameHandles(text, &h)) return TextFrameHandle::None;
+  const float r2 = radiusDoc * radiusDoc;
+  // First match wins, and the array is in enum order -- corners before edge
+  // midpoints, per the header.
+  for (int i = 0; i < 8; ++i) {
+    const float dx = h.at[i].x - atDoc.x;
+    const float dy = h.at[i].y - atDoc.y;
+    if (dx * dx + dy * dy <= r2) return static_cast<TextFrameHandle>(i + 1);
+  }
+  return TextFrameHandle::None;
+}
+
+bool textFrameResize(TextContent* text, TextFrameHandle handle, PathPoint toDoc,
+                     float minSizeDoc) {
+  if (text == nullptr || handle == TextFrameHandle::None) return false;
+  float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+  if (!textFrameRectLocal(*text, &x0, &y0, &x1, &y1)) return false;
+
+  // Into text space, so a rotated block resizes along its OWN axes. Without
+  // this the right edge of a block turned 30 degrees would follow the
+  // document's x and the frame would shear away from the cursor.
+  Mat3 inv;
+  if (!inverseOf(*text, &inv)) return false;
+  const Point2 localPt = mat3MapPoint(inv, Point2{toDoc.x, toDoc.y});
+
+  const bool movesLeft = handle == TextFrameHandle::TopLeft ||
+                         handle == TextFrameHandle::MiddleLeft ||
+                         handle == TextFrameHandle::BottomLeft;
+  const bool movesRight = handle == TextFrameHandle::TopRight ||
+                          handle == TextFrameHandle::MiddleRight ||
+                          handle == TextFrameHandle::BottomRight;
+  const bool movesTop = handle == TextFrameHandle::TopLeft ||
+                        handle == TextFrameHandle::TopCenter ||
+                        handle == TextFrameHandle::TopRight;
+  const bool movesBottom = handle == TextFrameHandle::BottomLeft ||
+                           handle == TextFrameHandle::BottomCenter ||
+                           handle == TextFrameHandle::BottomRight;
+
+  if (movesLeft) x0 = localPt.x;
+  if (movesRight) x1 = localPt.x;
+  if (movesTop) y0 = localPt.y;
+  if (movesBottom) y1 = localPt.y;
+
+  // Refused rather than clamped -- the header says why. A clamp would let the
+  // frame stick at the floor and then invert as the pointer kept going.
+  if (x1 - x0 < minSizeDoc) return false;
+  if ((movesTop || movesBottom) && y1 - y0 < minSizeDoc) return false;
+
+  text->origin = PathPoint{x0, y0};
+  text->frame.width = x1 - x0;
+  // Only a handle that owns the vertical pins the height. A block that was
+  // sizing its own height keeps doing so when it is merely widened, or the
+  // next line typed would be clipped by a box the user never set.
+  if (movesTop || movesBottom) text->frame.height = y1 - y0;
+  return true;
 }
 
 size_t textOffsetAtPoint(const TextContent& text, PathPoint at) {
@@ -279,14 +674,26 @@ size_t textOffsetAtPoint(const TextContent& text, PathPoint at) {
   const ShapedText shaped = shapeText(text.utf8, text.style, text.frame, text.align);
   if (!shaped.ok || shaped.glyphs.empty()) return 0;
 
+  // Back into text space before anything is compared. Everything below is
+  // written against the shaped pen positions, which are text-space, so this
+  // one map is the whole of what `transform` costs the hit test -- and
+  // without it a click on rotated type selects whatever character happens to
+  // sit at the same place in the UNROTATED block, which is the kind of wrong
+  // that feels like the tool ignoring the mouse.
+  Mat3 inv;
+  if (!inverseOf(text, &inv)) return 0;  // degenerate: header section 5
+  const Point2 local = mat3MapPoint(inv, Point2{at.x, at.y});
+  at = PathPoint{local.x, local.y};
+
   // Nearest pen position, with the LINE weighted far more heavily than the
   // column: a click below the last line of a paragraph must land at the end
   // of that line, not at whichever glyph happens to be horizontally closest
   // on the line above. The weight is a plain factor rather than a
   // line-height-relative one, because it only has to make vertical distance
   // dominate and the two axes are already in the same unit (text-space px).
-  const float lx = at.x - text.origin.x;
-  const float ly = at.y - text.origin.y;
+  const PathPoint blockAt = shapedOrigin(text, shaped);
+  const float lx = at.x - blockAt.x;
+  const float ly = at.y - blockAt.y;
 
   const ShapedGlyph* best = nullptr;
   float bestScore = 0.0f;
@@ -301,12 +708,19 @@ size_t textOffsetAtPoint(const TextContent& text, PathPoint at) {
   }
   if (best == nullptr) return 0;
 
-  // A click to the RIGHT of the nearest glyph belongs after it, not on it --
-  // without this, clicking anywhere past the last character puts the caret
+  // A click past the MIDDLE of the nearest glyph belongs after it, not on it
+  // -- without this, clicking anywhere past the last character puts the caret
   // before it and typing inserts in the wrong place, which is the single most
   // noticeable caret bug there is. `nextCluster` walks the glyph list rather
   // than adding a byte, so the result stays on a UTF-8 boundary.
-  if (lx <= best->x) return best->cluster;
+  //
+  // The midpoint rather than the leading edge (`lx <= best->x`, which is what
+  // this tested before `ShapedGlyph::advance` existed): with the leading
+  // edge, a click one pixel inside a character already counted as "after" it,
+  // so the caret could only ever be placed before a character by clicking in
+  // the character to its left. Half the glyph box each way is what every text
+  // editor does and what a drag-select needs to feel right.
+  if (lx <= best->x + best->advance * 0.5f) return best->cluster;
   size_t next = text.utf8.size();
   for (const ShapedGlyph& g : shaped.glyphs)
     if (g.cluster > best->cluster && g.cluster < next) next = g.cluster;

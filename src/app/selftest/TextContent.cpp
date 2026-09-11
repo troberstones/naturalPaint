@@ -299,6 +299,525 @@ bool runTextContentTest() {
           "bp.maxY>0 form passes either way up and proves nothing (see comment above)");
   }
 
+  // --- the anchor: point text is pinned by its BASELINE ---------------------
+  //
+  // core/TextContent.hpp section 2b. Two user-visible promises, and each was
+  // broken before `origin` meant the baseline.
+  {
+    const PathPoint org{200.0f, 300.0f};
+
+    // 1. Making the type bigger grows it UP and to the right out of a fixed
+    //    bottom-left, rather than pushing the block down the page.
+    {
+      TextContent small = makeTextContent("Handgloves", org);
+      small.style.sizePx = 12.0f;
+      TextContent big = small;
+      big.style.sizePx = 96.0f;
+      const PathBounds bs = textContentBounds(small);
+      const PathBounds bb = textContentBounds(big);
+      check(bs.valid && bb.valid, "anchor: both sizes shape");
+      std::printf("  [measured] 12px box y %.2f..%.2f, 96px box y %.2f..%.2f (baseline at %.1f)\n",
+                  bs.minY, bs.maxY, bb.minY, bb.maxY, org.y);
+
+      // The load-bearing one: the box grows UPWARD. Under the old top-left
+      // anchor `minY` stayed put and `maxY` ran down the page instead.
+      check(bb.minY < bs.minY - 10.0f,
+            "anchor: REQUIRED -- enlarging the type extends the block UPWARD (a smaller minY). "
+            "Pinning the top of the line box instead pushes the text DOWN the page, away from "
+            "the corner the user placed");
+
+      // And the left edge does not move -- the other half of "bottom left".
+      check(std::fabs(bb.minX - bs.minX) < 8.0f,
+            "anchor: and the LEFT edge stays put, so the growth is up-and-right");
+
+      // The baseline itself is exactly `origin.y` at BOTH sizes. Asserted on
+      // the caret rather than the ink, because ink dips below the baseline by
+      // a descender ('g' here) and that dip legitimately deepens with size --
+      // the baseline is the thing that must not move.
+      //
+      // The baseline is recovered from the segment's own 0.8/0.2 split rather
+      // than from the private `caretHeightFor()`: top + 0.8 of the span.
+      const TextCaretSegment cs = textCaretSegment(small, 0);
+      const TextCaretSegment cb = textCaretSegment(big, 0);
+      const float baseS = cs.top.y + 0.8f * (cs.bottom.y - cs.top.y);
+      const float baseB = cb.top.y + 0.8f * (cb.bottom.y - cb.top.y);
+      check(std::fabs(baseS - org.y) < 0.01f && std::fabs(baseB - org.y) < 0.01f,
+            "anchor: REQUIRED -- the first baseline is exactly origin.y at BOTH sizes, so what is "
+            "pinned is a baseline and not a bounding box that happens to be near one");
+    }
+
+    // 2. The caret does not JUMP when the first character is typed. An empty
+    //    block's caret was drawn at `origin` while the first glyph landed an
+    //    ascent lower, so the text appeared a whole ascent below where the
+    //    insertion point had been sitting.
+    {
+      TextContent empty = makeTextContent("", org);
+      empty.style.sizePx = 48.0f;
+      TextContent typed = empty;
+      typed.utf8 = "H";
+      const TextCaretSegment before = textCaretSegment(empty, 0);
+      const TextCaretSegment after = textCaretSegment(typed, 1);
+      std::printf("  [measured] empty caret bottom %.2f, after typing 'H' %.2f\n", before.bottom.y,
+                  after.bottom.y);
+      check(std::fabs(before.bottom.y - after.bottom.y) < 0.01f,
+            "anchor: REQUIRED -- the caret sits at the SAME height before and after the first "
+            "keystroke. It used to drop by a full ascent, so the text did not appear where the "
+            "insertion point promised it would");
+    }
+
+    // 3. Paragraph text is NOT moved: its `origin` is the frame's top-left,
+    //    which is the box the user dragged out. Enlarging the type fills
+    //    further down the frame; the frame stays where it is.
+    {
+      TextContent para = makeTextContent("Paragraph text wraps inside its frame.", org);
+      para.frame.width = 300.0f;
+      para.style.sizePx = 12.0f;
+      TextContent bigPara = para;
+      bigPara.style.sizePx = 24.0f;
+      const PathBounds bs = textContentBounds(para);
+      const PathBounds bb = textContentBounds(bigPara);
+      check(bs.valid && bb.valid && bb.minY > org.y - 1.0f && bs.minY > org.y - 1.0f,
+            "anchor: REQUIRED -- a PARAGRAPH block still hangs DOWN from its frame's top-left at "
+            "both sizes. Pinning a frame by its first baseline would slide the whole box up the "
+            "page whenever the type size changed");
+    }
+  }
+
+  // --- Return moves the caret, before anything is typed ---------------------
+  //
+  // CoreText's framesetter lays out no line for a newline that ENDS the text,
+  // so the caret used to stay at the end of the previous line: you pressed
+  // Return and nothing moved. Press it twice and start typing and you were
+  // two lines down, because both newlines had been in the string all along.
+  {
+    const PathPoint org{200.0f, 300.0f};
+    auto para = [&](const char* utf8) {
+      TextContent t = makeTextContent(utf8, org);
+      t.style.sizePx = 48.0f;
+      t.frame.width = 400.0f;
+      return t;
+    };
+
+    // THE assertion: the caret after Return is exactly where the next
+    // character will be drawn. Compared against the real thing -- the caret
+    // sitting before a 'Y' that IS on the second line -- rather than against
+    // a number this test worked out for itself.
+    const TextContent afterReturn = para("Hi\n");
+    const TextContent thenTyped = para("Hi\nY");
+    const TextCaretSegment cr = textCaretSegment(afterReturn, 3);
+    const TextCaretSegment ct = textCaretSegment(thenTyped, 3);
+    std::printf("  [measured] caret after Return (%.2f,%.2f) vs before a typed 'Y' (%.2f,%.2f)\n",
+                cr.bottom.x, cr.bottom.y, ct.bottom.x, ct.bottom.y);
+    check(std::fabs(cr.bottom.x - ct.bottom.x) < 0.01f &&
+              std::fabs(cr.bottom.y - ct.bottom.y) < 0.01f,
+          "newline: REQUIRED -- the caret after Return sits exactly where the next character "
+          "will be drawn. It used to stay on the previous line until something was typed");
+
+    // And a second Return moves it a second time, by exactly one line -- the
+    // spacing taken from a block that really does have two lines.
+    const TextContent twoLines = para("Hi\nYo");
+    const TextCaretSegment l1 = textCaretSegment(twoLines, 0);
+    const TextCaretSegment l2 = textCaretSegment(twoLines, 3);
+    const float lineStep = l2.bottom.y - l1.bottom.y;
+    const TextCaretSegment cr2 = textCaretSegment(para("Hi\n\n"), 4);
+    check(lineStep > 1.0f && std::fabs((cr2.bottom.y - cr.bottom.y) - lineStep) < 0.01f,
+          "newline: REQUIRED -- a SECOND Return moves the caret exactly one more line, by the "
+          "same spacing the block uses between two real lines");
+
+    // The empty line's caret honours alignment: a centred paragraph puts it
+    // in the middle, not hard against the left edge.
+    TextContent centred = para("Hi\n");
+    centred.align = TextAlign::Center;
+    const TextCaretSegment cc = textCaretSegment(centred, 3);
+    check(std::fabs(cc.bottom.x - (org.x + 400.0f * 0.5f)) < 0.01f,
+          "newline: the empty line's caret sits at the alignment point -- centred here, not at "
+          "the left edge");
+
+    // A freshly dragged, still-EMPTY text frame puts its caret on the first
+    // baseline, not on the frame's top edge. With the caret's baseline on the
+    // top edge the bar draws almost entirely above the box, and then the
+    // first character typed appears a whole ascent lower -- the same "the
+    // caret is not where the text will be" complaint as the newline case.
+    {
+      TextContent blank = para("");
+      TextContent oneChar = para("H");
+      const TextCaretSegment cb = textCaretSegment(blank, 0);
+      const TextCaretSegment c1 = textCaretSegment(oneChar, 0);
+      std::printf("  [measured] empty frame caret y %.2f, after one character %.2f (frame top %.1f)\n",
+                  cb.bottom.y, c1.bottom.y, org.y);
+      check(std::fabs(cb.bottom.y - c1.bottom.y) < 0.01f,
+            "empty frame: REQUIRED -- an empty PARAGRAPH block's caret sits exactly where the "
+            "first character will, not on the frame's top edge with the bar hanging above the box");
+      check(cb.bottom.y > org.y,
+            "empty frame: and that is BELOW the frame's top-left, which is what `origin` means "
+            "for paragraph text -- an assertion the equality above would pass even if both were "
+            "wrong in the same direction");
+    }
+
+    // --- Return in POINT text ---------------------------------------------
+    //
+    // Point text used to be excluded from all of this, because its shaper
+    // (`CTLineCreateWithAttributedString`) did not break lines at ALL: a
+    // point block holding "Hi\nYo" drew "HiYo", and a caret dropped to a
+    // second line would have stood under type that was not there. It goes
+    // through the framesetter now, so the line is real -- and these check the
+    // TYPE moved, not just the caret, because moving the caret alone is
+    // exactly the disguise the old assertion here was written to refuse.
+    auto pointBlock = [&](const char* utf8) {
+      TextContent t = makeTextContent(utf8, org);
+      t.style.sizePx = 48.0f;   // the SAME size on both sides, or the y's differ for that reason
+      return t;                 // and the comparison below would prove nothing
+    };
+
+    // The type: "Yo" is UNDER "Hi", not after it. A block that ran the two
+    // together would be as wide as both and as tall as one -- which is
+    // precisely what the bug looked like, so both halves are pinned.
+    {
+      const PathBounds broken = textContentBounds(pointBlock("HiYo"));
+      const PathBounds twoLine = textContentBounds(pointBlock("Hi\nYo"));
+      const PathBounds oneLine = textContentBounds(pointBlock("Hi"));
+      std::printf("  [measured] point text  \"HiYo\" %.2fx%.2f  \"Hi\\nYo\" %.2fx%.2f\n",
+                  broken.maxX - broken.minX, broken.maxY - broken.minY,
+                  twoLine.maxX - twoLine.minX, twoLine.maxY - twoLine.minY);
+      check(broken.valid && twoLine.valid && oneLine.valid,
+            "point newline: all three blocks shape");
+      check(twoLine.maxX < broken.maxX - 1.0f,
+            "point newline: REQUIRED -- \"Hi\\nYo\" is NARROWER than \"HiYo\". The newline used "
+            "to be a zero-width glyph on a line that never broke, so the two read the same "
+            "width; this is the assertion that fails if Return stops breaking the line");
+      check(twoLine.maxY > oneLine.maxY + 1.0f,
+            "point newline: and TALLER than one line -- the second line is drawn, not merely "
+            "counted");
+    }
+
+    // The caret, compared against the real thing rather than a number this
+    // test worked out: the caret after the newline of "Hi\n" must land where
+    // the caret before the 'Y' of "Hi\nY" lands, because they are the same
+    // insertion point with and without a character after it.
+    {
+      const TextCaretSegment afterBreak = textCaretSegment(pointBlock("Hi\n"), 3);
+      const TextCaretSegment beforeY = textCaretSegment(pointBlock("Hi\nY"), 3);
+      const TextCaretSegment endOfOne = textCaretSegment(pointBlock("Hi"), 2);
+      std::printf("  [measured] point caret  end-of-line1 y=%.2f  after \\n y=%.2f  before 'Y' y=%.2f\n",
+                  endOfOne.bottom.y, afterBreak.bottom.y, beforeY.bottom.y);
+      check(std::fabs(afterBreak.bottom.y - beforeY.bottom.y) < 0.01f &&
+                std::fabs(afterBreak.top.x - beforeY.top.x) < 0.01f,
+            "point newline: REQUIRED -- the caret after a trailing newline sits exactly where "
+            "the next character will, in x and y. CoreText lays out no line for a newline that "
+            "ENDS the text, so this is the one the shaper had to be asked for");
+      check(afterBreak.bottom.y > endOfOne.bottom.y + 1.0f,
+            "point newline: and it MOVED -- pressing Return once puts the caret one line down, "
+            "not nowhere");
+      check(std::fabs(afterBreak.top.x - org.x) < 0.01f,
+            "point newline: at the start of the new line, which for point text is the origin's "
+            "own x -- there is no frame to align within");
+    }
+
+    // Point text spaces its lines by the same rule paragraph text does. This
+    // is the "48 versus 58" fact: the line's ascent + descent + leading is
+    // NOT what CoreText spaces baselines by, and if point text stacked lines
+    // on its own arithmetic instead of asking, the two kinds would drift
+    // apart at the same size and font.
+    {
+      TextContent pt = pointBlock("Hi\nYo");
+      TextContent pa = pointBlock("Hi\nYo");
+      pa.frame.width = 600.0f;   // wide enough that it cannot wrap: the only break is the \n
+      const TextCaretSegment p0 = textCaretSegment(pt, 0);
+      const TextCaretSegment p1 = textCaretSegment(pt, 3);
+      const TextCaretSegment a0 = textCaretSegment(pa, 0);
+      const TextCaretSegment a1 = textCaretSegment(pa, 3);
+      const float pointSpacing = p1.bottom.y - p0.bottom.y;
+      const float paraSpacing = a1.bottom.y - a0.bottom.y;
+      std::printf("  [measured] line spacing  point %.3f  paragraph %.3f  (sizePx 48)\n",
+                  pointSpacing, paraSpacing);
+      check(pointSpacing > 1.0f && std::fabs(pointSpacing - paraSpacing) < 0.01f,
+            "point newline: REQUIRED -- point text's baseline spacing is the SAME as paragraph "
+            "text's at the same size. `sizePx`, or ascent+descent+leading, would each be about "
+            "10px short at 48px and only this comparison notices");
+    }
+
+    // The first baseline stays exactly on `origin` however many lines there
+    // are (core/TextContent.hpp section 2b). The block grows DOWN from it,
+    // which is what stops existing point text moving when this changed.
+    {
+      const TextCaretSegment one = textCaretSegment(pointBlock("Hi"), 0);
+      const TextCaretSegment many = textCaretSegment(pointBlock("Hi\nYo\nZa"), 0);
+      check(std::fabs(one.bottom.y - many.bottom.y) < 0.01f,
+            "point newline: REQUIRED -- adding lines BELOW does not move the first one. The "
+            "shaper reports a different block top for a multi-line block, and this is what "
+            "fails if that difference is not cancelled back out");
+    }
+
+  // --- the frame's resize handles -------------------------------------------
+  //
+  // core/TextContent.hpp section 4b. A frame is dragged out before a word is
+  // typed, so its size is a guess; these are how the guess gets corrected.
+  {
+    const PathPoint org{200.0f, 300.0f};
+    auto frame = [&](float w, float h) {
+      TextContent t = makeTextContent("Paragraph text that will reflow when the frame changes.",
+                                      org);
+      t.style.sizePx = 24.0f;
+      t.frame.width = w;
+      t.frame.height = h;
+      return t;
+    };
+
+    // Point text has no box, so it reports no handles -- and the hit test
+    // therefore cannot return one, however close the pointer gets.
+    {
+      TextContent point = makeTextContent("Handgloves", org);
+      TextFrameHandles h;
+      check(!textFrameHandles(point, &h),
+            "handles: POINT text reports none -- it has no frame to resize");
+      check(textFrameHandleAt(point, org, 1000.0f) == TextFrameHandle::None,
+            "handles: and no hit test on it can find one, at any radius");
+    }
+
+    // Eight handles on the frame's own corners and edge midpoints.
+    {
+      const TextContent t = frame(400.0f, 200.0f);
+      TextFrameHandles h;
+      check(textFrameHandles(t, &h), "handles: a paragraph frame reports them");
+      check(std::fabs(h.at[0].x - 200.0f) < 0.01f && std::fabs(h.at[0].y - 300.0f) < 0.01f,
+            "handles: TopLeft is the frame's origin");
+      check(std::fabs(h.at[7].x - 600.0f) < 0.01f && std::fabs(h.at[7].y - 500.0f) < 0.01f,
+            "handles: BottomRight is origin + (width, height)");
+      check(textFrameHandleAt(t, PathPoint{600.0f, 500.0f}, 5.0f) == TextFrameHandle::BottomRight,
+            "handles: the hit test finds the corner under the pointer");
+      check(textFrameHandleAt(t, PathPoint{400.0f, 400.0f}, 5.0f) == TextFrameHandle::None,
+            "handles: and finds nothing in the middle of the frame");
+    }
+
+    // Dragging the right edge changes the WIDTH and nothing else -- which is
+    // what makes the text reflow, since `frame.width` is an input to shaping.
+    {
+      TextContent t = frame(400.0f, 0.0f);
+      const PathBounds before = textContentBounds(t);
+      check(textFrameResize(&t, TextFrameHandle::MiddleRight, PathPoint{500.0f, 400.0f}, 4.0f),
+            "handles: dragging the right edge is accepted");
+      check(std::fabs(t.frame.width - 300.0f) < 0.01f,
+            "handles: REQUIRED -- the width becomes the drag's own (500 - 200 = 300)");
+      check(std::fabs(t.origin.x - org.x) < 0.01f && std::fabs(t.origin.y - org.y) < 0.01f,
+            "handles: and the origin did NOT move -- only the far edge did");
+      const PathBounds after = textContentBounds(t);
+      check(before.valid && after.valid && after.maxY > before.maxY,
+            "handles: REQUIRED -- the text REFLOWED: a narrower frame is taller, because the "
+            "same words wrap onto more lines. This is what fails if the width is stored but "
+            "shaping never sees it");
+    }
+
+    // Dragging the LEFT edge moves the origin as well as the width, or the
+    // box would grow from the wrong side and slide out from under the cursor.
+    {
+      TextContent t = frame(400.0f, 200.0f);
+      check(textFrameResize(&t, TextFrameHandle::MiddleLeft, PathPoint{150.0f, 400.0f}, 4.0f),
+            "handles: dragging the left edge is accepted");
+      check(std::fabs(t.origin.x - 150.0f) < 0.01f && std::fabs(t.frame.width - 450.0f) < 0.01f,
+            "handles: REQUIRED -- the left edge moves the ORIGIN and widens to match, so the "
+            "right edge stays where it was");
+    }
+
+    // A block sizing its own height keeps doing so when merely widened.
+    {
+      TextContent t = frame(400.0f, 0.0f);
+      check(textFrameResize(&t, TextFrameHandle::MiddleRight, PathPoint{700.0f, 400.0f}, 4.0f) &&
+                t.frame.height == 0.0f,
+            "handles: REQUIRED -- widening a block leaves its height AUTOMATIC. Pinning it here "
+            "would clip the next line typed inside a box the user never set");
+      check(textFrameResize(&t, TextFrameHandle::BottomCenter, PathPoint{400.0f, 560.0f}, 4.0f) &&
+                std::fabs(t.frame.height - 260.0f) < 0.01f,
+            "handles: and a bottom handle DOES pin it, because that is the one the user grabbed "
+            "to set a height");
+    }
+
+    // A collapse is refused outright, leaving the frame untouched -- a clamp
+    // would stick at the floor and then invert under the cursor.
+    {
+      TextContent t = frame(400.0f, 200.0f);
+      const TextContent before = t;
+      check(!textFrameResize(&t, TextFrameHandle::MiddleRight, PathPoint{100.0f, 400.0f}, 4.0f),
+            "handles: dragging the right edge past the left is REFUSED");
+      check(t.frame.width == before.frame.width && t.origin.x == before.origin.x,
+            "handles: and the refusal changed nothing at all");
+    }
+
+    // A rotated block resizes along ITS OWN axes. Dragging its right edge by
+    // 100 in the block's frame must widen it by 100 -- not by the projection
+    // of a document-space delta, which is what an unmapped pointer gives.
+    {
+      TextContent t = frame(400.0f, 200.0f);
+      t.transform = transformRotateDegrees(90.0f);
+      // The block's own right edge, under a 90-degree turn, lies along
+      // document Y. Ask for a point 100 further along the block's local x by
+      // mapping it forward through the same matrix the resize will invert.
+      const Point2 want = mat3MapPoint(t.transform, Point2{org.x + 500.0f, org.y + 100.0f});
+      check(textFrameResize(&t, TextFrameHandle::MiddleRight, PathPoint{want.x, want.y}, 4.0f),
+            "handles: a rotated block's edge drag is accepted");
+      check(std::fabs(t.frame.width - 500.0f) < 0.01f,
+            "handles: REQUIRED -- and it widens along the BLOCK's axis, not the document's. "
+            "Without the inverse map the frame shears away from the cursor");
+    }
+  }
+
+    // The outline and the handles are the SAME box. They were computed by two
+    // separate pieces of arithmetic, and the two had drifted for the one
+    // state nothing draws often: an EMPTY frame with an automatic height.
+    // Measured on a 520-wide empty block at 48px -- the outline's bottom edge
+    // came back at y = 300.00, a zero-height line on the frame's own top,
+    // while the bottom row of handles sat at y = 357.60. Both now go through
+    // `textFrameRectLocal()`.
+    {
+      TextContent empty = makeTextContent("", org);
+      empty.style.sizePx = 48.0f;
+      empty.frame.width = 520.0f;
+      empty.frame.height = 0.0f;   // "as tall as the lines need", and there are none yet
+      TextQuad q;
+      TextFrameHandles h;
+      check(textFrameQuad(empty, &q) && textFrameHandles(empty, &h),
+            "empty frame: an empty paragraph frame still has an outline and handles -- it is a "
+            "box the user dragged, not nothing");
+      std::printf("  [measured] empty auto frame  outline bottom %.2f  handle row %.2f\n",
+                  q.corner[2].y, h.at[6].y);
+      check(std::fabs(q.corner[2].y - h.at[6].y) < 0.01f,
+            "empty frame: REQUIRED -- the outline's bottom edge and the bottom row of handles "
+            "are the same y. Two rules for one box is how they drifted a whole line apart");
+      check(q.corner[2].y > q.corner[0].y + 1.0f,
+            "empty frame: and the box has real height -- one line's worth, room for the line "
+            "about to be typed, not a zero-height line drawn on the frame's own top edge");
+    }
+  }
+
+  // --- the transform: a scaled or rotated block is STILL TEXT ---------------
+  //
+  // core/TextContent.hpp section 4. The failure these guard against is not
+  // "the matrix is stored wrong" -- that is loud -- but the two quiet ones:
+  // a matrix that is stored and never APPLIED (the handle looks dead), and a
+  // matrix that is applied to the drawing but not to the hit test (the block
+  // draws at an angle and can only be clicked where it used to be).
+  {
+    const PathPoint org{40.0f, 90.0f};
+
+    // 1. Identity changes nothing at all. This is the assertion that fails if
+    //    the mapping pass runs unconditionally with a subtly wrong matrix --
+    //    every other check here uses a non-identity transform and would not
+    //    notice the default case regressing.
+    {
+      TextContent plain = makeTextContent("Handgloves", org);
+      TextContent explicitId = plain;
+      explicitId.transform = mat3Identity();
+      const PathBounds a = textContentBounds(plain);
+      const PathBounds b = textContentBounds(explicitId);
+      check(a.valid && b.valid && a.minX == b.minX && a.maxX == b.maxX && a.minY == b.minY &&
+                a.maxY == b.maxY,
+            "transform: an explicit IDENTITY matrix is byte-for-byte the same geometry as the "
+            "default -- the fast path and the general path agree");
+    }
+
+    // 2. A scale reaches the geometry, and leaves the string and size alone.
+    {
+      TextContent t = makeTextContent("Handgloves", org);
+      const PathBounds before = textContentBounds(t);
+      t.transform = transformScale(2.0f, 2.0f);
+      const PathBounds after = textContentBounds(t);
+      check(before.valid && after.valid &&
+                std::fabs((after.maxX - after.minX) - 2.0f * (before.maxX - before.minX)) < 0.01f,
+            "transform: a 2x scale doubles the shaped width -- the matrix is APPLIED by "
+            "textContentToShapes(), not merely stored");
+      check(t.utf8 == "Handgloves" && t.style.sizePx == makeTextContent("x", org).style.sizePx,
+            "transform: and neither the string nor the type size changed -- this is what makes a "
+            "scaled block still editable text rather than a rasterised picture of text");
+    }
+
+    // 3. **The round trip that matters**: a caret drawn at byte N, clicked on,
+    //    comes back as byte N -- under a rotation. This fails if the drawing
+    //    path maps and the hit test does not (the block is unclickable where
+    //    it is drawn), if the inverse is composed on the wrong side, or if
+    //    either side forgets `origin`.
+    {
+      TextContent t = makeTextContent("Handgloves", org);
+      // About the block's own middle, which is what a rotate handle produces.
+      const PathBounds box = textContentBounds(t);
+      const Point2 pivot{(box.minX + box.maxX) * 0.5f, (box.minY + box.maxY) * 0.5f};
+      t.transform = transformRotateDegreesAbout(30.0f, pivot);
+
+      bool everyOffsetRoundTrips = true;
+      size_t firstBad = 0;
+      for (size_t n = 0; n <= t.utf8.size(); ++n) {
+        const TextCaretSegment seg = textCaretSegment(t, n);
+        // Sample ON the baseline, a hair inside the caret: the segment's own
+        // endpoints are the ascender top and descender bottom, and a click at
+        // the very top of a line legitimately belongs to the line above.
+        const PathPoint at{(seg.top.x + seg.bottom.x) * 0.5f, (seg.top.y + seg.bottom.y) * 0.5f};
+        if (textOffsetAtPoint(t, at) != n) {
+          everyOffsetRoundTrips = false;
+          firstBad = n;
+          break;
+        }
+      }
+      if (!everyOffsetRoundTrips)
+        std::printf("  [measured] first caret offset that did not round-trip: %zu\n", firstBad);
+      check(everyOffsetRoundTrips,
+            "transform: REQUIRED -- under a 30-degree rotation, clicking the middle of the caret "
+            "drawn for byte N returns byte N, for EVERY N. This is the assertion that fails if "
+            "the hit test does not invert the matrix the drawing applied");
+    }
+
+    // 4. The selection quad turns with the block. Under a rotation its top
+    //    edge is no longer horizontal -- which an axis-aligned rect could
+    //    never express, and is why the API returns four corners.
+    {
+      TextContent t = makeTextContent("Handgloves", org);
+      const std::vector<TextQuad> square = textSelectionQuads(t, 0, 4);
+      check(square.size() == 1 && std::fabs(square[0].corner[0].y - square[0].corner[1].y) < 0.01f,
+            "transform: unrotated, a selection quad's top edge is horizontal");
+      t.transform = transformRotateDegrees(30.0f);
+      const std::vector<TextQuad> turned = textSelectionQuads(t, 0, 4);
+      check(turned.size() == 1 && std::fabs(turned[0].corner[0].y - turned[0].corner[1].y) > 1.0f,
+            "transform: REQUIRED -- rotated, it is NOT. A highlight that stayed axis-aligned "
+            "under rotated type is the bug the quad API exists to prevent");
+    }
+
+    // 5. The hash covers the matrix, or core/VectorRaster's cache serves the
+    //    pre-rotation picture and the handle looks dead.
+    {
+      TextContent a = makeTextContent("Handgloves", org);
+      TextContent b = a;
+      b.transform = transformRotateDegrees(15.0f);
+      check(textContentHash(a) != textContentHash(b),
+            "transform: REQUIRED -- the content hash changes with the matrix, so the raster cache "
+            "cannot serve an unrotated block for a rotated one");
+    }
+
+    // 6. A degenerate matrix has no inverse, so the hit test refuses rather
+    //    than dividing by ~0 and returning a garbage offset.
+    {
+      TextContent t = makeTextContent("Handgloves", org);
+      t.transform = transformScale(0.0f, 1.0f);
+      check(textOffsetAtPoint(t, PathPoint{50.0f, 95.0f}) == 0,
+            "transform: a collapsed matrix makes the hit test answer 0 rather than reading an "
+            "infinity -- and ops/DocumentTransform refuses to store one in the first place");
+    }
+
+    // 7. Curve handles are mapped too, not just anchors. `in`/`out` are
+    //    absolute positions, so a transform that moved only `pt` would turn
+    //    every round glyph inside out -- silent on straight-edged letters.
+    {
+      TextContent t = makeTextContent("o", org);   // a glyph that is all curve
+      t.transform = transformTranslate(1000.0f, 0.0f);
+      const std::vector<VectorShape> shapes = textContentToShapes(t, nullptr);
+      bool everyHandleMoved = !shapes.empty();
+      for (const VectorShape& sh : shapes)
+        for (const SubPath& sub : sh.path.subpaths)
+          for (const Anchor& an : sub.anchors)
+            if (an.in.x < 900.0f || an.out.x < 900.0f) everyHandleMoved = false;
+      check(everyHandleMoved,
+            "transform: REQUIRED -- the bezier control points move with their anchors. Mapping "
+            "only `pt` leaves every curve's handles behind, which is invisible on 'H' and "
+            "turns 'o' inside out");
+    }
+  }
+
   return ok;
 }
 

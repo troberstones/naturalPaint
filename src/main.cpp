@@ -23,6 +23,7 @@
 #include "app/AbrReport.hpp"
 #include "app/Batch.hpp"
 #include "app/ProfileToggle.hpp"
+#include "app/PsdExportCli.hpp"
 #include "app/PsdReport.hpp"
 #include "app/DabLibrary.hpp"
 #include "app/BrushSheet.hpp"
@@ -663,7 +664,9 @@ void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
                  static_cast<double>(onSegment.x), static_cast<double>(onSegment.y));
 }
 
-// --text-demo [paragraph|frame] (PLAN.md Phase 14; PRD K1-K3): puts a
+// --text-demo [paragraph|newline|pointbreak|emptyframe|rotated|frame] (PLAN.md
+// Phase 14;
+// PRD K1-K3): puts a
 // `LayerKind::Text` layer on the session's document, selects `Tool::Text`, and
 // drives `app/TextTool`'s real session transitions so the on-canvas text
 // chrome and the Text options row can be photographed.
@@ -691,6 +694,40 @@ void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
 //                 live and the box drawn is the LAYOUT frame rather than the
 //                 glyph bounds -- the two differ, and the overlay picks
 //                 deliberately between them.
+//   newline       A paragraph block whose text ENDS with a newline, caret at
+//                 the end -- i.e. the state right after pressing Return. The
+//                 caret has to be drawn on the empty line below the type, and
+//                 CoreText lays out no line there, so this is the one picture
+//                 that shows the caret standing on a line the shaper never
+//                 produced. Unreachable by any other flag, and the defect it
+//                 guards (the caret not moving until something was typed) is
+//                 invisible to a bounds check.
+//   rotated       A block carrying a non-identity `TextContent::transform`
+//                 (core/TextContent.hpp section 4), still in a live editing
+//                 session. The camera for the claim that a rotated block is
+//                 STILL TEXT: the glyphs are at an angle, and so are the
+//                 block box, the selection highlight and the caret bar --
+//                 all three of which were computed axis-aligned before the
+//                 transform existed, and any one of them left that way is a
+//                 bug no headless assertion can see.
+//   pointbreak    POINT text carrying a real line break, caret at the end --
+//                 the state right after typing a word, pressing Return, and
+//                 typing another. Point text used to draw every line on one
+//                 (`CTLineCreateWithAttributedString` does not break lines at
+//                 all), so this picture is the whole claim: two lines of type
+//                 with no frame around them, and a caret on the second. The
+//                 `newline` view above cannot stand in for it -- that one has
+//                 a frame, and a frame is exactly what this is proving is not
+//                 required.
+//   emptyframe    A committed paragraph frame with NOTHING TYPED IN IT, session
+//                 live -- the state a frame drag leaves behind, before the
+//                 first character. Combined with `--transform-demo` it is the
+//                 picture that Cmd+T on an empty frame produces a gizmo at
+//                 all: that was refused ("has no content -- nothing to
+//                 transform") about a box the user was looking at, because
+//                 the transform's bounds came from the INK rather than from
+//                 the frame. No other flag reaches an empty committed block --
+//                 every other mode here types something.
 //   frame         A paragraph-frame drag held open mid-gesture: pen-down on
 //                 empty canvas and a move, with no pen-up. Unphotographable
 //                 any other way, and pinned by `st.textEditDemo` for a reason
@@ -722,14 +759,36 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
   // glyph outlines all have to be separable in a screenshot, and at 24 px on
   // this canvas the box and the caret are within a pixel or two of each other.
   np::TextContent text = np::makeTextContent(
-      mode == 1 ? "Paragraph text wraps inside the frame it was dragged out."
-                : "Handgloves",
+      mode == 1   ? "Paragraph text wraps inside the frame it was dragged out."
+      : mode == 4 ? "Return was just pressed\n"
+      : mode == 5 ? "Point text\nbreaks here"
+      : mode == 6 ? ""
+                  : "Handgloves",
       np::PathPoint{200.0f, 300.0f});
   text.style.sizePx = 48.0f;
   // A deliberately non-black fill: the overlay draws its chrome in the
   // accent, and black-on-white text with black chrome over it makes a
   // mis-registered box indistinguishable from a correctly registered one.
   text.fill.rgba = {0.10f, 0.14f, 0.22f, 1.0f};
+  if (mode == 4) {
+    // A FRAME, so that this stays the paragraph camera and `pointbreak` below
+    // stays the point-text one -- the two states are drawn by the same code
+    // and photographed separately on purpose. Wide enough that the string
+    // does NOT wrap, so the second line in the picture is unambiguously the
+    // newline's doing and not the wrap's.
+    text.frame.width = 640.0f;
+  }
+  if (mode == 6) {
+    // Both numbers set, because that is what `textEditFrameDragEnd()` writes:
+    // a frame drag records the width AND the height it was dragged to. An
+    // auto height here would photograph a different state from the one the
+    // gesture actually produces.
+    text.frame.width = 520.0f;
+    text.frame.height = 171.0f;
+  }
+  // mode 5 sets no frame width at all: `frame.width == 0` IS point text
+  // (core/TextContent.hpp section 2), and leaving it alone is the whole
+  // fixture. A width here would silently photograph the paragraph path again.
   if (mode == 1) {
     // A frame NARROWER than the string needs, so the picture shows real
     // wrapping rather than one line that happens to fit -- a frame wide
@@ -739,7 +798,11 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
     text.align = np::TextAlign::Center;
   }
 
-  np::Layer layer = np::makeTextLayer(mode == 1 ? "Paragraph demo" : "Point text demo");
+  np::Layer layer = np::makeTextLayer(mode == 1   ? "Paragraph demo"
+                                      : mode == 4 ? "Newline demo"
+                                      : mode == 5 ? "Point break demo"
+                                      : mode == 6 ? "Empty frame demo"
+                                                  : "Point text demo");
   layer.text = text;
 
   const size_t at = od.document.layers.size();
@@ -763,17 +826,62 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
   // the end of the string sits just past the last glyph, which is also where a
   // caret computed from entirely the wrong glyph would land if the string were
   // measured instead of shaped.
-  const np::PathPoint clickAt{
-      placed.origin.x + (mode == 1 ? 210.0f : 150.0f),
-      placed.origin.y + (mode == 1 ? 30.0f : 20.0f)};
-  np::textCaretSetOffset(&st.textEdit, placed, np::textOffsetAtPoint(placed, clickAt));
+  if (mode == 6) {
+    // Offset 0 is the only caret an empty block has. Set through the same
+    // API as every other mode rather than left at whatever `textEditBegin()`
+    // happened to leave -- main.cpp's own single-writer rule for `textEdit`.
+    np::textCaretSetOffset(&st.textEdit, placed, 0);
+  } else if (mode == 4 || mode == 5) {
+    // The caret at the END, which is where Return leaves it -- the whole
+    // point of these two fixtures. `textCaretEnd()` rather than a click,
+    // because a click cannot express "past the last character on a line that
+    // has no characters", and for `pointbreak` it puts the caret on the
+    // SECOND line, which is the half a bounds check cannot see.
+    np::textCaretEnd(placed, &st.textEdit, /*extend=*/false);
+  } else {
+    const np::PathPoint clickAt{
+        placed.origin.x + (mode == 1 ? 210.0f : 150.0f),
+        placed.origin.y + (mode == 1 ? 30.0f : 20.0f)};
+    np::textCaretSetOffset(&st.textEdit, placed, np::textOffsetAtPoint(placed, clickAt));
+  }
+
+  if (mode == 3) {
+    // A rotation ABOUT THE BLOCK'S OWN CENTRE, which is what the Move tool's
+    // rotate handle produces -- a rotation about the document origin would
+    // fling the block off canvas and photograph an empty crop.
+    //
+    // Applied through `transformTextLayer()` rather than by assigning the
+    // matrix, so this fixture goes through the same entry the tool does and
+    // cannot pass while that entry is broken.
+    const np::PathBounds box = np::textContentBounds(od.document.layers[at].text);
+    const np::Point2 pivot{(box.minX + box.maxX) * 0.5f, (box.minY + box.maxY) * 0.5f};
+    const np::LayerTransformResult rot = np::transformTextLayer(
+        od.document, at, np::transformRotateDegreesAbout(-20.0f, pivot));
+    if (!rot.ok) std::fprintf(stderr, "[text-demo] rotation refused: %s\n", rot.error.c_str());
+
+    // A live SELECTION as well as a caret, because the highlight is the
+    // second thing that has to turn with the block and it is drawn by
+    // different code from the caret. Four characters, set through
+    // app/TextTool's own API -- never by assigning to `st.textEdit`, which
+    // this file's header notes is greppable precisely so a fixture cannot
+    // become a second writer.
+    const np::TextContent& turned = od.document.layers[at].text;
+    np::textCaretSetOffset(&st.textEdit, turned, 0);
+    for (int k = 0; k < 4; ++k) np::textCaretRight(turned, &st.textEdit, /*extend=*/true);
+    std::printf("[text-demo] rotated -20 degrees about (%.1f,%.1f), selection %zu..%zu\n",
+                pivot.x, pivot.y, np::textSelection(st.textEdit).lo,
+                np::textSelection(st.textEdit).hi);
+  }
 
   const np::PathBounds bounds = np::textContentBounds(placed);
   std::printf("[text-demo] %s, %zu glyph shape(s), caret at byte %zu of %zu, bounds %s\n",
-              mode == 1 ? "paragraph" : "point text",
+              placed.frame.width > 0.0f ? "paragraph" : "point text",
               np::textContentToShapes(placed).size(), st.textEdit.caret, placed.utf8.size(),
               bounds.valid ? "valid" : "INVALID");
-  if (!np::textContentDraws(placed) || !bounds.valid)
+  // Mode 6 is deliberately an EMPTY block, so "draws nothing" is the fixture
+  // working, not the warning's failure case. Every other mode types something
+  // and still gets the check.
+  if (mode != 6 && (!np::textContentDraws(placed) || !bounds.valid))
     std::fprintf(stderr,
                  "[text-demo] this block draws NOTHING -- either the shaper is unavailable in "
                  "this build or the fill is off, so the photograph shows chrome over an empty "
@@ -1658,7 +1766,8 @@ int main(int argc, char** argv) {
   int vectorDemoMode = 0;  // 0 = shape, 1 = components, 2 = marquee, 3 = pendraw,
                            // 4 = anchorpair
 
-  // --text-demo [paragraph|frame]: see runTextDemo().
+  // --text-demo [paragraph|newline|pointbreak|emptyframe|rotated|frame]:
+  // see runTextDemo().
   bool textDemo = false;
   int textDemoMode = 0;  // 0 = point text, 1 = paragraph, 2 = held-open frame drag
   bool overRangeDemo = false;
@@ -1745,6 +1854,14 @@ int main(int argc, char** argv) {
   // every hidden layer shown, a blend key quietly downgraded -- and none of
   // them is visible from a canvas.
   const char* psdReportPath = nullptr;
+  // --psd-export <out.psd> : write a synthesised document through io/PsdExport
+  // and, beside it, the SAME document as an 8-bit sRGB PNG through io/Export's
+  // existing encoder. Headless. This exists so an external reader (psd-tools)
+  // can judge the PSD against a reference this project's PSD code had no hand
+  // in -- see app/PsdExportCli.hpp for why a round trip through our own
+  // importer cannot answer that question.
+  const char* psdExportPath = nullptr;
+  bool psdExportLayered = false;
   // --profile-toggle <file.psd> <layer-index> <iterations> : headless
   // benchmarking scaffold, see app/ProfileToggle.hpp. Temporary.
   const char* profileTogglePath = nullptr;
@@ -1804,6 +1921,18 @@ int main(int argc, char** argv) {
       if (i + 1 < argc) abrReportPath = argv[++i];
     } else if (a == "--psd-report") {
       if (i + 1 < argc) psdReportPath = argv[++i];
+    } else if (a == "--psd-export") {
+      if (i + 1 < argc) psdExportPath = argv[++i];
+    } else if (a == "--psd-export-layered") {
+      // Tier 2: the same fixture with a real Layer and Mask Information
+      // section. This is the file the psd-tools oracle is run against --
+      // an external reader is the only thing that can see a flags-polarity
+      // or record-order mistake, because our own reader would make the same
+      // mistake in the same direction and round-trip perfectly.
+      if (i + 1 < argc) {
+        psdExportPath = argv[++i];
+        psdExportLayered = true;
+      }
     } else if (a == "--profile-toggle") {
       if (i + 1 < argc) profileTogglePath = argv[++i];
       if (i + 1 < argc) profileToggleLayer = std::atoi(argv[++i]);
@@ -2111,6 +2240,18 @@ int main(int argc, char** argv) {
           ++i;
         } else if (arg == "frame") {
           textDemoMode = 2;
+          ++i;
+        } else if (arg == "rotated") {
+          textDemoMode = 3;
+          ++i;
+        } else if (arg == "newline") {
+          textDemoMode = 4;
+          ++i;
+        } else if (arg == "pointbreak") {
+          textDemoMode = 5;
+          ++i;
+        } else if (arg == "emptyframe") {
+          textDemoMode = 6;
           ++i;
         }
       }
@@ -2470,6 +2611,7 @@ int main(int argc, char** argv) {
   // the GPU path does.
   if (abrReportPath != nullptr) return np::runAbrReport(abrReportPath);
   if (psdReportPath != nullptr) return np::runPsdReport(psdReportPath);
+  if (psdExportPath != nullptr) return np::runPsdExportDemo(psdExportPath, psdExportLayered);
   if (profileTogglePath != nullptr)
     return np::runProfileToggle(profileTogglePath, profileToggleLayer, profileToggleIterations);
   if (abrKeysPath != nullptr) return np::runAbrKeyCensus(abrKeysPath);
@@ -3087,7 +3229,7 @@ int main(int argc, char** argv) {
     const bool pathConsumersOk = np::runPathConsumersTest();
     // The Text tool owning the keyboard while a session is live: app/Keymap's
     // keyChordReachesKeymap() gate, app/TextTool's textSessionActive()
-    // transitions, and textEditRevert() vs plain textEditCancel(). Headless
+    // transitions, and that every way out of a session keeps the text. Headless
     // and GPU-free; writes no files.
     const bool textKeyCaptureOk = np::runTextKeyCaptureTest();
     // docs/testing-issues.md T14: the CPU half of the Free Transform live
@@ -3104,6 +3246,20 @@ int main(int argc, char** argv) {
     // well-formed files, which is the one input that cannot tell a checked
     // decoder from an unchecked one. Headless and GPU-free.
     const bool packBitsOk = np::runPackBitsTest();
+    const bool psdWriteOk = np::runPsdWriteTest();
+    // io/PsdBlendKeys: the one Photoshop-blend-key table, read in both
+    // directions now that PSD export needs mode -> key. Includes the tripwire
+    // that a new core::BlendMode must be triaged into the table or into a
+    // named "no PSD key" list rather than exporting as Normal by omission.
+    const bool psdBlendKeysOk = np::runPsdBlendKeysTest();
+    // io/PsdExport: the PSD container and its flattened composite (PSD export
+    // tier 1). Headless and GPU-free.
+    const bool psdExportOk = np::runPsdExportTest();
+    // io/PsdLayerSection: PSD's Layer and Mask Information section, written --
+    // one PSD layer record per naturalPaint layer, asserted by round trip
+    // through io/PsdImport (docs/psd-export.md tier 2). Headless and GPU-free.
+    const bool psdLayerSectionOk = np::runPsdLayerSectionTest();
+    const bool psdLayerExtrasOk = np::runPsdLayerExtrasTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD M1, M3, M4, M5, M8): the
     // internal clipboard's copy/cut/paste, its copy-on-write sharing, and the
     // two different coverage-weighting rules RGB and Pigment tiles take. Also
@@ -3707,6 +3863,14 @@ int main(int argc, char** argv) {
     // unconfigured AppState and requires the fade, with the identical drag at
     // strength 1 measured beside it as the negative.
     const bool smudgeOptionsOk = np::runSmudgeOptionsTest();
+    // brush/PigmentSmudge -- the smudge on a Pigment layer, which the routing
+    // table refused by name until the mass-weighted mean of a footprint of
+    // latents was decided and asserted. Asserted three ways: one pigment in is
+    // that pigment out at zero tolerance over a whole stroke, an erased or empty
+    // texel thins the finger without bleaching it (the rejected arithmetic mean
+    // measured beside it), and a mixed footprint picks up exactly what
+    // depositTexel() makes of the same two paints.
+    const bool pigmentSmudgeOk = np::runPigmentSmudgeTest();
     // PRD E1 (P0) on the layer kind that never had it, and ADR-0007's Pigment
     // eraser row that gate unblocked. brush/Deposit.hpp did not contain the word
     // "Selection", so a natural-media stroke on a Pigment layer painted straight
@@ -4025,7 +4189,7 @@ int main(int argc, char** argv) {
                     gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
                     textShaperOk && vectorLayerOk && textContentOk &&
                     transformPreviewTextureOk &&
-                    transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && inpaintOk && curveEditOk &&
+                    transformCompositeSplitOk && packBitsOk && psdWriteOk && psdBlendKeysOk && psdExportOk && psdLayerSectionOk && psdLayerExtrasOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && inpaintOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
                     multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk &&
                     userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
@@ -4052,7 +4216,7 @@ int main(int argc, char** argv) {
                     pencilDepositOk &&
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk && tonalBrushOk &&
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk && smudgeOk &&
-                    smudgeOptionsOk &&
+                    smudgeOptionsOk && pigmentSmudgeOk &&
                     pigmentSelectionOk && bucketRefusalOk &&
                     pigmentSelectionOk && cloneStampOk && healOk && bucketRefusalOk &&
                     layerMultiSelectOk && layerPanel2aOk && layerListHeightOk &&
@@ -4858,6 +5022,10 @@ int main(int argc, char** argv) {
   // laying out docked panels, sizing the canvas and settling ImGui's first
   // frames in exactly that window, and none of it is input-driven.
   uint64_t pacingPrevFrameNs = 0;
+  // "The last SDL_StartTextInput() was ours, not the ImGui backend's" --
+  // app/TextTool.hpp section 7's `startedHere`. Written only by the switch at
+  // the top of the loop below.
+  bool textInputStartedHere = false;
   uint64_t pacingLastActivityNs = SDL_GetTicksNS();
   np::FramePacingTier pacingTier = np::FramePacingTier::Unthrottled;
 
@@ -4905,6 +5073,32 @@ int main(int argc, char** argv) {
         }
       }
     }
+    // ---- hand the keyboard to a live Text session, at the PLATFORM ------
+    //
+    // Resolved here, ahead of this frame's `SDL_PollEvent()` drain, because
+    // the thing it switches on is whether SDL generates `SDL_EVENT_TEXT_INPUT`
+    // for the events about to be pumped -- turning it on after the drain
+    // would cost the first keystroke of every session. `st.textEdit` is last
+    // frame's `drawUI()` output, which is where every session begins and ends.
+    //
+    // app/TextTool.hpp section 7 is the whole argument, including why the
+    // Stop arm is the delicate one; `textInputStartedHere` is the one bit of
+    // state it needs and this is its only writer.
+    switch (np::textInputAction(np::textSessionActive(st.textEdit),
+                                SDL_TextInputActive(window),
+                                ImGui::GetIO().WantTextInput, textInputStartedHere)) {
+      case np::TextInputAction::Start:
+        SDL_StartTextInput(window);
+        textInputStartedHere = true;
+        break;
+      case np::TextInputAction::Stop:
+        SDL_StopTextInput(window);
+        textInputStartedHere = false;
+        break;
+      case np::TextInputAction::Leave:
+        break;
+    }
+
     const uint64_t frameStartNs = SDL_GetTicksNS();
     pacingPrevFrameNs = frameStartNs;
     st.lastInputEventNs = 0;
@@ -5041,6 +5235,16 @@ int main(int argc, char** argv) {
                     np::documentCanvasRegion(od->document));
                 st.transform.beginLayer(*od, *dropped.transformableLayer,
                                         initialPending);
+                // The same tool change Cmd+T's begin makes -- a dropped
+                // picture lands with a LIVE gizmo over it, so whatever tool
+                // was active still has its canvas gesture armed underneath.
+                // Drop a photo while the Text tool is selected and the first
+                // click meant to nudge the picture made a text layer instead.
+                // Conditioned on the session actually starting, which is what
+                // `active()` reports here -- this call site does not read the
+                // begin's own result (a drop that refuses has already been
+                // reported by the open itself).
+                if (st.transform.active()) np::enterTransformTool(st);
                 // T14: the SAME live-pixel-preview upload drawUI()'s own
                 // Free Transform handler makes -- this is the session's
                 // other begin*() call site (docs/testing-issues.md T14's own
@@ -5112,6 +5316,21 @@ int main(int argc, char** argv) {
             np::keyChordReachesKeymap(chord, typingIntoAWidget)
                 ? keymap.resolve(chord, activeScope)
                 : std::nullopt;
+        // ...and a chord that DID resolve puts the caret away, unless it is
+        // one of the handful that cannot disturb the block being typed into.
+        // app/TextTool.hpp section 8 is the list and the argument for it
+        // (undo/redo are deliberately NOT on the ending side); `textEditCancel()`
+        // is the accept, so every character typed is kept.
+        //
+        // Before the dispatch chain below, not after: several arms only set a
+        // request flag that `drawUI()` services later in this same frame, and
+        // the session has to be over by the time that block runs -- otherwise
+        // ui/MacPaintUI's canvas block would still be routing this frame's
+        // keys into a layer that Cmd+T is about to put a gizmo over.
+        if (action.has_value() && np::textSessionActive(st.textEdit) &&
+            np::keymapActionEndsTextSession(*action)) {
+          np::textEditCancel(&st.textEdit);
+        }
         if (action == "toggle_pause") st.paused = !st.paused;
         else if (action == "clear_canvas") st.requestClear = true;
         else if (action == "reload_shaders") st.requestReload = true;

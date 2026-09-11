@@ -283,6 +283,10 @@ const char* strokeRouteName(StrokeRoute route) noexcept {
     case StrokeRoute::CloneStamp: return "clone-stamp";
     case StrokeRoute::Heal: return "heal";
     case StrokeRoute::Smudge: return "smudge";
+    // Named for the storage, like "pigment-erase" beside "rgb-erase": the
+    // options bar prints "Smudge -> pigment-smudge" and a user who sees the
+    // paint mix rather than blend has been told why.
+    case StrokeRoute::PigmentSmudge: return "pigment-smudge";
     case StrokeRoute::PaintSim: return "paint-sim";
     // Named for the STORE it writes and not for the tool that reaches it, like
     // every other row here: the options bar prints this beside the tool's own
@@ -569,17 +573,15 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
     // of one means.
     if (healing) return StrokeRoute::None;
   //
-  // **The smudge refuses this row by name, on a stated condition** -- header
-  // §1's Smudge paragraphs. `brush/Smudge` §2's pick-up is a coverage-weighted
-  // ARITHMETIC mean, and the arithmetic mean of a footprint of Kubelka-Munk
-  // latents is not what mixing those paints means here: `depositTexel()` mixes
-  // with a MASS-weighted lerp whose exactness at `m == 0` is what makes
-  // `brush/Deposit` §1's idempotence-in-hue invariant assertable at zero
-  // tolerance. This row opens when someone decides what the mass-weighted mean
-  // of a footprint of latents is and asserts it -- the same shape of
-  // conditional refusal the Pigment ERASE row carried until `brush/Deposit` §4
-  // paid off the condition it named.
-    if (smudging) return StrokeRoute::None;
+  // **The smudge takes this row, and it used to refuse it by name on a stated
+  // condition** -- header §1's Smudge paragraphs. An ARITHMETIC mean of
+  // Kubelka-Munk latents would have been a second mixing rule beside
+  // `depositTexel()`'s mass-weighted lerp; the row was to open "when someone
+  // decides what the mass-weighted mean of a footprint of latents is and
+  // asserts it". `brush/PigmentSmudge` §1 decides it -- the brush's own running
+  // mass-weighted mean -- and `app/selftest/PigmentSmudge.cpp` asserts it, the
+  // same way `brush/Deposit` §4 paid off the Pigment ERASE row's condition.
+    if (smudging) return StrokeRoute::PigmentSmudge;
     return erasing ? StrokeRoute::PigmentErase : StrokeRoute::CpuDeposit;
   }
   if (target->kind == LayerKind::RGB && target->rgbTiles) {
@@ -1700,6 +1702,14 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
     smudge_.begin(tip.smudgeStrength);
   else
     smudge_.end();
+  // The Pigment smudge's carried paint, from the same field and for every one
+  // of the reasons above: one STRENGTH control whichever storage is under the
+  // tip (brush/PigmentSmudge §3), and an `else` that empties the finger so a
+  // colour cannot survive an interrupted drag into the next stroke.
+  if (route_ == StrokeRoute::PigmentSmudge)
+    pigSmudge_.begin(tip.smudgeStrength);
+  else
+    pigSmudge_.end();
 
   // The mask route's target coverage and ceiling, latched together for the
   // reason every pair above is latched together (brush/MaskPaint §3): the
@@ -2153,6 +2163,9 @@ void StrokeSession::depositPending() {
           : route_ == StrokeRoute::Smudge
               ? smudge_.smudgeDab(*layer.rgbTiles, dabTip, centre, doc.width, doc.height,
                                   selection, &frameTiles_)
+          : route_ == StrokeRoute::PigmentSmudge
+              ? pigSmudge_.smudgeDab(*layer.pigmentTiles, dabTip, centre, doc.width,
+                                     doc.height, selection, &frameTiles_)
           : route_ == StrokeRoute::RgbErase
               ? erase_.eraseDab(*layer.rgbTiles, dabTip, centre, doc.width, doc.height, selection,
                                 &frameTiles_)
@@ -2264,6 +2277,7 @@ const std::vector<TileCoord>& StrokeSession::end() {
   // next `begin()` is then responsible for clearing. Two places that must both
   // be right is one more than one place that must be.
   smudge_.end();
+  pigSmudge_.end();
   // And the mask route's, with the rest and unconditionally, for the reason the
   // six above give: exactly one of them was ever live, and asking which at
   // cleanup time is how the others keep their tiles after an interrupted drag.

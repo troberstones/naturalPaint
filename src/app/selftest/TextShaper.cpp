@@ -80,6 +80,33 @@ bool runTextShaperTest() {
     check(increasing, "glyph x strictly increases left to right");
     check(clustersWellFormed(hello, "Hello"),
           "clusters are non-decreasing, in bounds, and on UTF-8 boundaries (ASCII)");
+
+    // `advance` (text/Shaper.hpp) -- the field a caret cannot be placed
+    // without. Two properties, and the second is the one that matters: it is
+    // not enough that the numbers are positive, they have to be the REAL
+    // advances, so `x + advance` of one glyph is where the next one starts.
+    bool advancesPositive = true;
+    for (const ShapedGlyph& g : hello.glyphs)
+      if (!(g.advance > 0.0f)) advancesPositive = false;
+    check(advancesPositive, "every glyph carries a positive advance");
+
+    bool advancesChainToNextPen = true;
+    for (size_t i = 1; i < hello.glyphs.size(); ++i) {
+      const float predicted = hello.glyphs[i - 1].x + hello.glyphs[i - 1].advance;
+      if (std::fabs(predicted - hello.glyphs[i].x) > 0.05f) advancesChainToNextPen = false;
+    }
+    check(advancesChainToNextPen,
+          "REQUIRED -- glyph[i].x + advance == glyph[i+1].x: the advance is the real pen step, "
+          "so the trailing edge a caret sits at is a measured position and not a guess");
+
+    // The end-of-line caret's own number. `widthPx` is the line's typographic
+    // width, and the last glyph's trailing edge has to agree with it -- this
+    // is what `textCaretPosition()` returns for a caret at the end of the
+    // text, which is where the caret is for the whole of ordinary typing.
+    const ShapedGlyph& lastGlyph = hello.glyphs.back();
+    check(std::fabs((lastGlyph.x + lastGlyph.advance) - hello.widthPx) < 0.5f,
+          "REQUIRED -- the last glyph's trailing edge equals the line's width, which is where an "
+          "end-of-text caret belongs; the pen position alone sits in FRONT of that character");
   }
 
   // ==========================================================================
@@ -197,6 +224,149 @@ bool runTextShaperTest() {
     check(wide.lineCount == 1, "a 4000px-wide frame keeps the sentence on one line");
     check(clustersWellFormed(narrow, sentence) && clustersWellFormed(wide, sentence),
           "paragraph-text clusters are still well-formed");
+  }
+
+  // ==========================================================================
+  // 5b. Point text: no WRAPPING, but hard breaks still break.
+  // ==========================================================================
+  //
+  // The two are different rules and used to be one. Point text was shaped by
+  // `CTLineCreateWithAttributedString`, which does not break lines at all --
+  // so "Hi\nYo" came back as ONE line as wide as both words, with the newline
+  // sitting in it as a zero-width glyph. Return in a point block typed a
+  // character that could never become visible.
+  std::printf("  -- 5b. point text breaks on hard breaks, never on width --\n");
+  {
+    const ShapedText runOn = shapeText("HiYo", style, pointFrame, TextAlign::Left);
+    const ShapedText broken = shapeText("Hi\nYo", style, pointFrame, TextAlign::Left);
+    const ShapedText first = shapeText("Hi", style, pointFrame, TextAlign::Left);
+    const ShapedText second = shapeText("Yo", style, pointFrame, TextAlign::Left);
+    check(runOn.ok && broken.ok && first.ok && second.ok, "all four point blocks shape");
+    std::printf("  [measured] point \"HiYo\" lines=%d w=%.3f | \"Hi\\nYo\" lines=%d w=%.3f "
+                "| \"Hi\" w=%.3f \"Yo\" w=%.3f\n",
+                runOn.lineCount, runOn.widthPx, broken.lineCount, broken.widthPx,
+                first.widthPx, second.widthPx);
+    check(broken.lineCount == 2 && runOn.lineCount == 1,
+          "point text: REQUIRED -- a newline makes TWO lines. One line here is the original "
+          "defect, and it is the state every other assertion in this block is downstream of");
+    check(broken.widthPx < runOn.widthPx - 1.0f &&
+              std::fabs(broken.widthPx - std::max(first.widthPx, second.widthPx)) < 0.01f,
+          "point text: its width is the WIDEST LINE, not the two run together");
+
+    // Two distinct baselines, and every glyph on one of them.
+    float minY = 0.0f, maxY = 0.0f;
+    bool firstGlyph = true;
+    for (const ShapedGlyph& g : broken.glyphs) {
+      if (firstGlyph) { minY = maxY = g.y; firstGlyph = false; }
+      minY = std::min(minY, g.y);
+      maxY = std::max(maxY, g.y);
+    }
+    check(!firstGlyph && maxY - minY > 1.0f,
+          "point text: and the glyphs really are on two different baselines -- a line count "
+          "that moved without the glyphs moving would be a counter, not a line break");
+
+    // Trailing whitespace stays in the width. io/SvgImport advances its pen
+    // between consecutive `<tspan>` runs by exactly `widthPx`, so a run
+    // ending in a space that measured as if it did not would pull its
+    // neighbour left on top of it. The natural-size suggestion CoreText
+    // offers DOES drop it, which is why this is measured off the line.
+    const ShapedText bare = shapeText("Hi", style, pointFrame, TextAlign::Left);
+    const ShapedText spaced = shapeText("Hi   ", style, pointFrame, TextAlign::Left);
+    std::printf("  [measured] widthPx \"Hi\"=%.3f  \"Hi   \"=%.3f\n", bare.widthPx, spaced.widthPx);
+    check(spaced.ok && spaced.widthPx > bare.widthPx + 1.0f,
+          "point text: REQUIRED -- TRAILING SPACES still count toward widthPx, because that is "
+          "the pen advance an SVG <tspan> hands to the run after it");
+
+    // Every hard break CoreText knows, not just the one this codebase types.
+    // A hand-rolled split on '\n' passes the first of these and fails the
+    // rest -- and an imported document is where the rest come from.
+    struct Break { const char* what; const char* utf8; };
+    static const Break kBreaks[] = {
+        {"LF", "a\nb"},
+        {"CRLF", "a\r\nb"},
+        {"CR", "a\rb"},
+        {"U+2028 LINE SEPARATOR", "a\xE2\x80\xA8" "b"},
+        {"U+2029 PARAGRAPH SEPARATOR", "a\xE2\x80\xA9" "b"},
+    };
+    for (const Break& b : kBreaks) {
+      const ShapedText st = shapeText(b.utf8, style, pointFrame, TextAlign::Left);
+      check(st.ok && st.lineCount == 2,
+            (std::string("point text: breaks on ") + b.what +
+             " -- CoreText knows every one of these and a split on '\\n' would know one")
+                .c_str());
+      check(clustersWellFormed(st, b.utf8),
+            (std::string("point text: clusters stay well-formed across a ") + b.what + " break")
+                .c_str());
+    }
+
+    // The block's own top sits one ASCENT above the first baseline for point
+    // text, and at the frame's edge for paragraph text -- two different
+    // numbers for the same string (core/TextContent.cpp's `shapedOrigin()`
+    // relies on this being the point-text one). It cancels out of where the
+    // glyphs land either way, so nothing else would notice it changing;
+    // pinned here because core/TextContent.hpp section 2b's prose says
+    // "an ascent" and that has to stay a fact.
+    {
+      const ShapedText pt = shapeText("Handgloves", style, pointFrame, TextAlign::Left);
+      const ShapedText pa = shapeText("Handgloves", style, TextFrame{2000.0f, 0.0f},
+                                      TextAlign::Left);
+      std::printf("  [measured] firstBaselineY  point %.3f  paragraph %.3f\n",
+                  pt.firstBaselineY, pa.firstBaselineY);
+      check(pt.ok && pa.ok && pt.firstBaselineY < pa.firstBaselineY - 1.0f,
+            "point text: its block top is ONE ASCENT above the first baseline, not the frame's "
+            "own -- a framesetter puts extra leading above line 1 and point text has no frame "
+            "for that to belong to");
+      bool onBaseline = !pt.glyphs.empty();
+      for (const ShapedGlyph& g : pt.glyphs)
+        if (std::fabs(g.y - pt.firstBaselineY) > 0.01f) onBaseline = false;
+      check(onBaseline,
+            "point text: and line 1's glyphs sit ON that reported baseline -- the two are used "
+            "together by `shapedOrigin()`, and a block whose glyphs disagreed with its own "
+            "firstBaselineY would draw a whole ascent off");
+    }
+
+    // Point text ignores `align` and pins itself LEFT, whatever the string's
+    // own direction is. Its box is deliberately wider than its text, so
+    // anything but an explicit left would slide the line across that slack:
+    // CoreText's default NATURAL alignment right-aligns a right-to-left
+    // paragraph, and `TextAlign::Right` would do it to everything.
+    {
+      auto leftmostPen = [](const ShapedText& t) {
+        float x = 0.0f;
+        bool first = true;
+        for (const ShapedGlyph& g : t.glyphs) {
+          if (first || g.x < x) x = g.x;
+          first = false;
+        }
+        return first ? -1.0f : x;
+      };
+      const ShapedText askedRight = shapeText("Hi\nYo", style, pointFrame, TextAlign::Right);
+      const char* hebrew = "\xD7\xA9\xD7\x9C\xD7\x95\xD7\x9D";
+      const ShapedText rtl = shapeText(hebrew, style, pointFrame, TextAlign::Left);
+      std::printf("  [measured] leftmost pen  align=Right %.3f  right-to-left %.3f\n",
+                  leftmostPen(askedRight), leftmostPen(rtl));
+      check(askedRight.ok && std::fabs(leftmostPen(askedRight)) < 0.01f,
+            "point text: REQUIRED -- `align` is ignored, so even TextAlign::Right starts at "
+            "x = 0. text/Shaper.hpp's rule: there is nothing to align against when the box is "
+            "not the user's");
+      check(rtl.ok && std::fabs(leftmostPen(rtl)) < 0.01f,
+            "point text: REQUIRED -- and a RIGHT-TO-LEFT line starts at x = 0 too. Left is "
+            "pinned explicitly for exactly this: CoreText's default would push it right by the "
+            "whole width of the padding its box carries");
+    }
+
+    // A newline that ENDS the text gets no line of its own, in point text as
+    // in paragraph text -- so the spacing has to be measured rather than
+    // read off a second baseline that is not there.
+    const ShapedText trailing = shapeText("Hi\n", style, pointFrame, TextAlign::Left);
+    std::printf("  [measured] point \"Hi\\n\" lines=%d lineHeightPx=%.3f | \"Hi\\nYo\" "
+                "lineHeightPx=%.3f\n",
+                trailing.lineCount, trailing.lineHeightPx, broken.lineHeightPx);
+    check(trailing.ok && trailing.lineCount == 1 && broken.lineHeightPx > 1.0f &&
+              std::fabs(trailing.lineHeightPx - broken.lineHeightPx) < 0.01f,
+          "point text: REQUIRED -- a TRAILING newline still reports the spacing of the line "
+          "CoreText declined to lay out, and it agrees with the spacing of a block that has "
+          "two real lines. This is the number the caret after Return is placed by");
   }
 
   // ==========================================================================

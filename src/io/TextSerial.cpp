@@ -179,8 +179,22 @@ std::string serializeTextContent(const TextContent& text) {
   for (size_t i = 0; i < dashCount && i <= 0xFFFFu; ++i) putF32(payload, text.strokeStyle.dashes[i]);
   putF32(payload, text.strokeStyle.dashOffset);
 
+  // The version is decided by the CONTENT, not by the build: an untransformed
+  // block still writes v1, so documents that never used a rotated caption stay
+  // readable by older builds. io/TextSerial.hpp's `kTextContentSerialPrefixV2`
+  // has the full argument.
+  //
+  // Exact equality against the identity, not a tolerance -- a matrix that is
+  // nearly the identity is one the user built with a handle and must be
+  // stored, and the only case this needs to recognise is the default-
+  // constructed one.
+  const Mat3 identity = mat3Identity();
+  const bool v2 = text.transform.m != identity.m;
+  if (v2)
+    for (float v : text.transform.m) putF32(payload, v);
+
   static constexpr char kHex[] = "0123456789abcdef";
-  std::string out = kTextContentSerialPrefix;
+  std::string out = v2 ? kTextContentSerialPrefixV2 : kTextContentSerialPrefix;
   out.reserve(out.size() + payload.size() * 2);
   for (const uint8_t b : payload) {
     out.push_back(kHex[b >> 4]);
@@ -196,13 +210,25 @@ bool deserializeTextContent(std::string_view value, TextContent* textOut, std::s
   };
   if (textOut == nullptr) return fail("no destination for the decoded text content.");
 
-  const std::string_view prefix(kTextContentSerialPrefix);
   // The version is read before a byte is decoded. See the header: this is
-  // what makes a newer document survive an older build unaltered.
-  if (value.size() < prefix.size() || value.substr(0, prefix.size()) != prefix)
-    return fail("np:text does not begin with '" + std::string(prefix) +
+  // what makes a newer document survive an older build unaltered. This build
+  // reads both versions it knows; anything else is refused by name rather
+  // than guessed at.
+  const std::string_view v1Prefix(kTextContentSerialPrefix);
+  const std::string_view v2Prefix(kTextContentSerialPrefixV2);
+  bool isV2 = false;
+  std::string_view prefix;
+  if (value.size() >= v1Prefix.size() && value.substr(0, v1Prefix.size()) == v1Prefix) {
+    prefix = v1Prefix;
+  } else if (value.size() >= v2Prefix.size() && value.substr(0, v2Prefix.size()) == v2Prefix) {
+    prefix = v2Prefix;
+    isV2 = true;
+  } else {
+    return fail("np:text does not begin with '" + std::string(v1Prefix) + "' or '" +
+                std::string(v2Prefix) +
                 "' -- this build cannot read that version, and the attribute is carried "
                 "through unchanged rather than being reinterpreted.");
+  }
 
   const std::string_view hex = value.substr(prefix.size());
   if (hex.size() % 2 != 0)
@@ -288,6 +314,14 @@ bool deserializeTextContent(std::string_view value, TextContent* textOut, std::s
   for (uint16_t i = 0; i < dashCount; ++i) t.strokeStyle.dashes.push_back(r.f32());
   t.strokeStyle.dashOffset = r.f32();
   if (r.bad) return fail("np:text payload is truncated in its dash list.");
+
+  // v1 leaves `transform` at `TextContent`'s own default, which is the
+  // identity -- so a document written before this field existed loads as a
+  // block that has never been rotated, which is exactly what it is.
+  if (isV2) {
+    for (float& v : t.transform.m) v = r.f32();
+    if (r.bad) return fail("np:text payload is truncated in its transform matrix.");
+  }
 
   // The exact-length rule: the parse must have consumed the payload and
   // nothing less. Trailing bytes mean the writer knew something this reader

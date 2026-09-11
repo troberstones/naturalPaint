@@ -64,11 +64,11 @@ option(NP_USE_MIXBOX "Use the Mixbox pigment LUT (CC BY-NC, non-commercial only)
 #
 #   cmake -S . -B build -DCMAKE_PREFIX_PATH="$HOME/.local/openimageio"
 #
-# `NP_USE_OIIO` is still #defined for the compiler, unconditionally, so the
-# ~230 `#if defined(NP_USE_OIIO)` sites across src/ remain true rather than
-# becoming a lie. Their now-unreachable `#else` branches are dead code to be
-# removed as its own change; folding that into this one would have mixed a
-# decision with a 47-file sweep. PLAN.md 1.5's lesson ("an unexercised build
+# `NP_USE_OIIO` is still #defined for the compiler, unconditionally. It was
+# kept so the ~230 `#if defined(NP_USE_OIIO)` sites across src/ stayed true
+# until their now-unreachable `#else` branches could be removed as their own
+# change -- which has since happened (5b28695, 8f4aa1e): no source file tests
+# the macro any more, and the define is inert. PLAN.md 1.5's lesson ("an unexercised build
 # option is not a seam") is exactly why the option is being removed rather
 # than merely flipped to ON: an OFF path nobody builds is how NP_USE_MIXBOX
 # became a documented fallback that does not exist.
