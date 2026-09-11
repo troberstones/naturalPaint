@@ -47,6 +47,20 @@ float distance(PathPoint a, PathPoint b) noexcept {
   return std::hypot(a.x - b.x, a.y - b.y);
 }
 
+// Not `M_PI` -- see `app/WheelInput.cpp`'s own comment on why this codebase
+// spells out the float32-truncated literal instead: a POSIX extension is not
+// guaranteed by the standard, and the truncation is worth being explicit
+// about at the precision `gnomonHandleAffine()` actually computes in.
+constexpr float kPi = 3.14159265358979323846f;
+
+// Below this, a pointer-to-pivot vector is treated as zero-length: `pivot` is
+// document-space, so this is a fifth of a document pixel, tight enough that
+// no real drag crosses it by accident and loose enough that float rounding
+// in the subtraction above it never trips the guard for a vector a user
+// actually dragged out. See `gnomonHandleAffine()`'s own comment for what the
+// guard is for.
+constexpr float kGnomonDegenerateEpsilon = 0.2f;
+
 bool rectContains(PathBounds rect, PathPoint p) noexcept {
   return rect.valid && p.x >= rect.minX && p.x <= rect.maxX && p.y >= rect.minY &&
          p.y <= rect.maxY;
@@ -182,6 +196,20 @@ bool selectionIsEmpty(const PathSelection& selection) noexcept {
                                                   : selection.components.empty();
 }
 
+// The pivot the MANIPULATOR scales/rotates about -- distinct from
+// `pivotForSelection()` above in exactly the case docs/vector-editing.md
+// section 1 draws out: Component mode's pivot is the TRANSIENT one carried
+// on `PathEditState` (the selection's centroid, UNLESS the user has placed
+// it -- `componentPivotIsUserPlaced`), not a fresh recompute from the
+// selection alone, which is all `pivotForSelection()` can offer since it
+// takes no `PathEditState`. Shape mode has no such transient value --
+// `VectorShape::pivot` already IS the persisted, placeable one -- so it
+// falls through to `pivotForSelection()` unchanged.
+PathPoint gnomonPivotFor(const PathEditState& state, const std::vector<VectorShape>& shapes) {
+  if (state.selection.mode == PathSelectMode::Component) return state.componentPivot;
+  return pivotForSelection(shapes, state.selection);
+}
+
 }  // namespace
 
 // --- selection combine (section 4) -----------------------------------------
@@ -313,6 +341,65 @@ void applyAffineToSelection(std::vector<VectorShape>* shapes, const PathSelectio
   }
 }
 
+Mat3 gnomonHandleAffine(GnomonPart part, PathPoint pivot, PathPoint dragStart, PathPoint current,
+                        bool shiftHeld) noexcept {
+  switch (part) {
+    case GnomonPart::Center:
+      return transformTranslate(current.x - dragStart.x, current.y - dragStart.y);
+
+    case GnomonPart::Rotate: {
+      const float r1 = distance(dragStart, pivot);
+      const float r2 = distance(current, pivot);
+      // Degenerate: an angle cannot be read off a zero-length bearing at
+      // either end. Refuse the whole handle for this frame -- see this
+      // function's header comment -- rather than feed atan2(0, 0) (== 0, a
+      // perfectly finite and perfectly wrong answer) into a rotation.
+      if (r1 < kGnomonDegenerateEpsilon || r2 < kGnomonDegenerateEpsilon) return mat3Identity();
+      const float a1 = std::atan2(dragStart.y - pivot.y, dragStart.x - pivot.x);
+      const float a2 = std::atan2(current.y - pivot.y, current.x - pivot.x);
+      float degrees = (a2 - a1) * (180.0f / kPi);
+      if (shiftHeld) degrees = std::round(degrees / 15.0f) * 15.0f;
+      return transformRotateDegreesAbout(degrees, Point2{pivot.x, pivot.y});
+    }
+
+    case GnomonPart::Corner: {
+      float sx = 1.0f, sy = 1.0f;
+      const float dxStart = dragStart.x - pivot.x;
+      const float dyStart = dragStart.y - pivot.y;
+      const float dxCur = current.x - pivot.x;
+      const float dyCur = current.y - pivot.y;
+      if (shiftHeld) {
+        // Uniform: BOTH axes take the radial distance ratio, not either
+        // axis' own ratio alone -- "how far the pointer moved from the
+        // pivot," which is the reading a user watching the cursor (not the
+        // corner) expects Shift to lock two axes to.
+        const float rStart = distance(dragStart, pivot);
+        const float rCur = distance(current, pivot);
+        if (rStart >= kGnomonDegenerateEpsilon) sx = sy = rCur / rStart;
+      } else {
+        if (std::fabs(dxStart) >= kGnomonDegenerateEpsilon) sx = dxCur / dxStart;
+        if (std::fabs(dyStart) >= kGnomonDegenerateEpsilon) sy = dyCur / dyStart;
+      }
+      return transformScaleAbout(sx, sy, Point2{pivot.x, pivot.y});
+    }
+
+    case GnomonPart::AxisX: {
+      float sx = 1.0f;
+      const float dxStart = dragStart.x - pivot.x;
+      if (std::fabs(dxStart) >= kGnomonDegenerateEpsilon) sx = (current.x - pivot.x) / dxStart;
+      return transformScaleAbout(sx, 1.0f, Point2{pivot.x, pivot.y});
+    }
+
+    case GnomonPart::AxisY: {
+      float sy = 1.0f;
+      const float dyStart = dragStart.y - pivot.y;
+      if (std::fabs(dyStart) >= kGnomonDegenerateEpsilon) sy = (current.y - pivot.y) / dyStart;
+      return transformScaleAbout(1.0f, sy, Point2{pivot.x, pivot.y});
+    }
+  }
+  return mat3Identity();
+}
+
 // --- the gnomon and hit testing (section 5) ---------------------------------
 
 GnomonHandlePositions gnomonHandlePositions(const std::vector<VectorShape>& shapes,
@@ -361,23 +448,36 @@ PathHit hitTestPath(const std::vector<VectorShape>& shapes, const PathSelection&
   if (!gnomonSuppressed) {
     const GnomonHandlePositions g = gnomonHandlePositions(shapes, selection, gnomonReachPx);
     if (g.valid) {
+      // The CLOSEST sub-handle wins, tracked the same running-minimum way
+      // every other tier below picks its own best candidate -- this is what
+      // lets `hit.gnomonPart` (and, through `pathEditBegin()`,
+      // `PathEditState::gnomonHandle`) name a SPECIFIC control rather than
+      // merely "some gnomon handle," which is all this tier answered before
+      // anything downstream cared which one.
       float best = pickRadiusPx;
       bool found = false;
-      const auto consider = [&](PathPoint p) {
+      GnomonPart part = GnomonPart::Center;
+      const auto consider = [&](PathPoint p, GnomonPart candidate) {
         const float d = distance(at, p);
         if (d <= best) {
           best = d;
           found = true;
+          part = candidate;
         }
       };
-      consider(g.center);
-      consider(g.axisXTip);
-      consider(g.axisYTip);
-      for (const PathPoint& c : g.corners) consider(c);
+      consider(g.center, GnomonPart::Center);
+      consider(g.axisXTip, GnomonPart::AxisX);
+      consider(g.axisYTip, GnomonPart::AxisY);
+      for (const PathPoint& c : g.corners) consider(c, GnomonPart::Corner);
       const float ringDist = std::abs(distance(at, g.center) - g.rotateRingRadius);
-      if (ringDist <= best) found = true;
+      if (ringDist <= best) {
+        best = ringDist;
+        found = true;
+        part = GnomonPart::Rotate;
+      }
       if (found) {
         hit.kind = PathHitKind::GnomonHandle;
+        hit.gnomonPart = part;
         return hit;
       }
     }
@@ -763,8 +863,13 @@ bool pathEditBegin(PathEditState* state, const std::vector<VectorShape>& shapes,
       }
       // A whole-shape move is the manipulator's translate, reached without
       // touching the gnomon -- the same way Move commits on pen-up rather than
-      // on Return.
+      // on Return. Explicitly `Center` rather than left at whatever
+      // `gnomonHandle` a PREVIOUS Manipulator drag ended with: the field
+      // persists on `PathEditState` across drags, so a Segment click
+      // following a Rotate or Corner drag must not inherit that drag's
+      // handle silently.
       state->drag = PathDragKind::Manipulator;
+      state->gnomonHandle = GnomonPart::Center;
       state->shapesAtDragStart = shapes;
       return true;
     }
@@ -779,6 +884,10 @@ bool pathEditBegin(PathEditState* state, const std::vector<VectorShape>& shapes,
 
     case PathHitKind::GnomonHandle: {
       state->drag = PathDragKind::Manipulator;
+      // The one write of this field from a live hit -- see its own comment
+      // on `PathEditState` for why every OTHER path into a Manipulator drag
+      // must set it explicitly instead of relying on a stale value.
+      state->gnomonHandle = hit.gnomonPart;
       state->shapesAtDragStart = shapes;
       return true;
     }
@@ -800,7 +909,7 @@ bool pathEditBegin(PathEditState* state, const std::vector<VectorShape>& shapes,
 }
 
 PathEditChange pathEditUpdate(PathEditState* state, std::vector<VectorShape>* shapes,
-                              PathPoint at) {
+                              PathPoint at, bool shiftHeld) {
   if (state == nullptr || shapes == nullptr) return PathEditChange::None;
   if (state->drag == PathDragKind::None) return PathEditChange::None;
   state->dragNow = at;
@@ -808,7 +917,10 @@ PathEditChange pathEditUpdate(PathEditState* state, std::vector<VectorShape>* sh
   const float dx = at.x - state->dragStart.x;
   const float dy = at.y - state->dragStart.y;
   // A held-still pointer is the common case during a drag, not the rare one.
-  // Doing nothing here keeps it out of the undo history entirely.
+  // Doing nothing here keeps it out of the undo history entirely. This gates
+  // the Manipulator arm too: a pointer that has not moved on either axis
+  // changes no ratio and no bearing either, so there is nothing for a scale
+  // or a rotate to do this frame.
   if (dx == 0.0f && dy == 0.0f) return PathEditChange::None;
 
   switch (state->drag) {
@@ -837,33 +949,56 @@ PathEditChange pathEditUpdate(PathEditState* state, std::vector<VectorShape>* sh
       return first ? PathEditChange::EditBegan : PathEditChange::EditContinued;
     }
 
-    case PathDragKind::AnchorDrag:
-    case PathDragKind::TangentDrag:
-    case PathDragKind::Manipulator: {
+    case PathDragKind::AnchorDrag: {
       // **Rebuilt from the pen-down snapshot, never accumulated.** One affine
       // against the original geometry -- so the result depends on where the
       // pointer IS, not on how many frames it took to get there.
       *shapes = state->shapesAtDragStart;
+      applyAffineToSelection(shapes, state->selection, transformTranslate(dx, dy));
+      const bool first = !state->geometryEditOpened;
+      state->geometryEditOpened = true;
+      return first ? PathEditChange::EditBegan : PathEditChange::EditContinued;
+    }
 
-      if (state->drag == PathDragKind::TangentDrag) {
-        // One handle, alone: this is the gesture that BREAKS a smooth anchor,
-        // so it deliberately does not go through applyAffineToSelection().
-        for (VectorShape& s : *shapes) {
-          if (s.id != state->dragComponent.shapeId) continue;
-          if (state->dragComponent.subPath >= s.path.subpaths.size()) continue;
-          SubPath& sub = s.path.subpaths[state->dragComponent.subPath];
-          if (state->dragComponent.anchor >= sub.anchors.size()) continue;
-          Anchor& a = sub.anchors[state->dragComponent.anchor];
-          if (state->dragComponent.part == AnchorPart::InHandle) {
-            a.in = at;
-          } else if (state->dragComponent.part == AnchorPart::OutHandle) {
-            a.out = at;
-          }
+    case PathDragKind::TangentDrag: {
+      *shapes = state->shapesAtDragStart;
+      // One handle, alone: this is the gesture that BREAKS a smooth anchor,
+      // so it deliberately does not go through applyAffineToSelection().
+      for (VectorShape& s : *shapes) {
+        if (s.id != state->dragComponent.shapeId) continue;
+        if (state->dragComponent.subPath >= s.path.subpaths.size()) continue;
+        SubPath& sub = s.path.subpaths[state->dragComponent.subPath];
+        if (state->dragComponent.anchor >= sub.anchors.size()) continue;
+        Anchor& a = sub.anchors[state->dragComponent.anchor];
+        if (state->dragComponent.part == AnchorPart::InHandle) {
+          a.in = at;
+        } else if (state->dragComponent.part == AnchorPart::OutHandle) {
+          a.out = at;
         }
-      } else {
-        applyAffineToSelection(shapes, state->selection, transformTranslate(dx, dy));
       }
+      const bool first = !state->geometryEditOpened;
+      state->geometryEditOpened = true;
+      return first ? PathEditChange::EditBegan : PathEditChange::EditContinued;
+    }
 
+    case PathDragKind::Manipulator: {
+      // **Rebuilt from the pen-down snapshot, never accumulated** -- same
+      // rule as every other arm here, and the reason `gnomonHandleAffine()`
+      // takes `state->dragStart` and the live `at`, never a delta: the
+      // result depends on where the pointer IS, not on the path it took.
+      *shapes = state->shapesAtDragStart;
+      // `gnomonPivotFor()`, not `pivotForSelection()`: Component mode scales
+      // and rotates about the TRANSIENT pivot on `PathEditState` (which may
+      // be user-placed), not a fresh centroid recompute -- section 1's "the
+      // per-shape pivot in Shape mode, the transient component pivot in
+      // Component mode." `state->shapesAtDragStart` (not the just-reset
+      // `*shapes`, though they are the same vector right now) is passed
+      // explicitly to say that in code, not merely by relying on the line
+      // above it.
+      const PathPoint pivot = gnomonPivotFor(*state, state->shapesAtDragStart);
+      const Mat3 affine =
+          gnomonHandleAffine(state->gnomonHandle, pivot, state->dragStart, at, shiftHeld);
+      applyAffineToSelection(shapes, state->selection, affine);
       const bool first = !state->geometryEditOpened;
       state->geometryEditOpened = true;
       return first ? PathEditChange::EditBegan : PathEditChange::EditContinued;
