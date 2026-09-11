@@ -1511,7 +1511,7 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
 DynamicInputs dynamicInputsFor(const AppState& st) noexcept;
 
 // Track A: converts one queued `PointerSample` (window-space, raw axis
-// degrees -- `AppState::pointerQueue`'s own element) into a `StrokeSample`
+// degrees -- what `app/PointerQueue`'s `takeForStroke()` returns) into a `StrokeSample`
 // (canvas-space position, normalised [0,1] axes -- `brush/StrokePath.hpp`'s
 // own input type). `canvasPos` is the caller's own `xform.toCanvas(Vec2{
 // sample.x, sample.y})`, not re-derived here, for `ui/MacPaintUI.cpp`'s
@@ -1853,9 +1853,24 @@ class StrokeSession {
   // own first-call rule already reduces to.
   //
   // Same first-call rule as `smoothPressure()`: the first call after
-  // `begin()` returns `rawPressure` unchanged regardless of `distancePx`, so
-  // a stroke's opening dab is never damped toward a manufactured starting
-  // value.
+  // `begin()` returns `rawPressure` unchanged regardless of `distancePx`.
+  //
+  // **What that rule does and does not promise.** It promises that THIS
+  // filter adds no soft start: the stroke's first sample reaches its opening
+  // dab at exactly the pressure that sample carries, not blended from 0 or
+  // from the previous stroke. It cannot make that pressure right -- that is
+  // the sample's job, and for one wave it was not: every pen sample
+  // snapshotted the axes as they stood when its POSITION event arrived, SDL
+  // delivers a report's PEN_AXIS events after its position (every backend,
+  // `app/PointerQueue.hpp` section 2 has the orders), so the opening sample
+  // of every macOS stroke carried the 0 the previous lift left behind, and
+  // this unsmoothed first call faithfully painted the opening dab at 0 and
+  // ramped up from there (wave-1 review, finding 1). The promise holds again
+  // because `PointerQueue` now patches each sample with its own report's
+  // axes before any stroke can take it: the first sample carries the
+  // pressure the pen reported at contact, exactly on macOS, Wayland,
+  // Windows, X11, Android and iOS (that section lists the backends' own
+  // approximate cases, none of which is a stroke's first sample).
   float smoothPressureByDistance(float rawPressure, float distancePx) noexcept;
 
   // One raw pointer sample, in document texel coordinates and nothing else.
@@ -1900,8 +1915,9 @@ class StrokeSession {
   const std::vector<TileCoord>& addPoint(float x, float y);
 
   // The axis-carrying form -- what the interactive canvas block calls now,
-  // once per sample drained from `AppState::pointerQueue` (via
-  // `strokeSampleFromPointer()` below). Otherwise identical to `addPoint()`
+  // once per sample of the stroke's own gesture that `AppState::pointerQueue`
+  // hands it (app/PointerQueue.hpp; via `strokeSampleFromPointer()` above).
+  // Otherwise identical to `addPoint()`
   // above: same return, same no-op-when-inactive contract, same
   // `StrokePath::addPoint()` underneath. The two differ only in where the
   // sample's axes come from -- the frame's latched `hardwareInputs_` against
