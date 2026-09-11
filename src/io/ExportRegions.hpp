@@ -8,6 +8,7 @@
 #include "core/Region.hpp"
 #include "io/ExportAs.hpp"
 #include "io/ExportStates.hpp"
+#include "ops/DocumentTransform.hpp"  // DocumentRegion
 
 // io/ExportRegions -- `File > Export Frames and Slices...`, PLAN.md
 // gap-closing wave's payoff step. One file per region, each the visible
@@ -117,6 +118,24 @@ struct ExportRegionsRequest {
 // section argues against.
 const char* regionExportNoun();
 const char* regionExportPlural();
+
+// The rectangle one region actually exports: its intersection with the
+// canvas (this header's "a region partly outside exports the intersection").
+// `false`, and `*out` untouched, when that intersection is empty. The plan,
+// the export loop and the dialog's size readout all ask this one function,
+// so the size the dialog promises is the size the loop crops to.
+bool regionExportRect(const Document& doc, const Region& region, DocumentRegion* out);
+
+// `validateExportRequest()` for ONE region, against the image that region
+// actually exports -- its canvas intersection -- rather than the document.
+// **Why this exists:** each file is cropped first and resized second
+// (`exportDocumentRegions()` runs `exportDocumentWithRequest()` on the
+// cropped scratch document), so validating against the document's own
+// extent reported "1024 x 1024" for a 430x290 Frame and computed every
+// resize warning for an image no file would ever be. `ok == false`, with a
+// reason naming the region, when it lies wholly off the canvas.
+ExportValidation validateRegionExport(const Document& doc, const Region& region,
+                                      const ExportRequest& format);
 
 // Everything decided before the first byte: the selection (after the scope
 // filter), the output directory, every resolved filename, every collision,

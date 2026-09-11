@@ -479,6 +479,41 @@ bool runRegionTest() {
   // =========================================================================
   // E. Export (io/ExportRegions)
   // =========================================================================
+  std::printf("  -- E0. the size the dialog promises is each region's, not the document's --\n");
+  {
+    // `validateRegionExport()` is what the Export Frames and Slices dialog
+    // shows per file and refuses on. It used to be `validateExportRequest()`
+    // against the DOCUMENT's extent, which printed "1024 x 1024" over a
+    // 430x290 Frame and computed a resize for an image no file would be.
+    // 50% is the discriminating setting: the document at 50% is 50x40, and
+    // neither region's answer is that.
+    Document doc = Document::createBlank(100, 80, WorkingSpace{});
+    addRegion(doc, RegionKind::Frame, 0, 0, 40, 30, "Cover");     // wholly inside
+    addRegion(doc, RegionKind::Slice, 80, 0, 40, 30, "Edge");     // half off the right edge
+    addRegion(doc, RegionKind::Slice, 200, 200, 10, 10, "Gone");  // wholly outside
+    ExportRequest half;
+    half.format = ImageFormat::Png;
+    half.resize.mode = ExportResizeMode::Percent;
+    half.resize.percent = 50.0f;
+
+    DocumentRegion rect;
+    check(regionExportRect(doc, doc.regions[1], &rect) && rect.x == 80 && rect.y == 0 &&
+              rect.width == 20 && rect.height == 30,
+          "E0: a region half off the canvas exports its intersection, (80,0)+20x30");
+    check(!regionExportRect(doc, doc.regions[2], &rect),
+          "E0: and one wholly outside exports nothing");
+
+    const ExportValidation cover = validateRegionExport(doc, doc.regions[0], half);
+    const ExportValidation edge = validateRegionExport(doc, doc.regions[1], half);
+    check(cover.ok && cover.outWidth == 20 && cover.outHeight == 15,
+          "E0: a 40x30 Frame at 50% is promised as 20x15 -- not the document's 50x40");
+    check(edge.ok && edge.outWidth == 10 && edge.outHeight == 15,
+          "E0: and the half-off Slice as its 20x30 intersection at 50%, 10x15");
+    const ExportValidation gone = validateRegionExport(doc, doc.regions[2], half);
+    check(!gone.ok && gone.error.find("Gone") != std::string::npos,
+          "E0: a region wholly off the canvas is refused, by its own name");
+  }
+
   std::printf("  -- E. export: N files, the right pixel extents, the intersection rule --\n");
   {
     namespace fs = std::filesystem;

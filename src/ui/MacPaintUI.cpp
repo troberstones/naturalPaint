@@ -8307,10 +8307,15 @@ void drawExportRegionsDialog(AppState& st) {
   // --- The four settings, shared with every other export path -------------
   dialogSection("Format");
   drawExportSettingsControls(request.format);
-  const ExportValidation validation =
-      validateExportRequest(request.format, static_cast<uint32_t>(doc.width),
-                            static_cast<uint32_t>(doc.height), &doc.workingSpace, nullptr);
-  drawExportValidation(validation);
+  // **No single "Output size" here, unlike the other two export dialogs.**
+  // Each file is its region cropped first and resized second
+  // (`exportDocumentRegions()`), so there is one size per file, not one per
+  // dialog -- this used to validate against the document and promise
+  // "1024 x 1024" for a 430x290 Frame. The per-file sizes, and the settings'
+  // warnings and refusals computed against each region's own image
+  // (`validateRegionExport()`), are in the Plan below.
+  dialogHint("Each file is its own region's size -- listed in the plan below. A resize applies "
+             "to each file after it is cropped.");
 
   // --- Where, and under what names -----------------------------------------
   dialogSection("Output");
@@ -8374,7 +8379,29 @@ void drawExportRegionsDialog(AppState& st) {
   // --- The plan -------------------------------------------------------------
   ExportStatesReport plan;
   if (!noneChosen) plan = planRegionExport(doc, request);
-  const std::string blocked = exportStatesBlockedReason(true, request.selection.size(), plan);
+  std::string blocked = exportStatesBlockedReason(true, request.selection.size(), plan);
+  // The four settings, validated once per file against the image that file
+  // actually is. The first refusal blocks the batch -- the Export button used
+  // to stay live over a refused combination and let every item fail -- and
+  // the warnings are collected once each, since most (8-bit quantisation,
+  // JPEG is lossy) say the same thing for every region.
+  std::vector<ExportValidation> perItem(plan.items.size());
+  std::vector<std::string> planWarnings;
+  if (blocked.empty()) {
+    for (size_t i = 0; i < plan.items.size(); ++i) {
+      const ExportStateItem& item = plan.items[i];
+      if (item.filename.empty()) continue;
+      const Region& r = doc.regions[item.sourceIndex];
+      perItem[i] = validateRegionExport(doc, r, request.format);
+      if (!perItem[i].ok) {
+        blocked = std::string(regionKindName(r.kind)) + " \"" + r.name + "\": " + perItem[i].error;
+        break;
+      }
+      for (const std::string& w : perItem[i].warnings)
+        if (std::find(planWarnings.begin(), planWarnings.end(), w) == planWarnings.end())
+          planWarnings.push_back(w);
+    }
+  }
   dialogSection("Plan");
   if (!blocked.empty()) {
     if (noneChosen) dialogHint("%s", blocked.c_str());
@@ -8384,15 +8411,18 @@ void drawExportRegionsDialog(AppState& st) {
                plan.items.size() - plan.skipped() == 1 ? "" : "s", plan.skipped());
     if (ImGui::BeginChild("##regionplan",
                           ImVec2(0.0f, exportListHeight(plan.items.size(), 6, false)), true)) {
-      for (const ExportStateItem& item : plan.items) {
+      for (size_t i = 0; i < plan.items.size(); ++i) {
+        const ExportStateItem& item = plan.items[i];
         if (item.filename.empty()) {
           dialogStatusLine(DialogStatus::Warning, "skipped: " + item.reason);
         } else {
-          ImGui::TextUnformatted(item.filename.c_str());
+          ImGui::Text("%s   %u \xc3\x97 %u px", item.filename.c_str(), perItem[i].outWidth,
+                      perItem[i].outHeight);
         }
       }
     }
     ImGui::EndChild();
+    for (const std::string& w : planWarnings) dialogStatusLine(DialogStatus::Warning, w);
   }
 
   if (hasRun) {

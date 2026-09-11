@@ -152,7 +152,10 @@ inline constexpr std::size_t kExportResizeModeCount = 3;
 
 inline const char* exportResizeModeName(ExportResizeMode m) {
   switch (m) {
-    case ExportResizeMode::None: return "No resize (document size)";
+    // Not "(document size)": the same combo sits in Export Frames and Slices,
+    // where each file is its REGION's size, and in BATCH, where it is each
+    // input's. "No resize" is the one wording true in all three.
+    case ExportResizeMode::None: return "No resize";
     case ExportResizeMode::Percent: return "Percentage";
     case ExportResizeMode::FitWithin: return "Fit within (preserves aspect, never enlarges)";
   }

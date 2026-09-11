@@ -42,6 +42,32 @@ std::string lowerAscii(std::string_view s) {
 const char* regionExportNoun() { return "region"; }
 const char* regionExportPlural() { return "regions"; }
 
+bool regionExportRect(const Document& doc, const Region& region, DocumentRegion* out) {
+  const DocumentRegion canvas = documentCanvasRegion(doc);
+  const int32_t ix0 = std::max(region.x, canvas.x);
+  const int32_t iy0 = std::max(region.y, canvas.y);
+  const int32_t ix1 = std::min(region.x + static_cast<int32_t>(region.width),
+                               canvas.x + static_cast<int32_t>(canvas.width));
+  const int32_t iy1 = std::min(region.y + static_cast<int32_t>(region.height),
+                               canvas.y + static_cast<int32_t>(canvas.height));
+  if (ix1 <= ix0 || iy1 <= iy0) return false;
+  *out = DocumentRegion{ix0, iy0, static_cast<uint32_t>(ix1 - ix0),
+                        static_cast<uint32_t>(iy1 - iy0)};
+  return true;
+}
+
+ExportValidation validateRegionExport(const Document& doc, const Region& region,
+                                      const ExportRequest& format) {
+  DocumentRegion rect;
+  if (!regionExportRect(doc, region, &rect)) {
+    ExportValidation v;
+    v.error = std::string(regionKindName(region.kind)) + " '" + region.name +
+              "' lies entirely outside the canvas; nothing to export.";
+    return v;
+  }
+  return validateExportRequest(format, rect.width, rect.height, &doc.workingSpace, nullptr);
+}
+
 ExportStatesReport planRegionExport(const Document& doc, const ExportRegionsRequest& request) {
   ExportStatesReport report;
 
@@ -103,8 +129,6 @@ ExportStatesReport planRegionExport(const Document& doc, const ExportRegionsRequ
     return report;
   }
 
-  const DocumentRegion canvas = documentCanvasRegion(doc);
-
   report.items.reserve(selection.size());
   for (size_t n = 0; n < selection.size(); ++n) {
     ExportStateItem item;
@@ -117,15 +141,8 @@ ExportStatesReport planRegionExport(const Document& doc, const ExportRegionsRequ
     // The intersection with the canvas -- this header's own rule: a region
     // partly outside exports the intersection, and one wholly outside
     // exports nothing.
-    const DocumentRegion rect{region.x, region.y, region.width, region.height};
-    const int32_t ix0 = std::max(rect.x, canvas.x);
-    const int32_t iy0 = std::max(rect.y, canvas.y);
-    const int32_t ix1 = std::min(rect.x + static_cast<int32_t>(rect.width),
-                                 canvas.x + static_cast<int32_t>(canvas.width));
-    const int32_t iy1 = std::min(rect.y + static_cast<int32_t>(rect.height),
-                                 canvas.y + static_cast<int32_t>(canvas.height));
-
-    if (ix1 <= ix0 || iy1 <= iy0) {
+    DocumentRegion rect;
+    if (!regionExportRect(doc, region, &rect)) {
       markSkipped(item, std::string(regionKindName(region.kind)) + " " +
                             std::to_string(item.sourceIndex) + " '" + region.name +
                             "' lies entirely outside the canvas (the canvas is " +
@@ -211,16 +228,12 @@ ExportStatesReport exportDocumentRegions(const Document& doc, const ExportRegion
     // this build uses. `selection` is nullptr: an export has no active
     // selection to carry.
     Document scratch = doc;
-    const DocumentRegion canvas = documentCanvasRegion(doc);
-    const int32_t ix0 = std::max(region.x, canvas.x);
-    const int32_t iy0 = std::max(region.y, canvas.y);
-    const int32_t ix1 = std::min(region.x + static_cast<int32_t>(region.width),
-                                 canvas.x + static_cast<int32_t>(canvas.width));
-    const int32_t iy1 = std::min(region.y + static_cast<int32_t>(region.height),
-                                 canvas.y + static_cast<int32_t>(canvas.height));
-    const DocumentTransformResult cropped = cropDocument(
-        scratch, ix0, iy0, static_cast<uint32_t>(ix1 - ix0), static_cast<uint32_t>(iy1 - iy0),
-        nullptr);
+    DocumentRegion rect;
+    // The plan already skipped a region with no intersection, so this cannot
+    // be false here; the crop's own refusal below would name it if it were.
+    regionExportRect(doc, region, &rect);
+    const DocumentTransformResult cropped =
+        cropDocument(scratch, rect.x, rect.y, rect.width, rect.height, nullptr);
     if (!cropped.ok) {
       // Not observed in practice -- the plan already proved the intersection
       // is non-empty -- but a crop refusal is per-item, not per-disk, so it
