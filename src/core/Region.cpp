@@ -10,4 +10,10 @@ const char* regionKindName(RegionKind kind) noexcept {
   return "?";
 }
 
+std::optional<RegionKind> regionKindFromName(std::string_view name) noexcept {
+  if (name == "Frame") return RegionKind::Frame;
+  if (name == "Slice") return RegionKind::Slice;
+  return std::nullopt;
+}
+
 }  // namespace np

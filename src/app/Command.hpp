@@ -194,6 +194,11 @@ void registerImageCommands(std::vector<CommandSpec>* out);
 void registerLayerCommandRows(std::vector<CommandSpec>* out);
 void registerOpStackCommands(std::vector<CommandSpec>* out);
 void registerPatternCommands(std::vector<CommandSpec>* out);
+// core/Region: add/delete/rename/move/resize (PLAN.md gap-closing wave,
+// track `region`). See app/CommandsRegions.cpp's own header for why the
+// interactive gesture does not call these directly (app/CropTool's own
+// precedent) while the edits themselves are registered anyway.
+void registerRegionCommands(std::vector<CommandSpec>* out);
 
 // Every recordable command, in a stable order. Walked by the panel, by the
 // recorder and by `--selftest`, so a command added to one vocabulary without a

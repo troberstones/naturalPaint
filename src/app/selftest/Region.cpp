@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 
+#include "app/Command.hpp"
 #include "app/RegionTool.hpp"
 #include "core/RegionOps.hpp"
 #include "io/ExportRegions.hpp"
@@ -16,7 +17,7 @@ namespace np {
 // and `Tool::Slice`, and the document-level region model they both need
 // (docs/ui.md §4a: both tools named a concept that did not exist).
 //
-// Five sections, each pinned to the production line that would make it lie:
+// Six sections, each pinned to the production line that would make it lie:
 //
 //   A. The model itself (core/RegionOps): add/delete/rename/move/resize,
 //      unique naming across both kinds, and the empty-rectangle refusal.
@@ -34,6 +35,9 @@ namespace np {
 //   E. Export (io/ExportRegions): N files at the right pixel extents and
 //      names, a partly-off-canvas region exporting the intersection, and one
 //      wholly off-canvas exporting nothing.
+//   F. Recordability (app/CommandsRegions.cpp): the five commands run
+//      through `applyCommand()`, addressed by name, each a real
+//      `core::History` entry; an unknown region name refused by name.
 //
 // Headless and GPU-free throughout -- nothing here needs a window, and
 // app/RegionTool's own header says the UI half (the overlay, the options
@@ -49,7 +53,7 @@ bool runRegionTest() {
 
   std::printf(
       "[selftest] region: the model, .npaint persistence, the geometry-edit hookup, the "
-      "gesture, and export\n");
+      "gesture, export, and recordability\n");
 
   // =========================================================================
   // A. The model (core/RegionOps)
@@ -472,12 +476,77 @@ bool runRegionTest() {
     }
   }
 
+  // =========================================================================
+  // F. Recordability (app/CommandsRegions.cpp): the five commands, through
+  // `applyCommand()`, addressed by name.
+  // =========================================================================
+  std::printf("  -- F. recordability: the five commands, through applyCommand(), by name --\n");
+  {
+    OpenDocument od = makeBlankOpenDocument(200, 150, WorkingSpace{});
+    const size_t base = od.history.entries().size();
+
+    JsonValue addParams = JsonValue::object();
+    addParams.set("kind", JsonValue::string("Frame"));
+    addParams.set("x", JsonValue::number(10));
+    addParams.set("y", JsonValue::number(10));
+    addParams.set("rect_width", JsonValue::number(40));
+    addParams.set("rect_height", JsonValue::number(30));
+    addParams.set("name", JsonValue::string("Cover"));
+    const CommandResult added = applyCommand(od, Command{"add_region", addParams});
+    check(added.ok && od.document.regions.size() == 1 && od.document.regions[0].name == "Cover",
+          "F: add_region, through applyCommand(), creates the named region");
+    check(od.history.entries().size() == base + 1,
+          "F: and it is a real core::History entry, not a bypass of recordLayerEdit()");
+
+    JsonValue moveParams = JsonValue::object();
+    moveParams.set("region", JsonValue::string("Cover"));
+    moveParams.set("x", JsonValue::number(5));
+    moveParams.set("y", JsonValue::number(5));
+    const CommandResult moved = applyCommand(od, Command{"move_region", moveParams});
+    check(moved.ok && od.document.regions[0].x == 5 && od.document.regions[0].y == 5,
+          "F: move_region, addressed by name, moves it");
+
+    JsonValue resizeParams = JsonValue::object();
+    resizeParams.set("region", JsonValue::string("Cover"));
+    resizeParams.set("x", JsonValue::number(5));
+    resizeParams.set("y", JsonValue::number(5));
+    resizeParams.set("rect_width", JsonValue::number(60));
+    resizeParams.set("rect_height", JsonValue::number(45));
+    const CommandResult resized = applyCommand(od, Command{"resize_region", resizeParams});
+    check(resized.ok && od.document.regions[0].width == 60 && od.document.regions[0].height == 45,
+          "F: resize_region sets the whole rectangle");
+
+    JsonValue renameParams = JsonValue::object();
+    renameParams.set("region", JsonValue::string("Cover"));
+    renameParams.set("new_name", JsonValue::string("Hero"));
+    const CommandResult renamed = applyCommand(od, Command{"rename_region", renameParams});
+    check(renamed.ok && od.document.regions[0].name == "Hero", "F: rename_region renames it");
+
+    // An unknown name is refused BY NAME, on every one of the four commands
+    // that address one -- not a silent no-op.
+    JsonValue badTarget = JsonValue::object();
+    badTarget.set("region", JsonValue::string("No Such Region"));
+    const CommandResult badMove = applyCommand(od, Command{"move_region", badTarget});
+    check(!badMove.ok && badMove.status.find("No Such Region") != std::string::npos,
+          "F: move_region on an unknown name is refused, naming the region it could not find");
+
+    JsonValue deleteParams = JsonValue::object();
+    deleteParams.set("region", JsonValue::string("Hero"));
+    const size_t beforeDelete = od.history.entries().size();
+    const CommandResult deleted = applyCommand(od, Command{"delete_region", deleteParams});
+    check(deleted.ok && od.document.regions.empty(), "F: delete_region removes it");
+    check(od.history.entries().size() == beforeDelete + 1,
+          "F: and delete_region is its own history entry too");
+  }
+
   // Every section above was sabotage-proven against its own production line
   // (uniqueRegionName()'s collision scan, the crop/transform region hooks in
-  // ops/DocumentTransform.cpp, addRegion()'s empty-rectangle refusal, and
-  // io/RegionSerial's kind-byte and intersection rules) in the commit history
-  // of this wave's `region` track rather than left as a live edit in this
-  // file -- see that track's report for which line went red under each.
+  // ops/DocumentTransform.cpp, addRegion()'s empty-rectangle refusal,
+  // io/RegionSerial's kind-byte and intersection rules, and
+  // app/CommandsRegions.cpp's resolveRegionTarget() name lookup) in the
+  // commit history of this wave's `region` track rather than left as a live
+  // edit in this file -- see that track's report for which line went red
+  // under each.
 
   return ok;
 }

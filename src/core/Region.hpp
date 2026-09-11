@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // core/Region -- document-level named rectangles (docs/ui.md §4a's Frame and
@@ -120,6 +122,12 @@ enum class RegionKind {
 // "Frame" / "Slice" -- the name stem a default name is built from
 // (`defaultNewRegionName()`), and the word used in refusal sentences.
 const char* regionKindName(RegionKind kind) noexcept;
+
+// The inverse, for `app/CommandsRegions.cpp`'s `add_region` -- a `kind`
+// parameter is named, never an ordinal, `ops/Transform.hpp`'s
+// `resampleKernelFromName()`/`canvasAnchorFromName()` own convention.
+// `std::nullopt` for anything but an exact "Frame" or "Slice".
+std::optional<RegionKind> regionKindFromName(std::string_view name) noexcept;
 
 // One named, kinded rectangle in document pixel space, half-open like
 // `ops::DocumentRegion`: `[x, x + width) x [y, y + height)`.

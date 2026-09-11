@@ -15,6 +15,7 @@ add_executable(naturalPaint
   app/CommandsLayers.cpp
   app/CommandsOpStack.cpp
   app/CommandsPatterns.cpp
+  app/CommandsRegions.cpp
   app/CompPanel.cpp
   app/PanelLayout.cpp
   app/ControlsLayout.cpp

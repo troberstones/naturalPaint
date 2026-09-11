@@ -91,6 +91,25 @@ constexpr PixelUnitParam kPixelUnitParams[] = {
     // thing at every resolution.
     {"select_grow", "radius"},         {"select_shrink", "radius"},
     {"select_feather", "radius"},
+    // PLAN.md gap-closing wave, track `region` (app/CommandsRegions.cpp): a
+    // region's rectangle is document pixels the same way a crop or a canvas
+    // size is -- "add a Frame at (10, 10), 50x50" means a different rectangle
+    // on a 2k plate than on an 8k one, exactly `fill_with_pattern`'s own
+    // origin_x/origin_y reasoning above. `rename_region`'s `new_name` is not
+    // here for `select_colour_range`'s own reason: it carries no pixel unit
+    // at all. **Not spelled `width`/`height`**: those two names are already
+    // claimed by `image_size`/`canvas_size` for the OPPOSITE classification
+    // just above (a destination extent, not a pixel offset) -- this table is
+    // keyed by parameter NAME, not by (command, name) pair, so reusing them
+    // here would have pulled `image_size`/`canvas_size` into this column too.
+    // `app/CommandsRegions.cpp`'s own header explains the collision this
+    // avoids; `rect_width`/`rect_height` name a region's own rectangle
+    // instead.
+    {"add_region", "x"},          {"add_region", "y"},
+    {"add_region", "rect_width"}, {"add_region", "rect_height"},
+    {"move_region", "x"},         {"move_region", "y"},
+    {"resize_region", "x"},          {"resize_region", "y"},
+    {"resize_region", "rect_width"}, {"resize_region", "rect_height"},
 };
 
 // "filter_gaussian_blur's sigma" for every pixel-unit parameter `action`
