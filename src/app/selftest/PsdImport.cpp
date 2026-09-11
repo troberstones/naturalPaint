@@ -1208,6 +1208,23 @@ bool runPsdImportTest() {
             "D5: and the retry opens it -- so the offer was not an empty one");
     }
 
+    // D6: the other side of D4's and D5's offer -- a refusal that is not a
+    // PSD at all must not carry it. Flattening means "read this PSD's
+    // composite instead", and a dialog offering that for a truncated PNG
+    // would be offering something no code path can do.
+    //
+    // Written after a sabotage of the flag's initial value turned out to
+    // change nothing that any assertion could see: D4's negative check is
+    // about the SUCCESS path, and nothing was watching the refusal path for
+    // formats that have no second reader.
+    {
+      const std::string path = writeFile("not-an-image.bin",
+                                         std::vector<uint8_t>{0x00, 0x01, 0x02, 0x03, 0x04});
+      const OpenAnyResult r = openAnyFileAsDocument(path);
+      check(!r.ok && !r.flattenRetryAvailable,
+            "D6: a refusal that is not a PSD does not offer the flattened retry");
+    }
+
     std::filesystem::remove_all(scratch, ec);
   }
 

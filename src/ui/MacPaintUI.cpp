@@ -8866,6 +8866,11 @@ void applyDocumentPathAction(AppState& st, DocPathAction action, const std::stri
   OpenDocument* doc = st.documents.active();
   DocumentOpResult r;
   g_docPathActionOk = false;
+  // Beside `g_docPathActionOk` and for the same reason: the failure popup is
+  // shared with Save As and Save a Copy, and a flatten offer left over from
+  // an earlier refused Open would otherwise appear on a failed *save*, where
+  // pressing it would open a file the user was trying to write.
+  g_flattenRetryPath.clear();
   switch (action) {
     case DocPathAction::Open: {
       // **Any file this build can read, dispatched on its contents.**
