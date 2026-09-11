@@ -846,9 +846,11 @@ struct PigmentOverride {
 
 // One raw pointer sample, queued between render frames (Track A: full-rate
 // pen input). `main.cpp`'s SDL event loop appends one of these on every
-// event that carries a fresh position -- `SDL_EVENT_PEN_MOTION`/
-// `SDL_EVENT_PEN_DOWN` for a pen, `SDL_EVENT_MOUSE_MOTION`/
-// `SDL_EVENT_MOUSE_BUTTON_DOWN` for a mouse -- and `ui/MacPaintUI.cpp`'s
+// event that carries a fresh position WHILE THE POINTER IS DOWN --
+// `SDL_EVENT_PEN_DOWN` and in-contact `SDL_EVENT_PEN_MOTION` for a pen,
+// `SDL_EVENT_MOUSE_BUTTON_DOWN` (left) and left-held `SDL_EVENT_MOUSE_MOTION`
+// for a mouse, never the pen's own SDL-synthesized mouse duplicates (see
+// `queueMousePointerSample()`'s comment) -- and `ui/MacPaintUI.cpp`'s
 // canvas block drains `AppState::pointerQueue` once per render frame, converts
 // each entry from window space to canvas texel space through the SAME
 // `ViewTransform` the single per-frame sample used to go through, and feeds
@@ -1607,7 +1609,10 @@ struct AppState {
 
   // Track A: the full-rate pointer sample queue. `main.cpp`'s event loop
   // appends to it; `ui/MacPaintUI.cpp`'s canvas block drains and clears it
-  // every render frame. See `PointerSample`'s own comment above for the full
+  // every render frame, and `main.cpp` clears it unconditionally after
+  // `drawUI()` returns so that a frame on which the canvas block did NOT run
+  // (its window collapsed or clipped) still cannot carry samples forward into
+  // a later gesture. See `PointerSample`'s own comment above for the full
   // argument -- this exists because a tablet reporting at 133-200 Hz into a
   // 60 Hz frame loses more than half its samples to `penPressure` et al.'s
   // latest-wins scalars above, which stay exactly as they are (other code

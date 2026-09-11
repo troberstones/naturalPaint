@@ -18633,6 +18633,33 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     std::vector<PointerSample> pointerSamplesThisFrame;
     pointerSamplesThisFrame.swap(st.pointerQueue);
 
+    // Feeds this frame's queued samples to the active CPU stroke, in arrival
+    // order. One definition for the two places that need it: the painting
+    // branch below (every frame the pointer is held) and the pen-up branch
+    // (the frame it is released, BEFORE `end()` -- the samples a fast flick
+    // reported between the last painted frame and the release were all
+    // captured while the pointer was down, main.cpp only queues those, and
+    // dropping them would chord exactly the stroke tail this queue exists
+    // to keep).
+    //
+    // `ds` for the distance-keyed pressure filter
+    // (brush/Dynamics.hpp's `dynamicPressureSmoothedByDistance()`) is THIS
+    // sample's own travel since the previous one this stroke smoothed, not
+    // since the last render frame -- `st.lastX`/`st.lastY` advance after
+    // every sample, so a frame that drains three samples measures three real
+    // per-sample distances rather than one frame-sized jump split three ways.
+    const auto feedQueuedSamplesToStroke = [&]() {
+      for (const PointerSample& qs : pointerSamplesThisFrame) {
+        const Vec2 canvasPos = xform.toCanvas(Vec2{qs.x, qs.y});
+        StrokeSample ss = strokeSampleFromPointer(qs, canvasPos);
+        const float ds = std::hypot(ss.pos.x - st.lastX, ss.pos.y - st.lastY);
+        ss.pressure = g_stroke.smoothPressureByDistance(ss.pressure, ds);
+        g_stroke.addSample(ss);
+        st.lastX = ss.pos.x;
+        st.lastY = ss.pos.y;
+      }
+    };
+
     // Oil's contact -> velocity -> transfer pipeline (PaintSim::frame(),
     // shaders/oil_*.wgsl) still wants a genuine segment, not a point: its
     // tangential brush-velocity term (oil_velocity.wgsl's `vb`) and the
@@ -18774,24 +18801,13 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // would cost a call for no reason and, worse, would be answering the
         // wrong question: "no new sample this frame" and "a sample that
         // didn't move" are different facts, and only the real queue can
-        // tell them apart.
-        for (const PointerSample& qs : pointerSamplesThisFrame) {
-          const Vec2 canvasPos = xform.toCanvas(Vec2{qs.x, qs.y});
-          StrokeSample ss = strokeSampleFromPointer(qs, canvasPos);
-          // Distance-keyed pressure smoothing
-          // (brush/Dynamics.hpp's `dynamicPressureSmoothedByDistance()`):
-          // `ds` is THIS sample's own travel since the last one this stroke
-          // smoothed, not since the last render frame -- `st.lastX`/
-          // `st.lastY` are updated after every sample below, not once per
-          // frame, so a frame that drains three samples measures three real
-          // per-sample distances rather than one frame-sized jump split
-          // three ways.
-          const float ds = std::hypot(ss.pos.x - st.lastX, ss.pos.y - st.lastY);
-          ss.pressure = g_stroke.smoothPressureByDistance(ss.pressure, ds);
-          g_stroke.addSample(ss);
-          st.lastX = ss.pos.x;
-          st.lastY = ss.pos.y;
-        }
+        // tell them apart. A held-still pointer therefore ends where it did
+        // when this called `addPoint(tx, ty)` every frame: then, the repeats
+        // added zero travel and emitted nothing; now they are simply not
+        // made. Either way `flush()` sees `movedPx_ == 0` and lays the one
+        // stationary-click dab from the click's own sample (main.cpp queues
+        // the button-/pen-down event itself for exactly that reason).
+        feedQueuedSamplesToStroke();
       }
     } else if (strokeTool && down && hovered && inside && !panning && !rotating && !sizingHeld &&
                !st.pendingGuide.has_value() && route == StrokeRoute::None &&
@@ -19047,6 +19063,13 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // happens to leave behind -- the same discipline the counters below
         // rely on, which `end()` deliberately does not clear.
         const char* routeName = strokeRouteName(g_stroke.route());
+        // Track A: the release frame's own samples first -- all captured
+        // while the pointer was still down (main.cpp queues nothing else),
+        // so they are the real tail of this stroke, not a new gesture. See
+        // `feedQueuedSamplesToStroke`'s comment. Safe on an interrupted
+        // stroke for the reason `end()` just below is: `depositPending()`
+        // re-validates the target on every call.
+        feedQueuedSamplesToStroke();
         g_stroke.end();
         std::printf("[stroke] %s (%s): %zu dabs, %zu texels, %zu tiles\n",
                     g_stroke.label().c_str(), routeName, g_stroke.dabCount(),
