@@ -18744,7 +18744,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // The whole source set, not pressure alone -- tilt, azimuth and barrel
       // reach the tip here (app/PenAxes.hpp converts them), which is what the
       // DYNAMICS matrix's non-pressure rows actually drive.
-      const DynamicInputs live = dynamicInputsFor(st);
+      //
+      // Track A: `strokeHardwareInputsFor()` rather than plain
+      // `dynamicInputsFor()` -- the same values plus `hasTilt`/`hasBarrel`
+      // set for a pen in contact that reports them. `depositPending()` keeps
+      // only those flags from this latch and reads the values per dab, so
+      // without them no per-dab tilt/azimuth/barrel could ever reach a
+      // Control on this route (app/StrokeSession.hpp's comment on it).
+      const DynamicInputs live = strokeHardwareInputsFor(st);
       const BrushTip tip = brushTipFor(st.brush, lut, live);
       if (!g_stroke.active()) {
         g_strokeRefusal.clear();

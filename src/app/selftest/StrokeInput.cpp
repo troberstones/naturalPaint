@@ -1,6 +1,8 @@
 #include "app/selftest/Support.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <vector>
 
 #include "app/StrokeSession.hpp"
 #include "brush/Dynamics.hpp"
@@ -119,46 +121,54 @@ bool runStrokeInputTest() {
     check(coarse.size() == fine.size(),
           "rate independence: 2 samples and 20 over the same ramp emit the same dab COUNT");
 
-    // Position tolerance: `app/selftest/StrokePath.cpp` section 6 already
-    // established 0.05 px as the bound for this exact comparison (2 vs 41
-    // samples over an 80 px collinear path) -- the chord-walk error of a
-    // 24-subdivision piecewise-linear approximation of a curve that, for
-    // evenly spaced collinear input, degenerates to a straight line either
-    // way (that test's own comment). Reused verbatim rather than re-derived,
-    // since it is the identical geometry at a different path length.
-    constexpr float kPosTol = 0.05f;
-
-    // Pressure tolerance, derived rather than guessed: for straight, evenly
-    // spaced collinear input the centripetal Catmull-Rom parameter `u` is
-    // linear in POSITION (uniform knot spacing -- the same fact that makes
-    // the position comparison above exact), and this fixture's raw sample
-    // pressures lie exactly on one global linear ramp regardless of `n` --
-    // so with infinite-precision arithmetic the 2-sample and 20-sample runs
-    // would report BIT-IDENTICAL pressure at every matching dab position,
-    // for the identical reason their positions already are. The only real
-    // divergence is the SAME chord-walk float noise the position bound above
-    // already measured, carried into pressure through this fixture's own
-    // pressure-per-pixel gradient: `d(pressure)/d(x) = (1-0) / (kX1-kX0)`.
-    // `kPosTol` of positional slop maps to that much pressure slop at worst;
-    // a 10x margin absorbs the fact that the pressure interpolation itself
-    // walks its own 24-subdivision `u` parameter alongside the position one,
-    // roughly doubling (not 10x-ing) the noise budget in the worst case.
-    const float pressurePerPx = 1.0f / (kX1 - kX0);
-    const float kPressureTol = kPosTol * pressurePerPx * 10.0f;
-    std::printf("  [derived] rate independence tolerances: position %.4f px, pressure %.6f "
-                "(gradient %.6f/px x %.2f px x 10)\n",
-                static_cast<double>(kPosTol), static_cast<double>(kPressureTol),
-                static_cast<double>(pressurePerPx), static_cast<double>(kPosTol));
+    // Positions: EXACT. Every segment of both runs -- including the first
+    // and last, whose missing neighbour is mirrored -- sees four collinear
+    // control points at one uniform spacing, so the centripetal knots are
+    // uniform, the curve degenerates to the straight chord with `u` linear
+    // along it, and the arc-length walk lands each dab on the identical
+    // float. (`app/selftest/StrokePath.cpp` section 6 asserts the same
+    // claim for 2 vs 41 samples under a 0.05 px bound; here it is held to
+    // zero, which is what the brief for this test states and what the
+    // measurement printed below shows.)
+    //
+    // Pressures: bounded by float ROUNDING alone, and the bound follows from
+    // the same fact. Uniform knots make `u` equal the arc-length fraction of
+    // its segment in both runs, and the fixture's sample pressures lie on
+    // one global linear ramp -- so in exact arithmetic the two runs report
+    // identical pressure at every (identical) dab position. The parameter
+    // `u` and an arc-length fraction only part company on NON-uniform
+    // sample spacing (brush/StrokePath.hpp's header on why `u` anyway), which
+    // this fixture, by the brief's own specification, does not have.
+    //
+    // What is left is rounding in the few float operations between a
+    // fixture's inputs and a dab's pressure: each fine-run endpoint pressure
+    // `p0 + (p1-p0)*t` with `t = i/(n-1)` (3 ops), the chord-local parameter
+    // `uAt = uPrev + t*(u-uPrev)` with `u = i/24` and `t = walked/edgeLen`
+    // (5 ops), and the lerp `a + (b-a)*uAt` (3 ops). Every value is in
+    // [0, 1], so each op's rounding is at most half an ULP of 1.0 (2^-24);
+    // ~16 such contributions across the two runs is at most 8 ULPs of 1.0.
+    // That -- 8 * 2^-23 -- is the bound, not a guess with a margin.
+    constexpr float kPressureTol = 8.0f * 1.1920929e-7f;  // 8 ULP of 1.0f
+    std::printf("  [derived] rate independence tolerances: position exact (0 px), pressure "
+                "%.3g (8 ULP of 1.0)\n",
+                static_cast<double>(kPressureTol));
 
     bool posOk = coarse.size() == fine.size();
     bool pressureOk = coarse.size() == fine.size();
+    float maxPosErr = 0.0f, maxPressureErr = 0.0f;
     for (size_t i = 0; i < coarse.size() && i < fine.size(); ++i) {
-      if (!closeTo(coarse[i].pos.x, fine[i].pos.x, kPosTol) ||
-          !closeTo(coarse[i].pos.y, fine[i].pos.y, kPosTol))
-        posOk = false;
+      if (coarse[i].pos.x != fine[i].pos.x || coarse[i].pos.y != fine[i].pos.y) posOk = false;
       if (!closeTo(coarse[i].pressure, fine[i].pressure, kPressureTol)) pressureOk = false;
+      maxPosErr = std::max({maxPosErr, std::fabs(coarse[i].pos.x - fine[i].pos.x),
+                            std::fabs(coarse[i].pos.y - fine[i].pos.y)});
+      maxPressureErr = std::max(maxPressureErr, std::fabs(coarse[i].pressure - fine[i].pressure));
     }
-    check(posOk, "rate independence: dab positions match within the position tolerance above");
+    // Printed so the margins above are evidence, not faith: the real
+    // divergence against the bound it is asserted under.
+    std::printf("  [measured] rate independence, %zu dabs: max |dpos| %.9g px, max |dpressure| "
+                "%.9g\n",
+                coarse.size(), static_cast<double>(maxPosErr), static_cast<double>(maxPressureErr));
+    check(posOk, "rate independence: dab positions are bit-identical between 2 and 20 samples");
     check(pressureOk, "rate independence: dab pressures match within the derived tolerance above");
   }
 
@@ -283,13 +293,14 @@ bool runStrokeInputTest() {
                             "matches dynamicInputsFor()'s own mouse default, ignores garbage input");
 
     // The `has*` flags a real interactive mouse stroke reaches painting
-    // through are unaffected by this whole track: `hardwareInputs_` is still
-    // latched once per frame from `dynamicInputsFor(AppState)` at `begin()`/
-    // `setTip()`, exactly as before Track A -- this section's sample-level
-    // conversion has no `has*` fields of its own to disagree with it (see
-    // `StrokeSample`'s own header comment). Asserted here as the "as before"
-    // half of this section's claim, against the one path that sets them:
-    // `dynamicInputsFor()` on a mouse-only (never-`penSeen`) `AppState`.
+    // through are unaffected by this whole track. `hardwareInputs_` is
+    // latched once per frame at `begin()`/`setTip()`, now from
+    // `strokeHardwareInputsFor(AppState)` rather than bare
+    // `dynamicInputsFor()` -- and for a mouse the two must be the SAME
+    // DynamicInputs, bit for bit; the sibling only ever adds flags for a pen
+    // in contact. Asserted in two halves: `dynamicInputsFor()` itself is
+    // untouched (mouse-only, never-`penSeen` AppState), and the sibling
+    // agrees with it field by field on that AppState.
     AppState mouseOnly;
     const DynamicInputs mouseInputs = dynamicInputsFor(mouseOnly);
     check(mouseInputs.hasPressure && !mouseInputs.hasTilt && !mouseInputs.hasBarrel,
@@ -298,6 +309,42 @@ bool runStrokeInputTest() {
     check(mouseInputs.pressure == 1.0f && mouseInputs.tilt == 0.0f && mouseInputs.azimuth == 0.0f &&
               mouseInputs.barrel == 0.5f,
           "mouse sample: dynamicInputsFor()'s own four values are unchanged by this track");
+    const DynamicInputs mouseStroke = strokeHardwareInputsFor(mouseOnly);
+    check(mouseStroke.pressure == mouseInputs.pressure && mouseStroke.tilt == mouseInputs.tilt &&
+              mouseStroke.azimuth == mouseInputs.azimuth &&
+              mouseStroke.barrel == mouseInputs.barrel &&
+              mouseStroke.hasPressure == mouseInputs.hasPressure &&
+              mouseStroke.hasTilt == mouseInputs.hasTilt &&
+              mouseStroke.hasBarrel == mouseInputs.hasBarrel,
+          "mouse stroke: strokeHardwareInputsFor() is bit-identical to dynamicInputsFor() for a "
+          "mouse -- values and has* flags");
+
+    // The pen half of "set the has* flags correctly for pen vs mouse"
+    // (DynamicInputs' own comment: which axes the current device REPORTS).
+    // Three cases, each the one a wrong rule would get wrong:
+    //  * a pen in contact that has reported both axes -> both flags;
+    //  * a pen in contact that never sent a rotation axis -> tilt only
+    //    (a barrel Control must read identity, not the 0.5 rest value);
+    //  * the same fully-reporting pen, but NOT in contact -- a mouse stroke
+    //    made after the pen was put down -> mouse flags, or every Tilt
+    //    Control would read a stale pen tilt on a mouse stroke.
+    const auto penState = [](bool down, bool reportsTilt, bool reportsBarrel) {
+      AppState st;
+      st.penSeen = true;
+      st.penDown = down;
+      st.penReportsTilt = reportsTilt;
+      st.penReportsBarrel = reportsBarrel;
+      return strokeHardwareInputsFor(st);
+    };
+    const DynamicInputs penFullIn = penState(true, true, true);
+    check(penFullIn.hasPressure && penFullIn.hasTilt && penFullIn.hasBarrel,
+          "pen stroke: a pen in contact that reports tilt and barrel sets hasTilt and hasBarrel");
+    const DynamicInputs penNoBarrelIn = penState(true, true, false);
+    check(penNoBarrelIn.hasTilt && !penNoBarrelIn.hasBarrel,
+          "pen stroke: a pen that never reported barrel rotation leaves hasBarrel false");
+    const DynamicInputs penLiftedIn = penState(false, true, true);
+    check(!penLiftedIn.hasTilt && !penLiftedIn.hasBarrel,
+          "mouse stroke after pen use: pen not in contact reads a mouse's has* flags");
   }
 
   // ==========================================================================
@@ -317,6 +364,53 @@ bool runStrokeInputTest() {
   //    geometry and deposition being one shared path, not two.
   // ==========================================================================
   {
+    // 5a. StrokePath alone, bit-exact, on a CURVED path (a straight one would
+    // make the Catmull-Rom fit trivially linear and prove less). The old
+    // `Vec2` overloads against the `StrokeSample` ones fed neutral axes AND
+    // fed deliberately wild axes: positions must match with `==` in both,
+    // since axes ride along the walk and must never feed back into it.
+    {
+      constexpr int kN = 12;
+      constexpr float kSpacing = 3.0f;
+      const auto samplePos = [](int i) {
+        const float a = static_cast<float>(i) * 0.4f;
+        return Vec2{200.0f + 120.0f * std::cos(a), 200.0f + 80.0f * std::sin(a)};
+      };
+      StrokePath oldPath, neutralPath, wildPath;
+      oldPath.reset();
+      neutralPath.reset();
+      wildPath.reset();
+      std::vector<Vec2> oldDabs;
+      std::vector<StrokeDab> neutralDabs, wildDabs;
+      for (int i = 0; i < kN; ++i) {
+        const Vec2 p = samplePos(i);
+        oldPath.addPoint(p.x, p.y, kSpacing, oldDabs);
+        neutralPath.addPoint(StrokeSample{p}, kSpacing, neutralDabs);
+        const float w = static_cast<float>(i % 3) * 0.5f;
+        wildPath.addPoint(StrokeSample{p, w, 1.0f - w, w * 0.3f, 0.9f - w}, kSpacing, wildDabs);
+      }
+      oldPath.flush(kSpacing, oldDabs);
+      neutralPath.flush(kSpacing, neutralDabs);
+      wildPath.flush(kSpacing, wildDabs);
+
+      bool neutralExact = !oldDabs.empty() && oldDabs.size() == neutralDabs.size();
+      bool wildExact = !oldDabs.empty() && oldDabs.size() == wildDabs.size();
+      for (size_t i = 0; i < oldDabs.size(); ++i) {
+        if (i >= neutralDabs.size() || neutralDabs[i].pos.x != oldDabs[i].x ||
+            neutralDabs[i].pos.y != oldDabs[i].y)
+          neutralExact = false;
+        if (i >= wildDabs.size() || wildDabs[i].pos.x != oldDabs[i].x ||
+            wildDabs[i].pos.y != oldDabs[i].y)
+          wildExact = false;
+      }
+      std::printf("  [measured] curved path, %d samples at %.0f px spacing: %zu dabs\n", kN,
+                  static_cast<double>(kSpacing), oldDabs.size());
+      check(neutralExact, "StrokePath: Vec2 addPoint()/flush() and StrokeSample ones with neutral "
+                          "axes emit bit-identical dab positions on a curved path");
+      check(wildExact, "StrokePath: non-neutral axes do not move a single dab position -- axes "
+                       "ride along the walk and never feed back into it");
+    }
+
     auto makeDoc = [](int32_t w, int32_t h) {
       OpenDocument od = makeBlankOpenDocument(w, h, WorkingSpace{}, "stroke-input-neutral");
       recordLayerEdit(od, addLayer(od.document, od.document.layers.size(), makeRgbLayer("r")));

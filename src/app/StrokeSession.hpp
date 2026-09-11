@@ -1509,6 +1509,37 @@ DynamicInputs dynamicInputsFor(const AppState& st) noexcept;
 // (that struct's own header comment), so there is nothing left to compute.
 StrokeSample strokeSampleFromPointer(const PointerSample& sample, Vec2 canvasPos) noexcept;
 
+// Track A: what the interactive CPU route latches as a stroke's
+// `hardwareInputs` (`StrokeSession::begin()`/`setTip()`) -- `dynamicInputsFor()`
+// plus the `has*` availability flags set for the device actually painting.
+//
+// **Why this exists at all.** `depositPending()` now resolves Pressure/Tilt/
+// Azimuth/Barrel from each dab's own interpolated axes but keeps the latch's
+// `has*` flags (its own comment), and `dynamicInputsFor()` has never set
+// `hasTilt`/`hasBarrel` for anyone -- so without this, every per-dab tilt,
+// azimuth and barrel value `brush/StrokePath` interpolates would reach
+// `varianceScale()` only to be ignored as "no device reports this", and a
+// PenTilt/Rotation Control could never read a real pen on this route.
+//
+// The rule, per `brush/Dynamics.hpp`'s `DynamicInputs` flag comment ("which
+// pen axes the current device actually REPORTS"):
+//  * the pointer painting is the pen iff `st.penDown` -- a mouse stroke made
+//    after the pen was used is still a mouse stroke, with a mouse's flags;
+//  * a pen reports tilt/barrel iff it has sent that axis this session
+//    (`AppState::penReportsTilt`/`penReportsBarrel`) -- a tilt-less pen keeps
+//    `hasTilt == false` and its Tilt Controls contribute identity, never the
+//    zero that made reachability audit B7's brush paint nothing;
+//  * `hasPressure` stays `DynamicInputs`' own default `true`: a pen reports
+//    it and a mouse's per-sample 1.0 is its truthful reading.
+// For a mouse this is therefore bit-identical to `dynamicInputsFor()`, which
+// `app/selftest/StrokeInput.cpp` asserts.
+//
+// **Deliberately a sibling, not a change to `dynamicInputsFor()` itself**:
+// that function also feeds the solver route's `evaluateLinks()` and the
+// DYNAMICS gutter, which are outside this track's scope and keep exactly the
+// flags they had.
+DynamicInputs strokeHardwareInputsFor(const AppState& st) noexcept;
+
 // SCATTER's own axis (reachability audit B5). `centre` is the dab's
 // pre-scatter position; `seed`/`dabIndex` are the stroke's own per-dab draw,
 // identically to every other stroke-local source; `stepDx`/`stepDy` is the

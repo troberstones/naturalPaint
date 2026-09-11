@@ -1047,6 +1047,8 @@ void handlePenEvent(np::AppState& st, const SDL_Event& e) {
         case SDL_PEN_AXIS_XTILT:
         case SDL_PEN_AXIS_YTILT:
           st.penSeen = true;
+          st.penReportsTilt = true;  // AppState's own comment: the only
+                                     // capability evidence SDL 3.2 offers
           if (e.paxis.axis == SDL_PEN_AXIS_XTILT) st.penTiltXDeg = e.paxis.value;
           else st.penTiltYDeg = e.paxis.value;
           st.penTilt = np::penTiltNormalised(st.penTiltXDeg, st.penTiltYDeg);
@@ -1054,6 +1056,7 @@ void handlePenEvent(np::AppState& st, const SDL_Event& e) {
           break;
         case SDL_PEN_AXIS_ROTATION:
           st.penSeen = true;
+          st.penReportsBarrel = true;
           st.penRotationDeg = e.paxis.value;
           st.penBarrel = np::penBarrelNormalised(e.paxis.value);
           break;

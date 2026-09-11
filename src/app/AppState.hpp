@@ -1607,6 +1607,19 @@ struct AppState {
   // degrees are what `app/PenAxes.hpp`'s `penBarrelNormalised()` consumes.
   float penRotationDeg = 0.0f;
 
+  // Whether the pen has EVER reported a tilt axis (either of
+  // SDL_PEN_AXIS_XTILT/YTILT) or a barrel-rotation axis this session. SDL
+  // 3.2 exposes no pen capability query, so "has sent the axis" is the only
+  // honest evidence that a device reports it -- and `brush/Dynamics.hpp`'s
+  // `DynamicInputs::hasTilt`/`hasBarrel` exist precisely so an axis the
+  // device cannot report contributes its target's identity rather than a
+  // zero (reachability audit B7: a TILT->Size brush painting nothing with a
+  // tilt-less device). Read only by `strokeHardwareInputsFor()`
+  // (app/StrokeSession.hpp), which also requires `penDown`, so a mouse
+  // stroke after the pen has been used still reads as a mouse.
+  bool penReportsTilt = false;
+  bool penReportsBarrel = false;
+
   // Track A: the full-rate pointer sample queue. `main.cpp`'s event loop
   // appends to it; `ui/MacPaintUI.cpp`'s canvas block drains and clears it
   // every render frame, and `main.cpp` clears it unconditionally after

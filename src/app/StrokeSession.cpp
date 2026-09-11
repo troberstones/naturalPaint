@@ -1334,6 +1334,13 @@ StrokeSample strokeSampleFromPointer(const PointerSample& sample, Vec2 canvasPos
   return out;
 }
 
+DynamicInputs strokeHardwareInputsFor(const AppState& st) noexcept {
+  DynamicInputs in = dynamicInputsFor(st);
+  in.hasTilt = st.penDown && st.penReportsTilt;
+  in.hasBarrel = st.penDown && st.penReportsBarrel;
+  return in;
+}
+
 void applyPresetToBrush(const BrushPreset& preset, BrushState& brush) {
   // Radius/hardness/spacing/roundness/angle used to be five explicit copies
   // here -- gone along with the fields themselves (brush/Library.hpp's own
