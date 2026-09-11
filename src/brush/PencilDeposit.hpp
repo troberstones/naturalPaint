@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "brush/Deposit.hpp"
@@ -39,8 +40,17 @@
 // so `hardness == 1` alone no longer guarantees `d <= h` covers the whole
 // disc at `d < 1`, the fact the paragraph above rests on. Every other route
 // keeps that skirt (the project owner's decision: a cloned, healed or brushed
-// hard edge is antialiased). `drawDab()` below zeroes it on a local copy of
-// the tip before ever calling `dabCoverage()`, and **the reason is not merely
+// hard edge is antialiased). `drawDab()` below zeroes it on **both tips a dab
+// can be shaped by** before ever calling `dabCoverage()`: on a local copy of
+// the primary tip, and on a zeroed copy of its Dual Brush tip (`dualTip`,
+// §2d of brush/Deposit.hpp -- evaluated by the same `singleTipCoverage()`,
+// so its skirt shrinks the combined coverage just as the primary's would).
+// The dual tip is shared and immutable, so its zeroed copy is built once per
+// stroke, on the first dab that carries it, and reused by every later dab --
+// never allocated per dab. The first version of this exemption zeroed only
+// the primary: a hard r=12 pencil with a hard r=6 Multiply dual then drew 88
+// texels instead of 112 (review finding 5, pinned by
+// `runPencilDepositTest`'s section 10). **And the reason is not merely
 // "a pencil is aliased" -- the threshold would alias an antialiased rim
 // anyway. The reason is WHERE it would alias it.** The skirt is laid INSIDE
 // the radius (`[radius - edgePx, radius]`, so the footprint never grows), and
@@ -430,12 +440,25 @@ class PencilStroke {
   size_t accumulatorTiles() const noexcept { return alpha_.occupiedTileCount(); }
   size_t accumulatorBytes() const noexcept { return alpha_.tileBytes(); }
 
+  // The zeroed-`edgePx` copy of the Dual Brush tip this stroke is drawing
+  // with (§0's edgePx paragraph), or null before the first dual-tipped dab
+  // and after `begin()`/`end()`. Exposed for `--selftest` for the reason the
+  // two counts above are: "built once per stroke, never per dab" is a claim
+  // about allocation that no pixel can show, and a pointer that stays the
+  // same object across dabs is the observable form of it.
+  const BrushTip* aliasedDualTip() const noexcept { return aliasedDual_.get(); }
+
  private:
   std::array<float, 3> ink_{};
   float opacity_ = 1.0f;
   bool alphaLocked_ = false;
   bool active_ = false;
   StrokeAlphaStore alpha_;
+  // The dual tip the zeroed copy below was built from -- held, not merely
+  // remembered as an address, so the comparison in `drawDab()` cannot be
+  // fooled by a freed tip's address being reused -- and the copy itself.
+  std::shared_ptr<const BrushTip> dualSource_;
+  std::shared_ptr<const BrushTip> aliasedDual_;
 };
 
 }  // namespace np
