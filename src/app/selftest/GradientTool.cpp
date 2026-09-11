@@ -1,8 +1,13 @@
 #include "app/selftest/Support.hpp"
 
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+
 #include "app/AppState.hpp"
 #include "app/GradientTool.hpp"
 #include "app/StrokeSession.hpp"
+#include "io/GradientPresetFile.hpp"
 #include "ops/Gradient.hpp"
 
 namespace np {
