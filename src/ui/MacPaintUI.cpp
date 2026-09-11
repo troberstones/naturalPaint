@@ -6046,6 +6046,8 @@ void drawBrushNativeGroup(AppState& st) {
   ctlSlider("Taper min size", &st.brush.native.taperMinSize, 0.0f, 100.0f, "%.0f");
   ImGui::Checkbox("Taper flow too", &st.brush.native.taperFlow);
   ImGui::EndDisabled();
+  ImGui::TextDisabled(
+      "Applies to the CPU brush routes only -- not the GPU (oil/watercolour) solver route.");
 
   ImGui::Spacing();
   ImGui::TextUnformatted("STABILISER");
@@ -6203,9 +6205,9 @@ void drawBrushToolOptionsGroup(AppState& st) {
   drawBrushModelField(st, "airbrush");
   drawBrushModelField(st, "brushPose");
 
-  // Wave 2: naturalPaint's own stabiliser, next to the imported Smoothing
-  // bool just above it (which, as the note there says, has no engine target
-  // of its own -- this is what actually smooths a stroke).
+  // naturalPaint's own stabiliser, next to the imported Smoothing bool just
+  // above it (which, as the note there says, has no engine target of its
+  // own -- this is what actually smooths a stroke).
   ImGui::Separator();
   drawStabiliserPopover(st);
 }
@@ -19252,7 +19254,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // since the last render frame -- `st.lastX`/`st.lastY` advance after
     // every sample, so a frame that drains three samples measures three real
     // per-sample distances rather than one frame-sized jump split three ways.
+    // Returns how many samples it fed -- the canvas block's own gate on
+    // `g_stroke.tick()` below needs to know whether THIS frame already fed a
+    // real sample, since a tick's job is to move the nib on a frame that
+    // did not.
     const auto feedQueuedSamplesToStroke = [&]() {
+      size_t fed = 0;
       for (const PointerSample& qs : st.pointerQueue.takeForStroke(strokeGesture)) {
         const Vec2 canvasPos = xform.toCanvas(Vec2{qs.x, qs.y});
         StrokeSample ss = strokeSampleFromPointer(qs, canvasPos);
@@ -19261,7 +19268,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         g_stroke.addSample(ss);
         st.lastX = ss.pos.x;
         st.lastY = ss.pos.y;
+        ++fed;
       }
+      return fed;
     };
 
     // Oil's contact -> velocity -> transfer pipeline (PaintSim::frame(),
@@ -19376,10 +19385,16 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // §1b); on every other one it is ignored, so this is one argument
         // rather than a branch.
         //
-        // Wave 2: the global/per-brush stabiliser resolved to one effective
-        // setting here, once, at pen-down -- `resolveStabiliser()`'s own
-        // comment on why the rule lives in one pure function -- and the
-        // view's own zoom, for `scaleWithZoom`'s screen-px reading.
+        // The global/per-brush stabiliser resolved to one effective setting
+        // here, once, at pen-down -- `resolveStabiliser()`'s own comment on
+        // why the rule lives in one pure function -- and the view's own
+        // zoom, for `scaleWithZoom`'s screen-px reading. Loaded on demand
+        // rather than only when the Stabiliser popover has been drawn at
+        // least once: `st.stabiliserPrefs` would otherwise sit at its
+        // compiled-in defaults for every stroke of a session that never
+        // opened it, silently ignoring `stroke-preferences.txt`.
+        ensureStrokePreferencesLoaded(st.strokePreferences, st.strokePreferencesLoaded,
+                                      st.stabiliserPrefs);
         const StabiliserParams effStabiliser =
             resolveStabiliser(st.stabiliserPrefs, st.brush.native.stabiliser);
         if (!g_stroke.begin(*strokeDoc, strokeDoc->activeLayer, tip, st.brush.tool,
@@ -19428,22 +19443,31 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // would cost a call for no reason and, worse, would be answering the
         // wrong question: "no new sample this frame" and "a sample that
         // didn't move" are different facts, and only the real queue can
-        // tell them apart. A held-still pointer therefore ends where it did
-        // when this called `addPoint(tx, ty)` every frame: then, the repeats
-        // added zero travel and emitted nothing; now they are simply not
-        // made. Either way `flush()` sees `movedPx_ == 0` and lays the one
-        // stationary-click dab from the click's own sample (app/PointerQueue
-        // queues the button-/pen-down event itself for exactly that reason).
-        feedQueuedSamplesToStroke();
+        // tell them apart. A held-still pointer's DAB STREAM therefore ends
+        // where it did when this called `addPoint(tx, ty)` every frame: then,
+        // the repeats added zero travel and emitted nothing; now they are
+        // simply not made. Either way `flush()` sees `movedPx_ == 0` and lays
+        // the one stationary-click dab from the click's own sample
+        // (app/PointerQueue queues the button-/pen-down event itself for
+        // exactly that reason). The NIB itself may still move on such a
+        // frame -- `tick()`, right below, is the separate "catch up while
+        // paused" mechanism for exactly that, and it does not go through
+        // `addSample()` at all.
+        const size_t fedThisFrame = feedQueuedSamplesToStroke();
 
-        // Wave 2 "catch up while paused": once per frame regardless of
-        // whether the queue offered a new sample -- `StrokeSession::tick()`
-        // is a no-op unless the resolved stabiliser is weighted average with
-        // that option on (its own comment).
-        g_stroke.tick(SDL_GetTicksNS());
+        // "Catch up while paused": ONLY on a frame that fed no real sample --
+        // `StrokeSession::tick()`'s own contract. Calling it every frame
+        // regardless (this used to) let it run right after a real sample on
+        // the SAME frame too, which is not "no new sample this frame" by any
+        // reading, and it corrupted the next real sample's own dt: `tick()`
+        // advances the filter off `nowNs`, a frame-poll timestamp, and a
+        // later real event can carry an earlier PEN timestamp than that --
+        // two different clocks -- which `brush/Stabiliser.cpp`'s own comment
+        // on `prevRealTsNs_` is the other half of this fix for.
+        if (fedThisFrame == 0) g_stroke.tick(SDL_GetTicksNS());
 
-        // Wave 2 "show string": the nib-to-pointer line, and the pulled-
-        // string circle, drawn while painting only.
+        // "Show string": the nib-to-pointer line, and the pulled-string
+        // circle, drawn while painting only.
         const Stabiliser& sb = g_stroke.stabiliser();
         if (sb.params().showString && sb.params().mode != StabiliserMode::Off && sb.active()) {
           const Vec2 nibScreen = xform.toScreen(sb.nibPos());

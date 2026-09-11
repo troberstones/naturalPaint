@@ -6,11 +6,11 @@
 
 namespace np {
 
-// brush/Stabiliser -- Wave 2. Sits between raw pointer samples and
-// `StrokePath`: `StrokeSession::addSample()` feeds it a raw `StrokeSample`,
-// it emits the smoothed sample the path actually walks. Pure geometry/filter
-// state, no SDL/ImGui/Document -- `app/PointerQueue.{hpp,cpp}` is the pattern
-// this copies, and `app/selftest/Stabiliser.cpp` is what exercises it.
+// brush/Stabiliser -- sits between raw pointer samples and `StrokePath`:
+// `StrokeSession::addSample()` feeds it a raw `StrokeSample`, it emits the
+// smoothed sample the path actually walks. Pure geometry/filter state, no
+// SDL/ImGui/Document -- `app/PointerQueue.{hpp,cpp}` is the pattern this
+// copies.
 
 enum class StabiliserMode : uint8_t { Off, PulledString, WeightedAverage };
 
@@ -37,10 +37,13 @@ struct StabiliserParams {
   float responsiveness = 50.0f;
 
   bool catchUpAtEnd = true;
-  // Weighted average only (brief's own "(default on, weighted average)") --
-  // pulled string has nothing to converge while the pointer itself is still.
+  // Weighted average only -- pulled string has nothing to converge while the
+  // pointer itself is still.
   bool catchUpWhilePaused = true;
   bool stabilisePressure = false;
+  // Lengths are screen px rather than canvas px: `effectiveStringPx()` for
+  // pulled string, and the speed that drives weighted average's `beta` term
+  // (`brush/Stabiliser.cpp`'s own comment on why both need it) for the other.
   bool scaleWithZoom = false;
   bool showString = true;
 };
@@ -55,12 +58,13 @@ struct BrushStabiliserSetting {
   StabiliserParams own;
 };
 
-// The one place the global/per-brush rule lives, so it stays easy to change
-// (brief §"Resolve both into one effective setting"). `Off` ignores the
-// global entirely; `FollowGlobal` scales stringPx/strength/responsiveness by
-// `amountPct/100` (clamped back into range) and keeps the global's mode and
-// options; `Own` takes the brush's own mode/stringPx/strength/responsiveness
-// and the global's options.
+// The one place the global/per-brush rule lives, so it stays easy to change.
+// `Off` ignores the global entirely; `FollowGlobal` scales stringPx/strength
+// by `amountPct/100` (clamped back into range), keeps the global's
+// responsiveness UNSCALED (scaling it made higher amounts respond LESS to
+// speed, the opposite of what the slider promises), and keeps the global's
+// mode and options; `Own` takes the brush's own mode/stringPx/strength/
+// responsiveness and the global's options.
 StabiliserParams resolveStabiliser(const StabiliserParams& global,
                                    const BrushStabiliserSetting& brush) noexcept;
 
@@ -85,8 +89,10 @@ class Stabiliser {
   bool tick(uint64_t nowNs, StrokeSample& out) noexcept;
 
   // Stroke end, `catchUpAtEnd`: snaps straight to the last raw sample so the
-  // final dab reaches the lift point. False (nothing written) if no sample
-  // has ever been fed.
+  // final dab lands within one spacing of the lift point (the sample this
+  // returns is exact; the dab `StrokePath` emits from it is still spacing-
+  // quantised like any other). False (nothing written) if no sample has ever
+  // been fed.
   bool forceCatchUp(StrokeSample& out) noexcept;
 
   bool active() const noexcept { return haveRaw_; }
@@ -99,7 +105,14 @@ class Stabiliser {
 
  private:
   bool addSamplePulledString(const StrokeSample& raw, StrokeSample& out) noexcept;
-  bool addSampleWeightedAverage(const StrokeSample& raw, StrokeSample& out) noexcept;
+  // `isTick`: called from `tick()` with a synthetic sample rather than from
+  // `addSample()` with a real one. The filter's own elapsed-time step still
+  // runs off whichever of `prevTsNs_`/`prevRealTsNs_` last touched it, but a
+  // REAL sample's dt is always measured from the last REAL sample (never
+  // from an intervening tick) -- `brush/Stabiliser.cpp`'s own comment on why
+  // a tick's timestamp is a different clock (frame time, not the pen's own)
+  // and must never leak into a real sample's dt.
+  bool addSampleWeightedAverage(const StrokeSample& raw, StrokeSample& out, bool isTick) noexcept;
 
   StabiliserParams params_;
   float zoom_ = 1.0f;
@@ -116,7 +129,14 @@ class Stabiliser {
   Vec2 prevRawPos_{};
   float filtSpeed_ = 0.0f;
   float filtPressure_ = 1.0f;
+  // Last time the filter itself was advanced, real sample or tick -- what
+  // its own dt/alpha step is measured from.
   uint64_t prevTsNs_ = 0;
+  // Last REAL sample's timestamp only, untouched by `tick()`. A real
+  // sample's own dt is measured from this, not from `prevTsNs_`, so a tick
+  // that ran in between -- on the frame clock, not the pen's -- can never
+  // make the next real sample's dt negative or artificially tiny.
+  uint64_t prevRealTsNs_ = 0;
 };
 
 }  // namespace np

@@ -7,7 +7,7 @@
 
 namespace np {
 
-// app/StrokePreferences -- Wave 2's global stabiliser setting
+// app/StrokePreferences -- the global stabiliser setting
 // (`StabiliserParams`), persisted beside `brush-libraries.txt`
 // (`app/BrushLibraryFile.cpp`'s own path/override pattern, re-derived here
 // for the reason `app/UserBrushLibrary.hpp`'s `defaultUserPresetsFilePath()`
@@ -50,5 +50,16 @@ class StrokePreferencesStore {
  private:
   std::vector<std::string> unknownLines_;
 };
+
+// The lazy-load-on-first-need gate `AppState::strokePreferencesLoaded`
+// wraps, taking the three fields it needs by reference rather than
+// `AppState&` itself -- `AppState.hpp` already includes THIS header, so a
+// function here taking `AppState&` back would be circular. That also keeps
+// it callable from plain app/ code (`ui/MacPaintUI.cpp`'s pen-down path,
+// `--selftest`) with no UI dependency, which is the point: the global
+// setting must be current the first time a stroke resolves it, not only
+// once the Stabiliser popover has happened to be drawn.
+void ensureStrokePreferencesLoaded(StrokePreferencesStore& store, bool& loaded,
+                                   StabiliserParams& global);
 
 }  // namespace np

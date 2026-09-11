@@ -7,15 +7,9 @@
 namespace np {
 namespace {
 
-void ensureLoaded(AppState& st) {
-  if (st.strokePreferencesLoaded) return;
-  st.strokePreferencesLoaded = true;
-  std::string err;
-  st.strokePreferences.loadFromFile(defaultStrokePreferencesFilePath(), st.stabiliserPrefs, &err);
-}
-
 void save(AppState& st) {
-  ensureLoaded(st);
+  ensureStrokePreferencesLoaded(st.strokePreferences, st.strokePreferencesLoaded,
+                                st.stabiliserPrefs);
   std::string err;
   st.strokePreferences.saveToFile(defaultStrokePreferencesFilePath(), st.stabiliserPrefs, &err);
 }
@@ -31,9 +25,8 @@ const char* modeName(StabiliserMode m) noexcept {
 
 // Draws the mode/parameter/option controls for one `StabiliserParams` in
 // place, returning true if anything changed. `showOptions` is false for a
-// brush's `Own` block -- those five options are the global's, per the brief
-// ("the global options still apply"), so `Own`'s own copies are never drawn
-// and never read.
+// brush's `Own` block -- those five options are the global's, so `Own`'s own
+// copies are never drawn and never read.
 bool drawParams(const char* idPrefix, StabiliserParams& p, bool showOptions) {
   bool changed = false;
   char id[64];
@@ -89,7 +82,8 @@ std::string describeEffective(const StabiliserParams& eff, const BrushStabiliser
 }  // namespace
 
 void drawPerBrushStabiliserControls(AppState& st) {
-  ensureLoaded(st);
+  ensureStrokePreferencesLoaded(st.strokePreferences, st.strokePreferencesLoaded,
+                                st.stabiliserPrefs);
   BrushStabiliserSetting& s = st.brush.native.stabiliser;
   int mode = static_cast<int>(s.mode);
   if (ImGui::Combo("Stabiliser##brushMode", &mode, "Follow global\0Off\0Own\0"))
@@ -104,7 +98,8 @@ void drawPerBrushStabiliserControls(AppState& st) {
 }
 
 void drawStabiliserPopover(AppState& st) {
-  ensureLoaded(st);
+  ensureStrokePreferencesLoaded(st.strokePreferences, st.strokePreferencesLoaded,
+                                st.stabiliserPrefs);
   const StabiliserParams eff = resolveStabiliser(st.stabiliserPrefs, st.brush.native.stabiliser);
   char buttonLabel[80];
   std::snprintf(buttonLabel, sizeof(buttonLabel), "Stabiliser: %s",

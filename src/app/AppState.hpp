@@ -1947,8 +1947,9 @@ struct AppState {
   UserBrushLibraryStore userBrushLibrary;
   bool userBrushLibraryLoaded = false;
 
-  // Wave 2: the global stabiliser setting (app/StrokePreferences.hpp), the
-  // same lazy-load-on-first-need shape as `userBrushLibrary` above.
+  // The global stabiliser setting (app/StrokePreferences.hpp), the same
+  // lazy-load-on-first-need shape as `userBrushLibrary` above --
+  // `ensureStrokePreferencesLoaded()` is the gate.
   StabiliserParams stabiliserPrefs;
   StrokePreferencesStore strokePreferences;
   bool strokePreferencesLoaded = false;

@@ -3,6 +3,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -371,35 +373,60 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
     }
 
     if (key == "taper") {
-      // Wave 2: entry taper (brush/NativeBrush.hpp). A separate keyword for
+      // Entry taper (brush/NativeBrush.hpp). A separate keyword for
       // `scalars`'s own reason: growing that line's required count would
       // fail `takeFloats(rest, 7, ...)` for a file written before this
       // field existed.
+      //
+      // **Rejected (bad count, NaN/infinity, or -- once clamped -- nothing
+      // left to reject) preserves the line rather than dropping it.** This
+      // used to fall through to `pointMode = PointMode::None;` with nothing
+      // pushed to `pendingUnknown` on a parse failure -- silently DROPPING a
+      // line a future build understands but this one cannot parse, on the
+      // very next save. `grain`'s neighbouring block still does that (a
+      // malformed one just leaves the default, always a legal brush), but a
+      // rejected `taper`/`stabiliser` line has no safe default to fall back
+      // to that also protects a value this build cannot make sense of.
       float n[3];
-      if (takeFloats(rest, 3, n)) {
-        pending.native.taperInPx = n[0];
-        pending.native.taperMinSize = n[1];
+      if (takeFloats(rest, 3, n) && std::isfinite(n[0]) && std::isfinite(n[1]) &&
+          std::isfinite(n[2])) {
+        pending.native.taperInPx = std::clamp(n[0], 0.0f, 500.0f);
+        pending.native.taperMinSize = std::clamp(n[1], 0.0f, 100.0f);
         pending.native.taperFlow = n[2] != 0.0f;
+      } else {
+        pendingUnknown.push_back(line);
       }
       pointMode = PointMode::None;
       continue;
     }
 
     if (key == "stabiliser") {
-      // Wave 2: this brush's own stabiliser choice (brush/Stabiliser.hpp).
+      // This brush's own stabiliser choice (brush/Stabiliser.hpp).
       // `<brushMode> <amountPct> <ownMode> <ownStringPx> <ownStrength>
       // <ownResponsiveness>` -- the ordinals are `StabiliserBrushMode`'s and
       // `StabiliserMode`'s own, the same "write the enum's ordinal" `link`'s
-      // format above uses. A build that does not know this key preserves it
-      // verbatim (the fallthrough at the end of this loop).
+      // format above uses.
+      //
+      // Rejected (bad count, non-finite, or an ordinal this build's enum
+      // does not reach -- a future `StabiliserBrushMode`/`StabiliserMode`
+      // member) preserves the line verbatim, `taper`'s own reason just
+      // above: an ordinal from the future is exactly the case a build that
+      // does not know this key already protects with the fallthrough at the
+      // end of this loop, and a REJECTED line inside a key this build DOES
+      // recognise deserves the identical protection.
       float n[6];
-      if (takeFloats(rest, 6, n) && n[0] >= 0.0f && n[0] <= 2.0f && n[2] >= 0.0f && n[2] <= 2.0f) {
+      const bool allFinite = takeFloats(rest, 6, n) && std::isfinite(n[0]) && std::isfinite(n[1]) &&
+                             std::isfinite(n[2]) && std::isfinite(n[3]) && std::isfinite(n[4]) &&
+                             std::isfinite(n[5]);
+      if (allFinite && n[0] >= 0.0f && n[0] <= 2.0f && n[2] >= 0.0f && n[2] <= 2.0f) {
         pending.native.stabiliser.mode = static_cast<StabiliserBrushMode>(static_cast<int>(n[0]));
-        pending.native.stabiliser.amountPct = n[1];
+        pending.native.stabiliser.amountPct = std::clamp(n[1], 0.0f, 300.0f);
         pending.native.stabiliser.own.mode = static_cast<StabiliserMode>(static_cast<int>(n[2]));
-        pending.native.stabiliser.own.stringPx = n[3];
-        pending.native.stabiliser.own.strength = n[4];
-        pending.native.stabiliser.own.responsiveness = n[5];
+        pending.native.stabiliser.own.stringPx = std::clamp(n[3], 0.0f, 200.0f);
+        pending.native.stabiliser.own.strength = std::clamp(n[4], 0.0f, 100.0f);
+        pending.native.stabiliser.own.responsiveness = std::clamp(n[5], 0.0f, 100.0f);
+      } else {
+        pendingUnknown.push_back(line);
       }
       pointMode = PointMode::None;
       continue;
@@ -607,15 +634,25 @@ std::string UserBrushLibraryStore::serialize(const BrushLibrary& lib) const {
       // off link's shape would make the toggle destructive.
       for (const CurvePoint& pt : link.curve) out += "point " + f9(pt.x) + " " + f9(pt.y) + "\n";
     }
-    // Wave 2's two new keys, written only when non-default -- so a preset
-    // nobody has touched taper or the stabiliser on round-trips byte-
-    // identical to a file written before either key existed.
+    // `taper`/`stabiliser`, written only when non-default -- so a preset
+    // nobody has touched either on round-trips byte-identical to a file
+    // written before either key existed.
     if (p.native.taperInPx != 0.0f || p.native.taperMinSize != 0.0f || p.native.taperFlow) {
       out += "taper " + f9(p.native.taperInPx) + " " + f9(p.native.taperMinSize) + " " +
              (p.native.taperFlow ? "1" : "0") + "\n";
     }
     const BrushStabiliserSetting& s = p.native.stabiliser;
-    if (s.mode != StabiliserBrushMode::FollowGlobal || s.amountPct != 100.0f) {
+    // **`own` is checked against ITS OWN default regardless of `mode`.** A
+    // painter can tune `own` under `Own`, then switch back to `Follow
+    // global` without resetting it -- `mode`/`amountPct` alone being back at
+    // their defaults would otherwise skip this whole line and the tuned
+    // `own` values would not survive the save, silently losing them the
+    // moment `Own` is picked again.
+    const StabiliserParams ownDefault{};
+    const bool ownDiffers = s.own.mode != ownDefault.mode || s.own.stringPx != ownDefault.stringPx ||
+                            s.own.strength != ownDefault.strength ||
+                            s.own.responsiveness != ownDefault.responsiveness;
+    if (s.mode != StabiliserBrushMode::FollowGlobal || s.amountPct != 100.0f || ownDiffers) {
       out += "stabiliser " + std::to_string(static_cast<int>(s.mode)) + " " + f9(s.amountPct) +
              " " + std::to_string(static_cast<int>(s.own.mode)) + " " + f9(s.own.stringPx) +
              " " + f9(s.own.strength) + " " + f9(s.own.responsiveness) + "\n";

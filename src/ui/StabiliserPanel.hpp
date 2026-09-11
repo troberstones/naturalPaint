@@ -4,11 +4,12 @@
 
 namespace np {
 
-// ui/StabiliserPanel -- Wave 2's Stabiliser popover (brush Tool Options bar)
-// and the per-brush controls repeated in the Brush Settings window's own
-// NATURALPAINT group. Loads/saves `stroke-preferences.txt` itself, lazily,
-// the same shape `ui/MacPaintUI.cpp`'s `ensureUserBrushLibraryLoaded()`/
-// `saveUserBrushLibrary()` use for the brush library.
+// ui/StabiliserPanel -- the Stabiliser popover (brush Tool Options bar) and
+// the per-brush controls repeated in the Brush Settings window's own
+// NATURALPAINT group. Saves `stroke-preferences.txt` on every edit; the load
+// itself is `app/StrokePreferences.hpp`'s `ensureStrokePreferencesLoaded()`,
+// not this file's -- it has to be reachable from the pen-down path too, not
+// only from a popover that may never be drawn.
 
 // The popover: a button plus a popup with "All brushes" (the global
 // setting), "This brush" (follow x amount / off / own), the resolved

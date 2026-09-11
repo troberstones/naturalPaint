@@ -39,7 +39,9 @@ StabiliserParams resolveStabiliser(const StabiliserParams& global,
       const float amt = std::clamp(brush.amountPct, 0.0f, 300.0f) / 100.0f;
       eff.stringPx = std::max(0.0f, global.stringPx * amt);
       eff.strength = std::clamp(global.strength * amt, 0.0f, 100.0f);
-      eff.responsiveness = std::clamp(global.responsiveness * amt, 0.0f, 100.0f);
+      // `responsiveness` is deliberately NOT scaled by `amt` -- it is a
+      // cutoff-curve shape control, not a magnitude the "amount" slider's
+      // 0-300% is meant to stretch (see StabiliserParams::responsiveness).
       break;
     }
     case StabiliserBrushMode::Own:
@@ -70,6 +72,7 @@ void Stabiliser::begin(const StabiliserParams& params, float viewZoom) noexcept 
   filtSpeed_ = 0.0f;
   filtPressure_ = 1.0f;
   prevTsNs_ = 0;
+  prevRealTsNs_ = 0;
 }
 
 float Stabiliser::effectiveStringPx() const noexcept {
@@ -116,7 +119,8 @@ bool Stabiliser::addSamplePulledString(const StrokeSample& raw, StrokeSample& ou
   return true;
 }
 
-bool Stabiliser::addSampleWeightedAverage(const StrokeSample& raw, StrokeSample& out) noexcept {
+bool Stabiliser::addSampleWeightedAverage(const StrokeSample& raw, StrokeSample& out,
+                                          bool isTick) noexcept {
   out.timestamp = raw.timestamp;
   out.tilt = raw.tilt;
   out.azimuth = raw.azimuth;
@@ -128,6 +132,7 @@ bool Stabiliser::addSampleWeightedAverage(const StrokeSample& raw, StrokeSample&
     filtSpeed_ = 0.0f;
     filtPressure_ = raw.pressure;
     prevTsNs_ = raw.timestamp;
+    prevRealTsNs_ = raw.timestamp;  // bootstrap is always a real sample
     haveFilter_ = true;
     out.pos = raw.pos;
     out.pressure = raw.pressure;
@@ -142,20 +147,38 @@ bool Stabiliser::addSampleWeightedAverage(const StrokeSample& raw, StrokeSample&
     prevRawPos_ = raw.pos;
     filtPressure_ = raw.pressure;
     prevTsNs_ = raw.timestamp;
+    if (!isTick) prevRealTsNs_ = raw.timestamp;
     out.pos = raw.pos;
     out.pressure = raw.pressure;
     nib_ = out.pos;
     return true;
   }
 
-  float dtSec = raw.timestamp > prevTsNs_
-                    ? static_cast<float>(raw.timestamp - prevTsNs_) / 1e9f
-                    : 1e-4f;  // guard dt <= 0 (out-of-order/duplicate timestamp)
+  // A real sample's dt is measured from the last REAL sample, never from an
+  // intervening tick: `tick()`'s `nowNs` is a frame-poll timestamp, a
+  // different clock from the pen's own hardware timestamp, and comparing a
+  // real sample against it can make dt land before zero (a later-polled
+  // tick outrunning an earlier-timestamped pen event still in flight) --
+  // exactly the "leap"/reordering the review's probe caught. A tick's own
+  // dt still runs off `prevTsNs_`, whichever of the two last advanced it.
+  const uint64_t basisTs = isTick ? prevTsNs_ : prevRealTsNs_;
+  float dtSec = raw.timestamp > basisTs ? static_cast<float>(raw.timestamp - basisTs) / 1e9f
+                                        : 1e-4f;  // guard dt <= 0
   dtSec = std::max(dtSec, 1e-4f);
+  // Without `catchUpWhilePaused`, a long real pause must not register as one
+  // giant dt on the next real sample -- that would let the filter's cutoff
+  // open all the way and leap straight to the raw point instead of resuming
+  // its normal smoothing. Capped at 50 ms: long enough to span a real pen
+  // cadence gap, short enough that a multi-second pause no longer leaks in.
+  if (!params_.catchUpWhilePaused) dtSec = std::min(dtSec, 0.05f);
 
   const float vx = (raw.pos.x - prevRawPos_.x) / dtSec;
   const float vy = (raw.pos.y - prevRawPos_.y) / dtSec;
-  const float speed = std::hypot(vx, vy);
+  // `scaleWithZoom` reaches the speed term here too, not only pulled
+  // string's window -- the same canvas-space motion at a higher zoom is more
+  // screen px/sec, so it should read as faster and cut in sooner.
+  const float zoomForSpeed = (params_.scaleWithZoom && zoom_ > 1e-6f) ? zoom_ : 1.0f;
+  const float speed = std::hypot(vx, vy) * zoomForSpeed;
   const float dAlpha = alphaFor(kSpeedFilterHz, dtSec);
   filtSpeed_ = dAlpha * speed + (1.0f - dAlpha) * filtSpeed_;
 
@@ -172,6 +195,7 @@ bool Stabiliser::addSampleWeightedAverage(const StrokeSample& raw, StrokeSample&
 
   prevRawPos_ = raw.pos;
   prevTsNs_ = raw.timestamp;
+  if (!isTick) prevRealTsNs_ = raw.timestamp;
   out.pos = filtPos_;
   out.pressure = filtPressure_;
   nib_ = out.pos;
@@ -189,7 +213,7 @@ bool Stabiliser::addSample(const StrokeSample& raw, StrokeSample& out) noexcept 
     case StabiliserMode::PulledString:
       return addSamplePulledString(raw, out);
     case StabiliserMode::WeightedAverage:
-      return addSampleWeightedAverage(raw, out);
+      return addSampleWeightedAverage(raw, out, /*isTick=*/false);
   }
   out = raw;
   return true;
@@ -202,7 +226,7 @@ bool Stabiliser::tick(uint64_t nowNs, StrokeSample& out) noexcept {
   if (nowNs <= prevTsNs_) return false;
   StrokeSample synthetic = lastRaw_;
   synthetic.timestamp = nowNs;
-  return addSampleWeightedAverage(synthetic, out);
+  return addSampleWeightedAverage(synthetic, out, /*isTick=*/true);
 }
 
 bool Stabiliser::forceCatchUp(StrokeSample& out) noexcept {

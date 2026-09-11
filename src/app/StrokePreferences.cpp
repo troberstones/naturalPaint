@@ -3,6 +3,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -133,22 +135,31 @@ void StrokePreferencesStore::parse(const std::string& text, StabiliserParams& gl
     }
     firstLine = false;
 
+    // Every numeric key below requires `std::isfinite` -- a NaN or infinity
+    // read back from a hand-edited or corrupted file is rejected the same
+    // way an unparsable float already is (falls through to `unknownLines_`,
+    // preserved verbatim), rather than being cast to an enum ordinal
+    // (undefined behaviour for `mode`) or carried into the slider ranges
+    // below it. An in-range float is used as-is; a merely OUT-OF-RANGE one
+    // is clamped to the control's own slider range instead of rejected, so
+    // e.g. a value from a future build with a wider range degrades to this
+    // build's ceiling rather than vanishing.
     float f;
-    if (key == "mode" && takeFloat(rest, f)) {
+    if (key == "mode" && takeFloat(rest, f) && std::isfinite(f)) {
       const int m = static_cast<int>(f);
       if (m >= static_cast<int>(StabiliserMode::Off) &&
           m <= static_cast<int>(StabiliserMode::WeightedAverage)) {
         global.mode = static_cast<StabiliserMode>(m);
         continue;
       }
-    } else if (key == "stringPx" && takeFloat(rest, f)) {
-      global.stringPx = f;
+    } else if (key == "stringPx" && takeFloat(rest, f) && std::isfinite(f)) {
+      global.stringPx = std::clamp(f, 0.0f, 200.0f);
       continue;
-    } else if (key == "strength" && takeFloat(rest, f)) {
-      global.strength = f;
+    } else if (key == "strength" && takeFloat(rest, f) && std::isfinite(f)) {
+      global.strength = std::clamp(f, 0.0f, 100.0f);
       continue;
-    } else if (key == "responsiveness" && takeFloat(rest, f)) {
-      global.responsiveness = f;
+    } else if (key == "responsiveness" && takeFloat(rest, f) && std::isfinite(f)) {
+      global.responsiveness = std::clamp(f, 0.0f, 100.0f);
       continue;
     } else if (key == "catchUpAtEnd" && takeFloat(rest, f)) {
       global.catchUpAtEnd = f != 0.0f;
@@ -214,6 +225,14 @@ bool StrokePreferencesStore::saveToFile(const std::string& path, const Stabilise
   const fs::path parent = fs::path(path).parent_path();
   if (!parent.empty()) fs::create_directories(parent, ec);
   return writeFileAtomically(path, serialize(global), errorOut);
+}
+
+void ensureStrokePreferencesLoaded(StrokePreferencesStore& store, bool& loaded,
+                                   StabiliserParams& global) {
+  if (loaded) return;
+  loaded = true;
+  std::string err;
+  store.loadFromFile(defaultStrokePreferencesFilePath(), global, &err);
 }
 
 }  // namespace np

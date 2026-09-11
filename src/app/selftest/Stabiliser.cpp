@@ -2,8 +2,11 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <optional>
 #include <vector>
 
+#include "app/AppState.hpp"
 #include "app/StrokePreferences.hpp"
 #include "app/UserBrushLibrary.hpp"
 #include "brush/Library.hpp"
@@ -46,6 +49,40 @@ bool runStabiliserTest() {
   };
 
   std::printf("[selftest] stabiliser\n");
+
+  // ==========================================================================
+  // Fix 1: the global setting loads before pen-down, without any UI call --
+  // it used to load only when the Stabiliser popover had been drawn at
+  // least once (`ui/StabiliserPanel.cpp`'s own `ensureLoaded()`, now
+  // `app/StrokePreferences.hpp`'s `ensureStrokePreferencesLoaded()`).
+  // ==========================================================================
+  {
+    const std::string path = "/private/tmp/np-scatter/wave2/fix1-stroke-preferences.txt";
+    StrokePreferencesStore writer;
+    StabiliserParams toWrite;
+    toWrite.mode = StabiliserMode::WeightedAverage;
+    std::string writeErr;
+    check(writer.saveToFile(path, toWrite, &writeErr), "setup: the fixture prefs file writes");
+
+    const char* prevEnv = std::getenv("NP_STROKE_PREFERENCES");
+    const std::string prevEnvCopy = prevEnv != nullptr ? prevEnv : std::string();
+    setenv("NP_STROKE_PREFERENCES", path.c_str(), 1);
+
+    AppState st;  // fresh: strokePreferencesLoaded starts false, stabiliserPrefs at its default
+    check(st.stabiliserPrefs.mode == StabiliserMode::Off,
+          "setup: a fresh AppState's stabiliserPrefs starts at the compiled-in default (Off)");
+    // No UI call anywhere on this path -- the same app/ loader the pen-down
+    // canvas block now calls right before `resolveStabiliser()`.
+    ensureStrokePreferencesLoaded(st.strokePreferences, st.strokePreferencesLoaded,
+                                  st.stabiliserPrefs);
+    const StabiliserParams eff = resolveStabiliser(st.stabiliserPrefs, st.brush.native.stabiliser);
+    check(eff.mode == StabiliserMode::WeightedAverage,
+          "fix 1: a fresh AppState whose prefs file says Weighted average resolves to Weighted "
+          "average at pen-down, without any UI call");
+
+    if (prevEnv != nullptr) setenv("NP_STROKE_PREFERENCES", prevEnvCopy.c_str(), 1);
+    else unsetenv("NP_STROKE_PREFERENCES");
+  }
 
   // ==========================================================================
   // 1. Pulled string.
@@ -245,6 +282,140 @@ bool runStabiliserTest() {
   }
 
   // ==========================================================================
+  // Fix 5: a leap after a pause, with "catch up while paused" OFF -- nothing
+  // converges the nib during the pause, so the first real sample after a
+  // long one would otherwise see a huge dt and jump most of the way to the
+  // pen in a single step. Capped to a plausible single-frame dt instead.
+  // ==========================================================================
+  {
+    StabiliserParams p;
+    p.mode = StabiliserMode::WeightedAverage;
+    p.strength = 100.0f;
+    p.responsiveness = 0.0f;
+    p.catchUpWhilePaused = false;
+    Stabiliser stab;
+    stab.begin(p, 1.0f);
+    uint64_t t = 1'000'000'000ull;
+    StrokeSample out;
+    float x = 0.0f;
+    for (int i = 0; i < 60; ++i, t += 4'166'667ull) {  // run-up at 240 Hz
+      x = static_cast<float>(i) * 4.0f;
+      StrokeSample raw;
+      raw.pos = Vec2{x, 0.0f};
+      raw.timestamp = t;
+      stab.addSample(raw, out);
+    }
+    const float lagBeforePause = x - out.pos.x;
+    const float nibBeforePause = out.pos.x;
+    t += 2'000'000'000ull;  // 2 s pause; catchUpWhilePaused is off, so no tick() would run anyway
+    StrokeSample resume;
+    resume.pos = Vec2{x + 1.0f, 0.0f};
+    resume.timestamp = t;
+    stab.addSample(resume, out);
+    const float jump = out.pos.x - nibBeforePause;
+    std::printf("  [measured] lag before pause %.2f px, jump on the first sample after a 2s "
+               "pause %.2f px\n",
+               lagBeforePause, jump);
+    check(lagBeforePause > 3.0f, "setup: the run-up leaves a real lag to converge from");
+    check(jump < lagBeforePause * 0.2f,
+          "fix 5: capped dt keeps the first sample after a long pause from jumping most of the "
+          "way to the pen in one step");
+  }
+
+  // ==========================================================================
+  // Fix 6: a tick's timestamp (a frame-poll clock) must never leak into a
+  // real sample's own dt. A tick fired AFTER a real sample but with a LATER
+  // hardware-adjacent timestamp than the NEXT real sample (plausible: the
+  // tick uses `SDL_GetTicksNS()` at frame-poll time, the next real sample
+  // carries the pen's own, earlier, hardware timestamp) used to make that
+  // next real sample's dt negative -> the dt<=0 guard -> a near-zero dt ->
+  // an absurd computed speed -> the cutoff opening all the way -> the nib
+  // snapping onto the raw sample instead of smoothing it.
+  // ==========================================================================
+  {
+    StabiliserParams p;
+    p.mode = StabiliserMode::WeightedAverage;
+    p.strength = 50.0f;
+    p.responsiveness = 100.0f;
+    p.catchUpWhilePaused = true;
+    Stabiliser stab;
+    stab.begin(p, 1.0f);
+    const uint64_t t0 = 1'000'000'000ull;
+    StrokeSample out;
+    StrokeSample s1;
+    s1.pos = Vec2{0.0f, 0.0f};
+    s1.timestamp = t0;
+    stab.addSample(s1, out);  // bootstrap
+
+    StrokeSample s2;
+    s2.pos = Vec2{1.0f, 0.0f};
+    s2.timestamp = t0 + 4'000'000ull;  // 4 ms later, a normal pen cadence
+    stab.addSample(s2, out);
+    const float nibAfterS2 = out.pos.x;
+
+    StrokeSample tickOut;
+    // 10 ms after t0 -- LATER than s3's own hardware timestamp below, the
+    // scenario a frame-poll clock racing ahead of the pen's own produces.
+    stab.tick(t0 + 10'000'000ull, tickOut);
+
+    StrokeSample s3;
+    s3.pos = Vec2{2.0f, 0.0f};
+    s3.timestamp = t0 + 8'000'000ull;  // 4 ms after s2 -- same normal cadence
+    stab.addSample(s3, out);
+    std::printf("  [measured] nib after s2 %.4f, after the out-of-order tick + s3 %.4f (raw was "
+               "2.0)\n",
+               nibAfterS2, out.pos.x);
+    // Contrary to the original hypothesis, the bug's ~0.1 ms guard-dt does
+    // NOT snap the nib onto the raw sample -- the same corrupted near-zero
+    // dt also feeds the speed low-pass (dAlpha), so the responsiveness
+    // cutoff computes an absurdly LOW speed reading and closes down instead
+    // of opening: alpha ~= dt/(dt+tau), so a tiny dt makes for a tiny alpha
+    // and s3 is *under*-applied rather than snapped. Measured: buggy ~0.27,
+    // fixed ~0.48; 0.35 sits strictly between the two.
+    check(out.pos.x > 0.35f,
+          "fix 6: a real sample's dt is measured from the last real sample, never from an "
+          "intervening tick -- s3 responds normally, not suppressed by a corrupted near-zero dt");
+  }
+
+  // ==========================================================================
+  // Fix 11b: "scale with zoom" reaches weighted average's speed/beta term
+  // too, not just pulled string's window -- a higher zoom (more screen px
+  // per canvas px) should read the SAME canvas-space motion as FASTER, and
+  // open the cutoff more.
+  // ==========================================================================
+  {
+    const auto steadyLagAtZoom = [&](float zoom) {
+      StabiliserParams lp;
+      lp.mode = StabiliserMode::WeightedAverage;
+      lp.strength = 50.0f;
+      lp.responsiveness = 100.0f;
+      lp.scaleWithZoom = true;
+      Stabiliser s;
+      s.begin(lp, zoom);
+      uint64_t t = 0;
+      StrokeSample out;
+      float lastLag = 0.0f;
+      for (int i = 0; i < 300; ++i) {
+        StrokeSample raw;
+        raw.pos = Vec2{static_cast<float>(i) * 20.0f, 0.0f};  // identical canvas-space motion
+        raw.timestamp = t;
+        t += 8'000'000ull;
+        s.addSample(raw, out);
+        lastLag = raw.pos.x - out.pos.x;
+      }
+      return lastLag;
+    };
+    const float lagZoom1 = steadyLagAtZoom(1.0f);
+    const float lagZoom4 = steadyLagAtZoom(4.0f);
+    std::printf("  [measured] scale with zoom, weighted average: steady lag at 1x zoom %.2f px, "
+               "4x zoom %.2f px\n",
+               lagZoom1, lagZoom4);
+    check(lagZoom4 < lagZoom1 * 0.9f,
+          "fix 11b: a higher zoom reads the identical canvas motion as faster (screen px/s) and "
+          "shrinks the lag, so scale with zoom now reaches weighted average too");
+  }
+
+  // ==========================================================================
   // 5. Sample-rate independence (pulled string): the same physical path fed
   //    at two densities gives the same dab positions, within spacing
   //    tolerance.
@@ -304,13 +475,16 @@ bool runStabiliserTest() {
     followHalf.mode = StabiliserBrushMode::FollowGlobal;
     followHalf.amountPct = 50.0f;
     const StabiliserParams effFollow = resolveStabiliser(global, followHalf);
+    // Fix 4: amount scales stringPx/strength only. Responsiveness stays at
+    // the GLOBAL's own value (30, not 15) -- scaling it too made a higher
+    // amount respond LESS to speed, backwards from what the slider promises.
     check(effFollow.mode == StabiliserMode::WeightedAverage &&
               effFollow.stringPx == 10.0f && effFollow.strength == 20.0f &&
-              effFollow.responsiveness == 15.0f && effFollow.catchUpAtEnd == true &&
+              effFollow.responsiveness == 30.0f && effFollow.catchUpAtEnd == true &&
               effFollow.catchUpWhilePaused == false && effFollow.stabilisePressure == true &&
               effFollow.scaleWithZoom == true && effFollow.showString == false,
-          "resolveStabiliser: follow global x50% halves stringPx/strength/responsiveness, "
-          "keeps mode and every option");
+          "resolveStabiliser: follow global x50% halves stringPx/strength, leaves "
+          "responsiveness at the global's own value, keeps mode and every option");
 
     BrushStabiliserSetting off;
     off.mode = StabiliserBrushMode::Off;
@@ -378,6 +552,33 @@ bool runStabiliserTest() {
     check(resaved.find("futureKey 42") != std::string::npos,
           "stroke-preferences.txt: an unknown key survives a parse/serialize round trip");
 
+    // Fix 8: NaN is rejected (not cast into `mode`'s enum, not carried into
+    // a slider range -- undefined behaviour and a garbage value
+    // respectively), and a merely out-of-range value is clamped rather than
+    // rejected outright.
+    StabiliserParams badGlobal;
+    StrokePreferencesStore badReader;
+    badReader.parse(
+        "naturalPaint-stroke-preferences 1\nmode 7\nstrength nan\nstringPx -40\n"
+        "responsiveness 900\nfoo bar\n",
+        badGlobal);
+    std::printf("  [measured] fix 8 fixture: mode %d strength %f stringPx %f responsiveness %f, "
+               "%zu unknown line(s)\n",
+               static_cast<int>(badGlobal.mode), badGlobal.strength, badGlobal.stringPx,
+               badGlobal.responsiveness, badReader.unknownLines().size());
+    check(badGlobal.mode == StabiliserParams{}.mode,
+          "fix 8: 'mode 7' (out of the enum's range) is rejected, not cast -- mode stays default");
+    check(std::isfinite(badGlobal.strength) && badGlobal.strength == StabiliserParams{}.strength,
+          "fix 8: 'strength nan' is rejected outright, not clamped into a value that happens to "
+          "be finite -- strength stays default");
+    check(badGlobal.stringPx == 0.0f,
+          "fix 8: 'stringPx -40' (out of the 0-200 slider range) is clamped to 0, not rejected");
+    check(badGlobal.responsiveness == 100.0f,
+          "fix 8: 'responsiveness 900' (out of the 0-100 slider range) is clamped to 100");
+    check(badReader.unknownLines().size() == 3,
+          "fix 8: the three rejected lines (mode, strength, foo) all survive as unknown lines "
+          "for the next save");
+
     // user-presets.txt: the new `taper`/`stabiliser` preset lines round trip.
     BrushPreset preset;
     preset.name = "Taper And Stabiliser";
@@ -413,6 +614,32 @@ bool runStabiliserTest() {
               back->native.stabiliser.own.responsiveness == 66.0f,
           "user-presets.txt: the new `stabiliser` line round-trips exactly");
 
+    // Fix 11a: `own` is serialised whenever it differs from ITS OWN default,
+    // regardless of the active mode -- a painter can tune `own` under Own,
+    // then switch back to Follow global (both `mode`/`amountPct` back at
+    // their defaults) without resetting it, and that tuning must survive.
+    BrushPreset ownTunedButFollowing;
+    ownTunedButFollowing.name = "Own Tuned But Following";
+    ownTunedButFollowing.native.stabiliser.mode = StabiliserBrushMode::FollowGlobal;
+    ownTunedButFollowing.native.stabiliser.amountPct = 100.0f;  // both at their defaults
+    ownTunedButFollowing.native.stabiliser.own.strength = 77.0f;  // but `own` was tuned
+    UserBrushLibraryStore ownStore;
+    BrushLibrary ownLib;
+    ownLib.presets.push_back(ownTunedButFollowing);
+    const std::string ownText = ownStore.serialize(ownLib);
+    check(ownText.find("stabiliser ") != std::string::npos,
+          "fix 11a: a `stabiliser` line is written even though mode/amountPct are both at their "
+          "defaults, because `own` itself differs from its own default");
+    UserBrushLibraryStore ownReader;
+    BrushLibrary ownReloaded;
+    ownReader.parse(ownText, ownReloaded);
+    const BrushPreset* ownBack = nullptr;
+    for (const BrushPreset& p : ownReloaded.presets)
+      if (p.name == "Own Tuned But Following") ownBack = &p;
+    check(ownBack != nullptr && ownBack->native.stabiliser.own.strength == 77.0f,
+          "fix 11a: the tuned `own.strength` survives the round trip even though the active mode "
+          "never left Follow global");
+
     // A file with a key this build does not know, inside a preset scope,
     // still loads and preserves that line -- the "an older build ignores it"
     // half of the same claim, exercised the other direction (a NEWER key
@@ -429,6 +656,64 @@ bool runStabiliserTest() {
     check(futureResaved.find("futureFeature 1 2 3") != std::string::npos,
           "user-presets.txt: a key this build does not know survives a parse/serialize round "
           "trip");
+
+    // Fix 7: a REJECTED `stabiliser`/`taper` line -- an out-of-range ordinal
+    // (a future `StabiliserBrushMode`/`StabiliserMode` member) or simply
+    // malformed (wrong field count) -- survives a save too, the same
+    // protection an unrecognised KEY already has.
+    const std::string rejectedFixture =
+        "naturalPaint-user-presets 1\n"
+        "preset Rejected Lines\n"
+        "scalars 20 0.5 0.366 1 0 0.9 1.3\n"
+        "stabiliser 3 100 0 16 40 50\n"
+        "taper 60 0\n";
+    UserBrushLibraryStore rejectedReader;
+    BrushLibrary rejectedLib;
+    rejectedReader.parse(rejectedFixture, rejectedLib);
+    const std::string rejectedResaved = rejectedReader.serialize(rejectedLib);
+    check(rejectedResaved.find("stabiliser 3 100 0 16 40 50") != std::string::npos,
+          "fix 7: a `stabiliser` line with an out-of-range ordinal survives a save rather than "
+          "being silently dropped");
+    check(rejectedResaved.find("taper 60 0") != std::string::npos,
+          "fix 7: a malformed `taper` line (wrong field count) survives a save too");
+
+    // Fix 8: NaN/out-of-range `taper` values from the file are validated the
+    // same way stroke-preferences.txt's own fields are.
+    const auto taperMinSizeFor = [&](const char* tail) {
+      const std::string fx = std::string("naturalPaint-user-presets 1\npreset T\n"
+                                         "scalars 20 0.5 0.5 1 0 0.9 1.3\n") +
+                             tail + "\n";
+      UserBrushLibraryStore r;
+      BrushLibrary lib2;
+      r.parse(fx, lib2);
+      // A copy, not a pointer into `lib2` -- `lib2` is local to this lambda.
+      for (const BrushPreset& q : lib2.presets)
+        if (q.name == "T") return std::optional<float>(q.native.taperMinSize);
+      return std::optional<float>();
+    };
+    const std::optional<float> clampedHi = taperMinSizeFor("taper 60 150 0");
+    check(clampedHi.has_value() && *clampedHi == 100.0f,
+          "fix 8: 'taper 60 150 0' (taperMinSize past the 0-100 range) is clamped to 100");
+    const std::optional<float> clampedLo = taperMinSizeFor("taper 60 -100 0");
+    check(clampedLo.has_value() && *clampedLo == 0.0f,
+          "fix 8: 'taper 60 -100 0' (taperMinSize below the 0-100 range) is clamped to 0");
+    {
+      const std::string nanFx =
+          "naturalPaint-user-presets 1\npreset NanTaper\n"
+          "scalars 20 0.5 0.5 1 0 0.9 1.3\ntaper nan 0 0\n";
+      UserBrushLibraryStore r;
+      BrushLibrary lib2;
+      r.parse(nanFx, lib2);
+      const BrushPreset* p = nullptr;
+      for (const BrushPreset& q : lib2.presets)
+        if (q.name == "NanTaper") p = &q;
+      check(p != nullptr && p->native.taperInPx == 0.0f,
+            "fix 8: 'taper nan 0 0' is rejected outright -- taperInPx stays default (off), not "
+            "NaN");
+      const std::string nanResaved = r.serialize(lib2);
+      check(nanResaved.find("taper nan 0 0") != std::string::npos,
+            "fix 8: the rejected NaN `taper` line is preserved verbatim for the next save");
+    }
 
     // The `.abr` mapping.
     check(stabiliserBrushModeFromAbrSmoothing(true) == StabiliserBrushMode::FollowGlobal &&
