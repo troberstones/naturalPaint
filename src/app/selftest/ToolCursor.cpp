@@ -462,24 +462,33 @@ bool runToolCursorTest() {
 
     std::printf("    %d built, %d not built\n", built, unbuilt);
 
-    check(unbuilt > 0 && built > 0,
-          "unbuilt: the palette really does hold both kinds -- an all-or-nothing split "
-          "would make both assertions below vacuous");
+    // **There are no unbuilt tools left.** The gap-closing wave built Shape,
+    // Frame and Slice, the last three, so the population this section was
+    // written about is empty and `everyUnbuiltRefuses` is now vacuously true.
+    // It is kept, not deleted: the slash rule is still live code in
+    // `toolCursorOnTarget()`, and the day an enumerator is added ahead of its
+    // behaviour it has a subject again. What changes is the guard -- it used
+    // to demand both kinds exist, which would now fail for the best possible
+    // reason; it now pins the split itself, so a tool that silently went
+    // unbuilt again (a gate predicate deleted in a merge) fails HERE, by
+    // count, rather than being slashed on screen with every check green.
+    check(unbuilt == 0 && built == static_cast<int>(Tool::Count),
+          "unbuilt: every palette tool is built -- the last three (Shape, Frame, Slice) "
+          "shipped, so a slashed cell now means a regression, not a plan");
     check(everyUnbuiltRefuses,
-          "unbuilt: every tool toolImplemented() calls unbuilt is slashed -- picking one "
-          "and dragging does nothing, and the pointer is where the user will find out");
+          "unbuilt: every tool toolImplemented() calls unbuilt is slashed (vacuous while "
+          "none is) -- picking one and dragging does nothing, and the pointer says so");
     check(everyBuiltWorks,
           "unbuilt: and every BUILT tool is usable over an unlocked RGB layer -- the "
           "unbuilt rule must not spill onto a tool that works");
 
     // The rule is keyed on `toolImplemented()` and nothing else, so a tool
     // shipping flips its cursor with no edit in ui/ToolCursor -- the intent it
-    // will want is already written in `cursorForTool()`. Pinned on two of them
-    // so a future implementation that forgot the cursor cannot go unnoticed.
-    check(!toolImplemented(Tool::Frame) && cursorForTool(Tool::Frame) == ToolCursor::MoveObject &&
-              !toolImplemented(Tool::Slice) && cursorForTool(Tool::Slice) == ToolCursor::Select,
-          "unbuilt: an unbuilt tool still has its intent recorded -- the day it ships, "
-          "toolImplemented() flips and the right cursor appears with no edit here");
+    // will want is already written in `cursorForTool()`. It was pinned on
+    // two still-unbuilt examples so a future implementation that forgot the
+    // cursor could not go unnoticed; with none left unbuilt there is nothing
+    // to pin a promise on, and what remains is the record below of every
+    // time the promise was kept.
 
     // **And that claim has already been tested for real.** This assertion
     // originally named the Eraser as one of its two unbuilt examples. The
@@ -510,18 +519,23 @@ bool runToolCursorTest() {
     // was written. `Tool::Shape` took its place above. Three collections is
     // the point at which the promise stops being a hopeful comment.
     //
-    // **And a FOURTH time, by Shape**, docs/ui.md §4a. `Tool::Shape` was the
-    // pinned example above until app/ShapeTool plus the canvas block flipped
-    // `toolImplemented()`, and `cursorForTool(Tool::Shape)` needed no edit --
-    // it has answered `ToolCursor::Select` since the "defines a region or a
-    // path" grouping was written, alongside Crop, Slice, Pen and Curve.
-    // `Tool::Slice` took its place above.
+    // **And a FOURTH, FIFTH and SIXTH time, by Shape, Frame and Slice** --
+    // docs/ui.md §4a's "unbuilt three", all built in the gap-closing wave
+    // (app/ShapeTool, and app/RegionTool for the other two). None needed an
+    // edit in `ui/ToolCursor`: Shape and Slice have answered
+    // `ToolCursor::Select` since the "defines a region or a path" grouping
+    // was written, and Frame `ToolCursor::MoveObject` -- a Frame drag
+    // repositions a rectangle exactly as a Move drag repositions a layer.
     check(toolImplemented(Tool::Eraser) && cursorForTool(Tool::Eraser) == ToolCursor::Paint &&
               toolImplemented(Tool::Pencil) && cursorForTool(Tool::Pencil) == ToolCursor::Paint &&
               toolImplemented(Tool::Text) && cursorForTool(Tool::Text) == ToolCursor::Text &&
-              toolImplemented(Tool::Shape) && cursorForTool(Tool::Shape) == ToolCursor::Select,
-          "unbuilt: the Eraser, the Pencil, Text and Shape each shipped carrying the intent "
-          "they were written with while still unbuilt -- the promise above, collected four "
+              toolImplemented(Tool::Shape) && cursorForTool(Tool::Shape) == ToolCursor::Select &&
+              toolImplemented(Tool::Frame) &&
+              cursorForTool(Tool::Frame) == ToolCursor::MoveObject &&
+              toolImplemented(Tool::Slice) && cursorForTool(Tool::Slice) == ToolCursor::Select,
+          "unbuilt: the Eraser, the Pencil, Text, Shape, Frame and Slice each shipped carrying "
+          "the intent "
+          "they were written with while still unbuilt -- the promise above, collected six "
           "times");
   }
 

@@ -3,6 +3,7 @@
 #include "core/CanvasLimits.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -824,6 +825,125 @@ LayerTransformResult transformLayer(Document& doc, size_t index, const Transform
 }
 
 // --------------------------------------------------------------------------
+// Keeping `Document::regions` correct under a geometry edit
+// (core/Region.hpp §4 is the argued rule; this is where it is hooked in, and
+// it is hooked in exactly twice -- see each call site below for why two
+// hooks cover all four public entry points.)
+// --------------------------------------------------------------------------
+
+// Intersects `r` with `[0, newWidth) x [0, newHeight)`. Returns an empty
+// `Region` (both dimensions zero) when the intersection is empty -- the
+// caller erases those, `core/Region.hpp` §4's "a zero-size husk is not a
+// rectangle a user could see, drag or export" rule.
+Region clipRegionToCanvas(Region r, int32_t newWidth, int32_t newHeight) noexcept {
+  const int32_t x0 = std::max(r.x, int32_t{0});
+  const int32_t y0 = std::max(r.y, int32_t{0});
+  const int32_t x1 = std::min(r.x + static_cast<int32_t>(r.width), newWidth);
+  const int32_t y1 = std::min(r.y + static_cast<int32_t>(r.height), newHeight);
+  if (x1 <= x0 || y1 <= y0) {
+    r.width = 0;
+    r.height = 0;
+    return r;
+  }
+  r.x = x0;
+  r.y = y0;
+  r.width = static_cast<uint32_t>(x1 - x0);
+  r.height = static_cast<uint32_t>(y1 - y0);
+  return r;
+}
+
+// **Crop and canvas size's own rule** (core/Region.hpp §4): every region
+// translates by the same `(dx, dy)` every layer's tile store does -- `dx, dy`
+// is `(-x, -y)`, the crop origin becoming the new (0,0) -- then is
+// intersected with the new canvas, and dropped if that intersection is
+// empty. Unlike a layer's pixels, there is no off-canvas remainder worth
+// keeping: a region is two points and two extents, not a tile store, so
+// "clip to the new canvas" is where its own definition already runs out
+// (the header's own words). Undo still gives back the original region
+// exactly, because `core::History` snapshots the whole `Document`.
+void translateAndClipRegions(Document& doc, int32_t dx, int32_t dy, int32_t newWidth,
+                             int32_t newHeight) {
+  if (doc.regions.empty()) return;
+  std::vector<Region> kept;
+  kept.reserve(doc.regions.size());
+  for (Region r : doc.regions) {
+    r.x += dx;
+    r.y += dy;
+    r = clipRegionToCanvas(r, newWidth, newHeight);
+    if (!r.empty()) kept.push_back(r);
+  }
+  doc.regions = std::move(kept);
+}
+
+// **Image size and rotate/flip's own rule** (core/Region.hpp §4): a region's
+// four corners are mapped by the same matrix as every layer and the
+// selection, and the result is the smallest integer rectangle containing
+// them -- **not** `transformedRegion()`'s one-pixel rounding margin, because
+// that margin exists for resampled pixel content (a destination texel is
+// only written when its centre maps back inside the source); a named
+// rectangle has no sampling condition and wants the tightest exact box.
+//
+// This covers BOTH of the header's "image size" and "rotate/flip" bullets
+// with one function, because both reach here through `transformDocument()`'s
+// one matrix path (`resizeDocumentImage()`'s non-1:1 case included) -- and
+// for a pure axis-aligned scale, mapping the four corners exactly and taking
+// their bounding box gives the identical rectangle "scale x/y/width/height by
+// the same factor, rounded to the nearest texel" would, so there is no
+// second algorithm to keep in step with this one.
+//
+// Intersected with the new canvas afterwards and dropped if empty --
+// harmless for a pure scale (every mapped region already lands inside the
+// new canvas by construction) and load-bearing for a rotate that spins part
+// of a region off the edge.
+void transformRegionsInPlace(Document& doc, const Mat3& dstFromSrc, int32_t newWidth,
+                             int32_t newHeight) {
+  if (doc.regions.empty()) return;
+  std::vector<Region> kept;
+  kept.reserve(doc.regions.size());
+  for (Region r : doc.regions) {
+    const float x0 = static_cast<float>(r.x);
+    const float y0 = static_cast<float>(r.y);
+    const float x1 = x0 + static_cast<float>(r.width);
+    const float y1 = y0 + static_cast<float>(r.height);
+    const std::array<Point2, 4> corners = {Point2{x0, y0}, Point2{x1, y0}, Point2{x0, y1},
+                                           Point2{x1, y1}};
+    float minX = 0.0f, minY = 0.0f, maxX = 0.0f, maxY = 0.0f;
+    bool first = true;
+    bool finite = true;
+    for (const Point2& c : corners) {
+      const Point2 d = mat3MapPoint(dstFromSrc, c);
+      if (!std::isfinite(d.x) || !std::isfinite(d.y)) {
+        finite = false;
+        break;
+      }
+      if (first) {
+        minX = maxX = d.x;
+        minY = maxY = d.y;
+        first = false;
+      } else {
+        minX = std::min(minX, d.x);
+        minY = std::min(minY, d.y);
+        maxX = std::max(maxX, d.x);
+        maxY = std::max(maxY, d.y);
+      }
+    }
+    if (!finite) continue;  // a corner on a perspective horizon: drop it
+
+    Region mapped = r;
+    mapped.x = static_cast<int32_t>(std::floor(minX));
+    mapped.y = static_cast<int32_t>(std::floor(minY));
+    const int32_t rightEdge = static_cast<int32_t>(std::ceil(maxX));
+    const int32_t bottomEdge = static_cast<int32_t>(std::ceil(maxY));
+    mapped.width = rightEdge > mapped.x ? static_cast<uint32_t>(rightEdge - mapped.x) : 0u;
+    mapped.height = bottomEdge > mapped.y ? static_cast<uint32_t>(bottomEdge - mapped.y) : 0u;
+
+    mapped = clipRegionToCanvas(mapped, newWidth, newHeight);
+    if (!mapped.empty()) kept.push_back(mapped);
+  }
+  doc.regions = std::move(kept);
+}
+
+// --------------------------------------------------------------------------
 // The document entry points
 // --------------------------------------------------------------------------
 
@@ -852,6 +972,10 @@ DocumentTransformResult cropDocument(Document& doc, int32_t x, int32_t y, uint32
     *selection = translatedSelection(*selection, -x, -y);
     r.selectionMoved = true;
   }
+
+  // core/Region.hpp §4's crop rule: translate by the same `(-x, -y)`, then
+  // intersect with the new canvas and drop what no longer fits.
+  translateAndClipRegions(doc, -x, -y, static_cast<int32_t>(width), static_cast<int32_t>(height));
 
   doc.width = static_cast<int32_t>(width);
   doc.height = static_cast<int32_t>(height);
@@ -1041,6 +1165,13 @@ DocumentTransformResult transformDocument(Document& doc, const Mat3& dstFromSrc,
     }
     r.selectionMoved = true;
   }
+
+  // core/Region.hpp §4's image-size/rotate/flip rule: map every region's
+  // corners through the same matrix and take the tightest containing box,
+  // then clip to the new canvas. Covers `resizeDocumentImage()`'s scale case
+  // too, since it reaches here with a pure-scale `dstFromSrc`.
+  transformRegionsInPlace(doc, dstFromSrc, static_cast<int32_t>(newWidth),
+                          static_cast<int32_t>(newHeight));
 
   doc.width = static_cast<int32_t>(newWidth);
   doc.height = static_cast<int32_t>(newHeight);

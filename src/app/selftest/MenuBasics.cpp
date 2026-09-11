@@ -304,12 +304,17 @@ bool runMenuBasicsTest() {
         everyDisabledSaysNotBuilt = false;
       }
     }
-    // Stated as its own assertion so the count check below cannot pass
-    // vacuously: this build must actually have an unimplemented tool, or
-    // `enabledCount == implementedCount` would hold whether or not the A4
-    // fix is in place.
-    check(implementedCount < tools.size(),
-          "A4: this build has at least one unimplemented tool to test the guard against");
+    // **This used to demand an unimplemented tool, and there are none left.**
+    // The gap-closing wave built Shape, Frame and Slice, the last three, so
+    // the disabled half of A4's guard has no subject and the two checks below
+    // about disabled entries are vacuous until an enumerator is added ahead
+    // of its behaviour. The guard is not deleted -- `toolMenuFamily()` still
+    // disables by `toolImplemented()` -- but this line now pins the split
+    // itself: a tool that silently went unbuilt again (a gate predicate lost
+    // in a merge) greys its Goodies entry, and fails here by count.
+    check(implementedCount == tools.size(),
+          "A4: every tool in this build is implemented, so every Goodies tool entry is "
+          "enabled -- a disabled one now means a regression");
     check(enabledCount == implementedCount,
           "A4: exactly the tools toolImplemented() says are built are enabled -- counted "
           "against that predicate, never a literal number, so this stays true as tools ship");

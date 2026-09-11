@@ -19,6 +19,7 @@
 #include "app/GradientTool.hpp"
 #include "app/Memory.hpp"
 #include "app/MoveTool.hpp"
+#include "app/RegionTool.hpp"
 #include "app/StrokeSession.hpp"
 #include "app/ZoomAndSize.hpp"
 #include "color/Space.hpp"
@@ -26,6 +27,7 @@
 #include "io/GradientPresetFile.hpp"
 #include "ui/AtelierTheme.hpp"
 #include "ui/Fonts.hpp"
+#include "ui/LabelledControl.hpp"  // ctlInputText() -- the region NAME field
 #include "ui/MacPaintUI.hpp"
 
 #include "imgui.h"
@@ -238,8 +240,8 @@ constexpr ToolMeta kToolMeta[] = {
     // `commitDrawnSelection()`. Two modes, chosen in this band's own row
     // below -- a rectangle through `cropDocument()` and a four-corner
     // perspective through `transformFromQuad()` + `transformDocument()`.
-    // `Tool::Slice`, which shares its palette group and its cursor, is still
-    // one of the not-built cells and stays false.
+    // `Tool::Slice`, which shares its palette group and its cursor, is now
+    // built too -- see its own row below, app/RegionTool.
     {"Crop", "crop", 57515u, "C", "crop", true},
     // **Built**: app/MeasureLine, gated by `toolMeasuresCanvas()` -- the one
     // tool in this palette whose gesture writes no texel at all. Same
@@ -247,7 +249,12 @@ constexpr ToolMeta kToolMeta[] = {
     // order, so a built tool stays where the enum puts it and the divider
     // above marks the enum's not-built run, not a second sorted half.
     {"Measure", "ruler", 57675u, "", "measure", true},
-    {"Frame", "frame", 58001u, "", "frame", false},
+    // **Built**: app/RegionTool, gated by `toolCreatesRegions()` -- the
+    // eleventh canvas gate, shared with `Tool::Slice` below. Both tools draw
+    // a named rectangle into `Document::regions` (core/Region.hpp,
+    // PLAN.md gap-closing wave); the only difference between the two rows is
+    // which `RegionKind` `regionKindForTool()` hands the gesture.
+    {"Frame", "frame", 58001u, "", "frame", true},
     // **Built**, as of the clone route: brush/CloneStamp, and
     // app/StrokeSession §1b for the table it routes through. It stays in this
     // half of the table for the same reason the Eraser row just below does --
@@ -324,7 +331,9 @@ constexpr ToolMeta kToolMeta[] = {
     // against this table, so an empty `shortcut` here needs no exception
     // there -- it already skips a tool with nothing to check.
     {"Shape", "shapes", 58547u, "", "shape", true},
-    {"Slice", "slice", 58096u, "", "slice", false},
+    // **Built**: app/RegionTool, `Tool::Frame`'s own row above -- one gesture
+    // module for both, gated by the shared `toolCreatesRegions()` predicate.
+    {"Slice", "slice", 58096u, "", "slice", true},
     // **Built**: app/PenTool, gated by `toolEditsPath()` alongside Pen and
     // Curve. Photoshop's black arrow, and the tool that lets the Pen stop
     // being one: before this, Pen presses on existing geometry ran the
@@ -433,10 +442,17 @@ bool toolHasCanvasHandler(Tool t) noexcept {
   // because Shape's gesture (one closed primitive from exactly two points)
   // is not the Pen's (one anchor per press), and widening that gate would
   // route Shape's clicks into a handler built for anchor placement.
+  //
+  // `toolCreatesRegions()` is the TWELFTH, `app/CropTool`'s own reason again:
+  // it lives in `app/RegionTool` because it is that module's own answer about
+  // its own two tools, and widening `toolCropsCanvas()` to cover `Slice` (the
+  // one-line way to make this go true) would hand every Frame/Slice drag to
+  // `applyCropSession()`.
   return toolWritesRgbPixels(t) || toolDrawsSelection(t) || toolSamplesCanvas(t) ||
          toolMeasuresCanvas(t) || toolPansView(t) || toolMovesPixels(t) ||
          toolCropsCanvas(t) || toolBeginsStroke(t) || toolZoomsView(t) ||
-         toolEditsPath(t) || toolEditsText(t) || toolCreatesShapes(t);
+         toolEditsPath(t) || toolEditsText(t) || toolCreatesShapes(t) ||
+         toolCreatesRegions(t);
 }
 
 const char* toolNoHandlerException(Tool) noexcept {
@@ -1575,10 +1591,76 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     return;
   }
 
+  // --- Tool::Frame / Tool::Slice: the selected region's name and rectangle --
+  //
+  // The fifth early return in this band, Crop's own reason immediately
+  // above: neither `app/RegionTool` nor `core::RegionOps` reads a
+  // `BrushTip`, so the four brush sliders would be live controls over
+  // nothing.
+  //
+  // **The rectangle is read-only here; only the name is editable**, the
+  // brief's own words ("the selected region's name (editable) and
+  // x/y/w/h"). A region's rectangle is set by the same drag gesture Crop's
+  // own SIZE readout describes -- typing four numbers into an options-bar
+  // field is a second way to move a shape this build already has a precise
+  // one for (the corner handles), and that second way is not built here.
+  if (toolCreatesRegions(st.brush.tool)) {
+    bandSeparator();
+    OpenDocument* od = st.documents.active();
+    const Region* selected =
+        od != nullptr && st.region.doc == od->id ? findRegionById(od->document, st.region.selectedId)
+                                                 : nullptr;
+    if (selected == nullptr) {
+      capsLabel("REGION");
+      ImGui::SameLine();
+      ImGui::TextDisabled("Nothing selected -- drag on the canvas to create one.");
+      return;
+    }
+
+    capsLabel("NAME");
+    ImGui::SameLine();
+    // Synced from the model on every frame the field was NOT active last
+    // frame, so switching which region is selected shows its own name
+    // immediately, and a name typed mid-edit is never overwritten by a
+    // resync. **The flag is read back AFTER the field**: `IsItemActive()`
+    // asked before it answers for the previous item (the NAME label), which
+    // is never active -- that version rewrote the buffer every frame and
+    // threw away every keystroke.
+    static char nameBuf[128] = "";
+    static bool nameFieldActive = false;
+    if (!nameFieldActive) std::snprintf(nameBuf, sizeof(nameBuf), "%s", selected->name.c_str());
+    ImGui::SetNextItemWidth(160.0f);
+    const bool nameEntered = ctlInputText("##regionName", nameBuf, sizeof(nameBuf),
+                                          ImGuiInputTextFlags_EnterReturnsTrue);
+    nameFieldActive = ImGui::IsItemActive();
+    // Through `rename_region` (app/RegionTool's `regionRenameSelected()`),
+    // never `core::renameRegion()` from here -- a widget that reaches the
+    // model directly records nothing (docs/automation.md §7).
+    if (nameEntered && od != nullptr) {
+      regionRenameSelected(st.region, *od, nameBuf);
+      // An edit went through the document; do not trust a pointer into it.
+      selected = findRegionById(od->document, st.region.selectedId);
+      if (selected == nullptr) return;
+    }
+
+    bandSeparator();
+    capsLabel(selected->kind == RegionKind::Frame ? "FRAME" : "SLICE");
+    ImGui::SameLine();
+    pushAtelierMono();
+    ImGui::Text("%d, %d   %u x %u", selected->x, selected->y, selected->width, selected->height);
+    popAtelierMono();
+
+    bandSeparator();
+    if (ImGui::Button("Delete") && od != nullptr) regionDeleteSelected(st.region, *od);
+    ImGui::SetItemTooltip("Delete this region. Backspace does the same.");
+    return;
+  }
+
 
   // --- Tool::Text: FONT, SIZE, style, ALIGN and COLOUR --------------------
   //
-  // **The fifth early return in this band, and docs/ui.md section 4b's test
+  // **The sixth early return in this band (`Tool::Frame`/`Tool::Slice`,
+  // immediately above, is now the fifth), and docs/ui.md section 4b's test
   // settles it without argument.** That test is not "does this tool have
   // settings" but *would the four brush sliders be live controls over
   // something this tool provably never reads*, and the Text tool reads none

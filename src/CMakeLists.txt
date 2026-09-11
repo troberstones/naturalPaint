@@ -15,6 +15,7 @@ add_executable(naturalPaint
   app/CommandsLayers.cpp
   app/CommandsOpStack.cpp
   app/CommandsPatterns.cpp
+  app/CommandsRegions.cpp
   app/CompPanel.cpp
   app/PanelLayout.cpp
   app/ControlsLayout.cpp
@@ -305,12 +306,14 @@ add_executable(naturalPaint
   app/selftest/PathConsumers.cpp
   app/selftest/TextKeyCapture.cpp
   app/selftest/Tileable.cpp
+  app/selftest/Region.cpp
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
   app/LayerThumbnail.cpp
   app/MeasureLine.cpp
   app/GradientTool.cpp
   app/CropTool.cpp
+  app/RegionTool.cpp
   app/OpenAnyFile.cpp
   app/QuitSequence.cpp
   app/Snapping.cpp
@@ -371,6 +374,8 @@ add_executable(naturalPaint
   core/PathFlatten.cpp
   core/PathRaster.cpp
   core/PathStroke.cpp
+  core/Region.cpp
+  core/RegionOps.cpp
   core/VectorRaster.cpp
   core/VectorShape.cpp
   core/TextContent.cpp
@@ -412,6 +417,8 @@ add_executable(naturalPaint
   io/PsdLayerSection.cpp
   io/PsdLayerExtras.cpp
   io/PathSerial.cpp
+  io/RegionSerial.cpp
+  io/ExportRegions.cpp
   io/PsPatterns.cpp
   io/PsdImport.cpp
   io/SvgImport.cpp

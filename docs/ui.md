@@ -759,7 +759,7 @@ filing them somewhere unrelated to painting.
 
 Section 2 gives the options bar the job of showing "the active tool and its options".
 Most tools take the default — the brush's SIZE / HARD / LOAD / WET — because they all
-put down a tip. Six take an early return instead and draw their own row, and the test
+put down a tip. Seven take an early return instead and draw their own row, and the test
 for whether a tool belongs here is not "does it have settings" but **would the four brush
 sliders be live controls over something this tool provably never reads**:
 
@@ -771,6 +771,7 @@ sliders be live controls over something this tool provably never reads**:
 | Magic Wand | TOLERANCE (0..255), REACH (Contiguous / All Similar), ANTI-ALIAS | It selects; nothing it does deposits a texel. |
 | Paint Bucket | The same three, over its **own** parameter block | It fills a region found by a predicate, not a shape walked by a tip. |
 | Crop | MODE (Rectangle / Perspective), SIZE (the extent that will result), CROP and CANCEL, and the refusal sentence when there is one | It has no tip, no stroke and no deposit; nothing in `app/CropTool` or in the two engines behind it reads a `BrushTip`. |
+| Frame / Slice | NAME (editable), the kind label and its rectangle read-only in monospace, and DELETE | Neither `app/RegionTool` nor `core::RegionOps` reads a `BrushTip`; a region is a named rectangle, not a shape walked by a tip. |
 | Text | FONT (the installed families, with a filter box), SIZE (px), B and I, ALIGN (L / C / R / J) and COLOR | A glyph is an outline filled by `core/PathRaster`, not a stroke walked by a tip. |
 
 **ALIGN goes dead on point text**, greyed with the reason in a tooltip — SPREAD-on-Angular

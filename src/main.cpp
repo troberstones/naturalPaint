@@ -44,6 +44,7 @@
 #include "app/StrokeBake.hpp"
 #include "app/StrokeSession.hpp"
 #include "app/CropTool.hpp"
+#include "app/RegionTool.hpp"  // --region-demo
 #include "app/TilePreview.hpp"
 #include "app/ToolSwitch.hpp"
 #include "app/ZoomAndSize.hpp"
@@ -1661,6 +1662,11 @@ int main(int argc, char** argv) {
   np::GradientKind gradientDemoKind = np::GradientKind::Linear;
   bool cropDemo = false;
   int cropDemoShape = 0;  // 0 = rectangle, 1 = perspective, 2 = the refused bow-tie
+  // --region-demo [slice]: see the argument-parsing block for what this
+  // covers and why a flag is the only way to photograph it. Frame by
+  // default; "slice" selects Tool::Slice and RegionKind::Slice instead.
+  bool regionDemo = false;
+  bool regionDemoSlice = false;
   bool wandDemo = false;
   bool wandDemoBucket = false;
   bool wandDemoFlats = false;
@@ -2066,6 +2072,22 @@ int main(int argc, char** argv) {
         const std::string_view k(argv[i + 1]);
         if (k == "perspective") { cropDemoShape = 1; ++i; }
         else if (k == "bowtie") { cropDemoShape = 2; ++i; }
+      }
+    } else if (a == "--region-demo") {
+      // `--region-demo [slice]`: `Tool::Frame` (or `Tool::Slice`) with one
+      // region already laid down and SELECTED -- the options row and the
+      // canvas overlay are both per-region-selection state a screenshot run
+      // has no drag to produce, the same gap `--crop-demo` closes for
+      // `Tool::Crop`.
+      //
+      // `demoHeld` pins the session exactly as `CropSession::demoHeld`
+      // pins Crop's: it is not a live gesture, only a selection, but
+      // pinning it stops a stray pointer read from clearing `selectedId`
+      // before the frame is photographed.
+      regionDemo = true;
+      if (i + 1 < argc) {
+        const std::string_view k(argv[i + 1]);
+        if (k == "slice") { regionDemoSlice = true; ++i; }
       }
     } else if (a == "--wand-demo") {
       // Selects `Tool::MagicWand`, or `Tool::PaintBucket` with the optional
@@ -4066,6 +4088,11 @@ int main(int argc, char** argv) {
     // as one set, through app/TransformSession's `TransformTarget::LayerSet`.
     // Appended at the end of the chain, per this wave's own convention.
     const bool transformLayerSetOk = np::runTransformLayerSetTest();
+    // PLAN.md gap-closing wave, track `region`: core::Region, the Frame and
+    // Slice tools' shared gesture, np:regions persistence, the geometry-edit
+    // hookup in ops/DocumentTransform, and io/ExportRegions. Headless and
+    // GPU-free.
+    const bool regionOk = np::runRegionTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4134,7 +4161,7 @@ int main(int argc, char** argv) {
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
                     penToolOk && pathOpsOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
-                    transformLayerSetOk;
+                    transformLayerSetOk && regionOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -4568,6 +4595,35 @@ int main(int argc, char** argv) {
         std::printf("[crop-demo] Tool::Crop, Perspective (bow-tie): %s\n",
                     np::cropQuadRefusal(st.crop.quad).c_str());
       }
+    }
+  }
+  if (regionDemo) {
+    if (np::OpenDocument* od = st.documents.active()) {
+      // One region of EACH kind, so either view photographs both overlay
+      // styles side by side, and the one matching the active tool selected
+      // (handles + the options row's NAME field). Straight into the model
+      // rather than through `applyCommand()`: this is a fixture, and a
+      // history entry would mark the document dirty in the title band --
+      // a pixel difference the view is not about.
+      //
+      // Both inside `--crop-demo`'s measured visible part of the 1024x1024
+      // demo document (x 0..899, y 0..675), neither square nor centred, and
+      // not overlapping, so a label drawn at a swapped corner lands
+      // somewhere visibly wrong rather than on the other region.
+      np::Document& doc = od->document;
+      doc.regions.clear();
+      np::addRegion(doc, np::RegionKind::Frame, 110, 90, 430u, 290u, "Cover");
+      np::addRegion(doc, np::RegionKind::Slice, 600, 400, 230u, 170u, "Buy button");
+      const np::RegionKind kind = regionDemoSlice ? np::RegionKind::Slice : np::RegionKind::Frame;
+      np::setActiveTool(st, np::toolForRegionKind(kind));
+      st.region = np::RegionSession{};
+      st.region.doc = od->id;
+      st.region.demoHeld = true;
+      for (const np::Region& r : doc.regions)
+        if (r.kind == kind) st.region.selectedId = r.id;
+      std::printf("[region-demo] Tool::%s, \"Cover\" (Frame) and \"Buy button\" (Slice); the %s "
+                  "selected\n",
+                  np::regionKindName(kind), np::regionKindName(kind));
     }
   }
   if (cloneDemo) {

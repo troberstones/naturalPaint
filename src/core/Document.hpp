@@ -9,6 +9,7 @@
 #include "core/Channels.hpp"
 #include "core/Layer.hpp"
 #include "core/LayerComp.hpp"
+#include "core/Region.hpp"
 
 // core/Document (PLAN.md "Phase 2 -- See a file", step 4; CONTEXT.md
 // Relationships: "A Document holds an ordered list of Layers and a Working
@@ -185,6 +186,33 @@ struct Document {
   // and a file written before it existed loads with the list empty.
   // `--selftest` asserts both against files rather than assuming them.
   std::vector<AlphaChannel> channels;
+
+  // **Named document regions** (docs/ui.md §4a's Frame and Slice tools;
+  // PLAN.md gap-closing wave). `core/Region.hpp` §3 is the inside/outside
+  // argument -- the same one `comps` and `channels` above already made --
+  // for why this is here rather than on `app::OpenDocument`: creating,
+  // deleting, moving and resizing a region are edits a user makes, and
+  // `core::HistoryEntry` snapshotting a whole `Document` is what makes them
+  // undoable for free.
+  //
+  // io/NpaintFile writes this as `np:regions` on part 0, **only when
+  // non-empty** -- a document with no regions produces exactly the bytes it
+  // produced before this member existed, the same property `comps` and
+  // `channels` are each held to. `ops/DocumentTransform.cpp`'s crop, canvas
+  // size, image size and rotate/flip entry points keep every region correct
+  // under a geometry edit; `core/Region.hpp` §4 states the exact rule for
+  // each.
+  std::vector<Region> regions;
+
+  // The next value `core::addRegion()` will hand out for `Region::id`.
+  // A counter and not "one above the highest present", for `nextLayerId`'s
+  // own reason: the highest id present falls when the highest-numbered
+  // region is deleted, and max-plus-one would then re-issue a dead region's
+  // id to the next one created.
+  //
+  // Persisted inside `np:regions` and only there, so it costs nothing in a
+  // document that has none.
+  uint64_t nextRegionId = 1;
 
   // The next value `core::normalizeLayerIds()` will hand out for `Layer::id`.
   //

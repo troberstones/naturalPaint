@@ -6458,5 +6458,24 @@ bool runCommandCallsitesTest();
 // shared matrix, one atomic multi-layer commit, ONE `recordEdit()`. Headless,
 // GPU-free. See app/selftest/TransformLayerSet.cpp.
 bool runTransformLayerSetTest();
+// core/Region + core/RegionOps + app/RegionTool + io/RegionSerial +
+// io/ExportRegions (PLAN.md gap-closing wave, track `region`) -- `Tool::Frame`
+// and `Tool::Slice`, and the document-level named-rectangle model they both
+// need (docs/ui.md §4a).
+//
+// Five sections: the model itself (add/delete/rename/move/resize and unique
+// naming across both kinds); `.npaint` persistence (`np:regions`'s exact
+// round trip, the no-regions-writes-nothing byte-identity claim, and a
+// payload this build cannot parse being refused whole); the geometry-edit
+// hookup core/Region.hpp §4 argues (crop, canvas size, image size and a
+// quarter turn each keep a region's rectangle correct, or drop it); the
+// gesture (one history entry per completed define/move/resize/delete, a
+// click-without-a-drag creating nothing, and undo restoring the list
+// exactly); and export (N files at the right pixel extents and names, the
+// off-canvas intersection rule). Headless and GPU-free throughout -- the
+// overlay, the options row and the two menu items' dialog are UI, out of
+// this suite's reach for the reason every on-canvas gesture in
+// ui/MacPaintUI.cpp is. See app/selftest/Region.cpp.
+bool runRegionTest();
 
 }  // namespace np

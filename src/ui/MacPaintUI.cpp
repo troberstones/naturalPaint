@@ -42,6 +42,8 @@
 #include "app/CommandsLayers.hpp"
 #include "app/CompPanel.hpp"
 #include "app/CropTool.hpp"  // Tool::Crop, both modes
+#include "app/RegionTool.hpp"  // Tool::Frame, Tool::Slice
+#include "io/ExportRegions.hpp"
 #include "app/ActionsPanel.hpp"
 #include "app/Recorder.hpp"
 #include "app/Replay.hpp"
@@ -7485,6 +7487,7 @@ bool g_exportAsRequested = false;
 // reports here rather than into a line the popup had already closed over.
 std::string g_docStatus;
 bool g_exportStatesRequested = false;
+bool g_exportRegionsRequested = false;
 bool g_batchRequested = false;
 
 namespace {
@@ -8158,6 +8161,220 @@ void drawExportStatesDialog(AppState& st) {
       break;
     case DialogAction::Cancel:
       st.openExportStatesDialog = false;
+      ImGui::CloseCurrentPopup();
+      break;
+    default:
+      break;
+  }
+  endDialog();
+}
+
+// ---------------------------------------------- Export Frames and Slices
+//
+// `drawExportStatesDialog()`'s own shape, one region-shaped step over:
+// `io/ExportRegions` is the loop (this header's own "reuse, and where it
+// stops" argues why it is not a third `ExportStateSource`), and
+// `ExportStatesReport`/`ExportStateItem` are literally the same types, so
+// `exportStatesBlockedReason()` and `exportStatesSummary()` -- both already
+// pure functions of an `ExportStatesReport` -- are reused verbatim rather
+// than forked for a cosmetic rename.
+//
+// No `AppState::openExportRegionsDialog` flag: `--open-modal ExportRegions`
+// (main.cpp's generic "every dialog a menu item opens" door) already reaches
+// this one, and a bespoke bool here would be a second way to say the same
+// thing -- see AppState.hpp's own note by the export dialogs' flags.
+void drawExportRegionsDialog(AppState& st) {
+  static ExportRegionsRequest request;
+  static char dirBuf[512] = "";
+  static char templateBuf[256] = "{name}";
+  static std::vector<bool> picked;
+  static std::string status;
+  static ExportStatesReport lastRun;
+  static bool hasRun = false;
+  static bool justOpened = false;
+  static bool regionsOpenLatched = false;
+
+  const bool wantOpen = g_exportRegionsRequested;
+  if (wantOpen && !regionsOpenLatched) {
+    regionsOpenLatched = true;
+    justOpened = true;
+    ImGui::OpenPopup("Export Frames and Slices");
+  }
+  if (!wantOpen) regionsOpenLatched = false;
+  g_exportRegionsRequested = false;
+  static bool statusIsError = false;
+  if (!beginDialog("Export Frames and Slices", DialogWidth::Wide)) return;
+
+  const OpenDocument* activeDoc = st.documents.active();
+  if (activeDoc == nullptr) {
+    dialogStatusLine(DialogStatus::Warning, exportStatesBlockedReason(false, 0, ExportStatesReport{}));
+    dialogHint("The painting canvas is a solver texture, not a document: it has no regions.");
+    DialogFooter footer;
+    footer.commit = "OK";
+    footer.cancel = nullptr;
+    if (dialogFooter(footer) != DialogAction::None) ImGui::CloseCurrentPopup();
+    endDialog();
+    return;
+  }
+  const Document& doc = activeDoc->document;
+  request.documentName = documentDisplayName(*activeDoc);
+  const size_t dot = request.documentName.rfind('.');
+  if (dot != std::string::npos && dot > 0) request.documentName.resize(dot);
+
+  if (justOpened) {
+    justOpened = false;
+    picked.clear();
+    hasRun = false;
+    status.clear();
+  }
+
+  size_t frameCount = 0, sliceCount = 0;
+  for (const Region& r : doc.regions) (r.kind == RegionKind::Frame ? frameCount : sliceCount)++;
+
+  dialogHint("One image file per region from \xe2\x80\x9c%s\xe2\x80\x9d (%zu frame%s, %zu "
+             "slice%s), each the visible composite cropped to that region's rectangle.",
+             request.documentName.c_str(), frameCount, frameCount == 1 ? "" : "s", sliceCount,
+             sliceCount == 1 ? "" : "s");
+
+  // --- Which kinds (the export dialog's own two checkboxes -- io/ExportRegions
+  // §"RegionExportScope") ---------------------------------------------------
+  int scopeIdx = request.scope == RegionExportScope::FramesOnly
+                     ? 1
+                     : (request.scope == RegionExportScope::SlicesOnly ? 2 : 0);
+  static const char* kScopes[] = {"All", "Frames only", "Slices only"};
+  if (dialogRadioRow("Export", &scopeIdx, kScopes, 3)) picked.clear();
+  request.scope = scopeIdx == 1 ? RegionExportScope::FramesOnly
+                                 : (scopeIdx == 2 ? RegionExportScope::SlicesOnly
+                                                  : RegionExportScope::All);
+
+  // --- The four settings, shared with every other export path -------------
+  dialogSection("Format");
+  drawExportSettingsControls(request.format);
+  const ExportValidation validation =
+      validateExportRequest(request.format, static_cast<uint32_t>(doc.width),
+                            static_cast<uint32_t>(doc.height), &doc.workingSpace, nullptr);
+  drawExportValidation(validation);
+
+  // --- Where, and under what names -----------------------------------------
+  dialogSection("Output");
+  dialogInputText("Folder", dirBuf, sizeof(dirBuf));
+  dialogInputText("Name template", templateBuf, sizeof(templateBuf));
+  {
+    std::string tokenLine = "Tokens:";
+    for (const std::string& t : exportNameTemplateTokens()) tokenLine += " " + t;
+    tokenLine += ". Hover for what each does.";
+    dialogHint("%s", tokenLine.c_str());
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::BeginTooltip();
+      ImGui::PushTextWrapPos(420.0f);
+      ImGui::TextUnformatted(exportNameTemplateHelp().c_str());
+      ImGui::PopTextWrapPos();
+      ImGui::EndTooltip();
+    }
+  }
+  dialogCheckbox("Overwrite files that already exist", &request.overwriteExisting);
+  if (!request.overwriteExisting)
+    dialogHint("Off: a file that already exists refuses the whole batch.");
+  request.outputDirectory = dirBuf;
+  request.nameTemplate = templateBuf;
+
+  // --- Which regions -- filtered by scope, `drawExportStatesDialog()`'s own
+  // pick-list shape --------------------------------------------------------
+  std::vector<size_t> candidates;
+  for (size_t i = 0; i < doc.regions.size(); ++i) {
+    const RegionKind k = doc.regions[i].kind;
+    const bool inScope = request.scope == RegionExportScope::All ||
+                         (request.scope == RegionExportScope::FramesOnly && k == RegionKind::Frame) ||
+                         (request.scope == RegionExportScope::SlicesOnly && k == RegionKind::Slice);
+    if (inScope) candidates.push_back(i);
+  }
+  if (picked.size() != candidates.size()) picked.assign(candidates.size(), true);
+  dialogSection(request.scope == RegionExportScope::FramesOnly
+                    ? "Frames"
+                    : (request.scope == RegionExportScope::SlicesOnly ? "Slices" : "Regions"));
+  float listW = 0.0f;
+  dialogLabelRow(nullptr, &listW);
+  if (ImGui::SmallButton("All")) picked.assign(candidates.size(), true);
+  ImGui::SameLine();
+  if (ImGui::SmallButton("None")) picked.assign(candidates.size(), false);
+  dialogLabelRow(nullptr, &listW);
+  if (ImGui::BeginChild("##regionpick", ImVec2(listW, exportListHeight(candidates.size(), 6, true)),
+                        true)) {
+    for (size_t n = 0; n < candidates.size(); ++n) {
+      const Region& r = doc.regions[candidates[n]];
+      const std::string label =
+          std::string(regionKindName(r.kind)) + " \"" + r.name + "\"##" + std::to_string(n);
+      bool on = picked[n];
+      if (ImGui::Checkbox(label.c_str(), &on)) picked[n] = on;
+    }
+  }
+  ImGui::EndChild();
+  request.selection.clear();
+  for (size_t n = 0; n < candidates.size(); ++n)
+    if (picked[n]) request.selection.push_back(candidates[n]);
+  const bool noneChosen = request.selection.empty();
+
+  // --- The plan -------------------------------------------------------------
+  ExportStatesReport plan;
+  if (!noneChosen) plan = planRegionExport(doc, request);
+  const std::string blocked = exportStatesBlockedReason(true, request.selection.size(), plan);
+  dialogSection("Plan");
+  if (!blocked.empty()) {
+    if (noneChosen) dialogHint("%s", blocked.c_str());
+    else dialogStatusLine(DialogStatus::Error, blocked);
+  } else {
+    dialogText("Will write %zu file%s (%zu skipped):", plan.items.size() - plan.skipped(),
+               plan.items.size() - plan.skipped() == 1 ? "" : "s", plan.skipped());
+    if (ImGui::BeginChild("##regionplan",
+                          ImVec2(0.0f, exportListHeight(plan.items.size(), 6, false)), true)) {
+      for (const ExportStateItem& item : plan.items) {
+        if (item.filename.empty()) {
+          dialogStatusLine(DialogStatus::Warning, "skipped: " + item.reason);
+        } else {
+          ImGui::TextUnformatted(item.filename.c_str());
+        }
+      }
+    }
+    ImGui::EndChild();
+  }
+
+  if (hasRun) {
+    dialogSection("Result");
+    dialogStatusLine(statusIsError ? DialogStatus::Error : DialogStatus::Info, status);
+    if (!lastRun.items.empty()) {
+      if (ImGui::BeginChild("##regionreport",
+                            ImVec2(0.0f, exportListHeight(lastRun.items.size(), 6, false)),
+                            true)) {
+        for (const ExportStateItem& item : lastRun.items) {
+          const bool bad = item.outcome == ExportItemOutcome::Failed ||
+                           item.outcome == ExportItemOutcome::NotAttempted;
+          if (bad) ImGui::PushStyleColor(ImGuiCol_Text, dialogStatusColor(DialogStatus::Error));
+          ImGui::TextWrapped("%-13s %s%s%s", exportItemOutcomeName(item.outcome),
+                             item.filename.empty() ? item.stateName.c_str() : item.filename.c_str(),
+                             item.reason.empty() ? "" : " -- ", item.reason.c_str());
+          if (bad) ImGui::PopStyleColor();
+          for (const std::string& w : item.warnings)
+            dialogStatusLine(DialogStatus::Warning, "    ! " + w);
+        }
+      }
+      ImGui::EndChild();
+    }
+  } else {
+    dialogStatusLine(statusIsError ? DialogStatus::Error : DialogStatus::Info, status);
+  }
+
+  DialogFooter footer;
+  footer.commit = "Export";
+  footer.commitEnabled = blocked.empty();
+  footer.cancel = hasRun ? "Close" : "Cancel";
+  switch (dialogFooter(footer)) {
+    case DialogAction::Commit:
+      lastRun = exportDocumentRegions(doc, request);
+      hasRun = true;
+      status = exportStatesSummary(lastRun);
+      statusIsError = !lastRun.ok;
+      break;
+    case DialogAction::Cancel:
       ImGui::CloseCurrentPopup();
       break;
     default:
@@ -12279,6 +12496,7 @@ MenuContext menuContextFromState(AppState& st) {
   ctx.showPigmentPanel = st.panels.placementOf(ControlsSection::Pigment) != PanelPlacement::Hidden;
   ctx.showGuides = st.showGuides;
   ctx.showGrid = st.showGrid;
+  ctx.showRegions = st.showRegions;
   ctx.snappingEnabled = st.snappingEnabled;
   ctx.hasGuides = !st.guides.empty();
 
@@ -12643,6 +12861,10 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
       g_exportStatesRequested = true;
       break;
 
+    case MenuAction::ExportRegions:
+      g_exportRegionsRequested = true;
+      break;
+
     case MenuAction::Batch:
       g_batchRequested = true;
       break;
@@ -12852,6 +13074,7 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     }
     case MenuAction::Guides:           st.showGuides = !st.showGuides;           break;
     case MenuAction::Grid:             st.showGrid = !st.showGrid;               break;
+    case MenuAction::ShowRegions:      st.showRegions = !st.showRegions;         break;
     case MenuAction::Snap:             st.snappingEnabled = !st.snappingEnabled; break;
 
     case MenuAction::AddGuide:
@@ -15893,6 +16116,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // PLAN.md Phase 5 step 13 ("Export comps to files, and layers to files"),
   // out here for the same ID-stack reason.
   drawExportStatesDialog(st);
+  drawExportRegionsDialog(st);
   drawBatchDialog(st);
 
   // PLAN.md Phase 4 step 8 ("Document lifecycle"), out here for the same
@@ -18129,6 +18353,99 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
     // ===== Tool::Crop -- END ==============================================
+
+    // ===== Tool::Frame / Tool::Slice -- BEGIN: the gesture (app/RegionTool.hpp)
+    //
+    // One gesture module for both palette cells (`regionKindForTool()` picks
+    // which `RegionKind` a drag creates); everything else -- select, move,
+    // resize, delete -- is identical between the two. Gated on
+    // `toolCreatesRegions()`, the eleventh canvas gate, for
+    // `toolCropsCanvas()`'s own reason above: it is this module's own answer
+    // about its own two tools.
+    //
+    // Unlike Crop, a region gesture commits **on pen-up**, with no separate
+    // Enter/Escape confirmation step -- there is nothing destructive here to
+    // hold open for review, only a document edit no different in kind from a
+    // Move drag.
+    if (toolCreatesRegions(st.brush.tool) && !panning && !rotating && !sizingHeld &&
+        !st.pendingGuide.has_value()) {
+      RegionSession& region = st.region;
+      OpenDocument* regionDoc = st.documents.active();
+      const DocumentId regionDocId = regionDoc != nullptr ? regionDoc->id : 0u;
+      const RegionKind kind = regionKindForTool(st.brush.tool);
+
+      // A gesture begun on another tab means nothing here -- `CropSession`'s
+      // own rule for its own reason -- and neither does a SELECTION made
+      // there: region ids are a per-document counter, so document B's
+      // region 1 is not document A's. One normalisation here keeps
+      // `region.doc` naming the document every other field refers to.
+      if (region.doc != regionDocId) {
+        regionCancelGesture(region);
+        region.selectedId = 0;
+        region.doc = regionDocId;
+      }
+
+      if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && region.gesture != RegionGesture::Idle)
+        regionCancelGesture(region);
+
+      // Every commit below goes through `applyCommand()` (app/RegionTool.hpp:
+      // those functions are this tool's boundary into the command layer), so
+      // the history entry and the recorded step are already done by the time
+      // one returns. What is left for the canvas is the refusal sentence:
+      // `ok == false` with an EMPTY status is "not an edit" (a click), and
+      // must not be shown as a mistake.
+      const auto reportRegion = [](const CommandResult& r) {
+        if (!r.ok && !r.status.empty()) g_strokeRefusal = r.status;
+      };
+
+      // Delete/Backspace removes the selected region -- brief's own words.
+      // Guarded on `!WantTextInput` so renaming a region in the options row
+      // (a text field) does not also delete the row being renamed.
+      if (region.gesture == RegionGesture::Idle && region.selectedId != 0 && regionDoc != nullptr &&
+          !ImGui::GetIO().WantTextInput &&
+          (ImGui::IsKeyPressed(ImGuiKey_Delete, false) ||
+           ImGui::IsKeyPressed(ImGuiKey_Backspace, false))) {
+        reportRegion(regionDeleteSelected(region, *regionDoc));
+      }
+
+      // `--region-demo`'s pin, `CropSession::demoHeld`'s exact twin.
+      if (!region.demoHeld && regionDoc != nullptr) {
+        const float grabTexels = std::max(4.0f, 9.0f / std::max(0.05f, st.view.zoom));
+        const ImGuiIO& regionMods = ImGui::GetIO();
+
+        if (hovered && !transformActive && region.gesture == RegionGesture::Idle &&
+            ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+          const Region* selected = findRegionById(regionDoc->document, region.selectedId);
+          const int handle = (selected != nullptr && selected->kind == kind)
+                                 ? regionHandleAt(*selected, tx, ty, grabTexels)
+                                 : -1;
+          if (handle >= 0) {
+            regionBeginResize(region, regionDoc->document, handle);
+          } else if (const Region* hit = regionAt(regionDoc->document, kind, tx, ty)) {
+            region.selectedId = hit->id;
+            regionBeginMove(region, regionDoc->document, tx, ty);
+          } else {
+            // A click on empty canvas of this kind starts a new rectangle and
+            // deselects whatever was selected -- `regionBeginDefine()`'s own
+            // contract.
+            regionBeginDefine(region, regionDocId, kind, tx, ty);
+          }
+        }
+
+        if (region.gesture == RegionGesture::Defining &&
+            ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+          reportRegion(regionCommitDefine(region, *regionDoc, kind, tx, ty, regionMods.KeyShift,
+                                          regionMods.KeyAlt));
+        } else if (region.gesture == RegionGesture::Moving &&
+                   ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+          reportRegion(regionCommitMove(region, *regionDoc, tx, ty));
+        } else if (region.gesture == RegionGesture::Resizing &&
+                   ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+          reportRegion(regionCommitResize(region, *regionDoc, tx, ty));
+        }
+      }
+    }
+    // ===== Tool::Frame / Tool::Slice -- END ================================
 
     // ===== Tool::Move -- BEGIN: the drag (app/MoveTool.hpp) ===============
     //
@@ -21472,6 +21789,102 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
     // === END Tool::Crop overlay ============================================
+
+    // === BEGIN Tool::Frame / Tool::Slice overlay (app/RegionTool) ==========
+    //
+    // Outlines with a name label, drawn while either tool is active, and
+    // also whenever View > Show Frames and Slices is on (`st.showRegions`) --
+    // `AppState::showRegions`'s own comment: "a view toggle beside the
+    // tool-active condition that already draws the same overlay, not a
+    // replacement for it." No shield: unlike Crop, a region is not
+    // destructive, so there is nothing to darken the rest of the picture
+    // against.
+    //
+    // Frame and Slice are styled with two already-blessed design tokens
+    // (`ui/AtelierTheme.hpp`) rather than an invented third colour --
+    // `kAccent` (the active-tool / dirty-marker colour) for Frame,
+    // `kWarning` for Slice -- so the two read as distinct without adding a
+    // hue this design language does not already have a role for.
+    //
+    // **The live gesture is drawn too, and the selected region carries its
+    // four corner handles** -- without either, a Frame drag showed nothing
+    // until pen-up and a resize was a guess at where the corners were. The
+    // live rectangle comes from the same `regionDefineRect()` /
+    // `regionMoveOrigin()` / `regionResizeRect()` the commit calls with the
+    // same pointer, so what is drawn during the drag is what lands; the
+    // handles come from `regionHandlePoints()`, the function
+    // `regionHandleAt()` hit-tests, so a handle is never drawn where it
+    // cannot be grabbed (the Crop overlay's own rule, above).
+    //
+    // Every outline is four transformed corners, not two: the view can be
+    // rotated, and a rotated rectangle is not the axis-aligned box of two of
+    // its corners.
+    {
+      const OpenDocument* overlayDoc = st.documents.active();
+      const bool toolOn = toolCreatesRegions(st.brush.tool);
+      const bool sessionHere = overlayDoc != nullptr && st.region.doc == overlayDoc->id;
+      const bool defining = toolOn && sessionHere && st.region.gesture == RegionGesture::Defining;
+      if (overlayDoc != nullptr && (toolOn || st.showRegions) &&
+          (!overlayDoc->document.regions.empty() || defining)) {
+        const ImVec2 bandMin(paintOrigin.x, paintOrigin.y);
+        const ImVec2 bandMax(paintOrigin.x + avail.x, paintOrigin.y + avail.y);
+        dl->PushClipRect(bandMin, bandMax, true);
+        const auto corners = [&](int32_t x, int32_t y, uint32_t w, uint32_t h) {
+          const float x0 = static_cast<float>(x), y0 = static_cast<float>(y);
+          const float x1 = x0 + static_cast<float>(w), y1 = y0 + static_cast<float>(h);
+          const Vec2 c[4] = {xform.toScreen(Vec2{x0, y0}), xform.toScreen(Vec2{x1, y0}),
+                             xform.toScreen(Vec2{x1, y1}), xform.toScreen(Vec2{x0, y1})};
+          return std::array<ImVec2, 4>{ImVec2(c[0].x, c[0].y), ImVec2(c[1].x, c[1].y),
+                                       ImVec2(c[2].x, c[2].y), ImVec2(c[3].x, c[3].y)};
+        };
+        const ImGuiIO& overlayIo = ImGui::GetIO();
+        for (const Region& stored : overlayDoc->document.regions) {
+          const bool isSelected = toolOn && sessionHere && st.region.selectedId == stored.id;
+          // The selected region is drawn where the live gesture has it, not
+          // where the document last stored it.
+          Region r = stored;
+          if (isSelected && st.region.gesture == RegionGesture::Moving) {
+            regionMoveOrigin(st.region, tx, ty, &r.x, &r.y);
+          } else if (isSelected && st.region.gesture == RegionGesture::Resizing) {
+            const DocumentRegion live = regionResizeRect(st.region, tx, ty);
+            r.x = live.x;
+            r.y = live.y;
+            r.width = live.width;
+            r.height = live.height;
+          }
+          const ImU32 color = atelierToken(r.kind == RegionKind::Frame ? kAccent : kWarning);
+          const std::array<ImVec2, 4> q = corners(r.x, r.y, r.width, r.height);
+          dl->AddPolyline(q.data(), 4, color, ImDrawFlags_Closed, isSelected ? 2.5f : 1.5f);
+          // The name label, above the top-left corner. Clipped by the
+          // band's own `PushClipRect` above, so a region dragged mostly
+          // off-screen does not paint its label into the panels beside the
+          // canvas.
+          const ImVec2 textPos(q[0].x, q[0].y - ImGui::GetTextLineHeight() - 2.0f);
+          dl->AddText(textPos, color, r.name.c_str());
+          if (isSelected) {
+            for (const ImVec2& hp : q) {
+              constexpr float hr = 4.5f;
+              dl->AddRectFilled(ImVec2(hp.x - hr, hp.y - hr), ImVec2(hp.x + hr, hp.y + hr),
+                                atelierToken(kCanvasPaper));
+              dl->AddRect(ImVec2(hp.x - hr, hp.y - hr), ImVec2(hp.x + hr, hp.y + hr), color, 0.0f,
+                          0, 1.0f);
+            }
+          }
+        }
+        if (defining) {
+          const DocumentRegion live =
+              regionDefineRect(st.region, tx, ty, overlayIo.KeyShift, overlayIo.KeyAlt);
+          if (live.width > 0u && live.height > 0u) {
+            const ImU32 color = atelierToken(
+                regionKindForTool(st.brush.tool) == RegionKind::Frame ? kAccent : kWarning);
+            const std::array<ImVec2, 4> q = corners(live.x, live.y, live.width, live.height);
+            dl->AddPolyline(q.data(), 4, color, ImDrawFlags_Closed, 1.5f);
+          }
+        }
+        dl->PopClipRect();
+      }
+    }
+    // === END Tool::Frame / Tool::Slice overlay ==============================
 
     // === BEGIN Tool::Measure ruler (app/MeasureLine) =======================
     //

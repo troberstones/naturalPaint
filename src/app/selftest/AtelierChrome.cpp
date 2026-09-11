@@ -444,10 +444,10 @@ bool runAtelierChromeTest() {
     // selection tools' canvas block, so a Crop widened into it would have had
     // every crop drag handed to `commitDrawnSelection()`.
     //
-    // `Tool::Slice`, which shares Crop's palette group and its cursor, is
-    // deliberately still false: the group pairing is a layout fact, not a
-    // capability, and a group whose second cell went live by association would
-    // be exactly the half-wiring this check exists to catch.
+    // `Tool::Slice`, which shares Crop's palette group and its cursor, is now
+    // built too, as of app/RegionTool -- the same module `Tool::Frame` shares
+    // with `Move`'s group, gated by its own `toolCreatesRegions()` predicate
+    // rather than by widening `toolCropsCanvas()`.
     const Tool kImplementedTools[] = {Tool::Brush,       Tool::Water,
                                       Tool::DryBrush,    Tool::Eyedropper,
                                       Tool::Marquee,     Tool::EllipseMarquee,
@@ -461,15 +461,14 @@ bool runAtelierChromeTest() {
                                       Tool::Zoom,        Tool::Move,
                                       Tool::Crop,        Tool::Pen,
                                       Tool::Curve,       Tool::Text,
-                                      Tool::PathSelect,  Tool::Shape};
-    // **Twenty-eight, as of this row.** `Tool::Shape` (app/ShapeTool) is the
-    // gap this row's own comment named -- docs/ui.md §4a's "the unbuilt
-    // three are Frame, Shape and Slice" -- and is now the twenty-eighth
-    // implemented tool. Two other tracks in this wave flip two more of the
-    // remaining not-built cells on in the same window; if this array or the
-    // count in the message below disagrees with the tree at gather time,
-    // that is the expected three-way collision the wave's own brief named,
-    // not a defect in this row.
+                                      Tool::PathSelect,  Tool::Shape,
+                                      Tool::Frame,       Tool::Slice};
+    // **Thirty, as of this row -- every cell in the palette.** `Tool::Shape`
+    // (app/ShapeTool), `Tool::Frame` and `Tool::Slice` (app/RegionTool) were
+    // docs/ui.md §4a's "the unbuilt three", and the gap-closing wave built
+    // all three. The list is still spelled out rather than replaced by "every
+    // tool": a thirty-first enumerator added without behaviour must fail
+    // here, and "every tool" would wave it through.
     bool implementedOk = true;
     for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
       const Tool t = static_cast<Tool>(i);
@@ -479,7 +478,7 @@ bool runAtelierChromeTest() {
       if (toolImplemented(t) != shouldBe) implementedOk = false;
     }
     check(implementedOk,
-          "toolImplemented() is true for exactly the twenty-eight tools with real behaviour");
+          "toolImplemented() is true for exactly the thirty tools with real behaviour");
 
     // Every tool has an icon, and toolIconCodepoints() is the deduplicated,
     // sorted union of all of them plus the "More" cell's own ellipsis --
