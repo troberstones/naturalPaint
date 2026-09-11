@@ -89,3 +89,66 @@ Two things worth knowing before the next person touches this:
 - **The suite is slow here because llvmpipe is a CPU rasteriser**, not because
   anything regressed: the GPU sections dominate the 15 minutes. On a machine with a
   real Vulkan device it should approach the macOS figure.
+
+---
+
+## Record (RHEL 9.8, no-sudo, 2026-09-11)
+
+Same source tree, a different Linux entirely from the one above: RHEL 9.8
+("Plow"), no sudo (no package installs, period), and no `OpenImageIO-devel`
+RPM at all -- the Ubuntu record's "packaged OIIO is enough" does not hold here.
+Recorded because the fixes needed are different in kind, not degree, from
+Phase 1/2 above.
+
+**Building OpenImageIO with no package manager access.** Built from source into
+a user-owned prefix, letting CMake fetch OIIO's own missing deps (OpenEXR,
+Imath, OpenColorIO, fmt, pugixml, robin-map) rather than trying to source them
+individually -- none of those have devel RPMs here either.
+
+**GCC 11.5 cannot build this tree.** `src/core/Half.hpp` needs `_Float16`,
+which is a GCC 12 feature; RHEL 9.8's system GCC is 11.5 and there is no sudo
+to install a newer one. Fix used: build both OpenImageIO and naturalPaint with
+zig's bundled Clang (`zig cc` / `zig c++`) instead, with `CC`/`CXX` propagated
+into OIIO's own dependency sub-builds so every library in the chain shares one
+compiler and one C++ ABI. A separately-downloaded standalone LLVM toolchain
+also works and was tried first, but at 12 GB for a box that already had zig
+installed, it is strictly worse -- keeping it around a single build here for
+comparison purposes was not worth the disk.
+
+**Result.** Configures, builds, and `--selftest` runs to completion. Six
+sections fail here that pass on the Ubuntu/llvmpipe box above --
+`fonts`, `no-document canvas`, `inpaint` (this one is flaky -- not consistent
+run to run), `move tool`, `apply pass`, `panel settings` -- and have not been
+root-caused; recorded as an open question for whoever next builds on a
+GCC-11/RHEL9/NVIDIA-proprietary-driver box like this one, not asserted to be
+this environment's fault.
+
+**The packaging problem this environment exposes that Ubuntu's does not.**
+`find_package(OpenImageIO)` bakes `CMAKE_PREFIX_PATH` into the binary as an
+absolute RPATH. On Ubuntu that path is `/usr` (system package), invisible
+because it is already everywhere. Here it is `/work/.../openimageio-zig/lib64`
+-- a path that exists on exactly one machine. `build/src/naturalPaint` as
+CMake produces it is therefore **not the thing to hand to anyone else**, on
+this kind of build; copying it to a different directory on the *same* machine
+is enough to break it. `tools/package-linux/package.sh` fixes this: it
+bundles the non-system shared libraries `ldd` actually finds (found by
+inspecting the loader's output, not by hardcoding OpenImageIO's name -- so a
+version bump doesn't require editing the script), strips debug info (234 MB
+-> 21 MB, measured on this build), and repoints the binary at its own bundled
+copy with an old-style `DT_RPATH` rather than `patchelf`'s default
+`DT_RUNPATH`. That distinction is load-bearing, not cosmetic: `DT_RUNPATH`
+loses to `LD_LIBRARY_PATH`, and `LD_LIBRARY_PATH` is exactly what gets
+exported by a sourced Houdini/Nuke/RV environment on a box that also has DCC
+tools installed -- several of which bundle their own OpenImageIO. Verified by
+hand with a decoy `libOpenImageIO.so.3.0` on `LD_LIBRARY_PATH`: the
+`DT_RUNPATH` default lost to it, the forced `DT_RPATH` did not. No such
+collision exists on this box today (Autodesk RV ships a different SONAME,
+`libOpenImageIO.so.2.4`; Houdini renames its copy to
+`libOpenImageIO_sidefx.so` for this exact reason), but nothing guarantees the
+next tool installed alongside naturalPaint will bother to.
+
+One thing worth knowing before the next person touches this: **always package
+before handing a binary to anyone, even for a same-machine test in a different
+directory** -- `build/src/naturalPaint` carries an absolute path to this
+machine's OIIO prefix and will not run once moved. `tools/package-linux/package.sh`
+is the only supported way to produce something relocatable.
