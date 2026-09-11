@@ -7513,6 +7513,16 @@ bool g_exportAsRequested = false;
 // the export dialogs, because a successful Export As now closes its dialog and
 // reports here rather than into a line the popup had already closed over.
 std::string g_docStatus;
+// How wide the `ImGui::BeginMenu()` row actually drew last frame, beyond
+// `kTitleWordmarkW`, on platforms with no native menu bar (see
+// ui/MacNativeMenu.hpp). Fed into the NEXT frame's `atelierLayout()` calls as
+// `menuBarReservedW`, so the document tab strip starts after the menus
+// instead of being drawn on top of them -- see this file's own
+// `BeginMainMenuBar()` block for the measurement and AtelierLayout.hpp's
+// `menuBarReservedW` parameter for why one frame's lag here is fine. Always
+// 0 once a native menu bar is installed, since then nothing is drawn into
+// this row for the tab strip to collide with.
+float g_linuxMenuBarReservedW = 0.0f;
 bool g_exportStatesRequested = false;
 bool g_batchRequested = false;
 
@@ -15089,7 +15099,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // will -- this is the same value computed twice, not two different
   // answers.
   const AtelierRect earlyTabStrip =
-      atelierLayout(vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y, !st.documents.empty()).tabStrip;
+      atelierLayout(vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y, !st.documents.empty(),
+                    nativeMenuBarInstalled() ? 0.0f : g_linuxMenuBarReservedW)
+          .tabStrip;
 
   // ------------------------------------------------------------ title bar
   //
@@ -15141,6 +15153,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   const bool menuBarOpen = ImGui::BeginMainMenuBar();
   ImGui::PopStyleVar();
   if (menuBarOpen) {
+    // Row-local origin for `g_linuxMenuBarReservedW`'s measurement below --
+    // captured before the wordmark, so the delta to the end of the menu loop
+    // is the wordmark's own rendered width plus the menus', not just the
+    // menus' share on top of `kTitleWordmarkW`'s nominal 100 px (the two can
+    // differ by a few px depending on the font actually loaded).
+    const float titleRowStartX = ImGui::GetCursorPosX();
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
                          (kTitleBarH - ImGui::GetFrameHeight()) * 0.5f);
 
@@ -15199,6 +15217,17 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           ImGui::EndMenu();
         }
       }
+      // Measured so next frame's `atelierLayout()` calls can reserve exactly
+      // this much room for the tab strip -- see `g_linuxMenuBarReservedW`'s
+      // own comment. `titleRowStartX` is this same row's origin, so the delta
+      // to here is the wordmark's actual rendered width plus the menus',
+      // and subtracting `kTitleWordmarkW` converts that into "how much MORE
+      // than the nominal wordmark reservation the row just used" -- exactly
+      // what `atelierLayout()`'s `menuBarReservedW` parameter adds on top of.
+      g_linuxMenuBarReservedW = std::max(
+          0.0f, (ImGui::GetCursorPosX() - titleRowStartX) - kTitleWordmarkW);
+    } else {
+      g_linuxMenuBarReservedW = 0.0f;
     }
 
     // The active document's name used to be here, with a `*` dirty marker,
@@ -15659,8 +15688,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   dockExtents.right = pd.right;
   dockExtents.top = pd.top;
   dockExtents.bottom = pd.bottom;
-  const AtelierBands bands = atelierLayout(vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y,
-                                           /*showTabStrip=*/!st.documents.empty(), dockExtents);
+  const AtelierBands bands = atelierLayout(
+      vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y,
+      /*showTabStrip=*/!st.documents.empty(), dockExtents,
+      nativeMenuBarInstalled() ? 0.0f : g_linuxMenuBarReservedW);
 
   // Any dock, splitter or header gesture below sets this; it is written back
   // once, after every dock has drawn. One write per frame that changed
