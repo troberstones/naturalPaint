@@ -21859,7 +21859,17 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           // band's own `PushClipRect` above, so a region dragged mostly
           // off-screen does not paint its label into the panels beside the
           // canvas.
-          const ImVec2 textPos(q[0].x, q[0].y - ImGui::GetTextLineHeight() - 2.0f);
+          //
+          // **On a chrome-coloured plate**, because the label sits on the
+          // picture and the picture can be any colour: the Slice's warning
+          // yellow was close to unreadable over the demo's own pink and
+          // yellow, and the Frame's accent would vanish over red. The plate
+          // is the one background both are designed to read against.
+          const ImVec2 textSize = ImGui::CalcTextSize(r.name.c_str());
+          const ImVec2 textPos(q[0].x + 3.0f, q[0].y - textSize.y - 4.0f);
+          dl->AddRectFilled(ImVec2(textPos.x - 3.0f, textPos.y - 1.0f),
+                            ImVec2(textPos.x + textSize.x + 3.0f, textPos.y + textSize.y + 1.0f),
+                            (atelierToken(kChromeBase) & 0x00FFFFFFu) | 0xD8000000u);
           dl->AddText(textPos, color, r.name.c_str());
           if (isSelected) {
             for (const ImVec2& hp : q) {

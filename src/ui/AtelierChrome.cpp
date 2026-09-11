@@ -27,7 +27,6 @@
 #include "io/GradientPresetFile.hpp"
 #include "ui/AtelierTheme.hpp"
 #include "ui/Fonts.hpp"
-#include "ui/LabelledControl.hpp"  // ctlInputText() -- the region NAME field
 #include "ui/MacPaintUI.hpp"
 
 #include "imgui.h"
@@ -1630,8 +1629,13 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     static bool nameFieldActive = false;
     if (!nameFieldActive) std::snprintf(nameBuf, sizeof(nameBuf), "%s", selected->name.c_str());
     ImGui::SetNextItemWidth(160.0f);
-    const bool nameEntered = ctlInputText("##regionName", nameBuf, sizeof(nameBuf),
-                                          ImGuiInputTextFlags_EnterReturnsTrue);
+    // A plain `InputText`, not `ctlInputText()`: that one is a DOCKED-PANEL
+    // control -- it draws its label into the panel's label column and
+    // stretches the field to the panel edge -- and in this band it printed
+    // "##regionName" as a visible label and pushed the readout and the
+    // Delete button off the right of the window.
+    const bool nameEntered = ImGui::InputText("##regionName", nameBuf, sizeof(nameBuf),
+                                              ImGuiInputTextFlags_EnterReturnsTrue);
     nameFieldActive = ImGui::IsItemActive();
     // Through `rename_region` (app/RegionTool's `regionRenameSelected()`),
     // never `core::renameRegion()` from here -- a widget that reaches the
