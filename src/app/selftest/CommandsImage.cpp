@@ -998,6 +998,41 @@ bool runCommandsImageTest() {
             "offset: a fraction that resolves to (0, 0) texels is refused as the identity");
     }
 
+    std::printf("     -- filter_inpaint, filter_remove_lighting_gradient (command vs applier) --\n");
+    // Section B (both loops above) already runs these two rows through every
+    // params/refusal/type check the other twenty-eight image commands get.
+    // What is missing there is the bit-exact "the menu path and the command
+    // path are the same picture" claim -- the fixture that loop shares has no
+    // live selection, and Inpaint refuses outright without one, so it could
+    // not be added to that loop without changing what every OTHER row in it
+    // measures. `makeImageCommandDocument()` already carries a selection.
+    {
+      OpenDocument viaCommand = makeImageCommandDocument();
+      OpenDocument viaApplier = makeImageCommandDocument();
+      JsonValue p = JsonValue::object();
+      p.set("radius", num(4));
+      const CommandResult r = applyCommand(viaCommand, Command{"filter_inpaint", p});
+      const FilterOpResult a = applyInpaint(viaApplier, 4);
+      check(r.ok && a.refusal == PixelOpRefusal::None && r.texelsChanged > 0,
+            "filter_inpaint: both the command and the applier ran and moved texels");
+      check(sameRgbLayerPixels(viaCommand.document, viaApplier.document, viaCommand.activeLayer),
+            "filter_inpaint: the command and applyInpaint() agree bit-for-bit");
+    }
+    {
+      OpenDocument viaCommand = makeImageCommandDocument();
+      OpenDocument viaApplier = makeImageCommandDocument();
+      JsonValue p = JsonValue::object();
+      p.set("sigma", num(8.0));
+      const CommandResult r = applyCommand(viaCommand, Command{"filter_remove_lighting_gradient", p});
+      const FilterOpResult a = applyRemoveLightingGradient(viaApplier, 8.0f);
+      check(r.ok && a.refusal == PixelOpRefusal::None && r.texelsChanged > 0,
+            "filter_remove_lighting_gradient: both the command and the applier ran and moved "
+            "texels");
+      check(sameRgbLayerPixels(viaCommand.document, viaApplier.document, viaCommand.activeLayer),
+            "filter_remove_lighting_gradient: the command and applyRemoveLightingGradient() "
+            "agree bit-for-bit");
+    }
+
     std::printf("     -- delete_selection --\n");
     // (b) command vs the direct clear, both bounded and unbounded.
     {
