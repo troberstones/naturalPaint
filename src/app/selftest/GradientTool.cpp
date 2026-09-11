@@ -827,13 +827,25 @@ bool runGradientToolTest() {
           "gradient/json: every colour stop (incl. its Foreground flag) and opacity stop round "
           "trips exactly");
 
-    // The written text must NOT carry a "color" key for the Foreground stop
-    // -- the header's own rule: a reader that saw both a foreground flag and
-    // a colour would have to pick a winner. This is the one thing the
-    // round-trip check above cannot see, since a reader that silently wrote
-    // a placeholder colour and ignored it on read would still round-trip.
     check(text.find("\"foreground\": true") != std::string::npos,
           "gradient/json: a Foreground stop is written with a \"foreground\" key");
+
+    // The written text must NOT carry a "color" key for the Foreground stop
+    // -- the header's own rule: a reader that saw both a foreground flag and
+    // a colour would have to pick a winner. A preset holding ONLY Foreground
+    // colour stops isolates the claim: the round-trip check above cannot see
+    // this, since a writer that wrote a placeholder colour alongside
+    // "foreground": true and a reader that ignored it would still round trip
+    // byte-for-byte on the STRUCT, even though the file itself now carries a
+    // colour it should not.
+    GradientPresetStops allForeground;
+    allForeground.colorStops = {GradientColorStopSpec{0.0f, true, {0, 0, 0}, 0.5f},
+                                GradientColorStopSpec{1.0f, true, {0, 0, 0}, 0.5f}};
+    allForeground.opacityStops = {GradientOpacityStopSpec{0.0f, 1.0f}, GradientOpacityStopSpec{1.0f, 1.0f}};
+    std::string fgText;
+    writeGradientPreset("All Foreground", allForeground, &fgText);
+    check(fgText.find("\"color\"") == std::string::npos,
+          "gradient/json: a Foreground stop's own JSON carries no \"color\" key at all");
 
     // Refusals: no version key, and a colour stop with neither foreground
     // nor a valid colour.
