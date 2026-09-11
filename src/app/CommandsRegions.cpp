@@ -1,6 +1,8 @@
 #include <cmath>
 #include <string>
 
+#include "app/CommandsRegions.hpp"
+
 #include "app/CommandSupport.hpp"
 #include "core/RegionOps.hpp"
 
@@ -15,18 +17,16 @@
 // and none of these five has one -- a region is created and edited by an
 // on-canvas drag, `app/RegionTool`'s own gesture, never a menu item).
 //
-// **The interactive gesture itself does not call through here, and that is
-// not a gap this file leaves open.** `app/CropTool`'s own on-canvas drag
-// commits through `applyCropSession()` directly, never `applyCommand()` --
-// only `crop_to_selection` and `trim_to_content`, the two MENU-triggered
-// geometry ops, are registered rows, and the interactive rectangle itself is
-// treated as the same kind of live, session-owned gesture `MenuAction::
-// FreeTransform` is (`NotRecordable`, "the session owns the live transform").
-// A region drag is the identical shape of gesture over the identical
-// non-destructive replacement: two numbers dragged into place, not a value a
-// dialog could hold. What IS recordable, and what this file registers, is
-// the EDIT that gesture commits -- the same split app/CropTool.hpp keeps
-// between its own untouched interactive drag and its two menu rows.
+// **The interactive gesture COMMITS through here.** The live drag is session
+// state (docs/automation.md §1: "a live on-canvas gesture" is not
+// recordable), but what it commits on pen-up is a plain rectangle edit this
+// table already has a row for, so `app/RegionTool`'s `regionCommit*()`
+// build the matching command (app/CommandsRegions.hpp) and hand it to
+// `applyCommand()` rather than calling `core::RegionOps` themselves. That is
+// a deliberate departure from `app/CropTool`, whose on-canvas commit calls
+// `applyCropSession()` directly and so records nothing: a crop's commit has
+// no row of its own to go through, a region's does, and a recorded Frame
+// drag replays as the exact `add_region` a hand-written action would.
 //
 // Every row is an adapter and nothing more: read the parameters, refuse what
 // is missing or malformed **by name**, call `core::RegionOps` (which already
@@ -205,7 +205,67 @@ CommandResult doResizeRegion(OpenDocument& doc, const JsonValue& params) {
       "resize region");
 }
 
+Command regionCommand(const char* id, JsonValue params) {
+  Command c;
+  c.id = id;
+  c.params = std::move(params);
+  return c;
+}
+
 }  // namespace
+
+// --------------------------------------------------------------------------
+// The encoders (app/CommandsRegions.hpp), immediately under the readers they
+// feed so a key renamed in one is visibly not renamed in the other.
+// --------------------------------------------------------------------------
+
+Command addRegionCommand(RegionKind kind, int32_t x, int32_t y, uint32_t width, uint32_t height,
+                         const std::string& name) {
+  JsonValue p = JsonValue::object();
+  p.set("kind", JsonValue::string(regionKindName(kind)));
+  // Written only when the caller chose one: an absent `name` is
+  // `core::addRegion()`'s "Frame 1" / "Slice 3" default, and writing that
+  // default out would make a replay on a document that already has a
+  // "Frame 1" a rename-by-uniquifier the recording never asked for.
+  if (!name.empty()) p.set("name", JsonValue::string(name));
+  p.set("x", JsonValue::number(x));
+  p.set("y", JsonValue::number(y));
+  p.set("rect_width", JsonValue::number(width));
+  p.set("rect_height", JsonValue::number(height));
+  return regionCommand("add_region", std::move(p));
+}
+
+Command deleteRegionCommand(const std::string& region) {
+  JsonValue p = JsonValue::object();
+  p.set("region", JsonValue::string(region));
+  return regionCommand("delete_region", std::move(p));
+}
+
+Command renameRegionCommand(const std::string& region, const std::string& newName) {
+  JsonValue p = JsonValue::object();
+  p.set("region", JsonValue::string(region));
+  p.set("new_name", JsonValue::string(newName));
+  return regionCommand("rename_region", std::move(p));
+}
+
+Command moveRegionCommand(const std::string& region, int32_t x, int32_t y) {
+  JsonValue p = JsonValue::object();
+  p.set("region", JsonValue::string(region));
+  p.set("x", JsonValue::number(x));
+  p.set("y", JsonValue::number(y));
+  return regionCommand("move_region", std::move(p));
+}
+
+Command resizeRegionCommand(const std::string& region, int32_t x, int32_t y, uint32_t width,
+                            uint32_t height) {
+  JsonValue p = JsonValue::object();
+  p.set("region", JsonValue::string(region));
+  p.set("x", JsonValue::number(x));
+  p.set("y", JsonValue::number(y));
+  p.set("rect_width", JsonValue::number(width));
+  p.set("rect_height", JsonValue::number(height));
+  return regionCommand("resize_region", std::move(p));
+}
 
 void registerRegionCommands(std::vector<CommandSpec>* out) {
   out->push_back({"add_region",

@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "app/AppState.hpp"  // enum class Tool, for toolCreatesRegions() alone
+#include "app/CommandsRegions.hpp"
 #include "app/SelectionDrag.hpp"
 
 namespace np {
@@ -95,17 +96,19 @@ DocumentRegion regionDefineRect(const RegionSession& session, float curX, float 
   return cropRegionFromDrag(box.x0, box.y0, box.x1, box.y1);
 }
 
-LayerOpResult regionCommitDefine(RegionSession& session, Document& doc, RegionKind kind,
+CommandResult regionCommitDefine(RegionSession& session, OpenDocument& od, RegionKind kind,
                                  float curX, float curY, bool square, bool fromCentre) {
   const DocumentRegion rect = regionDefineRect(session, curX, curY, square, fromCentre);
   session.gesture = RegionGesture::Idle;
-  // `cropRegionFromDrag()` still returns a (possibly 1-texel) rectangle for
-  // a zero-extent drag rounded outward on one axis only; `addRegion()`'s own
-  // empty check is what actually implements "a click without a drag creates
-  // nothing" for the fully degenerate case (both axes) -- see that
-  // function's refusal.
-  LayerOpResult result = addRegion(doc, kind, rect.x, rect.y, rect.width, rect.height);
-  if (result.ok) session.selectedId = doc.regions[result.index].id;
+  // `cropRegionFromDrag()` keeps an axis with no extent at zero, so a click
+  // (or a drag along one axis only) lands here with an empty rectangle. That
+  // is "a click without a drag creates nothing" -- not an edit, so no
+  // command, and not a refusal, so no status.
+  if (rect.width == 0u || rect.height == 0u) return CommandResult{};
+  const CommandResult result =
+      applyCommand(od, addRegionCommand(kind, rect.x, rect.y, rect.width, rect.height));
+  // `core::addRegion()` appends, so the new region is the last one.
+  if (result.ok && !od.document.regions.empty()) session.selectedId = od.document.regions.back().id;
   return result;
 }
 
@@ -123,18 +126,25 @@ void regionMoveOrigin(const RegionSession& session, float curX, float curY, int3
   *outY = static_cast<int32_t>(std::lround(curY - session.grabOffsetY));
 }
 
-LayerOpResult regionCommitMove(RegionSession& session, Document& doc, float curX, float curY) {
+namespace {
+
+CommandResult selectedRegionGone(const char* what) {
+  CommandResult r;
+  r.status = std::string(what) + " refused: the selected region no longer exists.";
+  return r;
+}
+
+}  // namespace
+
+CommandResult regionCommitMove(RegionSession& session, OpenDocument& od, float curX, float curY) {
   int32_t x = 0, y = 0;
   regionMoveOrigin(session, curX, curY, &x, &y);
   session.gesture = RegionGesture::Idle;
-  const size_t index = indexOfRegionId(doc, session.selectedId);
-  if (index >= doc.regions.size()) {
-    LayerOpResult r;
-    r.ok = false;
-    r.error = "move region refused: the selected region no longer exists.";
-    return r;
-  }
-  return moveRegion(doc, index, x, y);
+  const Region* r = findRegionById(od.document, session.selectedId);
+  if (r == nullptr) return selectedRegionGone("move region");
+  // A selection click: the gesture ended where it began. Not an edit.
+  if (x == r->x && y == r->y) return CommandResult{};
+  return applyCommand(od, moveRegionCommand(r->name, x, y));
 }
 
 void regionBeginResize(RegionSession& session, const Document& doc, int handle) noexcept {
@@ -154,29 +164,33 @@ DocumentRegion regionResizeRect(const RegionSession& session, float curX, float 
   return cropRegionFromDrag(session.fixedX, session.fixedY, curX, curY);
 }
 
-LayerOpResult regionCommitResize(RegionSession& session, Document& doc, float curX, float curY) {
+CommandResult regionCommitResize(RegionSession& session, OpenDocument& od, float curX, float curY) {
   const DocumentRegion rect = regionResizeRect(session, curX, curY);
   session.gesture = RegionGesture::Idle;
-  const size_t index = indexOfRegionId(doc, session.selectedId);
-  if (index >= doc.regions.size()) {
-    LayerOpResult r;
-    r.ok = false;
-    r.error = "resize region refused: the selected region no longer exists.";
-    return r;
-  }
-  return resizeRegion(doc, index, rect.x, rect.y, rect.width, rect.height);
+  session.resizeCorner = -1;
+  const Region* r = findRegionById(od.document, session.selectedId);
+  if (r == nullptr) return selectedRegionGone("resize region");
+  if (rect.x == r->x && rect.y == r->y && rect.width == r->width && rect.height == r->height)
+    return CommandResult{};
+  // A zero-size rectangle is sent anyway: the row refuses it BY NAME, and a
+  // corner dragged onto its opposite is a mistake the user should be told
+  // about, unlike a click, which is not a mistake at all.
+  return applyCommand(od, resizeRegionCommand(r->name, rect.x, rect.y, rect.width, rect.height));
 }
 
-LayerOpResult regionDeleteSelected(RegionSession& session, Document& doc) {
-  const size_t index = indexOfRegionId(doc, session.selectedId);
-  if (index >= doc.regions.size()) {
-    LayerOpResult r;
-    r.ok = false;
-    return r;
-  }
-  LayerOpResult result = deleteRegion(doc, index);
+CommandResult regionDeleteSelected(RegionSession& session, OpenDocument& od) {
+  const Region* r = findRegionById(od.document, session.selectedId);
+  if (r == nullptr) return CommandResult{};
+  const CommandResult result = applyCommand(od, deleteRegionCommand(r->name));
   if (result.ok) session.selectedId = 0;
   return result;
+}
+
+CommandResult regionRenameSelected(const RegionSession& session, OpenDocument& od,
+                                   const std::string& newName) {
+  const Region* r = findRegionById(od.document, session.selectedId);
+  if (r == nullptr || r->name == newName) return CommandResult{};
+  return applyCommand(od, renameRegionCommand(r->name, newName));
 }
 
 void regionCancelGesture(RegionSession& session) noexcept {

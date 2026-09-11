@@ -17765,12 +17765,28 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       const RegionKind kind = regionKindForTool(st.brush.tool);
 
       // A gesture begun on another tab means nothing here -- `CropSession`'s
-      // own rule for its own reason.
-      if (region.gesture != RegionGesture::Idle && region.doc != regionDocId)
+      // own rule for its own reason -- and neither does a SELECTION made
+      // there: region ids are a per-document counter, so document B's
+      // region 1 is not document A's. One normalisation here keeps
+      // `region.doc` naming the document every other field refers to.
+      if (region.doc != regionDocId) {
         regionCancelGesture(region);
+        region.selectedId = 0;
+        region.doc = regionDocId;
+      }
 
       if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && region.gesture != RegionGesture::Idle)
         regionCancelGesture(region);
+
+      // Every commit below goes through `applyCommand()` (app/RegionTool.hpp:
+      // those functions are this tool's boundary into the command layer), so
+      // the history entry and the recorded step are already done by the time
+      // one returns. What is left for the canvas is the refusal sentence:
+      // `ok == false` with an EMPTY status is "not an edit" (a click), and
+      // must not be shown as a mistake.
+      const auto reportRegion = [](const CommandResult& r) {
+        if (!r.ok && !r.status.empty()) g_strokeRefusal = r.status;
+      };
 
       // Delete/Backspace removes the selected region -- brief's own words.
       // Guarded on `!WantTextInput` so renaming a region in the options row
@@ -17779,8 +17795,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           !ImGui::GetIO().WantTextInput &&
           (ImGui::IsKeyPressed(ImGuiKey_Delete, false) ||
            ImGui::IsKeyPressed(ImGuiKey_Backspace, false))) {
-        const LayerOpResult r = regionDeleteSelected(region, regionDoc->document);
-        if (r.ok) recordLayerEdit(*regionDoc, r);
+        reportRegion(regionDeleteSelected(region, *regionDoc));
       }
 
       // `--region-demo`'s pin, `CropSession::demoHeld`'s exact twin.
@@ -17809,17 +17824,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 
         if (region.gesture == RegionGesture::Defining &&
             ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-          const LayerOpResult r = regionCommitDefine(region, regionDoc->document, kind, tx, ty,
-                                                     regionMods.KeyShift, regionMods.KeyAlt);
-          if (r.ok) recordLayerEdit(*regionDoc, r);
+          reportRegion(regionCommitDefine(region, *regionDoc, kind, tx, ty, regionMods.KeyShift,
+                                          regionMods.KeyAlt));
         } else if (region.gesture == RegionGesture::Moving &&
                    ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-          const LayerOpResult r = regionCommitMove(region, regionDoc->document, tx, ty);
-          if (r.ok) recordLayerEdit(*regionDoc, r);
+          reportRegion(regionCommitMove(region, *regionDoc, tx, ty));
         } else if (region.gesture == RegionGesture::Resizing &&
                    ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-          const LayerOpResult r = regionCommitResize(region, regionDoc->document, tx, ty);
-          if (r.ok) recordLayerEdit(*regionDoc, r);
+          reportRegion(regionCommitResize(region, *regionDoc, tx, ty));
         }
       }
     }
@@ -21035,32 +21047,81 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // `kAccent` (the active-tool / dirty-marker colour) for Frame,
     // `kWarning` for Slice -- so the two read as distinct without adding a
     // hue this design language does not already have a role for.
+    //
+    // **The live gesture is drawn too, and the selected region carries its
+    // four corner handles** -- without either, a Frame drag showed nothing
+    // until pen-up and a resize was a guess at where the corners were. The
+    // live rectangle comes from the same `regionDefineRect()` /
+    // `regionMoveOrigin()` / `regionResizeRect()` the commit calls with the
+    // same pointer, so what is drawn during the drag is what lands; the
+    // handles come from `regionHandlePoints()`, the function
+    // `regionHandleAt()` hit-tests, so a handle is never drawn where it
+    // cannot be grabbed (the Crop overlay's own rule, above).
+    //
+    // Every outline is four transformed corners, not two: the view can be
+    // rotated, and a rotated rectangle is not the axis-aligned box of two of
+    // its corners.
     {
       const OpenDocument* overlayDoc = st.documents.active();
-      if (overlayDoc != nullptr &&
-          (toolCreatesRegions(st.brush.tool) || st.showRegions) &&
-          !overlayDoc->document.regions.empty()) {
+      const bool toolOn = toolCreatesRegions(st.brush.tool);
+      const bool sessionHere = overlayDoc != nullptr && st.region.doc == overlayDoc->id;
+      const bool defining = toolOn && sessionHere && st.region.gesture == RegionGesture::Defining;
+      if (overlayDoc != nullptr && (toolOn || st.showRegions) &&
+          (!overlayDoc->document.regions.empty() || defining)) {
         const ImVec2 bandMin(paintOrigin.x, paintOrigin.y);
         const ImVec2 bandMax(paintOrigin.x + avail.x, paintOrigin.y + avail.y);
         dl->PushClipRect(bandMin, bandMax, true);
-        for (const Region& r : overlayDoc->document.regions) {
-          const Vec2 s0 =
-              xform.toScreen(Vec2{static_cast<float>(r.x), static_cast<float>(r.y)});
-          const Vec2 s1 = xform.toScreen(
-              Vec2{static_cast<float>(r.x + static_cast<int32_t>(r.width)),
-                   static_cast<float>(r.y + static_cast<int32_t>(r.height))});
-          const ImVec2 p0(std::min(s0.x, s1.x), std::min(s0.y, s1.y));
-          const ImVec2 p1(std::max(s0.x, s1.x), std::max(s0.y, s1.y));
-          const bool isSelected =
-              st.region.selectedId == r.id && toolCreatesRegions(st.brush.tool);
+        const auto corners = [&](int32_t x, int32_t y, uint32_t w, uint32_t h) {
+          const float x0 = static_cast<float>(x), y0 = static_cast<float>(y);
+          const float x1 = x0 + static_cast<float>(w), y1 = y0 + static_cast<float>(h);
+          const Vec2 c[4] = {xform.toScreen(Vec2{x0, y0}), xform.toScreen(Vec2{x1, y0}),
+                             xform.toScreen(Vec2{x1, y1}), xform.toScreen(Vec2{x0, y1})};
+          return std::array<ImVec2, 4>{ImVec2(c[0].x, c[0].y), ImVec2(c[1].x, c[1].y),
+                                       ImVec2(c[2].x, c[2].y), ImVec2(c[3].x, c[3].y)};
+        };
+        const ImGuiIO& overlayIo = ImGui::GetIO();
+        for (const Region& stored : overlayDoc->document.regions) {
+          const bool isSelected = toolOn && sessionHere && st.region.selectedId == stored.id;
+          // The selected region is drawn where the live gesture has it, not
+          // where the document last stored it.
+          Region r = stored;
+          if (isSelected && st.region.gesture == RegionGesture::Moving) {
+            regionMoveOrigin(st.region, tx, ty, &r.x, &r.y);
+          } else if (isSelected && st.region.gesture == RegionGesture::Resizing) {
+            const DocumentRegion live = regionResizeRect(st.region, tx, ty);
+            r.x = live.x;
+            r.y = live.y;
+            r.width = live.width;
+            r.height = live.height;
+          }
           const ImU32 color = atelierToken(r.kind == RegionKind::Frame ? kAccent : kWarning);
-          dl->AddRect(p0, p1, color, 0.0f, 0, isSelected ? 2.5f : 1.5f);
+          const std::array<ImVec2, 4> q = corners(r.x, r.y, r.width, r.height);
+          dl->AddPolyline(q.data(), 4, color, ImDrawFlags_Closed, isSelected ? 2.5f : 1.5f);
           // The name label, above the top-left corner. Clipped by the
           // band's own `PushClipRect` above, so a region dragged mostly
           // off-screen does not paint its label into the panels beside the
           // canvas.
-          const ImVec2 textPos(p0.x, p0.y - ImGui::GetTextLineHeight() - 2.0f);
+          const ImVec2 textPos(q[0].x, q[0].y - ImGui::GetTextLineHeight() - 2.0f);
           dl->AddText(textPos, color, r.name.c_str());
+          if (isSelected) {
+            for (const ImVec2& hp : q) {
+              constexpr float hr = 4.5f;
+              dl->AddRectFilled(ImVec2(hp.x - hr, hp.y - hr), ImVec2(hp.x + hr, hp.y + hr),
+                                atelierToken(kCanvasPaper));
+              dl->AddRect(ImVec2(hp.x - hr, hp.y - hr), ImVec2(hp.x + hr, hp.y + hr), color, 0.0f,
+                          0, 1.0f);
+            }
+          }
+        }
+        if (defining) {
+          const DocumentRegion live =
+              regionDefineRect(st.region, tx, ty, overlayIo.KeyShift, overlayIo.KeyAlt);
+          if (live.width > 0u && live.height > 0u) {
+            const ImU32 color = atelierToken(
+                regionKindForTool(st.brush.tool) == RegionKind::Frame ? kAccent : kWarning);
+            const std::array<ImVec2, 4> q = corners(live.x, live.y, live.width, live.height);
+            dl->AddPolyline(q.data(), 4, color, ImDrawFlags_Closed, 1.5f);
+          }
         }
         dl->PopClipRect();
       }

@@ -4,6 +4,8 @@
 #include <fstream>
 
 #include "app/Command.hpp"
+#include "app/CommandsRegions.hpp"
+#include "app/Recorder.hpp"
 #include "app/RegionTool.hpp"
 #include "core/RegionOps.hpp"
 #include "io/ExportRegions.hpp"
@@ -345,64 +347,71 @@ bool runRegionTest() {
     // D1. A click without a drag creates nothing, and costs no history entry.
     const size_t before1 = od.history.entries().size();
     regionBeginDefine(session, od.id, RegionKind::Frame, 20.0f, 20.0f);
-    const LayerOpResult clickOnly =
-        regionCommitDefine(session, od.document, RegionKind::Frame, 20.0f, 20.0f, false, false);
+    const CommandResult clickOnly =
+        regionCommitDefine(session, od, RegionKind::Frame, 20.0f, 20.0f, false, false);
     check(!clickOnly.ok && od.document.regions.empty(),
           "D: a click without a drag creates no region");
-    if (clickOnly.ok) recordLayerEdit(od, clickOnly);
+    check(clickOnly.status.empty(),
+          "D: and says nothing -- a click is not a mistake, so it is not a refusal to show");
     check(od.history.entries().size() == before1,
           "D: and therefore costs no history entry");
 
     // D2. A real drag commits ONE history entry and selects the new region.
     regionBeginDefine(session, od.id, RegionKind::Frame, 10.0f, 10.0f);
     const size_t before2 = od.history.entries().size();
-    const LayerOpResult defined =
-        regionCommitDefine(session, od.document, RegionKind::Frame, 60.0f, 40.0f, false, false);
-    check(defined.ok, "D: a real drag defines a region");
-    if (defined.ok) recordLayerEdit(od, defined);
+    const CommandResult defined =
+        regionCommitDefine(session, od, RegionKind::Frame, 60.0f, 40.0f, false, false);
+    check(defined.ok && od.document.regions.size() == 1, "D: a real drag defines a region");
     check(od.history.entries().size() == before2 + 1,
           "D: defining a region is exactly ONE history entry");
-    check(session.selectedId == od.document.regions[defined.index].id,
+    check(!od.document.regions.empty() && session.selectedId == od.document.regions.back().id,
           "D: and the new region is selected");
 
-    // D3. Move: select, begin, commit -- one entry.
+    // D3. Move: select, begin, commit -- one entry. A selection click (the
+    // same begin, released where it started) is not an edit at all.
     const size_t before3 = od.history.entries().size();
     regionBeginMove(session, od.document, 30.0f, 20.0f);
-    const LayerOpResult moved = regionCommitMove(session, od.document, 35.0f, 25.0f);
+    const CommandResult selectClick = regionCommitMove(session, od, 30.0f, 20.0f);
+    check(!selectClick.ok && selectClick.status.empty() &&
+              od.history.entries().size() == before3,
+          "D: clicking a region to select it moves nothing and costs no history entry");
+    regionBeginMove(session, od.document, 30.0f, 20.0f);
+    const CommandResult moved = regionCommitMove(session, od, 35.0f, 25.0f);
     check(moved.ok, "D: a move commits");
-    if (moved.ok) recordLayerEdit(od, moved);
     check(od.history.entries().size() == before3 + 1, "D: moving a region is exactly ONE history entry");
+    check(!od.document.regions.empty() && od.document.regions[0].x == 15 &&
+              od.document.regions[0].y == 15,
+          "D: and lands where the pointer took it (10,10 grabbed at 30,20, released at 35,25)");
 
     // D4. Resize: begin on a corner handle, commit -- one entry. Degenerate
-    // (dragged onto its own fixed opposite corner) is refused.
+    // (dragged onto its own fixed opposite corner) is refused, BY NAME.
     const size_t before4 = od.history.entries().size();
     const Region& sel = *findRegionById(od.document, session.selectedId);
     const std::array<Point2, 4> handles = regionHandlePoints(sel);
     regionBeginResize(session, od.document, 2 /* bottom-right */);
-    const LayerOpResult degenerate =
-        regionCommitResize(session, od.document, handles[0].x, handles[0].y);  // onto the fixed TL
-    check(!degenerate.ok, "D: resizing a region to zero size is refused");
-    if (degenerate.ok) recordLayerEdit(od, degenerate);
+    const CommandResult degenerate =
+        regionCommitResize(session, od, handles[0].x, handles[0].y);  // onto the fixed TL
+    check(!degenerate.ok && !degenerate.status.empty(),
+          "D: resizing a region to zero size is refused, with a reason");
     check(od.history.entries().size() == before4,
           "D: a refused resize costs no history entry");
     regionBeginResize(session, od.document, 2);
-    const LayerOpResult resized =
-        regionCommitResize(session, od.document, handles[2].x + 10.0f, handles[2].y + 5.0f);
+    const CommandResult resized =
+        regionCommitResize(session, od, handles[2].x + 10.0f, handles[2].y + 5.0f);
     check(resized.ok, "D: a real resize commits");
-    if (resized.ok) recordLayerEdit(od, resized);
     check(od.history.entries().size() == before4 + 1,
           "D: a real resize is exactly ONE history entry");
 
     // D5. Delete: one entry, selection cleared. Deleting with nothing
     // selected is refused with no error text (not a mistake to surface).
     const size_t before5 = od.history.entries().size();
-    const LayerOpResult deleted = regionDeleteSelected(session, od.document);
+    const CommandResult deleted = regionDeleteSelected(session, od);
     check(deleted.ok && od.document.regions.empty() && session.selectedId == 0,
           "D: delete removes the selected region and clears the selection");
-    if (deleted.ok) recordLayerEdit(od, deleted);
     check(od.history.entries().size() == before5 + 1, "D: delete is exactly ONE history entry");
-    const LayerOpResult deleteAgain = regionDeleteSelected(session, od.document);
-    check(!deleteAgain.ok, "D: deleting with nothing selected is refused");
+    const CommandResult deleteAgain = regionDeleteSelected(session, od);
+    check(!deleteAgain.ok && deleteAgain.status.empty(),
+          "D: deleting with nothing selected does nothing and says nothing");
 
     // D6. Undo restores the region list exactly -- `core::HistoryEntry`
     // snapshotting the whole `Document`, core/Region.hpp §3's whole argument.
@@ -411,6 +420,60 @@ bool runRegionTest() {
     } else {
       check(false, "D: undo after the delete returns a prior snapshot");
     }
+  }
+
+  // =========================================================================
+  // D'. The gesture RECORDS: every commit goes through applyCommand()
+  // =========================================================================
+  //
+  // The canvas and the options row call exactly these functions, so arming
+  // the process recorder around them is testing the real wiring
+  // (app/selftest/CommandCallsites.cpp section A's argument). A commit that
+  // reached `core::RegionOps` directly would pass every assertion in D above
+  // -- the history entry is the same -- and record nothing here.
+  std::printf("  -- D'. the gesture records: one step per commit, and a click records none --\n");
+  {
+    OpenDocument od = makeBlankOpenDocument(200, 150, WorkingSpace{});
+    RegionSession session;
+    Recorder& rec = sessionRecorder();
+    rec.arm(od);
+    regionBeginDefine(session, od.id, RegionKind::Slice, 20.0f, 20.0f);
+    regionCommitDefine(session, od, RegionKind::Slice, 20.0f, 20.0f, false, false);  // a click
+    regionBeginDefine(session, od.id, RegionKind::Slice, 20.0f, 30.0f);
+    regionCommitDefine(session, od, RegionKind::Slice, 70.0f, 60.0f, false, false);
+    regionBeginMove(session, od.document, 40.0f, 40.0f);
+    regionCommitMove(session, od, 40.0f, 40.0f);  // a selection click
+    regionBeginMove(session, od.document, 40.0f, 40.0f);
+    regionCommitMove(session, od, 45.0f, 41.0f);
+    regionBeginResize(session, od.document, 2);
+    regionCommitResize(session, od, 80.0f, 90.0f);
+    regionRenameSelected(session, od, "Hero");
+    regionRenameSelected(session, od, "Hero");  // unchanged: not an edit
+    regionDeleteSelected(session, od);
+    const std::vector<Command> steps = rec.steps();
+    rec.stop();
+    const char* const expected[] = {"add_region", "move_region", "resize_region", "rename_region",
+                                    "delete_region"};
+    bool idsMatch = steps.size() == 5;
+    for (size_t i = 0; idsMatch && i < 5; ++i) idsMatch = steps[i].id == expected[i];
+    if (!idsMatch) {
+      std::printf("     recorded %zu step(s):", steps.size());
+      for (const Command& c : steps) std::printf(" %s", c.id.c_str());
+      std::printf("\n");
+    }
+    check(idsMatch,
+          "D': define, move, resize, rename, delete record as exactly those five steps, in order "
+          "-- and the click, the selection click and the unchanged rename record nothing");
+    check(steps.size() == 5 && steps[0].params.stringOr("kind", "") == "Slice" &&
+              steps[0].params.numberOr("x", -1) == 20 && steps[0].params.numberOr("y", -1) == 30 &&
+              steps[0].params.numberOr("rect_width", -1) == 50 &&
+              steps[0].params.numberOr("rect_height", -1) == 30,
+          "D': the add_region step carries the dragged rectangle, (20,30)+50x30, and its kind");
+    check(steps.size() == 5 && steps[3].params.stringOr("region", "") == "Slice 1" &&
+              steps[3].params.stringOr("new_name", "") == "Hero",
+          "D': the rename step addresses the region by its old name");
+    check(steps.size() == 5 && steps[4].params.stringOr("region", "") == "Hero",
+          "D': and the delete after it by the new one");
   }
 
   // =========================================================================

@@ -1322,7 +1322,8 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     bandSeparator();
     OpenDocument* od = st.documents.active();
     const Region* selected =
-        od != nullptr ? findRegionById(od->document, st.region.selectedId) : nullptr;
+        od != nullptr && st.region.doc == od->id ? findRegionById(od->document, st.region.selectedId)
+                                                 : nullptr;
     if (selected == nullptr) {
       capsLabel("REGION");
       ImGui::SameLine();
@@ -1332,20 +1333,28 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
 
     capsLabel("NAME");
     ImGui::SameLine();
-    // The ACTIONS panel's own idiom (`drawActionsSection()`): synced from the
-    // model on every frame the field is NOT active, so switching which
-    // region is selected shows its own name immediately, and a name typed
-    // mid-edit is never overwritten by a stray resync.
+    // Synced from the model on every frame the field was NOT active last
+    // frame, so switching which region is selected shows its own name
+    // immediately, and a name typed mid-edit is never overwritten by a
+    // resync. **The flag is read back AFTER the field**: `IsItemActive()`
+    // asked before it answers for the previous item (the NAME label), which
+    // is never active -- that version rewrote the buffer every frame and
+    // threw away every keystroke.
     static char nameBuf[128] = "";
-    if (!ImGui::IsItemActive())
-      std::snprintf(nameBuf, sizeof(nameBuf), "%s", selected->name.c_str());
+    static bool nameFieldActive = false;
+    if (!nameFieldActive) std::snprintf(nameBuf, sizeof(nameBuf), "%s", selected->name.c_str());
     ImGui::SetNextItemWidth(160.0f);
-    if (ctlInputText("##regionName", nameBuf, sizeof(nameBuf),
-                     ImGuiInputTextFlags_EnterReturnsTrue) &&
-        od != nullptr) {
-      const size_t index = indexOfRegionId(od->document, selected->id);
-      if (index < od->document.regions.size())
-        recordLayerEdit(*od, renameRegion(od->document, index, nameBuf));
+    const bool nameEntered = ctlInputText("##regionName", nameBuf, sizeof(nameBuf),
+                                          ImGuiInputTextFlags_EnterReturnsTrue);
+    nameFieldActive = ImGui::IsItemActive();
+    // Through `rename_region` (app/RegionTool's `regionRenameSelected()`),
+    // never `core::renameRegion()` from here -- a widget that reaches the
+    // model directly records nothing (docs/automation.md §7).
+    if (nameEntered && od != nullptr) {
+      regionRenameSelected(st.region, *od, nameBuf);
+      // An edit went through the document; do not trust a pointer into it.
+      selected = findRegionById(od->document, st.region.selectedId);
+      if (selected == nullptr) return;
     }
 
     bandSeparator();
@@ -1356,9 +1365,7 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     popAtelierMono();
 
     bandSeparator();
-    if (ImGui::Button("Delete") && od != nullptr) {
-      recordLayerEdit(*od, regionDeleteSelected(st.region, od->document));
-    }
+    if (ImGui::Button("Delete") && od != nullptr) regionDeleteSelected(st.region, *od);
     ImGui::SetItemTooltip("Delete this region. Backspace does the same.");
     return;
   }
