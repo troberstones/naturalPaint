@@ -944,7 +944,10 @@ target_compile_options(naturalPaint PRIVATE
 # "make the degradation loud" rule ui/Fonts.cpp's missing-font path exists for.
 include(CheckIPOSupported)
 check_ipo_supported(RESULT np_ipo_ok OUTPUT np_ipo_why)
-if(np_ipo_ok)
+# NP_NO_LTO=ON: a dev build dir for fast edit-test loops (a .cpp edit relinks in
+# ~3-10 s instead of ~17-21 s). Verify on the default LTO build.
+option(NP_NO_LTO "Disable link-time optimisation (fast iteration builds)" OFF)
+if(np_ipo_ok AND NOT NP_NO_LTO)
   set_property(TARGET naturalPaint PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
   message(STATUS "naturalPaint: link-time optimisation enabled (P0-2)")
 else()
