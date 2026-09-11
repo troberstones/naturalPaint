@@ -1,0 +1,82 @@
+#include "ui/AppIcon.hpp"
+
+#include <SDL3/SDL.h>
+
+#include <cstring>
+
+#include "stb_image.h"  // declarations only; paint/Palette.cpp compiles the bodies
+
+namespace np {
+namespace {
+
+// Generated at configure time by src/CMakeLists.txt from
+// icons/linux/hicolor/512x512/apps/naturalPaint.png -- see ui/AppIcon.hpp §1.
+#include "AppIconPng.inc"
+
+bool g_installed = false;
+
+}  // namespace
+
+const unsigned char* appIconPngData() noexcept { return kAppIconPng; }
+size_t appIconPngSize() noexcept { return sizeof(kAppIconPng); }
+
+AppIconImage decodeAppIcon() {
+  AppIconImage out;
+  int w = 0, h = 0, channels = 0;
+  unsigned char* pixels = stbi_load_from_memory(kAppIconPng, static_cast<int>(sizeof(kAppIconPng)),
+                                                &w, &h, &channels, 4);
+  if (pixels == nullptr) {
+    const char* why = stbi_failure_reason();
+    out.error = std::string("app icon: the embedded PNG did not decode (") +
+                (why != nullptr ? why : "no reason given") + ").";
+    return out;
+  }
+  out.width = w;
+  out.height = h;
+  out.rgba.assign(pixels, pixels + static_cast<size_t>(w) * static_cast<size_t>(h) * 4u);
+  stbi_image_free(pixels);
+  return out;
+}
+
+SDL_Surface* createAppIconSurface(std::string* error) {
+  const AppIconImage img = decodeAppIcon();
+  if (!img.error.empty()) {
+    if (error != nullptr) *error = img.error;
+    return nullptr;
+  }
+  // SDL_CreateSurface (not ...From) so the surface owns its pixels and
+  // outlives `img`. RGBA32 is byte order R, G, B, A on every endianness,
+  // which is exactly stb_image's layout.
+  SDL_Surface* surface = SDL_CreateSurface(img.width, img.height, SDL_PIXELFORMAT_RGBA32);
+  if (surface == nullptr) {
+    if (error != nullptr) *error = std::string("app icon: SDL_CreateSurface: ") + SDL_GetError();
+    return nullptr;
+  }
+  const size_t rowBytes = static_cast<size_t>(img.width) * 4u;
+  auto* dst = static_cast<unsigned char*>(surface->pixels);
+  for (int y = 0; y < img.height; ++y)
+    std::memcpy(dst + static_cast<size_t>(y) * static_cast<size_t>(surface->pitch),
+                img.rgba.data() + static_cast<size_t>(y) * rowBytes, rowBytes);
+  return surface;
+}
+
+bool installAppIcon(SDL_Window* window, std::string* error) {
+  std::string why;
+  SDL_Surface* surface = createAppIconSurface(&why);
+  if (surface == nullptr) {
+    if (error != nullptr) *error = why;
+    return false;
+  }
+  // SDL converts the surface into the platform's own image before returning
+  // (an NSImage, an _NET_WM_ICON array, a wl_buffer, an HICON), so it can be
+  // destroyed straight away.
+  const bool ok = SDL_SetWindowIcon(window, surface);
+  if (!ok && error != nullptr) *error = std::string("app icon: SDL_SetWindowIcon: ") + SDL_GetError();
+  SDL_DestroySurface(surface);
+  g_installed = g_installed || ok;
+  return ok;
+}
+
+bool appIconInstalled() noexcept { return g_installed; }
+
+}  // namespace np

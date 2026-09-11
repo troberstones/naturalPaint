@@ -31,6 +31,14 @@ endif()
 # back to a plain Kubelka-Munk two-constant mix with no licence encumbrance.
 option(NP_USE_MIXBOX "Use the Mixbox pigment LUT (CC BY-NC, non-commercial only)" ON)
 
+# macOS only: build `naturalPaint.app` instead of a bare executable, so Finder
+# shows the app icon (icons/macos/naturalPaint.icns). OFF by default because
+# every tool in this repository -- the golden harness, the selftest recipes,
+# start.sh -- runs `build/src/naturalPaint`; ON moves the binary to
+# `build/src/naturalPaint.app/Contents/MacOS/naturalPaint`. The Dock icon does
+# not need this: ui/AppIcon sets it at runtime either way.
+option(NP_MACOS_APP_BUNDLE "macOS: build naturalPaint.app (Finder icon) instead of a bare executable" OFF)
+
 # OpenImageIO backs EXR/TIFF/HDR/DPX and flattened-PSD read (PLAN.md phase 4
 # step 2). **It is a hard requirement, and it used to be an option that
 # defaulted OFF.** The reversal is deliberate and the reason it was made is

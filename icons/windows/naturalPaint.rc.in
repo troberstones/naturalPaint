@@ -1,0 +1,9 @@
+// icons/windows/naturalPaint.rc.in -- the .exe's own icon (Explorer, the
+// taskbar, Alt-Tab). src/CMakeLists.txt configures this into the build tree
+// under `if(WIN32)` with an ABSOLUTE path to the .ico, because MSVC's rc and
+// MinGW's windres disagree about what a relative path in a .rc is relative
+// to. The first ICON resource in a module is the one the shell shows.
+//
+// NOT BUILT OR TESTED YET: Windows surface creation is still an #error
+// (README.md), so no Windows build of this target exists to compile it.
+IDI_APP_ICON ICON "@NP_APP_ICON_ICO@"

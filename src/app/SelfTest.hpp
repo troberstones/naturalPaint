@@ -6617,4 +6617,18 @@ bool runStrokeInputTest();
 // Headless, GPU-free, writes no files. See app/selftest/PointerQueue.cpp.
 bool runPointerQueueTest();
 
+// ui/AppIcon -- the application icon set on the window at runtime.
+//
+//  1. the PNG compiled into the binary decodes, at 512 x 512;
+//  2. it is byte-for-byte the committed icons/linux/hicolor 512 px PNG it is
+//     generated from (a stale generated include would otherwise ship an old
+//     icon with every other check green);
+//  3. its pixels are the artwork's, not a blank: the painted corner and the
+//     centre of the brush tip;
+//  4. createAppIconSurface() hands SDL the same pixels at the same size;
+//  5. main.cpp's installAppIcon() call succeeded on the real window.
+//
+// See app/selftest/AppIcon.cpp.
+bool runAppIconTest();
+
 }  // namespace np

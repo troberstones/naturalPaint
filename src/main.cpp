@@ -64,6 +64,7 @@
 #include "io/ImageDecode.hpp"
 #include "paint/Palette.hpp"
 #include "sim/PaintSim.hpp"
+#include "ui/AppIcon.hpp"
 #include "ui/Fonts.hpp"
 #include "ui/BrushSettingsWindow.hpp"
 #include "ui/CanvasQuad.hpp"
@@ -2693,6 +2694,18 @@ int main(int argc, char** argv) {
   // dead for as long as the panel is up.
   np::setFileDialogParentWindow(window);
 
+  // ---- the application icon (ui/AppIcon) ----------------------------------
+  //
+  // The Dock icon on macOS (an unbundled binary otherwise gets the generic
+  // "exec" tile), the taskbar/Alt-Tab icon on X11 and Windows, and
+  // xdg-toplevel-icon on Wayland. ui/AppIcon.hpp says why this is set at
+  // runtime from a PNG compiled into the binary. Never fatal.
+  {
+    std::string iconError;
+    if (!np::installAppIcon(window, &iconError))
+      std::fprintf(stderr, "warning: %s\n", iconError.c_str());
+  }
+
   // ---- the native menu bar (ui/MacNativeMenu, ui/MenuModel) ---------------
   //
   // A no-op off Apple, where the ImGui menu bar in the title band is the whole
@@ -4210,6 +4223,9 @@ int main(int argc, char** argv) {
     // reading. Headless and GPU-free (app/SelfTest.hpp's own comment on it).
     const bool strokeInputOk = np::runStrokeInputTest();
     const bool pointerQueueOk = np::runPointerQueueTest();
+    // ui/AppIcon: the embedded icon decodes, matches the committed PNG it was
+    // generated from, and the running window accepted it.
+    const bool appIconOk = np::runAppIconTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4279,7 +4295,7 @@ int main(int argc, char** argv) {
                     penToolOk && pathOpsOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
-                    nativeBrushOk && strokeInputOk && pointerQueueOk;
+                    nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
