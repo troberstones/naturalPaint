@@ -27,6 +27,10 @@ void mixDab(uint64_t& h, const DabRecord& d) {
   mixF(h, d.hardness);
   mixF(h, d.roundness);
   mixF(h, d.angle);
+  // `edgePx` changes a dab's pixels (brush/Deposit.hpp §2), so a record
+  // differing only there must miss both the evaluation cache and
+  // core/DirtyTiles -- "every field", as the header promises.
+  mixF(h, d.edgePx);
   mixF(h, d.flow);
   for (const float c : d.rgba) mixF(h, c);
   mix(h, static_cast<uint64_t>(d.source));

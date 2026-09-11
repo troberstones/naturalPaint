@@ -282,6 +282,28 @@
 // tile-byte-count assertion for it, exactly what they were before §2a.
 // Freed at `end()` alongside `alpha_`, for the identical reason.
 //
+// **What a scrubbed stroke costs before it stops dirtying tiles -- the hard
+// tip's cost went up, and this is where it is written down.** The ceiling's
+// "a dab past it writes nothing" (`depositDab()` below) is what lets a stroke
+// scrubbed in place stop re-dirtying tiles, and it is still literally true:
+// every texel converges and then goes silent. What `BrushTip::edgePx`
+// changed is HOW LONG that takes on a hardness-1 tip. Before it, a hard tip's
+// footprint was all core -- weight `flow` everywhere -- so the whole disc hit
+// the ceiling within a dab or two. Now its last pixel is an antialiased rim
+// whose outermost texels have coverage near zero, each approaching the
+// ceiling by only `flow * c * (1 - A)` per dab, so the rim converges exactly
+// as slowly as a soft tip's rim always has. Measured by the wave-1 review, a
+// hard r = 20 tip at flow 1, opacity 0.5, scrubbed 1000 dabs in place: 1
+// writing dab, 4 tile reports and 1 264 texel writes at `edgePx == 0`; 168
+// writing dabs, 672 tile reports and 3 256 texel writes at the shipped
+// `edgePx == 1`. Accepted rather than engineered away: the cost is bounded
+// (the faintest rim texel reaches the cap within `ceil(cap / (flow * c_min *
+// (1 - cap)))` dabs -- the bound `app/selftest/RgbDeposit.cpp`'s opacity-cap
+// section asserts), it is paid only while a pen dwells on one spot, and it is
+// the price every soft brush in the build was already paying. `brush/RgbErase`
+// and `brush/TonalBrush` have the same ceiling shape and point here rather
+// than restating it.
+//
 // ==========================================================================
 // 4. The selection bounds the deposit (PRD E1, P0)
 // ==========================================================================
@@ -533,10 +555,10 @@ class RgbStroke {
   // stroke-level composite is only correct against the mode it started with,
   // and a mode that changed mid-drag has no well-defined `dst0`/`target`
   // pairing. Defaulted to `BlendMode::Normal` so every existing caller keeps
-  // compiling and keeps painting the unblended path; `app/StrokeSession.cpp`
-  // is the only caller that ever passes anything else, and only on the RGB
-  // deposit route (`BrushTip::blend`'s own comment names it as the one
-  // reader).
+  // compiling and keeps painting the unblended path. Two callers pass the
+  // brush's own mode: `app/StrokeSession.cpp`, on the RGB deposit route only,
+  // and `app/PathConsumers.cpp`'s Stroke Path with Brush on an RGB layer
+  // (`BrushTip::blend`'s own comment lists both, and the routes that do not).
   void begin(const std::array<float, 3>& straightLinearRgb, float opacity,
             bool alphaLocked = false, BlendMode blend = BlendMode::Normal) noexcept;
 
@@ -559,7 +581,8 @@ class RgbStroke {
   // nothing, allocates nothing and reports no tiles. That is the cap being
   // observable rather than merely arithmetic: a stroke scrubbed back and forth
   // stops dirtying tiles once it is done, so live feedback stops re-uploading
-  // them too.
+  // them too. (How many dabs "done" takes on a hard tip's antialiased rim is
+  // header §3's last paragraph.)
   //
   // §2a: when `blend_ != BlendMode::Normal`, each texel this dab actually
   // changes is composited through `depositRgbTexelBlended()` against `dst0_`

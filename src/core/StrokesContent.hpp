@@ -145,6 +145,24 @@ struct DabRecord {
   float roundness = 1.0f;
   float angle = 0.0f;
 
+  // `BrushTip::edgePx`, the fifth shape field: the minimum width, in document
+  // pixels, of the tip's antialiased rim (brush/Deposit.hpp §2). Default
+  // `BrushTip`'s own 1.0, so a record built in code composites exactly as a
+  // live dab from a default tip does.
+  //
+  // **A stored field, not a constant the evaluation assumes**, and that was a
+  // correction: until `npdabs2` (io/StrokesSerial.hpp) a record had no
+  // `edgePx`, so `strokesRasterize()` replayed every record -- including every
+  // one saved before `edgePx` existed, painted with the hard rim that build
+  // had -- at whatever default the build of the day carried. A hardness-1
+  // r=6 record saved as 112 texels at exactly 1.0 re-rendered as 80 at 1.0
+  // plus 32 fractional, with nothing in the file changed. A footprint that
+  // moves when the build does is exactly what a stored dab exists not to do
+  // (section 1: "re-evaluated", not "re-interpreted"). The live recording
+  // route stores the dab tip's own value; an `npdabs1` payload reads as 0,
+  // the rim those documents were actually painted with.
+  float edgePx = 1.0f;
+
   // The dab's own opacity ceiling, in [0,1]. One number rather than
   // `BrushTip`'s flow/opacity pair: a stored dab has no stroke around it for
   // a per-stroke ceiling to be a ceiling OVER, so the two collapse into the

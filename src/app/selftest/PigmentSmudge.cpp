@@ -114,8 +114,16 @@ bool runPigmentSmudgeTest() {
       }
   };
 
-  // A hard disc: `dabCoverage()` is exactly 1 over the whole footprint, so the
-  // numbers are about the smudge and not about the falloff.
+  // A hardness-1 disc: `dabCoverage()` is exactly 1 over its flat CORE, out to
+  // `radius - edgePx`, and antialiased in the last pixel (BrushTip::edgePx) --
+  // not "exactly 1 over the whole footprint", as this said before `edgePx`.
+  // The checks below never needed the whole footprint to be 1, which is why
+  // none of them moved: the pick-up fixtures rest on SYMMETRY (a footprint
+  // split down its centre line has the same rim on both halves, so "half the
+  // mass" is still exactly half), on UNIFORM mass or hue across the footprint
+  // (any coverage weighting of one value is that value), or on probes on the
+  // drag's spine, inside the core -- so the numbers are about the smudge and
+  // not about the falloff.
   auto discTip = [](float radius, float flow) {
     BrushTip t;
     t.radius = radius;

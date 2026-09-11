@@ -182,7 +182,9 @@
 //     case. A stroke at strength 1 reaches it in ordinary use.
 //   * `E >= strength`. Also skipped, and this is the floor doing its job: every
 //     dab after it is reached writes nothing at all, so a scrubbed erase stops
-//     dirtying tiles and live feedback stops re-uploading them.
+//     dirtying tiles and live feedback stops re-uploading them. (How long a
+//     hard tip's antialiased rim takes to get there: brush/RgbDeposit.hpp §3's
+//     last paragraph, which applies to this floor unchanged.)
 //   * `flow > 1`. Deliberately not clamped, for `brush/Deposit`'s stated reason
 //     ("a flow above 1 is a legitimate one dab saturates the paper tip"): the
 //     `min` already caps `E'`, so a flow of 2.5 means one dab reaches the floor.

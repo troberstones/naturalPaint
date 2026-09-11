@@ -1,6 +1,7 @@
 #include "brush/PencilDeposit.hpp"
 
 #include <algorithm>
+#include <memory>
 
 namespace np {
 
@@ -21,11 +22,17 @@ void PencilStroke::begin(const std::array<float, 3>& straightLinearRgb, float op
   // store drops every `shared_ptr` slot and therefore every tile the previous
   // stroke held, which is `end()`'s free as well as this one's.
   alpha_ = StrokeAlphaStore{};
+  // The previous stroke's zeroed Dual Brush copy goes with its accumulator:
+  // the next stroke's first dab latches its own (`drawDab()`).
+  dualSource_.reset();
+  aliasedDual_.reset();
   active_ = true;
 }
 
 void PencilStroke::end() noexcept {
   alpha_ = StrokeAlphaStore{};
+  dualSource_.reset();
+  aliasedDual_.reset();
   active_ = false;
 }
 
@@ -60,6 +67,37 @@ DepositCount PencilStroke::drawDab(TileStore& store, const BrushTip& tip, Vec2 c
   // which is the property this copy exists to preserve.
   BrushTip aliasedTip = tip;
   aliasedTip.edgePx = 0.0f;
+
+  // **And the Dual Brush tip, which the line above does not reach.**
+  // `dabCoverage()` evaluates `*tip.dualTip` through the same
+  // `singleTipCoverage()` (brush/Deposit.hpp §2d), so its own `edgePx` skirt
+  // shrinks the combined coverage exactly as the primary's would -- the
+  // review measured a hard r=12 pencil with a hard r=6 Multiply dual at 88
+  // texels instead of the pre-`edgePx` 112, the very shrink this exemption
+  // exists to prevent (`io/AbrBrushes.cpp` builds procedural dual tips at
+  // the default `edgePx == 1`). The dual tip is a `shared_ptr<const
+  // BrushTip>` and cannot be zeroed in place, so a zeroed COPY is built --
+  // **once per stroke, never per dab** (CONTEXT.md's *Lightweight* -- nothing
+  // allocates until used -- and no heap traffic in the per-dab path). It is
+  // latched on the first dab that carries a given
+  // dual tip rather than at `begin()`, because `begin()` is not handed a tip;
+  // every later dab of the stroke carries the same pointer
+  // (`app/StrokeSession`'s per-dab tip rebuild copies `BrushState::dualTip`,
+  // it does not re-make it), so this branch allocates once and afterwards is
+  // one pointer comparison. `dualSource_` OWNS the pointer it compares
+  // against, so a freed-and-reused address can never be mistaken for the
+  // tip the copy was made from. `begin()`/`end()` drop both.
+  if (tip.dualTip != dualSource_) {
+    dualSource_ = tip.dualTip;
+    if (tip.dualTip != nullptr) {
+      auto zeroed = std::make_shared<BrushTip>(*tip.dualTip);
+      zeroed->edgePx = 0.0f;
+      aliasedDual_ = std::move(zeroed);
+    } else {
+      aliasedDual_.reset();
+    }
+  }
+  aliasedTip.dualTip = aliasedDual_;
 
   // `dabPixelBounds()` and `dabCoverage()` unchanged from all three sibling
   // routes -- the shape of a dab is not a property of what the dab does with
@@ -137,7 +175,8 @@ DepositCount PencilStroke::drawDab(TileStore& store, const BrushTip& tip, Vec2 c
           // not `dx`/`dy`, which is why it cannot live inside `dabCoverage()`.
           // Identical line and identical reasoning to the three sibling
           // routes' (brush/Deposit.cpp §2e). `aliasedTip.grain` is bit-
-          // identical to `tip.grain` -- the copy above changes only `edgePx`.
+          // identical to `tip.grain` -- the copy above changes only `edgePx` and
+          // points `dualTip` at the zeroed copy of the same dual tip.
           const float grained = grainCoverageAt(aliasedTip.grain, rawCov, x, y);
 
           // §1. The threshold is the LAST thing that happens to a coverage,

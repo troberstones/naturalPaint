@@ -107,7 +107,10 @@ part 2   "L0002"          R G B A + pig.* + res.*
 
 part 3   "L0003"          (no image channels)
          attrs:  np:kind        "strokes"
-                 np:dabs        <blob>
+                 np:dabs        "npdabs2:<hex>"  every dab record + the id
+                                 allocator. **A `string`, not a `<blob>`** --
+                                 see "`np:dabs`" below for the layout and
+                                 its two versions.
 
 part 4   "S0001"          coverage                   ← a saved selection
          attrs:  np:kind        "selection"
@@ -280,6 +283,48 @@ at their own site, naming each other.
   > shapes**, so a path-free document stays byte-identical to what earlier builds
   > wrote. A document-level table is still the right home for *gradients*, which
   > several shapes share (`core/VectorShape.hpp` §2) -- that one is unbuilt.
+  >
+  > ✅ **`np:dabs` is gone from that list too: it is written, on the Strokes layer's own
+  > part** (PLAN.md phase 8, `io/StrokesSerial`), as a hex `string` on the same pattern.
+  > Its header carries the full wire layout; the part a reader of this file needs is
+  > the **version**, which lives in the prefix and has been bumped once:
+  >
+  > - **`"npdabs1:<hex>"`** -- `u64 nextDabId`, `u32 count`, then per record `u64 id`,
+  >   `u64 strokeId`, `f32 x y radius hardness roundness angle flow`, `f32 rgba[4]`,
+  >   `u8 source`, `f32 sourceDx sourceDy`: 69 bytes a record, exact length.
+  > - **`"npdabs2:<hex>"`** -- the same, with one `f32 edgePx` after `angle`: 73 bytes a
+  >   record. `edgePx` is `BrushTip::edgePx`, the minimum pixel width of a tip's
+  >   antialiased rim (`brush/Deposit.hpp` §2), which arrived after `npdabs1`.
+  >
+  > **Why the bump was necessary.** A dab record is re-evaluated on every open, not
+  > stored as pixels, so every field that changes its pixels has to be in the record.
+  > `npdabs1` had no `edgePx`, so a record replayed at whatever default the build opening
+  > it carried: a hardness-1 r=6 record saved as 112 texels at exactly 1.0 re-rendered as
+  > 80 at 1.0 plus 32 fractional once `edgePx` defaulted to 1, with nothing in the file
+  > changed. This build reads an `npdabs1` payload with **every record's `edgePx` = 0**,
+  > the hard rim those documents were painted with, so they render exactly as before.
+  >
+  > **Which version is written is decided by the content**, `io/TextSerial`'s `nptext2`
+  > rule: `npdabs1` whenever it is lossless (every record's `edgePx` is +0.0, bit for
+  > bit -- including an empty list), `npdabs2` otherwise. An `npdabs1` document opened
+  > and saved again without recording anything new stays `npdabs1`; every dab recorded
+  > live since `edgePx` (default 1.0) makes the payload `npdabs2`.
+  >
+  > **What an OLDER build does with an `npdabs2` payload.** Every build that reads only
+  > `npdabs1` refuses the payload **by name**, before decoding a byte, and opens the
+  > Strokes layer with no dab records and a load warning -- the layer does not render
+  > there. **It does not preserve the payload on save**, despite the load warning's
+  > promise -- measured against the pre-bump writer (`cd614c9`), not inferred: that writer
+  > emits the (empty) Strokes content it holds unconditionally, and its carry replay drops
+  > a carried `np:dabs` whenever it has written its own, so **saving from such a build
+  > replaces the `npdabs2` records with an empty `npdabs1` list**. This build fixes that for the next bump:
+  > a Strokes layer that opened empty because its `np:dabs` could not be decoded, and has
+  > recorded nothing since, writes the carried attribute back verbatim instead of its own
+  > (`io/NpaintFile.cpp`, `writesOwnStrokes`; `--selftest` saves an `npdabs3:` file twice
+  > and reads the payload back byte for byte). Once the user records into such a layer,
+  > their records win -- this build cannot merge them into a payload it cannot read. The
+  > content-decided version rule above is what limits the older-build exposure to
+  > documents that actually carry a rim.
 
 > ✅ **Implemented, 2026-08-19, at PLAN.md Phase 5 step 3: a Pigment layer's part is
 > written and read with all eleven channels above.** The seven stored ones (`pig.c0

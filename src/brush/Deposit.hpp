@@ -180,9 +180,10 @@
 // **`hardness == 1` used to degenerate to a hard disc with no division at
 // all -- it no longer does, and this is the correction, not a silent edit.**
 // `hardness` measures the skirt in *radius* units: `(1 - hardness) * radius`
-// pixels wide. That is fine at the sizes this build's presets actually paint
-// at (`Round Bristle 03`, r = 24, h = 0.35, has a 15.6 px skirt) and it is
-// exactly the defect at the sizes a user also reaches for -- `Detail Liner`
+// pixels wide. That is fine at the sizes most of this build's presets paint
+// at (`Round Bristle 03`, r = 20 at its default 40 px diameter, h = 0.35, has
+// a 13 px skirt) and it is exactly the defect at the sizes a user also
+// reaches for -- `Detail Liner`
 // (r = 5, h = 0.95) has a 0.25 px skirt and stair-steps, and `hardness == 1`
 // at ANY radius has none at all, so a texel is decided by which side of the
 // rim its centre falls on with no antialiasing whatsoever. Neither is a bug
@@ -214,10 +215,20 @@
 //     `radius - hardness*radius >= edgePx` rearranges to
 //     `hardness <= 1 - edgePx/radius`, which is exactly the condition under
 //     which `min()` picks `hardness`, so `hEff == hardness` bit for bit. At
-//     the shipped default `edgePx == 1.0f` this is **every built-in brush at
-//     its default size** (`Round Bristle 03`'s 15.6 px skirt is nowhere near
-//     the 1 px floor) and therefore `--pigment-stroke-demo` and the `canvas`
-//     golden view: unchanged, not merely close.
+//     the shipped default `edgePx == 1.0f` this is **three of the four
+//     built-in brushes at their default size** -- `Round Bristle 03` (r 20,
+//     h 0.35: a 13 px skirt), `Flat Wash` (r 46, h 0.12: 40.5 px) and `Dry
+//     Bristle` (r 18, h 0.85: 2.7 px) -- and therefore `--pigment-stroke-demo`
+//     and the `canvas` golden view (`Round Bristle 03`): unchanged, not merely
+//     close. **The fourth, `Detail Liner` (r 5, h 0.95: a 0.25 px skirt), is
+//     NOT identical, and is not meant to be: it is the case this field
+//     exists for.** Its `hEff` is `min(0.95, 1 - 1/5) = 0.8`, a 1 px skirt in
+//     place of the stair-stepping quarter pixel the paragraph above describes
+//     -- the intended change, not a regression. (This bullet used to say
+//     "every built-in brush at its default size"; the Liner made that false
+//     from the day `edgePx` landed.) `app/selftest/TipEdge.cpp` section 7
+//     asserts the split preset by preset from `defaultBrushLibrary()`, so a
+//     re-tuned built-in cannot silently move from one side to the other.
 //
 // The ellipse (§2b) measures `d` in an ISOTROPIC frame where one scalar `hEff`
 // governs both axes, so it cannot floor the major and minor axes to the same
@@ -389,10 +400,37 @@
 // sparkles. Track B / B2 (`brush/TipMips.hpp`) is the fix: `BrushTipBitmap`
 // carries a box-filtered mip chain, built once alongside `alpha`, and
 // `bitmapDabCoverage()` (brush/Deposit.cpp) picks the coarsest level whose own
-// texel still maps to no more than about 2 document pixels -- `scale =
+// texel still maps to no more than one document pixel -- `scale =
 // bitmapTipScale(bmp, tip.radius)` document pixels per NATIVE texel, `level =
-// clamp(floor(log2(1/scale)), 0, mips.size())` -- and samples THAT level
-// bilinearly instead of level 0. At `scale >= 1` (drawn at native size or
+// clamp(floor(log2(1/scale)), 0, mips.size())`, so a level texel spans
+// `2^level * scale` in (0.5, 1] document pixels and one output texel covers
+// between 1 and ~2 of them -- and samples THAT level bilinearly instead of
+// level 0.
+//
+// **That "~2 source texels per output texel" holds along the tip's MAJOR
+// axis only.** `scale` is isotropic -- it comes from `radius`, the semi-major
+// axis -- but §2b's squash divides the minor-axis coordinate by `roundness`
+// before the lookup, so along the MINOR axis of an elliptical bitmap tip one
+// output texel covers up to `2 / roundness` level texels: 4 at roundness 0.5,
+// 8 at 0.25. There the four-texel bilinear sample is again a point sample of
+// a wider footprint, and a minor axis carrying detail at the level's own
+// frequency can still sparkle. **Left so, deliberately, and measured rather
+// than argued:** the alternative is choosing the level from the minor axis
+// (`scale * roundness`), which removes that aliasing by blurring the MAJOR
+// axis by the same factor -- one level per dab cannot be right on both axes
+// of an anisotropic footprint (that is what anisotropic filtering is for, at
+// several samples a texel). Against the exact box-filtered coverage of the
+// level-0 bitmap over each output texel (16x16 supersampled, every texel of
+// the footprint, 16 sub-pixel dab offsets), a 512x512 grainy soft mark -- the
+// stand-in for a scanned tip -- came out at or below the minor-axis choice's
+// RMS error at every size and roundness tried (radius 6/12/24, roundness
+// 1/0.5/0.25; e.g. roundness 0.25, radius 6: 0.025 against 0.073, and its
+// sub-pixel flicker 0.020 against 0.046). The minor-axis choice won only on
+// detail that varies ACROSS the minor axis at the pathological frequency (a
+// 64x64 checkerboard, or 4-texel stripes across the minor axis, at scale
+// 0.19-0.75: 0.37 against 0.11) and lost by the same factor on stripes along
+// the major axis (0.095 against 0.21). A scanned mark is closer to the first
+// case than to either stripe, so the major-axis level stays. At `scale >= 1` (drawn at native size or
 // magnified) `level` is always 0 and the arithmetic is the bilinear sample
 // above, bit-identical to before this section existed; minification is the
 // only case that ever reaches a coarser level. No trilinear blend between two
@@ -763,11 +801,17 @@ struct BrushTip {
   // dab centre; a radius of 0 or less deposits nothing at all.
   float radius = 24.0f;
 
-  // The fraction of the radius that is the flat, fully-covered core, in
-  // [0,1]. 0 is a pure smoothstep from the centre; 1 is a hard disc only at
-  // `edgePx == 0` -- at the default `edgePx` below it is a flat core out to
-  // `radius - edgePx` with an antialiased last pixel (§2; this line used to
-  // say "1 is a hard disc" unqualified, which `edgePx` made false).
+  // The fraction of the radius the tip ASKS to be its flat, fully-covered
+  // core, in [0,1]. The core `dabCoverage()` actually draws is `hEff` of the
+  // radius, `hEff = clamp(min(hardness, 1 - edgePx / radius), 0, 1)` (§2):
+  // exactly `hardness` whenever the skirt it leaves, `(1 - hardness) *
+  // radius`, is at least `edgePx` pixels wide, and narrower otherwise, so no
+  // tip's rim is ever under `edgePx` pixels. 0 is a pure smoothstep from the
+  // centre; 1 is a hard disc only at `edgePx == 0` -- at the default `edgePx`
+  // below it is a flat core out to `radius - edgePx` with an antialiased last
+  // pixel. (This line used to say "the fraction of the radius that is the
+  // flat core" and "1 is a hard disc", unqualified; `edgePx` made both false
+  // for any tip whose skirt is under a pixel -- `Detail Liner` among them.)
   float hardness = 0.35f;
 
   // **The minimum width, in DOCUMENT PIXELS, of the smoothstep skirt** --
@@ -927,20 +971,38 @@ struct BrushTip {
   // (`blendModeFromPsToolOptions()`, brush/ToolOptionsBlend.hpp) onto this
   // project's layer-compositing vocabulary (`core::BlendMode`).
   //
-  // **Set by `brushTipFor()`. Read by exactly ONE downstream consumer:
-  // `brush/RgbDeposit`'s `RgbStroke`, on the RGB deposit route, and nowhere
-  // else.** `app/StrokeSession.cpp`'s `StrokeSession::begin()` passes it to
-  // `RgbStroke::begin()` only when `route_ == StrokeRoute::RgbDeposit`; every
-  // other route (`brush/RgbErase`, `brush/PigmentErase`, the free
-  // `depositDab()` for Pigment, and heal/clone/smudge/tonal/mask/pencil)
-  // still ignores it, for the two obstacles this comment used to name as
-  // having stopped ALL wiring: a Pigment texel has no premultiplied RGBA to
-  // blend, and Photoshop's own Eraser tool does not read a brush's blend
-  // mode at all. Neither obstacle applies to a plain RGB layer, which is why
-  // this is one reader and not zero -- see `brush/RgbDeposit.hpp` §2a for the
-  // stroke-level (never per-dab) composite that reads it, and
-  // `brush/ToolOptionsBlend.hpp` for which of the five Photoshop ids
-  // (`Nrml`/`Mltp`/`Drkn`/`linearBurn`/`Dslv`) ever reach here at all.
+  // **Applied on RGB layers and when stroking a path; not yet on Strokes
+  // layers or Pigment layers.** That sentence is the whole user-visible
+  // contract, and the Tool Options banner (`ui/MacPaintUI.cpp`'s
+  // `drawBrushToolOptionsGroup()`) says it in the same words.
+  //
+  // **Set by `brushTipFor()`. Read by exactly ONE downstream consumer,
+  // `brush/RgbDeposit`'s `RgbStroke`, reached from two places:**
+  //   * `app/StrokeSession.cpp`'s `StrokeSession::begin()`, which passes it
+  //     to `RgbStroke::begin()` only when `route_ == StrokeRoute::RgbDeposit`
+  //     -- a live brush stroke on an RGB layer;
+  //   * `app/PathConsumers.cpp`'s `strokePathWithBrush()`, Stroke Path with
+  //     Brush onto an RGB layer. (It once omitted the argument, so the
+  //     defaulted Normal painted every Multiply/Darken brush as Normal along
+  //     a path; `--selftest`'s path consumers section 10 pins the fix.)
+  // Every other route (`brush/RgbErase`, `brush/PigmentErase`, the free
+  // `depositDab()` for Pigment -- live or along a path -- and heal/clone/
+  // smudge/tonal/mask/pencil) still ignores it, for the two obstacles this
+  // comment used to name as having stopped ALL wiring: a Pigment texel has no
+  // premultiplied RGBA to blend, and Photoshop's own Eraser tool does not
+  // read a brush's blend mode at all. Neither obstacle applies to a plain RGB
+  // layer, which is why this is one reader and not zero -- see
+  // `brush/RgbDeposit.hpp` §2a for the stroke-level (never per-dab) composite
+  // that reads it, and `brush/ToolOptionsBlend.hpp` for which of the five
+  // Photoshop ids (`Nrml`/`Mltp`/`Drkn`/`linearBurn`/`Dslv`) ever reach here.
+  //
+  // **A Strokes layer is the third "not yet", and it is a file-format gap,
+  // not an obstacle.** `core/StrokesContent`'s `DabRecord` has no blend
+  // field, so nothing recorded onto a Strokes layer can carry one and its
+  // evaluation (`brush/StrokesLayer`) composites every record Normal.
+  // Adding it is a record-layout change (`io/StrokesSerial`'s version
+  // prefix), deliberately not bundled with the `npdabs2` bump that carried
+  // `edgePx` -- a separate decision with its own format version.
   BlendMode blend = BlendMode::Normal;
 
   // **`sizeFloorPx` is gone.** Through commit 8f6f960 this held the pixel
@@ -1008,11 +1070,19 @@ bool brushTipEqual(const BrushTip& a, const BrushTip& b) noexcept;
 // for the profile, §2b for the ellipse and §2c for a sampled bitmap tip.
 //
 // Exactly 0.0f for every offset at or beyond the tip's rim, exactly 1.0f
-// inside `tip.hardness` of the way to it, and a smoothstep between them --
-// where "the rim" is the circle of `tip.radius` for a round tip and §2b's
-// ellipse for any other -- **unless `tip.bitmap` is set**, in which case §2c's
-// mapping and the bitmap's own pixels decide coverage outright and
-// `tip.hardness` plays no part.
+// inside `hEff` of the way to it, and a smoothstep between them, where
+//
+//     hEff = clamp(min(tip.hardness, 1 - tip.edgePx / tip.radius), 0, 1)
+//
+// (§2) -- so the flat core is `tip.hardness` of the way out only when the
+// skirt that leaves, `(1 - hardness) * radius`, is already at least `edgePx`
+// pixels wide, and is narrower otherwise (a hardness-1 tip at the default
+// `edgePx` has its core end one pixel short of the rim). This comment used to
+// say "inside `tip.hardness`", which `edgePx` made false. "The rim" is the
+// circle of `tip.radius` for a round tip and §2b's ellipse for any other --
+// **unless `tip.bitmap` is set**, in which case §2c's mapping and the
+// bitmap's own pixels decide coverage outright and neither `tip.hardness`
+// nor `tip.edgePx` plays any part.
 //
 // **When `tip.dualTip` is set** (§2d), this is `tip`'s own coverage by the
 // rule above, combined with `*tip.dualTip`'s coverage (by the SAME rule,

@@ -1,6 +1,7 @@
 #include "app/selftest/Support.hpp"
 
 #include "brush/Deposit.hpp"
+#include "brush/Library.hpp"
 #include "brush/TipMips.hpp"
 
 namespace np {
@@ -10,7 +11,7 @@ namespace np {
 // on the procedural falloff (brush/Deposit.hpp §2), and
 // `BrushTipBitmap::mips`' box-filter chain for a minified sampled tip (§2c).
 //
-// Six sections, matching the brief this section was specified against:
+// Seven sections -- the brief this section was specified against, plus 7:
 //   1. Identity: bit-exact against the pre-`edgePx` formula, two ways.
 //   2. A hard disc's rim band: fractional with the floor, binary without.
 //   3. The stroke's rim reads smoother: more than two distinct values along
@@ -18,6 +19,8 @@ namespace np {
 //   4. `buildTipMips()` against a 7x5 fixture, hand-computed.
 //   5. Level selection: a checkerboard tip minified vs. drawn at native size.
 //   6. `brushTipEqual()` distinguishes two tips differing only in `edgePx`.
+//   7. Which built-in brushes the floor leaves bit-identical (Detail Liner
+//      is the one it changes, on purpose).
 // ---------------------------------------------------------------------------
 bool runTipEdgeTest() {
   bool ok = true;
@@ -31,8 +34,10 @@ bool runTipEdgeTest() {
   //    hold, compared at bit-exact `==`.
   // ======================================================================
   {
-    // (1 - hardness) * radius == 15.6 >= 1.0 -- `Round Bristle 03`'s own
-    // shipped default, the case brush/Deposit.hpp §2 names by name.
+    // (1 - hardness) * radius == 15.6 >= 1.0 -- `BrushTip`'s default radius
+    // with `Round Bristle 03`'s hardness. (The preset itself paints at r 20,
+    // its 40 px default diameter, a 13 px skirt; section 7 checks every
+    // built-in at its real default size.)
     BrushTip base;
     base.radius = 24.0f;
     base.hardness = 0.35f;
@@ -379,6 +384,56 @@ bool runTipEdgeTest() {
     b.edgePx = a.edgePx;
     check(brushTipEqual(a, b),
           "equality: and restoring edgePx alone recovers equality -- isolating the field");
+  }
+
+  // ======================================================================
+  // 7. Which BUILT-IN brushes the floor leaves bit-identical, preset by preset
+  // ======================================================================
+  //
+  // brush/Deposit.hpp §2's second identity condition, applied to the shipped
+  // library rather than to one hand-typed tip. That header said "every
+  // built-in brush at its default size" is unchanged, and `Detail Liner`
+  // (r 5, h 0.95: a 0.25 px skirt, `hEff` 0.8) made it false the day `edgePx`
+  // landed -- the case the field exists for, not a regression. This pins the
+  // corrected claim: the measured bit-identity of every built-in agrees with
+  // the algebraic condition `(1 - hardness) * radius >= edgePx`, and the one
+  // built-in it does NOT hold for is `Detail Liner`. A re-tuned or added
+  // built-in that crosses the line then fails here, by name, instead of
+  // silently moving the `canvas` golden view or the header's list.
+  {
+    const BrushLibrary lib = defaultBrushLibrary();
+    std::string changed;
+    bool agrees = !lib.presets.empty();
+    for (const BrushPreset& p : lib.presets) {
+      if (!p.builtin) continue;
+      BrushTip tip;
+      tip.radius = p.model.tip.diameterPx * 0.5f;  // brushTipFor()'s own conversion
+      tip.hardness = p.model.tip.hardness;
+      tip.roundness = p.model.tip.roundness;
+      tip.angle = p.model.tip.angleDeg;
+      BrushTip noFloor = tip;
+      noFloor.edgePx = 0.0f;
+      bool identical = true;
+      const float reach = tip.radius + 1.0f;
+      for (float dy = -reach; dy <= reach; dy += 0.25f)
+        for (float dx = -reach; dx <= reach; dx += 0.25f)
+          if (dabCoverage(tip, dx, dy) != dabCoverage(noFloor, dx, dy)) identical = false;
+      const bool predicted = (1.0f - tip.hardness) * tip.radius >= tip.edgePx;
+      std::printf("  [measured] built-in \"%s\": r %.1f h %.2f, skirt %.2f px -> %s\n",
+                  p.name.c_str(), static_cast<double>(tip.radius),
+                  static_cast<double>(tip.hardness),
+                  static_cast<double>((1.0f - tip.hardness) * tip.radius),
+                  identical ? "bit-identical" : "CHANGED by edgePx");
+      if (identical != predicted) agrees = false;
+      if (!identical) changed += (changed.empty() ? "" : ", ") + p.name;
+    }
+    check(agrees,
+          "built-ins: every built-in brush's bit-identity under edgePx agrees with the header's "
+          "condition (1 - hardness) * radius >= edgePx, measured over its whole footprint");
+    check(changed == "Detail Liner",
+          "built-ins: and the ONE built-in edgePx changes is Detail Liner (0.25 px skirt -> "
+          "hEff 0.8) -- the intended fix, which brush/Deposit.hpp §2 names; Round Bristle 03, "
+          "Flat Wash and Dry Bristle are bit-identical");
   }
 
   std::printf("[selftest] tip edge %s\n", ok ? "PASS" : "FAIL");

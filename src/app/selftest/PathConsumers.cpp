@@ -973,6 +973,90 @@ bool runPathConsumersTest() {
           "  and paints nothing outside it");
   }
 
+  // ==========================================================================
+  // 10. The brush's own blend mode reaches a path stroke (review finding 4)
+  // ==========================================================================
+  //
+  // `strokePathWithBrush()` used to call `RgbStroke::begin()` without
+  // `tip.blend`, so the defaulted Normal painted a Multiply brush as Normal
+  // along a path -- while the Tool Options banner said Blend Mode was applied
+  // on an RGB layer. White ink is the discriminating fixture: under Multiply
+  // it is the identity (`dst * 1 == dst`), so the grey must come back
+  // unchanged, and under Normal it is the one ink that moves a 0.2 grey the
+  // furthest (to 1.0). A second ink, 0.5, proves Multiply is actually being
+  // computed rather than the stroke being dropped.
+  //
+  // Tolerance: the layer is binary16, so a stored value can differ from the
+  // exact product by one round-to-nearest, 2^-11 relative plus a 2^-25
+  // subnormal floor -- the derivation runRgbDepositTest() states for the same
+  // `core::Tile`. The probe texel (120, 128) is on the path's spine, in the
+  // hardness-1 tip's flat core (coverage exactly 1 at flow 1), so the stroke's
+  // `A'` there is exactly 1 and brush/RgbDeposit.hpp §2a's composite reduces to
+  // `blend(dst0, ink)` with no partial-coverage term to budget for.
+  std::printf("  -- 10. stroke path honours the brush's blend mode --\n");
+  {
+    constexpr float kHalfRel = 4.8828125e-04f;    // 2^-11
+    constexpr float kHalfFloor = 2.9802322e-08f;  // 2^-25
+    auto nearHalf = [&](float got, float want) {
+      return std::fabs(got - want) <= std::fabs(want) * kHalfRel + kHalfFloor;
+    };
+    Path line;
+    SubPath sub;
+    for (float x : {40.0f, 200.0f}) {
+      Anchor a;
+      a.pt = PathPoint{x, 128.0f};
+      a.in = a.pt;
+      a.out = a.pt;
+      sub.anchors.push_back(a);
+    }
+    line.subpaths.push_back(sub);
+
+    // One stroke over a fresh opaque 0.2-grey layer, returning the probe
+    // texel before and after.
+    auto strokeOverGrey = [&](BlendMode mode, float ink, std::array<float, 4>* before,
+                              bool* strokeOk) {
+      Layer target = makeRgb("blend over grey", W, H);
+      for (int32_t y = 96; y < 160; ++y)
+        for (int32_t x = 0; x < W; ++x) {
+          const PixelCoord at{x, y};
+          target.rgbTiles->getOrCreate(tileCoordAt(at))
+              .writePixel(tileLocalOffset(at), {0.2f, 0.2f, 0.2f, 1.0f});
+        }
+      *before = pixelAt(*target.rgbTiles, 120, 128);
+      BrushTip tip = testTip();
+      tip.linearRgb = {ink, ink, ink};
+      tip.blend = mode;
+      const PathStrokeResult s =
+          strokePathWithBrush(target, {filledShape(line, {1, 1, 1, 1})}, tip, nullptr, W, H);
+      *strokeOk = s.ok;
+      return pixelAt(*target.rgbTiles, 120, 128);
+    };
+
+    std::array<float, 4> greyN{}, greyM{}, greyM5{};
+    bool okN = false, okM = false, okM5 = false;
+    const std::array<float, 4> normalWhite = strokeOverGrey(BlendMode::Normal, 1.0f, &greyN, &okN);
+    const std::array<float, 4> multWhite =
+        strokeOverGrey(BlendMode::Multiply, 1.0f, &greyM, &okM);
+    const std::array<float, 4> multHalf =
+        strokeOverGrey(BlendMode::Multiply, 0.5f, &greyM5, &okM5);
+    std::printf("  [measured] white ink over %.6f grey: Normal -> %.6f, Multiply -> %.6f; "
+                "0.5 ink under Multiply -> %.6f (want %.6f)\n",
+                static_cast<double>(greyM[0]), static_cast<double>(normalWhite[0]),
+                static_cast<double>(multWhite[0]), static_cast<double>(multHalf[0]),
+                static_cast<double>(greyM5[0] * 0.5f));
+    check(okN && nearHalf(normalWhite[0], 1.0f) && nearHalf(normalWhite[3], 1.0f),
+          "blend: premise -- a NORMAL white stroke over the grey whitens it to 1.0, so the "
+          "fixture can tell the two modes apart");
+    check(okM && nearHalf(multWhite[0], greyM[0]) && nearHalf(multWhite[1], greyM[1]) &&
+              nearHalf(multWhite[2], greyM[2]) && multWhite[3] == greyM[3],
+          "blend: a MULTIPLY brush's white ink stroked along a path leaves the 0.2 grey at 0.2 "
+          "-- the path stroke reads the brush's own blend mode, as a live RGB stroke does");
+    check(okM5 && nearHalf(multHalf[0], greyM5[0] * 0.5f) &&
+              nearHalf(multHalf[2], greyM5[2] * 0.5f),
+          "blend: and a 0.5 ink under the same Multiply lands on grey * 0.5 -- the mode is "
+          "computed, not the stroke dropped");
+  }
+
   std::printf("[selftest] path consumers %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

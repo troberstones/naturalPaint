@@ -168,7 +168,7 @@ DepositCount recordDabAt(Layer& layer, const BrushTip& tip, Vec2 centre, int32_t
   }
 
   DabRecord d;
-  // The shape, field for field. core/StrokesContent §1: the four names match
+  // The shape, field for field. core/StrokesContent §1: the five names match
   // `BrushTip`'s exactly BECAUSE `strokesRasterize()` builds a `BrushTip` back
   // out of them and calls the one `dabCoverage()` in this build -- so a
   // recorded dab's footprint is the footprint the same tip painted live, rather
@@ -177,6 +177,10 @@ DepositCount recordDabAt(Layer& layer, const BrushTip& tip, Vec2 centre, int32_t
   d.y = centre.y;
   d.radius = tip.radius;
   d.hardness = tip.hardness;
+  // The dab tip's OWN rim width, stored rather than assumed (npdabs2,
+  // io/StrokesSerial.hpp) -- so the record replays at the rim it was painted
+  // with, whatever a later build's `BrushTip::edgePx` default becomes.
+  d.edgePx = tip.edgePx;
   d.roundness = tip.roundness;
   d.angle = tip.angle;
   // **Flow times the stroke's opacity, collapsed into the one number a stored

@@ -6,12 +6,17 @@
 namespace np {
 namespace {
 
-constexpr const char* kPrefix = "npdabs1:";
+// The two versions this build reads (io/StrokesSerial.hpp): `npdabs2:` adds
+// one f32, `DabRecord::edgePx`, after `angle` in every record; `npdabs1:`
+// has none and reads back as `edgePx == 0`.
+constexpr const char* kPrefixV1 = "npdabs1:";
+constexpr const char* kPrefixV2 = "npdabs2:";
 
 // The largest dab count a payload may declare. io/FlatsSerial's cap and its
 // reason: a well-formed file from this build never approaches it (a drawing
-// is hundreds of thousands of dabs at the very most, and one dab is 68 bytes
-// on disk, so a million is already a 68 MB attribute), and a corrupt or
+// is hundreds of thousands of dabs at the very most, and one dab is 73 bytes
+// on disk -- 69 in `npdabs1` -- so a million is already a 73 MB attribute),
+// and a corrupt or
 // hostile one that declares more is refused BEFORE any allocation. That
 // ordering is the whole point -- a four-byte count is all it takes to ask for
 // a terabyte otherwise.
@@ -73,6 +78,21 @@ struct Reader {
 }  // namespace
 
 std::string serializeStrokesContent(const StrokesContent& c) {
+  // The header's version rule: `npdabs1` exactly when it is lossless -- every
+  // record's `edgePx` is +0.0f, the value a v1 payload reads back as --
+  // and `npdabs2` otherwise. Compared as a BIT PATTERN, not with `== 0.0f`:
+  // `-0.0f` compares equal to `0.0f` but would come back as `+0.0f`, and
+  // this carrier's whole promise is bit-exact floats.
+  bool needsV2 = false;
+  for (const DabRecord& d : c.dabs) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &d.edgePx, sizeof(bits));
+    if (bits != 0u) {
+      needsV2 = true;
+      break;
+    }
+  }
+
   std::vector<uint8_t> b;
   putU64(b, c.nextDabId);
   putU32(b, static_cast<uint32_t>(c.dabs.size()));
@@ -85,6 +105,7 @@ std::string serializeStrokesContent(const StrokesContent& c) {
     putF32(b, d.hardness);
     putF32(b, d.roundness);
     putF32(b, d.angle);
+    if (needsV2) putF32(b, d.edgePx);
     putF32(b, d.flow);
     for (const float ch : d.rgba) putF32(b, ch);
     // One byte for the source enum rather than the enum's own width: the set
@@ -96,7 +117,7 @@ std::string serializeStrokesContent(const StrokesContent& c) {
   }
 
   static const char* hex = "0123456789abcdef";
-  std::string out = kPrefix;
+  std::string out = needsV2 ? kPrefixV2 : kPrefixV1;
   out.reserve(out.size() + b.size() * 2);
   for (const uint8_t v : b) {
     out.push_back(hex[v >> 4]);
@@ -107,15 +128,22 @@ std::string serializeStrokesContent(const StrokesContent& c) {
 
 bool deserializeStrokesContent(std::string_view value, StrokesContent* contentOut,
                                std::string* errorOut) {
-  const std::string_view prefix(kPrefix);
-  if (value.substr(0, prefix.size()) != prefix) {
+  // The version is read before a single byte is decoded (the header's rule),
+  // and it selects the one framing difference: whether a record carries
+  // `edgePx`. Both prefixes are the same length.
+  const std::string_view v1(kPrefixV1);
+  const std::string_view v2(kPrefixV2);
+  const bool isV2 = value.substr(0, v2.size()) == v2;
+  if (!isV2 && value.substr(0, v1.size()) != v1) {
     if (errorOut)
-      *errorOut = "np:dabs does not start with '" + std::string(kPrefix) +
-                  "'; a newer carrier version, or not a dab payload at all. The attribute is "
-                  "carried unchanged and the layer opened with no dabs (PRD I10).";
+      *errorOut = "np:dabs does not start with '" + std::string(kPrefixV1) + "' or '" +
+                  std::string(kPrefixV2) +
+                  "', the two versions this build reads; a newer carrier version, or not a dab "
+                  "payload at all. The attribute is carried unchanged and the layer opened "
+                  "with no dabs (PRD I10).";
     return false;
   }
-  const std::string_view hexBody = value.substr(prefix.size());
+  const std::string_view hexBody = value.substr(isV2 ? v2.size() : v1.size());
   if (hexBody.size() % 2 != 0) {
     if (errorOut) *errorOut = "np:dabs has an odd-length hex payload.";
     return false;
@@ -159,6 +187,10 @@ bool deserializeStrokesContent(std::string_view value, StrokesContent* contentOu
     d.hardness = r.f32("a dab hardness");
     d.roundness = r.f32("a dab roundness");
     d.angle = r.f32("a dab angle");
+    // `npdabs1` predates the field: those records were painted, and are
+    // replayed, with NO antialiasing floor -- the hard rim of the build that
+    // wrote them -- not with `DabRecord`'s in-memory default of 1.
+    d.edgePx = isV2 ? r.f32("a dab edge width") : 0.0f;
     d.flow = r.f32("a dab flow");
     for (float& ch : d.rgba) ch = r.f32("a dab colour channel");
     // An unrecognised source byte reads as `Ink`, which is the value that
