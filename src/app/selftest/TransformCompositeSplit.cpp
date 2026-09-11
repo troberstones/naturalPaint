@@ -220,6 +220,41 @@ bool runTransformCompositeSplitTest() {
           "split: hiding an out-of-range layer changes nothing");
   }
 
+  // --- 6. documentWithLayerRangeHidden(): track `xform`'s wireframe-only ----
+  //     fallback for a `TransformTarget::LayerSet` session (PRD C12) --------
+  {
+    const Document doc = makeDoc();
+    const Document range01 = documentWithLayerRangeHidden(doc, 0, 1);
+    check(!range01.layers[0].visible && !range01.layers[1].visible && range01.layers[2].visible,
+          "range: [0,1] hides exactly those two, leaving 2 visible");
+
+    const Document rangeAll = documentWithLayerRangeHidden(doc, 0, 2);
+    check(!rangeAll.layers[0].visible && !rangeAll.layers[1].visible &&
+              !rangeAll.layers[2].visible,
+          "range: [0,2] hides every layer this 3-layer document has");
+
+    const Document rangeOne = documentWithLayerRangeHidden(doc, 1, 1);
+    check(rangeOne.layers[0].visible && !rangeOne.layers[1].visible && rangeOne.layers[2].visible,
+          "range: lo == hi hides exactly one layer, like documentWithLayerHidden()");
+
+    // hi past the end clamps to the last real layer rather than reading OOB.
+    const Document rangeClampHi = documentWithLayerRangeHidden(doc, 1, 99);
+    check(rangeClampHi.layers[0].visible && !rangeClampHi.layers[1].visible &&
+              !rangeClampHi.layers[2].visible,
+          "range: an out-of-range hi clamps to the document's last layer");
+
+    // lo past the end hides nothing -- there is no layer at or after it.
+    const Document rangeLoPastEnd = documentWithLayerRangeHidden(doc, 99, 199);
+    check(rangeLoPastEnd.layers[0].visible && rangeLoPastEnd.layers[1].visible &&
+              rangeLoPastEnd.layers[2].visible,
+          "range: an out-of-range lo hides nothing rather than reading OOB");
+
+    const std::vector<float> before = compositeDocumentPremultiplied(doc);
+    (void)documentWithLayerRangeHidden(doc, 0, 1);
+    const std::vector<float> after = compositeDocumentPremultiplied(doc);
+    check(bitIdentical(before, after), "range: building the view leaves the source untouched");
+  }
+
   return ok;
 }
 

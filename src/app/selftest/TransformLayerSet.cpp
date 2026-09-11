@@ -176,7 +176,13 @@ bool runTransformLayerSetTest() {
 
     TransformSession ts;
     TransformBeginResult groupBegin = ts.beginLayerSet(od, makeLayerSelection({1, groupIdx}));
-    check(!groupBegin.ok && groupBegin.error.find("Group") != std::string::npos &&
+    // `layerKindName(LayerKind::Group)` is lower-case "group" on purpose
+    // (core/Layer.hpp: matching a published `np:kind` spec string beats a
+    // capitalisation habit) -- asked for through that function rather than
+    // hardcoded as "Group", so this assertion cannot go stale against its
+    // own production line the way a literal would.
+    check(!groupBegin.ok &&
+              groupBegin.error.find(layerKindName(LayerKind::Group)) != std::string::npos &&
               groupBegin.error.find("no pixels") != std::string::npos,
           "beginLayerSet refuses a selected Group member by name, as a kind with no pixels");
 
