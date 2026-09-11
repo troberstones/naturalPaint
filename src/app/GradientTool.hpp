@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -153,6 +154,30 @@ bool removeGradientOpacityStop(GradientPresetStops& stops, size_t index);
 // after every drag, exactly as `drawGradientMapDialog()` already does on its
 // own, unwidened stop list.
 void sortGradientPresetStops(GradientPresetStops& stops);
+
+// Moves the stop at `index` to `position` (clamped to [0,1] by
+// `clampGradientStopPosition()`), keeping the list sorted ascending --
+// `movePoint()`'s own erase-then-reinsert shape (`app/CurveEdit.cpp`), one
+// dimension over: a stop's only free coordinate is its position, so there is
+// no second axis to carry through the splice. Returns the stop's index AFTER
+// the move, which can differ from `index` when the move crossed a neighbour.
+// `index` must be < the list's size (bounds-checked via `std::vector::at`,
+// throws `std::out_of_range` on misuse, the same discipline `app/CurveEdit`
+// holds its callers to).
+size_t moveGradientColorStop(GradientPresetStops& stops, size_t index, float position);
+size_t moveGradientOpacityStop(GradientPresetStops& stops, size_t index, float position);
+
+// Nearest stop in `positions` to `t`, within `hitRadius` (inclusive) -- the
+// hit-test the editor's drag/delete gestures start from, `hitTestPoint()`'s
+// own contract (`app/CurveEdit.hpp`) on a 1-D strip instead of a 2-D plot.
+// nullopt when nothing in `positions` (including an empty list) is within
+// range. On a tie, the smaller index wins (a strict `<`, never `<=`, when
+// replacing the running best) -- deterministic rather than
+// iteration-order-dependent by accident. Takes a plain position list rather
+// than a `GradientPresetStops` so the editor's colour row and opacity row
+// share the one function despite hit-testing two different-typed lists.
+std::optional<size_t> hitTestGradientStop(const std::vector<float>& positions, float t,
+                                          float hitRadius) noexcept;
 
 // ---------------------------------------------------------------------------
 // § 3. The tool's own settings

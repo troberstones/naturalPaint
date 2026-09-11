@@ -1,6 +1,7 @@
 #include "app/GradientTool.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <type_traits>
 #include <utility>
 
@@ -160,6 +161,46 @@ bool removeGradientOpacityStop(GradientPresetStops& stops, size_t index) {
   if (stops.opacityStops.size() <= 2 || index >= stops.opacityStops.size()) return false;
   stops.opacityStops.erase(stops.opacityStops.begin() + static_cast<ptrdiff_t>(index));
   return true;
+}
+
+size_t moveGradientColorStop(GradientPresetStops& stops, size_t index, float position) {
+  const GradientColorStopSpec moved = stops.colorStops.at(index);
+  stops.colorStops.erase(stops.colorStops.begin() + static_cast<ptrdiff_t>(index));
+  GradientColorStopSpec placed = moved;
+  placed.position = clampGradientStopPosition(position);
+  const auto it = std::upper_bound(
+      stops.colorStops.begin(), stops.colorStops.end(), placed.position,
+      [](float t, const GradientColorStopSpec& s) { return t < s.position; });
+  const size_t idx = static_cast<size_t>(it - stops.colorStops.begin());
+  stops.colorStops.insert(it, placed);
+  return idx;
+}
+
+size_t moveGradientOpacityStop(GradientPresetStops& stops, size_t index, float position) {
+  const GradientOpacityStopSpec moved = stops.opacityStops.at(index);
+  stops.opacityStops.erase(stops.opacityStops.begin() + static_cast<ptrdiff_t>(index));
+  GradientOpacityStopSpec placed = moved;
+  placed.position = clampGradientStopPosition(position);
+  const auto it = std::upper_bound(
+      stops.opacityStops.begin(), stops.opacityStops.end(), placed.position,
+      [](float t, const GradientOpacityStopSpec& s) { return t < s.position; });
+  const size_t idx = static_cast<size_t>(it - stops.opacityStops.begin());
+  stops.opacityStops.insert(it, placed);
+  return idx;
+}
+
+std::optional<size_t> hitTestGradientStop(const std::vector<float>& positions, float t,
+                                          float hitRadius) noexcept {
+  std::optional<size_t> best;
+  float bestDist = 0.0f;
+  for (size_t i = 0; i < positions.size(); ++i) {
+    const float d = std::fabs(positions[i] - t);
+    if (d <= hitRadius && (!best.has_value() || d < bestDist)) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  return best;
 }
 
 namespace {

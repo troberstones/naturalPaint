@@ -74,7 +74,7 @@
 # So each capture gets its own empty scratch copies of all of them, via the
 # same env overrides the app already supports for exactly this purpose
 # (`NP_PANEL_LAYOUT`, `NP_BRUSH_LIBRARIES`, `NP_DAB_DIR`, `NP_ACTION_DIR`,
-# `NP_DOCUMENT_PRESETS`). Pointing them at paths that do not exist yet is
+# `NP_GRADIENT_DIR`, `NP_DOCUMENT_PRESETS`). Pointing them at paths that do not exist yet is
 # deliberate and is what the app's own defaults are for: a missing file means
 # "no imported libraries, no dabs, the built-in panel layout", which is a
 # defined starting state, the same one on every machine, and the one the
@@ -1814,6 +1814,7 @@ run_view_launch() {
       NP_DOCUMENT_PRESETS="$jdir/document-presets.txt" \
       NP_EXPORT_PRESETS="$jdir/export-presets.json" \
       NP_ACTION_DIR="$jdir/actions-root" \
+      NP_GRADIENT_DIR="$jdir/gradients-root" \
       "$BIN" ${view_args[$idx]} --screenshot "$fullPng" "${view_frames[$idx]}" \
       > "$jdir/stdout.log" 2> "$jdir/stderr.log"; then
     echo "run_golden.sh: $name: naturalPaint exited nonzero -- see $jdir/stderr.log" >&2
