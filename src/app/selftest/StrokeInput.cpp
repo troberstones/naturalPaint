@@ -77,17 +77,31 @@ bool runStrokeInputTest() {
     }
     check(increasing, "two-sample rising segment: dab pressure is strictly increasing, dab to dab");
 
-    // Open interval, not closed: `StrokePath::addPoint()`'s own contract is
-    // that the first dab of a drag lands ONE FULL SPACING in, never at the
-    // first sample itself (`app/selftest/StrokePath.cpp` section 5 asserts
-    // the identical thing for position) -- and `flush()`'s trailing segment
-    // never reaches its own far endpoint either (`leftover_` is spent before
-    // `u` reaches 1). So neither the exact 0.0 the first sample carried nor
-    // the exact 1.0 the last one did should ever appear on a dab.
+    // The span is the HALF-OPEN (0, 1], and the asymmetry is real rather
+    // than sloppiness about the endpoints:
+    //
+    //  * strictly above 0: `StrokePath`'s walk emits its first dab ONE FULL
+    //    SPACING in, never at the first sample itself (`app/selftest/
+    //    StrokePath.cpp` section 5 asserts the identical thing for position),
+    //    so no dab can carry the 0.0 the first sample held;
+    //  * up to and INCLUDING 1: the far endpoint IS reachable, and this
+    //    fixture reaches it exactly. The walk emits whenever the accumulated
+    //    arc length crosses a spacing boundary, and `leftover_` starts at 0
+    //    on a fresh path -- so a segment whose length is an exact integer
+    //    multiple of the spacing puts its last dab exactly on its far
+    //    endpoint. 200 px at 5 px spacing is 40 spacings exactly, which is
+    //    why the measurement below reports the last dab at the last sample's
+    //    own 1.0. A fixture with a non-multiple length would report just
+    //    under it; neither is a defect, so the assertion admits both.
+    std::printf("  [measured] two-sample 0->1 ramp over 200 px at 5 px spacing: %zu dabs, "
+                "first pressure %.6f, last %.6f\n",
+                dabs.size(), static_cast<double>(dabs.empty() ? 0.0f : dabs.front().pressure),
+                static_cast<double>(dabs.empty() ? 0.0f : dabs.back().pressure));
     check(!dabs.empty() && dabs.front().pressure > 0.0f && dabs.front().pressure < 1.0f,
           "two-sample rising segment: first dab's pressure is strictly inside (0, 1)");
-    check(!dabs.empty() && dabs.back().pressure > 0.0f && dabs.back().pressure < 1.0f,
-          "two-sample rising segment: last dab's pressure is strictly inside (0, 1)");
+    check(!dabs.empty() && dabs.back().pressure <= 1.0f && dabs.back().pressure > 0.9f,
+          "two-sample rising segment: last dab's pressure is in (0.9, 1] -- the ramp really is "
+          "spanned, and the far endpoint is reachable but never exceeded");
   }
 
   // ==========================================================================
@@ -287,9 +301,20 @@ bool runStrokeInputTest() {
   }
 
   // ==========================================================================
-  // 5. The old addPoint(x, y) wrapper and the new addSample() with neutral
-  //    axes produce bit-identical dabs, end to end through a real
-  //    StrokeSession -- not merely through StrokePath alone.
+  // 5. The old addPoint(x, y) wrapper and the new addSample() produce
+  //    bit-identical dabs, end to end through a real StrokeSession -- not
+  //    merely through StrokePath alone.
+  //
+  //    The stroke below begins with a default `DynamicInputs{}` latch, which
+  //    is where the two routes are required to coincide: `addPoint()` builds
+  //    its sample's axes from THAT latch (its own header comment argues why
+  //    it must, and `app/selftest/ActiveLayer.cpp` guards the case where the
+  //    latch is not neutral), and `addSample()` here is handed a default
+  //    `StrokeSample`. Those two readings agree on pressure/tilt/azimuth and
+  //    differ only in `barrel` -- 0.0 against `StrokeSample`'s own rest
+  //    reading of 0.5 -- which `hasBarrel == false` makes unreadable
+  //    downstream. So "bit-identical pixels" is a real claim about the
+  //    geometry and deposition being one shared path, not two.
   // ==========================================================================
   {
     auto makeDoc = [](int32_t w, int32_t h) {
@@ -320,7 +345,8 @@ bool runStrokeInputTest() {
       std::string err;
       s.begin(od, 1, tip, Tool::Brush, &err, nullptr, DynamicInputs{});
       for (int i = 0; i < 6; ++i) {
-        StrokeSample ss;  // default-constructed: neutral axes, `addPoint()`'s own
+        StrokeSample ss;  // default-constructed: the neutral reading this
+                          // stroke's own `DynamicInputs{}` latch also holds
         ss.pos = Vec2{40.0f + 20.0f * static_cast<float>(i), 128.0f};
         s.addSample(ss);
       }
@@ -416,12 +442,12 @@ bool runStrokeInputTest() {
     // flush walks the final segment, samples 3->4 (0.66->1.0).
     s.addSample(StrokeSample{Vec2{100.0f, 250.0f}, 0.0f, 0.0f, 0.0f, 0.5f});
     s.addSample(StrokeSample{Vec2{233.33f, 250.0f}, 0.33f, 0.0f, 0.0f, 0.5f});
-    const float rEarly = s.lastDabRadius();
     s.addSample(StrokeSample{Vec2{366.67f, 250.0f}, 0.66f, 0.0f, 0.0f, 0.5f});
-    const float rMid = s.lastDabRadius();
+    const float rEarly = s.lastDabRadius();  // samples 1->2 walked: 0.0 -> 0.33
     s.addSample(StrokeSample{Vec2{500.0f, 250.0f}, 1.0f, 0.0f, 0.0f, 0.5f});
+    const float rMid = s.lastDabRadius();  // samples 2->3 walked: 0.33 -> 0.66
     s.end();
-    const float rLate = s.lastDabRadius();
+    const float rLate = s.lastDabRadius();  // flush walked 3->4: 0.66 -> 1.0
 
     std::printf("  [measured] PenPressure Size, rising stroke -- early %.3f px, mid %.3f px, "
                 "late %.3f px (base %.1f px, sabotaged-constant reading would be %.1f px flat)\n",
