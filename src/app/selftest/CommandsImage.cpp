@@ -1,9 +1,13 @@
 #include "app/selftest/Support.hpp"
 
 #include "app/AdjustmentOps.hpp"
+#include "app/Action.hpp"
 #include "app/Command.hpp"
 #include "app/CropTool.hpp"
 #include "app/FilterOps.hpp"
+#include "app/Recorder.hpp"
+#include "app/Replay.hpp"
+#include "app/TransformSession.hpp"
 #include "core/SelectionMask.hpp"
 #include "ops/Blur.hpp"
 #include "ops/Filters.hpp"
@@ -74,6 +78,38 @@ double layerSignature(const Document& doc, size_t layerIndex) {
     }
   }
   return acc;
+}
+
+// Bit-exact, unlike `layerSignature()` above: for section H's three rows this
+// is comparing two DIFFERENT code paths that are each supposed to have done
+// the identical thing (a command against its applier, or the command against
+// `app/TransformSession`'s own interactive commit) rather than checking that
+// one control changed *something*, so a tolerance -- or a weighted sum that a
+// pair of compensating errors could still hit -- would let a reroute that ran
+// a slightly different op pass. `sameLayerPixels()` in
+// app/selftest/CommandCallsites.cpp makes the identical argument; this is a
+// second, smaller copy rather than a shared header because both are
+// file-local test helpers over a `Document`/`Tile` shape neither module
+// exports for the purpose.
+bool sameRgbLayerPixels(const Document& a, const Document& b, size_t layerIndex) {
+  if (layerIndex >= a.layers.size() || layerIndex >= b.layers.size()) return false;
+  const Layer& la = a.layers[layerIndex];
+  const Layer& lb = b.layers[layerIndex];
+  if (la.rgbTiles.has_value() != lb.rgbTiles.has_value()) return false;
+  if (!la.rgbTiles.has_value()) return true;
+  if (a.width != b.width || a.height != b.height) return false;
+  for (int32_t y = 0; y < static_cast<int32_t>(a.height); ++y) {
+    for (int32_t x = 0; x < static_cast<int32_t>(a.width); ++x) {
+      const PixelCoord pc{x, y};
+      const TileCoord tc = tileCoordAt(pc);
+      const Tile* ta = la.rgbTiles->find(tc);
+      const Tile* tb = lb.rgbTiles->find(tc);
+      if ((ta == nullptr) != (tb == nullptr)) return false;
+      if (ta == nullptr) continue;
+      if (ta->readPixel(tileLocalOffset(pc)) != tb->readPixel(tileLocalOffset(pc))) return false;
+    }
+  }
+  return true;
 }
 
 JsonValue num(double v) { return JsonValue::number(v); }
@@ -860,6 +896,276 @@ bool runCommandsImageTest() {
     }
     check(pigmentHandled,
           "precondition: pixel ops refuse a pigment layer; document ops still run");
+  }
+
+  // ==========================================================================
+  // H. Offset, Delete Selection and Numeric Transform -- the three section A
+  //    named out of its shared-fixture loop, each for its own reason.
+  // ==========================================================================
+  std::printf("  -- H. Offset, Delete Selection, Numeric Transform --\n");
+  {
+    std::printf("     -- offset --\n");
+    // A document with no selection (offset refuses under any live one), sized
+    // so `offsetByHalf()` lands on an EXACT half in both axes -- the case the
+    // by-half button exists for. A pattern that is not flat, so an offset
+    // that landed on the wrong texels would show up as different pixels
+    // rather than the same colour moved.
+    OpenDocument origin = makeBlankOpenDocument(64, 64, WorkingSpace{}, "offset origin");
+    {
+      Tile& t = origin.document.layers[0].rgbTiles->getOrCreate(TileCoord{0, 0});
+      for (int32_t y = 0; y < kTileSize; ++y)
+        for (int32_t x = 0; x < kTileSize; ++x) {
+          const float v = static_cast<float>((x * 3 + y * 5) % 11) / 10.0f;
+          t.writePixel(PixelCoord{x, y}, {v, 1.0f - v, 0.25f, 1.0f});
+        }
+      origin.recordEdit("offset fixture", EditKind::Content);
+    }
+    const PixelCoord half = offsetByHalf(origin);
+    check(half.x == 32 && half.y == 32,
+          "offset: fixture's by-half is an exact half -- the case this section needs");
+
+    JsonValue offsetParams = JsonValue::object();
+    offsetParams.set("dx_fraction", num(0.5));
+    offsetParams.set("dy_fraction", num(0.5));
+    offsetParams.set("edge", JsonValue::string("wrap"));
+
+    // (b) command vs applier, at the resolution it was "recorded" at: the
+    // fraction this row carries and the texel delta the old dialog computed
+    // must land on the identical picture.
+    {
+      OpenDocument viaCommand = origin;
+      OpenDocument viaApplier = origin;
+      const CommandResult r = applyCommand(viaCommand, Command{"filter_offset", offsetParams});
+      const FilterOpResult a = applyOffset(viaApplier, OffsetRequest{32, 32, OffsetEdge::Wrap});
+      check(r.ok && a.refusal == PixelOpRefusal::None && r.texelsChanged > 0,
+            "offset: both the command and the applier ran and moved texels");
+      check(sameRgbLayerPixels(viaCommand.document, viaApplier.document, 0),
+            "offset: filter_offset(0.5, 0.5) and applyOffset(32, 32) agree bit-for-bit");
+    }
+
+    // (c) record -> replay at a DIFFERENT resolution: by-half stays by-half.
+    // The stored step is the SAME JSON (0.5, 0.5, wrap) recorded against the
+    // 64x64 fixture above; replayed against a 96x160 document it must land on
+    // THAT document's own half, not on 32x32 texels of a 96x160 canvas.
+    {
+      OpenDocument resized = makeBlankOpenDocument(96, 160, WorkingSpace{}, "offset resized");
+      for (int32_t ty = 0; ty < 3; ++ty) {
+        for (int32_t tx = 0; tx < 2; ++tx) {
+          Tile& t = resized.document.layers[0].rgbTiles->getOrCreate(TileCoord{tx, ty});
+          for (int32_t y = 0; y < kTileSize; ++y)
+            for (int32_t x = 0; x < kTileSize; ++x) {
+              const float v = static_cast<float>((x * 7 + y * 3 + tx * 13 + ty * 17) % 13) / 12.0f;
+              t.writePixel(PixelCoord{x, y}, {v, 0.4f, 1.0f - v, 1.0f});
+            }
+        }
+      }
+      resized.recordEdit("offset resized fixture", EditKind::Content);
+      const PixelCoord halfAtNewSize = offsetByHalf(resized);
+      check(halfAtNewSize.x != 32 || halfAtNewSize.y != 32,
+            "offset: the resized fixture's own half is NOT the 64x64 fixture's half -- a "
+            "literal texel replay would visibly disagree with it");
+
+      OpenDocument replayed = resized;
+      Action a;
+      a.name = "Offset by half";
+      a.steps.push_back(Command{"filter_offset", offsetParams});
+      const ReplayResult rr = replayAction(replayed, a);
+      check(rr.ok, "offset: replay of the recorded fraction succeeds on the resized document");
+
+      OpenDocument direct = resized;
+      applyOffset(direct, OffsetRequest{halfAtNewSize.x, halfAtNewSize.y, OffsetEdge::Wrap});
+      check(sameRgbLayerPixels(replayed.document, direct.document, 0),
+            "offset: replaying the recorded fraction at a new resolution reproduces THAT "
+            "document's own offsetByHalf(), not the original texel count");
+    }
+
+    // Refusals: outright under any live selection, and the (0,0) identity.
+    {
+      OpenDocument withSelection = makeImageCommandDocument();
+      const CommandResult r =
+          applyCommand(withSelection, Command{"filter_offset", offsetParams});
+      check(!r.ok && contains(r.status, "selection"),
+            "offset: refuses outright under a live selection, unlike every bounded row above");
+    }
+    {
+      OpenDocument flat = origin;
+      JsonValue zero = JsonValue::object();
+      zero.set("dx_fraction", num(0.0));
+      zero.set("dy_fraction", num(0.0));
+      zero.set("edge", JsonValue::string("wrap"));
+      const CommandResult r = applyCommand(flat, Command{"filter_offset", zero});
+      check(!r.ok && contains(r.status, "identity"),
+            "offset: a fraction that resolves to (0, 0) texels is refused as the identity");
+    }
+
+    std::printf("     -- delete_selection --\n");
+    // (b) command vs the direct clear, both bounded and unbounded.
+    {
+      OpenDocument viaCommand = makeImageCommandDocument();  // carries a selection
+      OpenDocument viaApplier = makeImageCommandDocument();
+      const CommandResult r = applyCommand(viaCommand, Command{"delete_selection", JsonValue::object()});
+      const Selection* sel = viaApplier.selection ? &*viaApplier.selection : nullptr;
+      clearThroughSelection(*viaApplier.document.layers[viaApplier.activeLayer].rgbTiles, sel);
+      check(r.ok && r.texelsChanged > 0,
+            "delete_selection: the command ran and cleared something under the fixture's "
+            "selection");
+      check(sameRgbLayerPixels(viaCommand.document, viaApplier.document, 0),
+            "delete_selection: command and direct clearThroughSelection() agree, bounded");
+    }
+    {
+      OpenDocument viaCommand = makeImageCommandDocument();
+      viaCommand.selection.reset();
+      OpenDocument viaApplier = makeImageCommandDocument();
+      viaApplier.selection.reset();
+      applyCommand(viaCommand, Command{"delete_selection", JsonValue::object()});
+      clearThroughSelection(*viaApplier.document.layers[viaApplier.activeLayer].rgbTiles, nullptr);
+      check(sameRgbLayerPixels(viaCommand.document, viaApplier.document, 0),
+            "delete_selection: an absent selection clears the WHOLE layer, matching the "
+            "applier's own documented default");
+    }
+    // Accepts a Pigment layer, unlike the shared pixel-op bridge.
+    {
+      OpenDocument pig = makeImageCommandDocument();
+      const LayerEditResult added =
+          applyLayerCommand(pig, LayerCommand::NewPigmentLayer, pig.activeLayer);
+      check(added.ok, "delete_selection: fixture can add a Pigment layer");
+      if (added.ok) {
+        setActiveLayer(pig, added.selected);
+        const CommandResult r = applyCommand(pig, Command{"delete_selection", JsonValue::object()});
+        check(r.ok,
+              "delete_selection: available on a Pigment layer, unlike the shared pixel-op "
+              "bridge that would refuse it");
+      }
+    }
+    // A locked layer is refused, by name.
+    {
+      OpenDocument locked = makeImageCommandDocument();
+      locked.document.layers[locked.activeLayer].locked = true;
+      const CommandResult r = applyCommand(locked, Command{"delete_selection", JsonValue::object()});
+      check(!r.ok && contains(r.status, "locked"), "delete_selection: refuses a locked layer, by name");
+    }
+    // selectionBounded's channel-match protection (app/Recorder.hpp §4):
+    // exactly the same rule app/selftest/Recorder.cpp section E proves on
+    // filter_gaussian_blur, exercised here on the two rows this track added
+    // that reuse it for a reason other than "absent means whole canvas".
+    {
+      Recorder& session = sessionRecorder();
+      OpenDocument marquee = makeImageCommandDocument();  // a live, unsaved selection
+      session.arm(marquee);
+      const CommandResult r = applyCommand(marquee, Command{"delete_selection", JsonValue::object()});
+      const bool refusedAsStep = session.steps().empty() && session.refusals().size() == 1;
+      const std::string why = session.refusals().empty() ? std::string() : session.refusals()[0];
+      session.stop();
+      check(r.ok, "delete_selection: the command itself still ran under the live marquee");
+      check(refusedAsStep && contains(why, "delete_selection") && contains(why, "channel"),
+            "delete_selection: but the RECORDER refuses it as a step, naming the fix");
+    }
+    {
+      Recorder& session = sessionRecorder();
+      OpenDocument marquee = makeImageCommandDocument();
+      session.arm(marquee);
+      // radius is inpaintCommand's own required key; large enough that the
+      // small live selection is comfortably inside its reach.
+      JsonValue p = JsonValue::object();
+      p.set("radius", num(6));
+      const CommandResult r = applyCommand(marquee, Command{"filter_inpaint", p});
+      const bool refusedAsStep = session.steps().empty() && session.refusals().size() == 1;
+      const std::string why = session.refusals().empty() ? std::string() : session.refusals()[0];
+      session.stop();
+      check(r.ok, "filter_inpaint: the command itself still ran under the live marquee");
+      check(refusedAsStep && contains(why, "filter_inpaint") && contains(why, "channel"),
+            "filter_inpaint: but the RECORDER refuses it as a step too, the same rule");
+    }
+    // Inpaint's own point: an ABSENT selection is a hard refusal, never "the
+    // whole canvas" -- `inpaintRefusal()`'s `NoSelection`, not a silent
+    // whole-layer fill nobody asked for.
+    {
+      OpenDocument noSel = makeBlankOpenDocument(64, 64, WorkingSpace{}, "inpaint no selection");
+      Tile& t = noSel.document.layers[0].rgbTiles->getOrCreate(TileCoord{0, 0});
+      for (int32_t y = 0; y < kTileSize; ++y)
+        for (int32_t x = 0; x < kTileSize; ++x) t.writePixel(PixelCoord{x, y}, {0.5f, 0.5f, 0.5f, 1.0f});
+      noSel.recordEdit("inpaint no-selection fixture", EditKind::Content);
+      JsonValue p = JsonValue::object();
+      p.set("radius", num(6));
+      const CommandResult r = applyCommand(noSel, Command{"filter_inpaint", p});
+      check(!r.ok && contains(r.status, "selection"),
+            "filter_inpaint: an absent selection is refused, not read as 'the whole canvas'");
+    }
+
+    std::printf("     -- numeric_transform --\n");
+    // (b) command vs the interactive path: `app/TransformSession` built and
+    // committed exactly as `drawNumericTransformDialog()`'s Apply button
+    // does, compared against `numeric_transform` given the same five fields.
+    // Neither side recomputes the other's pivot -- each asks its OWN code for
+    // it (`TransformSession::sourceBounds()` for the session,
+    // `layerContentBounds()` inside `doNumericTransform()` for the command),
+    // so agreement here is the two independent implementations landing on the
+    // same answer, not one checked against a copy of itself.
+    {
+      OpenDocument viaSession = makeImageCommandDocument();
+      viaSession.selection.reset();
+      OpenDocument viaCommand = makeImageCommandDocument();
+      viaCommand.selection.reset();
+
+      TransformSession ts;
+      const TransformBeginResult began = ts.beginLayer(viaSession, viaSession.activeLayer);
+      check(began.ok, "numeric_transform: the session begins on the same fixture");
+      const DocumentRegion& b = ts.sourceBounds();
+      const Point2 pivot{static_cast<float>(b.x) + static_cast<float>(b.width) * 0.5f,
+                         static_cast<float>(b.y) + static_cast<float>(b.height) * 0.5f};
+      const Mat3 m = composeNumericTransform(15.0f, 1.2f, 0.85f, 6.0f, -4.0f, pivot);
+      ts.setPending(m);
+      const TransformCommitResult committed = ts.commit(viaSession);
+      check(committed.ok, "numeric_transform: the interactive session commits");
+
+      JsonValue p = JsonValue::object();
+      p.set("rotate_degrees", num(15.0));
+      p.set("scale_x_percent", num(120.0));
+      p.set("scale_y_percent", num(85.0));
+      p.set("translate_x", num(6.0));
+      p.set("translate_y", num(-4.0));
+      const CommandResult r = applyCommand(viaCommand, Command{"numeric_transform", p});
+      check(r.ok, "numeric_transform: the command runs the same request");
+      check(sameRgbLayerPixels(viaSession.document, viaCommand.document, viaSession.activeLayer),
+            "numeric_transform: the interactive session and the command agree bit-for-bit");
+    }
+    // An identity request is a no-op, matching TransformSession::commit()'s
+    // own rule exactly -- not a refusal, and not read as "nothing was asked".
+    {
+      OpenDocument idOp = makeImageCommandDocument();
+      idOp.selection.reset();
+      JsonValue p = JsonValue::object();
+      p.set("rotate_degrees", num(0.0));
+      p.set("scale_x_percent", num(100.0));
+      p.set("scale_y_percent", num(100.0));
+      p.set("translate_x", num(0.0));
+      p.set("translate_y", num(0.0));
+      const CommandResult r = applyCommand(idOp, Command{"numeric_transform", p});
+      check(r.ok && contains(r.status, "identity"),
+            "numeric_transform: the identity request succeeds and says so, matching the "
+            "interactive session's own rule");
+    }
+    // Refused by name: a live selection (the case left to the interactive
+    // dialog and Free Transform), a locked layer.
+    {
+      OpenDocument withSelection = makeImageCommandDocument();  // carries a selection
+      JsonValue p = JsonValue::object();
+      p.set("rotate_degrees", num(10.0));
+      const CommandResult r = applyCommand(withSelection, Command{"numeric_transform", p});
+      check(!r.ok && contains(r.status, "selection"),
+            "numeric_transform: refuses a live selection by name -- that stays the "
+            "interactive dialog's and Free Transform's job");
+    }
+    {
+      OpenDocument locked = makeImageCommandDocument();
+      locked.selection.reset();
+      locked.document.layers[locked.activeLayer].locked = true;
+      JsonValue p = JsonValue::object();
+      p.set("rotate_degrees", num(10.0));
+      const CommandResult r = applyCommand(locked, Command{"numeric_transform", p});
+      check(!r.ok && contains(r.status, "locked"),
+            "numeric_transform: refuses a locked layer, by name");
+    }
   }
 
   return ok;
