@@ -26,8 +26,7 @@ bool runAppIconTest() {
   check(img.width == 512 && img.height == 512, "app icon: embedded PNG is 512 x 512");
   check(img.rgba.size() == 512u * 512u * 4u, "app icon: decoded buffer is 512*512*4 bytes");
 
-  // 2. It is the committed PNG, byte for byte. NP_APP_ICON_PNG is the absolute
-  //    source path src/CMakeLists.txt generated AppIconPng.inc from.
+  // 2. A stale generated include would otherwise ship an old icon, all green.
   {
     std::ifstream f(NP_APP_ICON_PNG, std::ios::binary);
     const std::vector<unsigned char> onDisk((std::istreambuf_iterator<char>(f)),
@@ -37,9 +36,8 @@ bool runAppIconTest() {
     check(same, "app icon: embedded bytes == icons/linux/hicolor 512 px PNG");
   }
 
-  // 3. The pixels are the artwork's. The master is fully opaque -- its white
-  //    ground is painted in the .kra's bottom layer -- so the corner is white,
-  //    and the centre sits on the brown brush.
+  // 3. The artwork's pixels: an opaque white ground, the brush's brown at the
+  //    centre (measured 139 105 50; +-16 survives a re-export).
   if (img.rgba.size() == 512u * 512u * 4u) {
     auto px = [&](int x, int y) { return &img.rgba[(static_cast<size_t>(y) * 512u + x) * 4u]; };
     const unsigned char* c = px(0, 0);
@@ -55,8 +53,7 @@ bool runAppIconTest() {
     check(false, "app icon: centre (256,256) is the brush's brown");
   }
 
-  // 4. The surface handed to SDL carries the same pixels at the same size,
-  //    row by row through its pitch.
+  // 4. The surface handed to SDL, row by row through its pitch.
   {
     std::string why;
     SDL_Surface* s = createAppIconSurface(&why);
@@ -74,7 +71,7 @@ bool runAppIconTest() {
     check(same, "app icon: surface is RGBA32, 512 x 512, pixels == decode");
   }
 
-  // 5. main.cpp installed it on the real window before the suite ran.
+  // 5. main.cpp installs it on the real window before the suite runs.
   check(appIconInstalled(), "app icon: installAppIcon() succeeded on the window");
 
   std::printf("[selftest] app icon %s\n", ok ? "PASS" : "FAIL");

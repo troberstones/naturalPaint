@@ -2694,12 +2694,7 @@ int main(int argc, char** argv) {
   // dead for as long as the panel is up.
   np::setFileDialogParentWindow(window);
 
-  // ---- the application icon (ui/AppIcon) ----------------------------------
-  //
-  // The Dock icon on macOS (an unbundled binary otherwise gets the generic
-  // "exec" tile), the taskbar/Alt-Tab icon on X11 and Windows, and
-  // xdg-toplevel-icon on Wayland. ui/AppIcon.hpp says why this is set at
-  // runtime from a PNG compiled into the binary. Never fatal.
+  // Dock / taskbar / Wayland icon (ui/AppIcon). Never fatal.
   {
     std::string iconError;
     if (!np::installAppIcon(window, &iconError))
@@ -4223,8 +4218,6 @@ int main(int argc, char** argv) {
     // reading. Headless and GPU-free (app/SelfTest.hpp's own comment on it).
     const bool strokeInputOk = np::runStrokeInputTest();
     const bool pointerQueueOk = np::runPointerQueueTest();
-    // ui/AppIcon: the embedded icon decodes, matches the committed PNG it was
-    // generated from, and the running window accepted it.
     const bool appIconOk = np::runAppIconTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&

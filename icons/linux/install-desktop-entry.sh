@@ -9,16 +9,8 @@
 #   icons/hicolor/<N>x<N>/apps/naturalPaint.png   (16..512, from icons/linux/hicolor)
 #   applications/naturalPaint.desktop             (Exec= rewritten to the binary's absolute path)
 #
-# The desktop file's name, its Icon= and its StartupWMClass= are all
-# "naturalPaint" because that is the app id SDL reports to the compositor
-# (SDL_GetAppID(): the executable's name, since the app sets no identifier)
-# -- Wayland compositors and X11 taskbars match a running window to its
-# desktop entry, and so to its icon, by exactly that string.
-#
-# Per-user and outside the build on purpose: this build has no install()
-# layout (the binary finds its shaders and keymaps beside itself or in the
-# source tree -- core/ResourcePaths.hpp), so a system-wide install would have
-# nothing coherent to point Exec= at.
+# Everything is named "naturalPaint" because that is SDL's default app id (the
+# executable's name), which compositors match to the desktop entry.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,11 +40,8 @@ for size in 16 24 32 48 64 128 256 512; do
 done
 
 mkdir -p "$DATA/applications"
-# The Exec key's own rules (Desktop Entry spec, "The Exec key"), so a checkout
-# under any path still launches: inside the quotes, " ` $ and \ are
-# backslash-escaped and % doubled; then the value's string escaping doubles
-# every backslash once more. Written line by line, not with sed, whose
-# replacement text would itself reinterpret & | and \.
+# Desktop Entry Exec quoting: escape " ` $ \ and double %, then double every
+# backslash again for the string value. Not sed: it reinterprets & | \.
 EXEC_PATH="${BIN//\\/\\\\}"
 EXEC_PATH="${EXEC_PATH//\"/\\\"}"
 EXEC_PATH="${EXEC_PATH//\`/\\\`}"
@@ -67,7 +56,6 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   fi
 done < "$HERE/$NAME.desktop" > "$DATA/applications/$NAME.desktop"
 
-# Both refreshes are optional conveniences; most desktops notice on their own.
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DATA/applications" || true
 command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t "$DATA/icons/hicolor" || true
 
