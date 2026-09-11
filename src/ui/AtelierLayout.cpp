@@ -56,12 +56,13 @@ AtelierToolGrid atelierToolGrid(float availW, float availH) noexcept {
   return g;
 }
 
-AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip) {
-  return atelierLayout(x, y, w, h, showTabStrip, kDefaultDockExtents);
+AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip,
+                           float menuBarReservedW) {
+  return atelierLayout(x, y, w, h, showTabStrip, kDefaultDockExtents, menuBarReservedW);
 }
 
 AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip,
-                           const AtelierDockExtents& docks) {
+                           const AtelierDockExtents& docks, float menuBarReservedW) {
   AtelierBands b;
 
   const auto addRule = [&b](AtelierRect r) {
@@ -83,8 +84,9 @@ AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip
   // than handed to a caller as a rect with negative width, matching this
   // file's own "undersized windows" rule for every other band.
   if (showTabStrip) {
-    const float tabsW = std::max(0.0f, w - kTitleWordmarkW - kTitleControlsW);
-    b.tabStrip = AtelierRect{x + kTitleWordmarkW, b.titleBar.y, tabsW, kTitleBarH};
+    const float leftReserve = kTitleWordmarkW + std::max(0.0f, menuBarReservedW);
+    const float tabsW = std::max(0.0f, w - leftReserve - kTitleControlsW);
+    b.tabStrip = AtelierRect{x + leftReserve, b.titleBar.y, tabsW, kTitleBarH};
   } else {
     b.tabStrip = AtelierRect{x, b.titleBar.y, 0.0f, 0.0f};
   }

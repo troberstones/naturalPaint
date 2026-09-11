@@ -1032,18 +1032,18 @@ void applyToolToBrush(AppState& st) {
   switch (st.brush.tool) {
     case Tool::Water:
       st.sim.brushPigment = 0.0f;
-      st.sim.brushWater = st.brush.wetness * 1.4f;
+      st.sim.brushWater = st.brush.native.wetness * 1.4f;
       st.sim.brushHardness = 0.15f;
       break;
     case Tool::DryBrush:
-      st.sim.brushPigment = st.brush.load * 1.3f;
-      st.sim.brushWater = st.brush.wetness * 0.15f;
+      st.sim.brushPigment = st.brush.native.load * 1.3f;
+      st.sim.brushWater = st.brush.native.wetness * 0.15f;
       st.sim.brushHardness = 0.9f;
       break;
     case Tool::Brush:
     default:
-      st.sim.brushPigment = st.brush.load;
-      st.sim.brushWater = st.brush.wetness;
+      st.sim.brushPigment = st.brush.native.load;
+      st.sim.brushWater = st.brush.native.wetness;
       st.sim.brushHardness = st.brush.model.tip.hardness;
       break;
   }
@@ -5749,10 +5749,10 @@ void drawBrushTipShapeGroup(AppState& st, GpuContext& gpu, const MixboxLut& lut)
 void drawBrushPaintGroup(AppState& st) {
   // kBrushLoadMin/Max (app/AppState.hpp): the one range for this field, also
   // read by the options bar's LOAD slider.
-  ctlSlider("Load", &st.brush.load, kBrushLoadMin, kBrushLoadMax);
+  ctlSlider("Load", &st.brush.native.load, kBrushLoadMin, kBrushLoadMax);
 
   // **WET reaches sim::PaintSim's `brushWater` and nothing else.**
-  // `applyToolToBrush()` (:742) is the only reader of `st.brush.wetness`, and
+  // `applyToolToBrush()` (:742) is the only reader of `st.brush.native.wetness`, and
   // its only call site is the canvas block's `paintTool && ...` branch below,
   // which is reached exclusively when `strokeRouteFor()` answers
   // `StrokeRoute::PaintSim` -- the Water tool always, or Brush/DryBrush with
@@ -5772,7 +5772,7 @@ void drawBrushPaintGroup(AppState& st) {
     ImGui::BeginDisabled(!honoured);
     // kBrushWetnessMin/Max (app/AppState.hpp): the one range for this field,
     // also read by the options bar's WET slider.
-    ctlSlider("Water", &st.brush.wetness, kBrushWetnessMin, kBrushWetnessMax);
+    ctlSlider("Water", &st.brush.native.wetness, kBrushWetnessMin, kBrushWetnessMax);
     ImGui::EndDisabled();
     if (honoured)
       ImGui::TextDisabled("Water content the solver canvas mixes into this stroke.");
@@ -5960,8 +5960,8 @@ void drawBrushTextureGroup(AppState& st, bool ownPage) {
     const StrokeRoute route = strokeRouteFor(st.brush.tool, target);
     const bool honoured = grainReachesRoute(route);
     ImGui::BeginDisabled(!honoured);
-    ImGui::Checkbox("Enabled", &st.brush.grain.enabled);
-    ImGui::BeginDisabled(!st.brush.grain.enabled);
+    ImGui::Checkbox("Enabled", &st.brush.native.grain.enabled);
+    ImGui::BeginDisabled(!st.brush.native.grain.enabled);
     // One slider drives both `periodX` and `periodY` -- `GrainParams`'s own
     // comment on why the struct keeps them separate (the patent's NR/NC are
     // independent) while this, the only control surface that writes them,
@@ -5969,19 +5969,19 @@ void drawBrushTextureGroup(AppState& st, bool ownPage) {
     // thing but not a distinction this panel's first control needs to offer,
     // and one slider is one fewer number for a painter reaching for "make
     // the paper coarser" to reconcile.
-    int period = st.brush.grain.periodX;
+    int period = st.brush.native.grain.periodX;
     if (ctlSliderInt("Scale", &period, 4, 96)) {
-      st.brush.grain.periodX = period;
-      st.brush.grain.periodY = period;
+      st.brush.native.grain.periodX = period;
+      st.brush.native.grain.periodY = period;
     }
-    ctlSlider("Depth", &st.brush.grain.depth, 0.0f, 1.0f);
-    ctlSlider("Strength", &st.brush.grain.strength, 0.0f, 2.0f);
+    ctlSlider("Depth", &st.brush.native.grain.depth, 0.0f, 1.0f);
+    ctlSlider("Strength", &st.brush.native.grain.strength, 0.0f, 2.0f);
     ImGui::EndDisabled();
     ImGui::EndDisabled();
     if (!honoured)
       ImGui::TextDisabled("Grain reaches the layer routes; this stroke goes to %s.",
                           strokeRouteName(route));
-    else if (st.brush.grain.enabled)
+    else if (st.brush.native.grain.enabled)
       ImGui::TextDisabled("Deep valleys fill; peaks get skipped, at the same pressure.");
     else
       ImGui::TextDisabled("Off: every dab covers exactly what its falloff says, paper or not.");
@@ -5989,7 +5989,7 @@ void drawBrushTextureGroup(AppState& st, bool ownPage) {
 
   // --- BrushModel::texture -- Photoshop's imported Texture panel ----------
   //
-  // A DIFFERENT struct from PAPER GRAIN above (`st.brush.grain`): this is
+  // A DIFFERENT struct from PAPER GRAIN above (`st.brush.native.grain`): this is
   // `model.texture`, what a '.abr' file's own Texture panel carries --
   // pattern, scale, depth, blend mode, brightness/contrast. Not yet read at
   // paint time (`BrushModel.hpp`'s own comment: "imported by nothing until
@@ -6014,6 +6014,30 @@ void drawBrushTextureGroup(AppState& st, bool ownPage) {
     if (!enabled)
       ImGui::TextDisabled("Texture is off -- turn it on above to edit these.");
   }
+}
+
+// The NATURALPAINT group: a small seam at the top of the Dynamics tab's own
+// window page for naturalPaint's own brush parameters, beside the shelved
+// matrix this tab has always carried -- see `BrushSettingsTab::Dynamics`'s
+// own comment on why this is the tab that holds it. LOAD/WETNESS bind to
+// `st.brush.native` (brush/NativeBrush.hpp); OPACITY binds to the plain
+// `st.brush.opacity`, which is naturalPaint's own too but deliberately NOT in
+// `native` -- per-session options-bar state a preset does not carry
+// (NativeBrush.hpp's header). NOT drawn in the docked column:
+// `drawBrushSection()` calls `drawBrushDynamicsGroup()` below directly, and
+// `drawBrushPaintGroup()` already shows these same three controls, with their
+// full reasoning, there.
+void drawBrushNativeGroup(AppState& st) {
+  if (!ImGui::CollapsingHeader("NATURALPAINT", ImGuiTreeNodeFlags_DefaultOpen)) return;
+  ctlSlider("Load", &st.brush.native.load, kBrushLoadMin, kBrushLoadMax);
+  const OpenDocument* od = st.documents.active();
+  const Layer* target = od != nullptr ? activeLayerOf(*od) : nullptr;
+  const bool wetHonoured = wetnessReachesSolver(strokeRouteFor(st.brush.tool, target));
+  ImGui::BeginDisabled(!wetHonoured);
+  ctlSlider("Wetness", &st.brush.native.wetness, kBrushWetnessMin, kBrushWetnessMax);
+  ImGui::EndDisabled();
+  if (!wetHonoured) ImGui::TextDisabled("Reaches the wet canvas only.");
+  ctlSlider("Opacity", &st.brush.opacity, 0.0f, 1.0f);
 }
 
 // **The two draws below are gated behind `st.showAdvancedDynamics`.** The
@@ -6128,6 +6152,29 @@ void drawBrushTransferGroup(AppState& st) {
 void drawBrushToolOptionsGroup(AppState& st) {
   // No `enabled` field on `PsToolOptions` -- Tool Options has no off switch
   // in Photoshop either (BrushSettingsTab::ToolOptions's own comment).
+  //
+  // **Blend Mode is now the one field below this line the engine actually
+  // reads on a stroke** -- brush/RgbDeposit.hpp §2a, reached through
+  // `brush/ToolOptionsBlend.hpp`'s mapping and `RgbStroke::begin()`. Opacity,
+  // Flow and Smoothing are not: `BrushState::opacity`/`native.load` (the brush's own
+  // sliders, drawn on the Paint group, not this imported value) are what a
+  // stroke actually reads for the first two, and Smoothing has no engine
+  // target at all. Said here, once, rather than leaving the reader to guess
+  // which of four adjacent fields the RGB-blend work below changed.
+  //
+  // The first sentence is `BrushTip::blend`'s own contract, in the same words
+  // (brush/Deposit.hpp): applied on RGB layers and when stroking a path (Stroke
+  // Path with Brush onto an RGB layer, app/PathConsumers.cpp), not yet on
+  // Strokes layers -- a dab record has no blend field, so a recorded mark
+  // composites Normal -- or on Pigment layers, which have no RGBA to blend.
+  textDisabledWrapped(
+      "Blend Mode is applied on RGB layers and when stroking a path; not yet on Strokes "
+      "layers or Pigment layers. Normal, Multiply and Darken are applied -- Linear Burn and "
+      "Dissolve are refused by name, brush/ToolOptionsBlend.hpp. A Strokes layer's dab "
+      "records carry no blend mode yet, so marks recorded there composite Normal; a Pigment "
+      "layer has no RGBA to blend. Opacity, Flow and Smoothing below are parsed and carried "
+      "but not applied -- the brush's own Opacity/Flow sliders are what a stroke actually "
+      "reads.");
   drawBrushModelFieldsForPrefix(st, "options.");
 
   // The bare top-level checkbox tail -- `noise`/`wetEdges`/`airbrush`/
@@ -7486,6 +7533,16 @@ bool g_exportAsRequested = false;
 // the export dialogs, because a successful Export As now closes its dialog and
 // reports here rather than into a line the popup had already closed over.
 std::string g_docStatus;
+// How wide the `ImGui::BeginMenu()` row actually drew last frame, beyond
+// `kTitleWordmarkW`, on platforms with no native menu bar (see
+// ui/MacNativeMenu.hpp). Fed into the NEXT frame's `atelierLayout()` calls as
+// `menuBarReservedW`, so the document tab strip starts after the menus
+// instead of being drawn on top of them -- see this file's own
+// `BeginMainMenuBar()` block for the measurement and AtelierLayout.hpp's
+// `menuBarReservedW` parameter for why one frame's lag here is fine. Always
+// 0 once a native menu bar is installed, since then nothing is drawn into
+// this row for the tab strip to collide with.
+float g_linuxMenuBarReservedW = 0.0f;
 bool g_exportStatesRequested = false;
 bool g_exportRegionsRequested = false;
 bool g_batchRequested = false;
@@ -15780,7 +15837,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // will -- this is the same value computed twice, not two different
   // answers.
   const AtelierRect earlyTabStrip =
-      atelierLayout(vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y, !st.documents.empty()).tabStrip;
+      atelierLayout(vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y, !st.documents.empty(),
+                    nativeMenuBarInstalled() ? 0.0f : g_linuxMenuBarReservedW)
+          .tabStrip;
 
   // ------------------------------------------------------------ title bar
   //
@@ -15832,6 +15891,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   const bool menuBarOpen = ImGui::BeginMainMenuBar();
   ImGui::PopStyleVar();
   if (menuBarOpen) {
+    // Row-local origin for `g_linuxMenuBarReservedW`'s measurement below --
+    // captured before the wordmark, so the delta to the end of the menu loop
+    // is the wordmark's own rendered width plus the menus', not just the
+    // menus' share on top of `kTitleWordmarkW`'s nominal 100 px (the two can
+    // differ by a few px depending on the font actually loaded).
+    const float titleRowStartX = ImGui::GetCursorPosX();
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
                          (kTitleBarH - ImGui::GetFrameHeight()) * 0.5f);
 
@@ -15890,6 +15955,17 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           ImGui::EndMenu();
         }
       }
+      // Measured so next frame's `atelierLayout()` calls can reserve exactly
+      // this much room for the tab strip -- see `g_linuxMenuBarReservedW`'s
+      // own comment. `titleRowStartX` is this same row's origin, so the delta
+      // to here is the wordmark's actual rendered width plus the menus',
+      // and subtracting `kTitleWordmarkW` converts that into "how much MORE
+      // than the nominal wordmark reservation the row just used" -- exactly
+      // what `atelierLayout()`'s `menuBarReservedW` parameter adds on top of.
+      g_linuxMenuBarReservedW = std::max(
+          0.0f, (ImGui::GetCursorPosX() - titleRowStartX) - kTitleWordmarkW);
+    } else {
+      g_linuxMenuBarReservedW = 0.0f;
     }
 
     // The active document's name used to be here, with a `*` dirty marker,
@@ -16356,8 +16432,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   dockExtents.right = pd.right;
   dockExtents.top = pd.top;
   dockExtents.bottom = pd.bottom;
-  const AtelierBands bands = atelierLayout(vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y,
-                                           /*showTabStrip=*/!st.documents.empty(), dockExtents);
+  const AtelierBands bands = atelierLayout(
+      vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y,
+      /*showTabStrip=*/!st.documents.empty(), dockExtents,
+      nativeMenuBarInstalled() ? 0.0f : g_linuxMenuBarReservedW);
 
   // Any dock, splitter or header gesture below sets this; it is written back
   // once, after every dock has drawn. One write per frame that changed
@@ -20186,6 +20264,46 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     st.paintingThisFrame = false;
     st.pendingDabs.clear();
 
+    // The gesture the active CPU stroke paints (app/PointerQueue.hpp section
+    // 3), latched by `claimGesture()` on the frame `g_stroke.begin()`
+    // succeeds. The stroke takes that gesture's samples and no other: a
+    // LATER gesture's samples wait in the queue for the stroke that begins on
+    // it, and whatever the canvas is offered and does not take -- a press on
+    // a panel, a pan, a refused stroke -- is dropped by the queue's
+    // `endFrame()` in main.cpp, never fed to a later stroke. This used to be a
+    // per-frame swap of the whole queue, which fed a stroke every sample of
+    // whichever frame it was drained in, gesture boundaries or not (wave-1
+    // review, finding 2).
+    static uint64_t strokeGesture = 0;
+
+    // Feeds the stroke's own gesture's queued samples to the active CPU
+    // stroke, in arrival order, each converted from window space to canvas
+    // space through the same `xform` the single per-frame sample used to go
+    // through. One definition for the two places that need it: the painting
+    // branch below (every frame the pointer is held) and the pen-up branch
+    // (the frame ImGui reports the release, BEFORE `end()` -- the samples a
+    // fast flick reported between the last painted frame and the release
+    // belong to this gesture, and dropping them would chord exactly the
+    // stroke tail this queue exists to keep).
+    //
+    // `ds` for the distance-keyed pressure filter
+    // (brush/Dynamics.hpp's `dynamicPressureSmoothedByDistance()`) is THIS
+    // sample's own travel since the previous one this stroke smoothed, not
+    // since the last render frame -- `st.lastX`/`st.lastY` advance after
+    // every sample, so a frame that drains three samples measures three real
+    // per-sample distances rather than one frame-sized jump split three ways.
+    const auto feedQueuedSamplesToStroke = [&]() {
+      for (const PointerSample& qs : st.pointerQueue.takeForStroke(strokeGesture)) {
+        const Vec2 canvasPos = xform.toCanvas(Vec2{qs.x, qs.y});
+        StrokeSample ss = strokeSampleFromPointer(qs, canvasPos);
+        const float ds = std::hypot(ss.pos.x - st.lastX, ss.pos.y - st.lastY);
+        ss.pressure = g_stroke.smoothPressureByDistance(ss.pressure, ds);
+        g_stroke.addSample(ss);
+        st.lastX = ss.pos.x;
+        st.lastY = ss.pos.y;
+      }
+    };
+
     // Oil's contact -> velocity -> transfer pipeline (PaintSim::frame(),
     // shaders/oil_*.wgsl) still wants a genuine segment, not a point: its
     // tangential brush-velocity term (oil_velocity.wgsl's `vb`) and the
@@ -20270,7 +20388,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // The whole source set, not pressure alone -- tilt, azimuth and barrel
       // reach the tip here (app/PenAxes.hpp converts them), which is what the
       // DYNAMICS matrix's non-pressure rows actually drive.
-      const DynamicInputs live = dynamicInputsFor(st);
+      //
+      // Track A: `strokeHardwareInputsFor()` rather than plain
+      // `dynamicInputsFor()` -- the same values plus `hasTilt`/`hasBarrel`
+      // set for a pen in contact that reports them. `depositPending()` keeps
+      // only those flags from this latch and reads the values per dab, so
+      // without them no per-dab tilt/azimuth/barrel could ever reach a
+      // Control on this route (app/StrokeSession.hpp's comment on it).
+      const DynamicInputs live = strokeHardwareInputsFor(st);
       const BrushTip tip = brushTipFor(st.brush, lut, live);
       if (!g_stroke.active()) {
         g_strokeRefusal.clear();
@@ -20293,30 +20418,55 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         if (!g_stroke.begin(*strokeDoc, strokeDoc->activeLayer, tip, st.brush.tool,
                             &g_strokeRefusal, &st.brush.model, live, &st.clone)) {
           st.paintingThisFrame = false;
+        } else {
+          // Which gesture this stroke is: the one ImGui is inside right now
+          // -- its press already reported (that is why `down` is true), its
+          // release not yet. app/PointerQueue.hpp section 3 argues why that
+          // is exactly one gesture. Only on a successful `begin()`: a refused
+          // stroke claims nothing, and its gesture's samples are dropped at
+          // the end of the frame like any other press the canvas did not use.
+          strokeGesture = st.pointerQueue.claimGesture();
         }
         st.lastX = tx;
         st.lastY = ty;
       }
       if (g_stroke.active()) {
-        // Per frame, from this frame's pressure -- the same granularity the
-        // solver route gets, which sets one brushRadius per frame.
+        // The BASE tip, rebuilt once per frame exactly as before --
+        // `StrokeSession::setTip()`'s own comment argues this is still fine:
+        // Size/Angle/Roundness/Scatter/Count resolve per DAB from the model
+        // regardless of how many dabs a frame's samples produce. Reusing
+        // `tip` here rather than rebuilding it from a "smoothed" input is not
+        // an approximation: `brushTipFor(BrushState, MixboxLut,
+        // DynamicInputs)` ignores its `DynamicInputs` argument entirely for
+        // everything this returns (its own `(void)inputs;` -- the four
+        // hardware sources reach a stroke through `begin()`/`setTip()`'s
+        // SEPARATE `hardwareInputs` parameter, not through this), so a
+        // second call with a different `DynamicInputs` would return a
+        // bit-identical `BrushTip`.
+        g_stroke.setTip(tip, live);
+
+        // Track A: drain this stroke's gesture's full-rate samples instead of
+        // the single per-frame `(tx, ty)` the solver route below still uses.
+        // Each queued window-space sample becomes its own `StrokeSample` --
+        // canvas position plus ITS OWN axes -- so `StrokePath` can
+        // interpolate pressure/tilt/azimuth/barrel per DAB instead of every
+        // dab in a fast frame sharing one frame-latched reading, which is
+        // the defect this track exists to fix.
         //
-        // **Smoothed, not raw.** `g_stroke.smoothPressure()` (PaintCopilot
-        // §3.2's EMA jitter filter, StrokeSession.hpp's own comment) is
-        // called here rather than beside `dynamicInputsFor()` above, on
-        // purpose: this branch only runs once `g_stroke.active()`, which on
-        // a stroke's first painting frame is true only AFTER `begin()` has
-        // already reset the filter's per-stroke state for it -- calling it
-        // any earlier would blend against the previous stroke's last
-        // reading. `tip` above (built from the raw sample, used only to
-        // decide whether `begin()` accepts the stroke) is superseded here
-        // before a single dab is ever emitted from it.
-        DynamicInputs smoothed = live;
-        smoothed.pressure = g_stroke.smoothPressure(live.pressure);
-        g_stroke.setTip(brushTipFor(st.brush, lut, smoothed), smoothed);
-        g_stroke.addPoint(tx, ty);
-        st.lastX = tx;
-        st.lastY = ty;
+        // **A frame with no new samples calls addSample() zero times.**
+        // `StrokePath::flush()`'s stationary-click rule depends on
+        // `movedPx_`, which only advances inside `addPoint()`/`addSample()`
+        // -- feeding a synthetic repeat of `(tx, ty)` here on an empty queue
+        // would cost a call for no reason and, worse, would be answering the
+        // wrong question: "no new sample this frame" and "a sample that
+        // didn't move" are different facts, and only the real queue can
+        // tell them apart. A held-still pointer therefore ends where it did
+        // when this called `addPoint(tx, ty)` every frame: then, the repeats
+        // added zero travel and emitted nothing; now they are simply not
+        // made. Either way `flush()` sees `movedPx_ == 0` and lays the one
+        // stationary-click dab from the click's own sample (app/PointerQueue
+        // queues the button-/pen-down event itself for exactly that reason).
+        feedQueuedSamplesToStroke();
       }
     } else if (strokeTool && down && hovered && inside && !panning && !rotating && !sizingHeld &&
                !st.pendingGuide.has_value() && route == StrokeRoute::None &&
@@ -20576,6 +20726,16 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // happens to leave behind -- the same discipline the counters below
         // rely on, which `end()` deliberately does not clear.
         const char* routeName = strokeRouteName(g_stroke.route());
+        // Track A: this stroke's own gesture's remaining samples first --
+        // the real tail of this stroke. ONLY its own: a new press that
+        // arrived in the same poll as this release (a lift and re-touch
+        // inside one frame) is a later gesture, and its samples stay queued
+        // for the stroke that begins on it rather than bridging from this
+        // stroke's end to its start. See `feedQueuedSamplesToStroke`'s
+        // comment. Safe on an interrupted stroke for the reason `end()` just
+        // below is: `depositPending()` re-validates the target on every call.
+        feedQueuedSamplesToStroke();
+        strokeGesture = 0;
         g_stroke.end();
         std::printf("[stroke] %s (%s): %zu dabs, %zu texels, %zu tiles\n",
                     g_stroke.label().c_str(), routeName, g_stroke.dabCount(),

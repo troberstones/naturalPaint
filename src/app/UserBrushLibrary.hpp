@@ -89,15 +89,20 @@
 // content; there is no cheaper half to defer.
 //
 // **`scalars` is seven numbers, frozen positionally** -- radius, hardness,
-// spacing, roundness, angle, load, wetness, in `BrushPreset`'s declared
-// order. Same rule as the sibling file's `row`: an eighth number added here
+// spacing, roundness, angle, load, wetness, in the order `BrushPreset`
+// declared them when this format was frozen. The first five are projections
+// of `model.tip` now and the last two live on `native` (brush/NativeBrush.hpp)
+// -- the fields moved, the positions and the key did not, which is exactly
+// what lets a file written before either move still load. Same rule as the sibling file's `row`: an eighth number added here
 // by a later build would be read by this one as `preset`'s name is NOT read
 // by `scalars` -- wait, more precisely, as garbage that fails to parse as the
 // eighth float and is dropped as a malformed record (see below), which is
 // why new scalar data must arrive as a new key, never an eighth field.
 //
 // **`grain 1 24 24 0.35 1` -- enabled, periodX, periodY, depth, strength
-// (`BrushPreset::grain`, brush/Grain.hpp's `GrainParams`) -- is exactly that:
+// (`BrushPreset::native.grain`, brush/Grain.hpp's `GrainParams`; it was a
+// loose `BrushPreset::grain` until brush/NativeBrush.hpp existed, under this
+// same key) -- is exactly that:
 // a NEW key added after `scalars` already had a file format in the wild,
 // rather than an eighth `scalars` field.** Growing `scalars`' required count
 // would fail `takeFloats(rest, 7, n)`'s exact-count parse against every
@@ -105,10 +110,30 @@
 // preset it belongs to (§ this section's own paragraph above, restated for
 // the case that actually arrived). A `preset` block with no `grain` line at
 // all -- every file on disk before this feature shipped -- leaves
-// `pending.grain` at its default-constructed value, which is grain OFF, the
-// answer every such brush already had. A malformed `grain` line is treated
-// like a malformed `link` line (below), not like a malformed `scalars` one:
-// it costs only itself, not the whole preset.
+// `pending.native.grain` at its default-constructed value, which is grain
+// OFF, the answer every such brush already had. A malformed `grain` line is
+// treated like a malformed `link` line (below), not like a malformed
+// `scalars` one: it costs only itself, not the whole preset.
+//
+// **There is no `opacity` key, and the reader drops one if it finds it.** A
+// preset does not carry opacity: `BrushState::opacity` is per-session
+// options-bar state that survives picking a preset (brush/NativeBrush.hpp's
+// header on why it was deliberately left out of `native`). An interim build
+// of the `NativeBrush` migration briefly wrote an `opacity <v>` line per
+// preset; this build accepts and DROPS it -- not applied to anything, not
+// preserved as an unknown line -- the same treatment as the two retired
+// `model` paths below, so a file that build saved loads cleanly and the line
+// disappears on the next save.
+//
+// **Two `model` paths are retired: bare `load` and `wetness`.** They were
+// `BrushModel`'s last two leaves until brush/NativeBrush.hpp took them (151
+// -> 149), and an older build's `brushModelToLines()` wrote `model load <v>`/
+// `model wetness <v>` whenever those dead copies were non-default. The
+// reader accepts and DROPS them -- neither applied to `native` (the live
+// values were always `scalars`' trailing pair) nor preserved as unknown
+// lines the way a newer build's unrecognised `model` path is (§2's
+// forward-compatibility rule is about data this build cannot interpret;
+// these it can, and they mean nothing).
 //
 // ==========================================================================
 // 2. A link, and why its ordinals are load-bearing

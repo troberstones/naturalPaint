@@ -117,7 +117,7 @@ std::vector<uint8_t> wrapAbrWithSamp(const std::vector<uint8_t>& sampBody,
 // separately, from this SAME `Txtr` block, by `grainFromTexture()`) stores
 // the pattern's pixel data, never its name -- so an assertion on
 // `model.texture.pattern.name` cannot be satisfied by accident through
-// `preset.grain` and proves the model itself, and nothing upstream of it,
+// `preset.native.grain` and proves the model itself, and nothing upstream of it,
 // made the trip.
 std::vector<uint8_t> oneTexturedBrushDesc(const char* name, const char* patternId,
                                           const char* patternName) {
@@ -708,7 +708,7 @@ bool runAbrSampledTipsTest() {
     // The documented blind spot: presetMatches() does not compare tipBitmap
     // (brush/Library.hpp's comment on why). Proven here rather than only
     // asserted in prose -- two presets differing ONLY in their bitmap read
-    // as matching by the eight fields presetMatches() actually checks.
+    // as matching by the fields presetMatches() actually checks.
     BrushPreset other = dup;
     auto differentBmp = std::make_shared<BrushTipBitmap>();
     differentBmp->width = 3;
@@ -717,8 +717,7 @@ bool runAbrSampledTipsTest() {
     other.tipBitmap = differentBmp;
     check(presetMatches(other, brush.model.tip.diameterPx / 2.0f, brush.model.tip.hardness,
                         brush.model.tip.spacingPercent / 100.0f, brush.model.tip.roundness,
-                        brush.model.tip.angleDeg, brush.load, brush.wetness, brush.links,
-                        brush.grain),
+                        brush.model.tip.angleDeg, brush.native, brush.links),
           "abr-samp/roundtrip: presetMatches() DELIBERATELY cannot tell `other`'s different "
           "bitmap apart from `brush`'s -- documented on BrushPreset::tipBitmap and on "
           "presetMatches() itself, because nothing today can move a live bitmap independently "
@@ -740,7 +739,7 @@ bool runAbrSampledTipsTest() {
     // from (`preset.model`, io/AbrBrushes.cpp), not into a side vector --
     // and it is not left default-constructed for a preset whose Texture
     // panel is on. `model.texture.pattern.name` is the discriminating field:
-    // `preset.grain`, filled from this identical `Txtr` block by
+    // `preset.native.grain`, filled from this identical `Txtr` block by
     // `grainFromTexture()` a few lines below where `preset.model` is set,
     // carries the pattern's PIXELS but never its name -- so this assertion
     // cannot pass by accident through the grain path, only through the model

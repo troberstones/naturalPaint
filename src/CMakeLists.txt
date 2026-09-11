@@ -27,6 +27,7 @@ add_executable(naturalPaint
   app/HistoryPanel.cpp
   app/Keymap.cpp
   app/PenAxes.cpp
+  app/PointerQueue.cpp
   app/PathOps.cpp
   app/PathsPanel.cpp
   app/PenTool.cpp
@@ -307,6 +308,11 @@ add_executable(naturalPaint
   app/selftest/TextKeyCapture.cpp
   app/selftest/Tileable.cpp
   app/selftest/Region.cpp
+  app/selftest/TipEdge.cpp
+  app/selftest/BrushBlendMode.cpp
+  app/selftest/NativeBrush.cpp
+  app/selftest/StrokeInput.cpp
+  app/selftest/PointerQueue.cpp
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
   app/LayerThumbnail.cpp
@@ -336,10 +342,12 @@ add_executable(naturalPaint
   brush/Heal.cpp
   brush/CoverageBlend.cpp
   brush/Deposit.cpp
+  brush/TipMips.cpp
   brush/Dynamics.cpp
   brush/Grain.cpp
   brush/Library.cpp
   brush/MaskPaint.cpp
+  brush/NativeBrush.cpp
   brush/PencilDeposit.cpp
   brush/PigmentErase.cpp
   brush/PigmentSmudge.cpp

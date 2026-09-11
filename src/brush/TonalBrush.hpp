@@ -258,7 +258,9 @@
 //     ordinary.
 //   * `T >= cap`. Skipped, and this is the ceiling doing its job: every dab
 //     after it writes nothing at all, so a scrubbed stroke stops dirtying tiles
-//     and live feedback stops re-uploading them.
+//     and live feedback stops re-uploading them. (How long a hard tip's
+//     antialiased rim takes to get there: brush/RgbDeposit.hpp §3's last
+//     paragraph, which applies to this ceiling unchanged.)
 //   * `flow > 1`. Deliberately not clamped, for `brush/Deposit`'s stated reason
 //     ("a flow above 1 is a legitimate one dab saturates the paper tip"): the
 //     `min` already caps `T'`. `strength` *is* clamped to [0,1], because

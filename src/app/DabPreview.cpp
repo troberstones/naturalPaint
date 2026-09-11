@@ -207,7 +207,15 @@ bool dabPreviewTipsEqual(const BrushTip& a, const BrushTip& b) noexcept {
   // slider moved with every other field unchanged must still redraw. Missing
   // this would be the identical failure `bitmap`'s own comment describes:
   // the cache handing back a picture for the paper this brush no longer has.
-  return a.radius == b.radius && a.hardness == b.hardness && a.flow == b.flow &&
+  //
+  // `edgePx` (Track B / B1) is checked alongside `hardness` for the same
+  // reason: it feeds the identical falloff `dabCoverage()` computes, so a
+  // cache keyed on `hardness` alone would go stale the moment anything ever
+  // varies `edgePx` per tip (nothing does yet -- every `BrushTip` this wave
+  // builds carries the fixed default -- but a comparison this cheap to add
+  // now is cheaper than finding the gap after a control reads it).
+  return a.radius == b.radius && a.hardness == b.hardness && a.edgePx == b.edgePx &&
+         a.flow == b.flow &&
          a.roundness == b.roundness && a.angle == b.angle && a.pigment == b.pigment &&
          a.bitmap == b.bitmap && a.dualTip == b.dualTip && a.dualBlend == b.dualBlend &&
          grainParamsEqual(a.grain, b.grain);

@@ -106,10 +106,20 @@ bool runCloneStampTest() {
       }
   };
 
-  // A hard disc, so `dabCoverage()` is exactly 1.0f over the whole disc --
-  // `singleTipCoverage()` returns `1.0f` outright whenever `d <= hardness`, and
-  // `d < 1` always holds inside -- and every number below is about the clone
-  // rather than about the falloff.
+  // A hardness-1 tip, so `dabCoverage()` is exactly 1.0f over the whole flat
+  // CORE and every exactness number below is about the clone rather than about
+  // the falloff.
+  //
+  // **"The whole core", not "the whole disc" -- that is the one thing that
+  // changed here, and why.** This used to say the disc was covered at exactly
+  // 1.0 all the way to `radius`. `BrushTip::edgePx` (brush/Deposit.hpp §2)
+  // floors every procedural tip's smoothstep skirt at one document pixel, so a
+  // hardness-1 tip is now 1.0 out to `radius - edgePx` and FRACTIONAL in its
+  // last pixel -- a cloned edge is antialiased, as Photoshop's is. The exactness
+  // claims were always claims about full-coverage texels, so they now probe
+  // exactly those (`dabCoverage() == 1.0f`, via `inCore` below), and section 2b
+  // asserts what the rim texels are instead: masked blends of the destination
+  // and the UNRESAMPLED source, never a resampled source.
   auto discTip = [](float radius, float flow) {
     BrushTip t;
     t.radius = radius;
@@ -117,6 +127,20 @@ bool runCloneStampTest() {
     t.flow = flow;
     t.opacity = 1.0f;
     return t;
+  };
+  // The flat core: texels this tip covers at coverage EXACTLY 1.0, which is the
+  // only place a full-flow clone is a bit-for-bit copy. Selected by asking
+  // `dabCoverage()` itself rather than by re-deriving `radius - edgePx` here --
+  // `d <= hEff` in brush/Deposit.cpp is a comparison of two separately rounded
+  // quotients, so a hand-written `ddx*ddx + ddy*ddy <= (r - edgePx)^2` could
+  // disagree with it by one texel on the boundary, and a probe that disagreed
+  // with the engine about which texels are "core" would be testing the probe.
+  // Every caller pairs this with a count, so an engine whose coverage never
+  // reached 1.0 would fail loudly rather than select nothing and pass.
+  auto inCore = [](const BrushTip& t, int32_t x, int32_t y, Vec2 centre) {
+    const float ddx = (static_cast<float>(x) + 0.5f) - centre.x;
+    const float ddy = (static_cast<float>(y) + 0.5f) - centre.y;
+    return dabCoverage(t, ddx, ddy) == 1.0f;
   };
 
   auto makeRgbDoc = [](int32_t w, int32_t h) {
@@ -130,11 +154,25 @@ bool runCloneStampTest() {
   // ======================================================================
   {
     const BrushTip t = discTip(10.0f, 1.0f);
+    // Was: "covers its whole disc at EXACTLY 1.0", probed at 9.99 of a radius
+    // 10. Since `edgePx` that texel sits in the antialiased last pixel, so the
+    // premise is restated for what the clone's exactness actually needs -- a
+    // flat core at exactly 1.0 -- and the rim is asserted to be fractional
+    // rather than left unmentioned. 8.99 rather than `radius - edgePx` = 9.0
+    // itself: `inCore`'s comment says why the boundary texel is the engine's to
+    // decide, not this file's.
     check(dabCoverage(t, 0.0f, 0.0f) == 1.0f && dabCoverage(t, 6.5f, 0.0f) == 1.0f &&
-              dabCoverage(t, 9.99f, 0.0f) == 1.0f && dabCoverage(t, 10.0f, 0.0f) == 0.0f,
-          "premise: a hardness-1 tip covers its whole disc at EXACTLY 1.0 -- without that "
-          "every 'reproduces the source exactly' claim below would be a claim about the "
+              dabCoverage(t, 8.99f, 0.0f) == 1.0f && dabCoverage(t, 10.0f, 0.0f) == 0.0f,
+          "premise: a hardness-1 tip covers its flat CORE -- everything short of the last "
+          "edgePx of the radius -- at EXACTLY 1.0, and is exactly 0 at the radius; without "
+          "that every 'reproduces the source exactly' claim below would be a claim about the "
           "falloff instead");
+    check(t.edgePx == 1.0f && dabCoverage(t, 9.5f, 0.0f) > 0.0f &&
+              dabCoverage(t, 9.5f, 0.0f) < 1.0f,
+          "premise: and its last edgePx (1 px) is ANTIALIASED, strictly between 0 and 1 -- "
+          "a cloned edge is masked like any other brush's since BrushTip::edgePx, so every "
+          "exact-copy probe below is restricted to the core, and section 2b says what the "
+          "rim holds instead");
     check(columnTexel(7) != columnTexel(8) && columnValue(20) == columnValue(33),
           "premise: the column pattern really does differ column to column -- a flat fixture "
           "cannot tell a shift from a smear from the identity");
@@ -222,16 +260,20 @@ bool runCloneStampTest() {
       s.cloneDab(store, t, Vec2{128.5f, 100.5f}, 256, 256, nullptr, nullptr);
       s.end();
 
-      // Only the texels the disc covers at coverage exactly 1 -- which for a
-      // hardness-1 tip is every texel strictly inside it -- are claims about
-      // the clone; the rest are claims about `dabCoverage()`.
+      // Only the texels the disc covers at coverage exactly 1 are claims about
+      // the clone; the rest are claims about `dabCoverage()`. **This probe
+      // used to be "every texel strictly inside the disc"**, which for a
+      // hardness-1 tip was the same set -- and stopped being the same set when
+      // `edgePx` gave the tip an antialiased last pixel, whose texels are
+      // blends and not copies. It now selects the flat core by `inCore`, the
+      // engine's own answer to "coverage exactly 1", which is what it always
+      // meant. Section 2b covers the rim this excludes, with a claim of its
+      // own rather than no claim at all.
       int32_t checked = 0;
       int32_t wrong = 0;
       for (int32_t y = 82; y <= 118; ++y) {
         for (int32_t x = 109; x <= 147; ++x) {
-          const float ddx = (static_cast<float>(x) + 0.5f) - 128.5f;
-          const float ddy = (static_cast<float>(y) + 0.5f) - 100.5f;
-          if (!(ddx * ddx + ddy * ddy < 20.0f * 20.0f)) continue;
+          if (!inCore(t, x, y, Vec2{128.5f, 100.5f})) continue;
           ++checked;
           if (readAt(store, x, y) != columnTexel(x + dxOffset)) ++wrong;
         }
@@ -249,12 +291,14 @@ bool runCloneStampTest() {
           "order: both directions really do exercise hundreds of texels over the same disc -- "
           "the premise the pair below rests on");
     check(right.second == 0,
-          "order: a source one texel to the RIGHT reproduces the shifted columns exactly -- "
-          "the direction a live-reading loop also gets right, asserted so the pair is a pair");
+          "order: a source one texel to the RIGHT reproduces the shifted columns exactly over "
+          "the dab's flat core -- the direction a live-reading loop also gets right, asserted "
+          "so the pair is a pair. The core, not the whole disc, since edgePx antialiased the "
+          "last pixel (section 2b owns the rim)");
     check(left.second == 0,
-          "order: and a source one texel to the LEFT does too, at zero tolerance -- this is "
-          "the one a live-reading loop turns into a single column smeared across the whole "
-          "dab, and it is why the source is snapshotted at pen-down");
+          "order: and a source one texel to the LEFT does too over the same core, at zero "
+          "tolerance -- this is the one a live-reading loop turns into a single column "
+          "smeared across the whole dab, and it is why the source is snapshotted at pen-down");
 
     // The same hazard one granularity up: a STROKE whose dabs pass over their
     // own source. Snapshotting per DAB instead of per stroke -- the other
@@ -285,6 +329,175 @@ bool runCloneStampTest() {
     check(sd.dabs == dabs.size() && strokeChecked == 101 && strokeWrong == 0,
           "order: a whole STROKE dragged along its own source is the same shifted copy, dab "
           "for dab -- a per-DAB snapshot is right for one dab and reads its own output here");
+  }
+
+  // ======================================================================
+  // 2b. The rim is MASKED, never RESAMPLED (brush/CloneStamp §3, edgePx)
+  // ======================================================================
+  //
+  // The project owner's decision when `BrushTip::edgePx` antialiased every
+  // hardness-1 tip, this route's included: a cloned edge is antialiased, as
+  // Photoshop's is -- "the actual sampled data from a clone would be MASKED
+  // with an anti-aliased brush, while the actual data WOULDN'T be re-sampled."
+  // Two different operations, and only the first is allowed here:
+  //
+  //   * **Masking** scales how much of the source lands: coverage enters the
+  //     composite's weight, so a rim texel is part destination, part source.
+  //   * **Resampling** changes WHICH source value lands: a bilinear (or any)
+  //     filter at a sub-texel position reconstructs a value no source texel
+  //     holds. brush/CloneStamp §3 rules it out -- the source is read at the
+  //     ROUNDED integer offset, with no filter -- and that rule does not
+  //     relax at the rim just because the rim is where a filter would be
+  //     least visible.
+  //
+  // Together they pin every written texel to one line segment: with an opaque
+  // source (`src[3] == 1`, so the keep factor `1 - src[3] * a` is `1 - a`),
+  //
+  //     out == lerp(dst_before, src_exact, a) == dst + a * (src - dst)
+  //
+  // for the dab's own `a` in (0, 1], channel-wise, with ONE `a` shared by all
+  // four channels -- where `src_exact` is the pre-stroke texel at `(x, y) +
+  // lround(offset)`, not a blend of its neighbours. **This is a stronger claim
+  // than the "every texel strictly inside the disc is an exact copy" section 2
+  // used to make**: that one was silent about the rim (it excluded it the
+  // moment the rim became fractional), and this one covers every texel the dab
+  // wrote. A resampled source moves `src` off `src_exact` by a different amount
+  // on each channel, so no single `a` puts `out` on the segment -- which is
+  // what makes this the assertion that goes red if the source is ever filtered.
+  //
+  // **The fixture is built to make that discrimination unavoidable.** Each
+  // channel varies along a DIFFERENT axis with a different period (red by
+  // column, green by row, blue diagonally), so a filter along any direction
+  // perturbs the channels unequally; and the source window's values are all in
+  // [33/64, 45/64] while the destination window's are all in [1/64, 13/64], so
+  // every channel's `src - dst` is at least 20/64 and the recovered `a` is well
+  // conditioned. Every value is k/64 with k < 64: exact in binary16, so the
+  // endpoints themselves carry no storage error.
+  //
+  // The offset is deliberately FRACTIONAL, (-80.4, 0.6), which `begin()` rounds
+  // to (-80, +1). An implementation that honoured the fraction by filtering
+  // would read a blend of (-81|-80, 0|+1); one that truncated instead of
+  // rounding would read (-80, 0). Both land off the segment to `src_exact`.
+  //
+  // --- The tolerance, derived rather than guessed ---
+  //
+  // Let `e_c` be channel c's distance from the exact segment point after the
+  // store. The engine computes `src*a + dst*(1-a)` in float (at most four
+  // roundings of magnitude <= 1, so <= 4 * 2^-24) and stores it through
+  // binary16 (<= kHalfRel * |out| + kHalfFloor, |out| <= 1 here). `a` is
+  // recovered from the channel `k` with the WIDEST `|src - dst|`, so its error
+  // is `e_k / (src_k - dst_k)`, and the residual on any channel c is
+  // `e_c - e_k * (src_c - dst_c) / (src_k - dst_k)` -- a ratio <= 1 by the
+  // choice of k, so `|residual| <= e_c + e_k`. This file's own recovery and
+  // prediction add at most another four roundings (the subtractions of two
+  // binary16 values are exact in float). Hence:
+  //
+  //     kSegTol  = 2 * (kHalfRel + kHalfFloor) + 8 * 2^-24   ~= 9.77e-04
+  //     kSegTolA = kSegTol / (20/64)                          ~= 3.13e-03
+  //
+  // `kSegTolA` bounds how far outside [0, 1] the recovered `a` may sit. For
+  // scale: a filter at the fraction 0.4 moves a column-varying channel by
+  // 0.4/64 = 6.25e-03 on a full-coverage texel -- six times `kSegTol`.
+  {
+    constexpr float kSegTol = 2.0f * (kHalfRel + kHalfFloor) + 8.0f * 5.9604645e-08f;
+    constexpr float kMinGap = 20.0f / 64.0f;
+    constexpr float kSegTolA = kSegTol / kMinGap;
+
+    OpenDocument od = makeRgbDoc(256, 256);
+    TileStore& store = *od.document.layers[0].rgbTiles;
+    auto band = [](int32_t v, int32_t period, int32_t base) {
+      return static_cast<float>(base + ((v % period) + period) % period) / 64.0f;
+    };
+    for (int32_t y = 70; y <= 130; ++y) {
+      for (int32_t x = 50; x <= 110; ++x) {  // the SOURCE window: upper band
+        const PixelCoord p{x, y};
+        store.getOrCreate(tileCoordAt(p))
+            .writePixel(tileLocalOffset(p), {band(x, 13, 33), band(y, 11, 33),
+                                             band(x + 2 * y, 7, 33), 1.0f});
+      }
+      for (int32_t x = 130; x <= 190; ++x) {  // the DESTINATION window: lower band
+        const PixelCoord p{x, y};
+        store.getOrCreate(tileCoordAt(p))
+            .writePixel(tileLocalOffset(p), {band(x, 13, 1), band(y, 11, 1),
+                                             band(2 * x + y, 7, 1), 1.0f});
+      }
+    }
+    // The ground truth for BOTH endpoints: a share of the pre-stroke store,
+    // exactly what `begin()` itself takes -- the dab's first write unshares
+    // the live store's tiles and leaves this holding the pre-stroke bytes.
+    const TileStore before = store;
+
+    const BrushTip t = discTip(12.0f, 1.0f);
+    const Vec2 centre{160.3f, 100.7f};
+    CloneStampStroke s;
+    s.begin(store, Vec2{-80.4f, 0.6f}, 1.0f, false);
+    const int32_t ox = s.offsetX();
+    const int32_t oy = s.offsetY();
+    const DepositCount c = s.cloneDab(store, t, centre, 256, 256, nullptr, nullptr);
+    s.end();
+
+    int32_t covered = 0;      // texels with dabCoverage > 0: the ones the dab may write
+    int32_t core = 0;         // ... of which at coverage exactly 1
+    int32_t coreNotExact = 0; // core texels that are not `src_exact` bit for bit
+    int32_t offSegment = 0;   // texels NOT on [dst_before, src_exact] within kSegTol
+    int32_t rimBlends = 0;    // texels strictly between the endpoints: 0 < a < 1
+    float worstResidual = 0.0f;
+    float minA = 2.0f, maxRimA = -1.0f;
+    const PixelBounds bounds = dabPixelBounds(t, centre, 256, 256);
+    for (int32_t y = bounds.y0; y <= bounds.y1; ++y) {
+      for (int32_t x = bounds.x0; x <= bounds.x1; ++x) {
+        const float cov = dabCoverage(t, (static_cast<float>(x) + 0.5f) - centre.x,
+                                      (static_cast<float>(y) + 0.5f) - centre.y);
+        if (!(cov > 0.0f)) continue;
+        ++covered;
+        const std::array<float, 4> dst = readAt(before, x, y);
+        const std::array<float, 4> src = readAt(before, x + ox, y + oy);
+        const std::array<float, 4> out = readAt(store, x, y);
+
+        size_t k = 0;
+        for (size_t ch = 1; ch < 3; ++ch)
+          if (std::fabs(src[ch] - dst[ch]) > std::fabs(src[k] - dst[k])) k = ch;
+        const float a = (out[k] - dst[k]) / (src[k] - dst[k]);
+        float residual = 0.0f;
+        for (size_t ch = 0; ch < 4; ++ch)
+          residual = std::max(residual, std::fabs(out[ch] - (dst[ch] + a * (src[ch] - dst[ch]))));
+        worstResidual = std::max(worstResidual, residual);
+        minA = std::min(minA, a);
+        if (residual > kSegTol || a < -kSegTolA || a > 1.0f + kSegTolA) ++offSegment;
+
+        if (cov == 1.0f) {
+          ++core;
+          if (out != src) ++coreNotExact;
+        } else {
+          maxRimA = std::max(maxRimA, a);
+          if (out != dst && out != src) ++rimBlends;
+        }
+      }
+    }
+    std::printf("  [measured] one dab r=12 at offset (-80.4,0.6) -> rounded (%d,%d): %zu texels "
+                "written, %d covered (%d core, %d strictly-blended rim); worst segment residual "
+                "%.3e (bound %.3e), min a %.6f, max rim a %.6f\n",
+                ox, oy, c.texels, covered, core, rimBlends,
+                static_cast<double>(worstResidual), static_cast<double>(kSegTol),
+                static_cast<double>(minA), static_cast<double>(maxRimA));
+
+    check(ox == -80 && oy == 1 && c.texels == static_cast<size_t>(covered) && core > 300,
+          "no resample: premise -- the fractional offset (-80.4, 0.6) was ROUNDED to (-80, +1), "
+          "and the dab wrote exactly the texels dabCoverage() covers, hundreds of them at full "
+          "coverage");
+    check(offSegment == 0,
+          "no resample: EVERY texel the dab wrote lies on the segment from its untouched "
+          "destination value to the exact, unfiltered source texel at the rounded offset, with "
+          "one shared weight on all four channels (to the derived f16 bound) -- the rim is "
+          "masked by the antialiased tip, never re-sampled; a filtered source lands off it");
+    check(core > 300 && coreNotExact == 0,
+          "no resample: and every full-coverage texel sits at the segment's far end EXACTLY "
+          "(a == 1: the source texel bit for bit) -- what section 1's 'reproduces the source "
+          "exactly' was always about, now asserted over the whole core of this fixture");
+    check(rimBlends > 0,
+          "no resample: and the rim really does hold texels STRICTLY between the endpoints "
+          "(0 < a < 1) -- the antialiased edge exists on this route, so the segment claim "
+          "above is not vacuously true of a hard disc");
   }
 
   // ======================================================================
@@ -579,24 +792,107 @@ bool runCloneStampTest() {
     CloneStampStroke s;
     s.begin(store, Vec2{0.0f, -100.0f}, 0.5f, false);
     const BrushTip t = discTip(20.0f, 1.0f);
+    const Vec2 centre{120.0f, 120.0f};
+
+    // **This used to assert "only the FIRST dab writes at all", and since
+    // `edgePx` that is false for a reason that is correct, not a regression.**
+    // The claim held because a hardness-1 tip gave every texel coverage 1, so
+    // one full-flow dab took every texel straight to the ceiling. The tip's
+    // last pixel is now an antialiased rim whose coverage `c` is below 1, and a
+    // texel's per-dab weight is `flow * c`: `1 - A` shrinks by `(1 - c)` per
+    // dab, so the rim approaches the ceiling over several dabs instead of one.
+    // What the assertion was protecting -- a scrubbed clone STOPS dirtying
+    // tiles -- is still true; it now takes as many dabs as the faintest rim
+    // texel needs. So the one claim becomes three, each true as stated:
+    //
+    //   1. The CORE is written by the first dab and never again (the old
+    //      claim, restricted to the texels it was always about).
+    //   2. Scrubbing still TERMINATES: some dab writes nothing at all. Bounded,
+    //      not hoped for: while `A < cap` one dab adds `c * (1 - A) >= c * (1 -
+    //      cap)`, so a texel of coverage `c` reaches the cap within
+    //      `ceil(cap / (c * (1 - cap)))` dabs and the dab after the last of
+    //      those, over the faintest texel `c_min`, writes nothing. `c_min` is
+    //      measured below rather than typed in: centred on a texel corner, a
+    //      texel's squared offset is `i(i+1) + j(j+1) + 0.5` -- an even integer
+    //      plus a half -- so the outermost texel inside r = 20 is at d^2 = 398.5
+    //      (never 399.5), c ~= 0.004, and the bound is a couple of hundred dabs.
+    //      Far above float's floor, so no texel can stall below the cap on an
+    //      increment that rounds away.
+    //   3. The rim converges to the SAME ceiling as the core, exactly: every
+    //      texel the dab covers ends with its accumulator at 0.5 -- the ceiling
+    //      belongs to the stroke, not to the coverage.
+    std::vector<PixelCoord> coreTexels;
+    std::vector<PixelCoord> coveredTexels;
+    float minCov = 1.0f;
+    {
+      const PixelBounds bb = dabPixelBounds(t, centre, 256, 256);
+      for (int32_t y = bb.y0; y <= bb.y1; ++y)
+        for (int32_t x = bb.x0; x <= bb.x1; ++x) {
+          const float cov = dabCoverage(t, (static_cast<float>(x) + 0.5f) - centre.x,
+                                        (static_cast<float>(y) + 0.5f) - centre.y);
+          if (cov > 0.0f) {
+            coveredTexels.push_back(PixelCoord{x, y});
+            minCov = std::min(minCov, cov);
+          }
+          if (inCore(t, x, y, centre)) coreTexels.push_back(PixelCoord{x, y});
+        }
+    }
+    const size_t silentBound =
+        static_cast<size_t>(std::ceil(0.5f / (minCov * t.flow * (1.0f - 0.5f)))) + 1;
+    constexpr size_t kMaxDabs = 1000;
     size_t writingDabs = 0;
-    for (int k = 0; k < 40; ++k)
-      if (s.cloneDab(store, t, Vec2{120.0f, 120.0f}, 256, 256, nullptr, nullptr).texels > 0)
+    size_t coreWritingDabs = 0;
+    size_t dabsUntilSilent = 0;  // 1-based index of the first dab that wrote nothing
+    float coreGot = 0.0f;
+    float coreAccum = 0.0f;
+    std::vector<float> coreBefore(coreTexels.size());
+    for (size_t k = 0; k < kMaxDabs; ++k) {
+      for (size_t i = 0; i < coreTexels.size(); ++i) coreBefore[i] = s.strokeAlphaAt(coreTexels[i]);
+      const DepositCount dc = s.cloneDab(store, t, centre, 256, 256, nullptr, nullptr);
+      bool coreChanged = false;
+      for (size_t i = 0; i < coreTexels.size(); ++i)
+        if (s.strokeAlphaAt(coreTexels[i]) != coreBefore[i]) coreChanged = true;
+      if (coreChanged) ++coreWritingDabs;
+      if (k == 39) {  // the original 40-dab reading, kept so the first claim is unchanged
+        coreGot = readAt(store, 120, 120)[0];
+        coreAccum = s.strokeAlphaAt(PixelCoord{120, 120});
+      }
+      if (dc.texels > 0)
         ++writingDabs;
-    const float got = readAt(store, 120, 120)[0];
-    const float accum = s.strokeAlphaAt(PixelCoord{120, 120});
+      else if (dabsUntilSilent == 0)
+        dabsUntilSilent = k + 1;
+      if (dabsUntilSilent != 0 && k >= 39) break;
+    }
+    size_t rimOffCeiling = 0;
+    for (const PixelCoord& p : coveredTexels)
+      if (s.strokeAlphaAt(p) != 0.5f) ++rimOffCeiling;
     s.end();
 
-    std::printf("  [measured] 40 dabs at opacity 0.5: %zu of them wrote anything; texel %.6f, "
-                "accumulator %.6f (a per-dab model reaches 1.0)\n",
-                writingDabs, static_cast<double>(got), static_cast<double>(accum));
-    check(accum == 0.5f && got == 0.5f,
+    std::printf("  [measured] opacity 0.5, r=20 hardness 1: texel %.6f, accumulator %.6f after 40 "
+                "dabs (a per-dab model reaches 1.0); %zu dabs wrote anything, %zu wrote the "
+                "%zu-texel core; dab %zu was the first to write nothing (bound %zu from the "
+                "faintest rim coverage %.6f); %zu of %zu covered texels off the ceiling at the "
+                "end\n",
+                static_cast<double>(coreGot), static_cast<double>(coreAccum), writingDabs,
+                coreWritingDabs, coreTexels.size(), dabsUntilSilent, silentBound,
+                static_cast<double>(minCov), rimOffCeiling, coveredTexels.size());
+    check(coreAccum == 0.5f && coreGot == 0.5f,
           "ceiling: 40 overlapping dabs at opacity 0.5 land the texel exactly half way from "
           "the destination to the source and stop -- a per-dab opacity would converge to a "
           "full copy, which is a second flow slider with a different name");
-    check(writingDabs == 1,
-          "ceiling: and only the FIRST dab writes at all -- once the ceiling is reached the "
-          "rest touch no texel, so a scrubbed clone stops dirtying tiles for re-upload");
+    check(coreTexels.size() > 1000 && coreWritingDabs == 1,
+          "ceiling: and only the FIRST dab writes the dab's CORE -- once a full-coverage texel "
+          "reaches the ceiling no later dab touches it. Restated for the core since edgePx: the "
+          "antialiased rim's weight is below 1, so it legitimately takes more dabs to get there");
+    check(dabsUntilSilent > 1 && dabsUntilSilent <= silentBound &&
+              writingDabs + 1 == dabsUntilSilent,
+          "ceiling: and scrubbing still STOPS -- within the bound derived from the faintest rim "
+          "texel's coverage, a dab writes no texel at all, so a scrubbed clone stops dirtying "
+          "tiles for re-upload; it just no longer stops after the first dab");
+    check(rimOffCeiling == 0 && coveredTexels.size() > coreTexels.size(),
+          "ceiling: by then EVERY texel the tip covers, rim included, holds the accumulator at "
+          "exactly 0.5 -- the antialiased rim converges to the same ceiling as the core rather "
+          "than to a fainter one, because the ceiling belongs to the stroke");
   }
 
   // ======================================================================
@@ -673,24 +969,36 @@ bool runCloneStampTest() {
       // coverage `1 - G` is still positive -- it lowers the coverage, so the
       // observable is that the copy stops being exact wherever the tooth
       // stands up, which is the whole point of a paper.
+      //
+      // **Counted over the tip's flat CORE, not the whole disc -- changed with
+      // `edgePx`.** This used to count every texel strictly inside r = 24 and
+      // demand > 1700 exact copies of the smooth dab (pi * 24^2 ~= 1810 texels,
+      // all at coverage 1 then). The last pixel is now an antialiased rim whose
+      // texels are blends, not copies, with or without grain, so counting them
+      // measured the rim rather than the paper. Over the core the smooth dab is
+      // exact at EVERY texel -- a stronger claim than "more than 1700" -- and the
+      // grained one is still exact at fewer than half.
       int32_t exact = 0;
+      int32_t checked = 0;
       for (int32_t y = 76; y <= 124; ++y)
         for (int32_t x = 104; x <= 152; ++x) {
-          const float ddx = (static_cast<float>(x) + 0.5f) - 128.5f;
-          const float ddy = (static_cast<float>(y) + 0.5f) - 100.5f;
-          if (!(ddx * ddx + ddy * ddy < 24.0f * 24.0f)) continue;
+          if (!inCore(t, x, y, Vec2{128.5f, 100.5f})) continue;
+          ++checked;
           if (readAt(store, x, y) == columnTexel(x - 4)) ++exact;
         }
-      return std::pair<size_t, int32_t>{c.texels, exact};
+      return std::array<size_t, 3>{c.texels, static_cast<size_t>(exact),
+                                   static_cast<size_t>(checked)};
     };
     const auto plain = dabWithGrain(false);
     const auto grained = dabWithGrain(true);
-    std::printf("  [measured] one dab of %zu texels: %d exact copies smooth, %d through paper "
-                "tooth\n",
-                plain.first, plain.second, grained.second);
-    check(plain.second > 1700 && grained.second < plain.second / 2,
+    std::printf("  [measured] one dab of %zu texels: %zu of %zu core texels exact smooth, %zu "
+                "through paper tooth\n",
+                plain[0], plain[1], plain[2], grained[1]);
+    check(plain[2] > 1600 && plain[1] == plain[2] && grained[2] == plain[2] &&
+              grained[1] < plain[1] / 2,
           "grain: the paper tooth is applied on THIS route -- a grained clone stops being an "
-          "exact copy wherever the tooth stands up, while the smooth one is exact everywhere. "
+          "exact copy wherever the tooth stands up, while the smooth one is exact over its "
+          "whole flat core (the core since edgePx: the antialiased rim is a blend either way). "
           "The predicate the BRUSH panel greys that group on is true because the call is "
           "there, not because a table says so");
   }

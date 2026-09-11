@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "app/PenAxes.hpp"
 #include "brush/ToolOptionsBlend.hpp"
 #include "color/Space.hpp"
 #include "core/StrokesContent.hpp"
@@ -167,7 +168,7 @@ DepositCount recordDabAt(Layer& layer, const BrushTip& tip, Vec2 centre, int32_t
   }
 
   DabRecord d;
-  // The shape, field for field. core/StrokesContent §1: the four names match
+  // The shape, field for field. core/StrokesContent §1: the five names match
   // `BrushTip`'s exactly BECAUSE `strokesRasterize()` builds a `BrushTip` back
   // out of them and calls the one `dabCoverage()` in this build -- so a
   // recorded dab's footprint is the footprint the same tip painted live, rather
@@ -176,6 +177,10 @@ DepositCount recordDabAt(Layer& layer, const BrushTip& tip, Vec2 centre, int32_t
   d.y = centre.y;
   d.radius = tip.radius;
   d.hardness = tip.hardness;
+  // The dab tip's OWN rim width, stored rather than assumed (npdabs2,
+  // io/StrokesSerial.hpp) -- so the record replays at the rim it was painted
+  // with, whatever a later build's `BrushTip::edgePx` default becomes.
+  d.edgePx = tip.edgePx;
   d.roundness = tip.roundness;
   d.angle = tip.angle;
   // **Flow times the stroke's opacity, collapsed into the one number a stored
@@ -1114,7 +1119,7 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
 
   // **Unscaled HERE by anything Photoshop calls Transfer -- not because it
   // stays unscaled, but because this is not where the scaling happens.** The
-  // old code multiplied `brush.load` by two matrix columns (`Flow`,
+  // old code multiplied `brush.native.load` by two matrix columns (`Flow`,
   // `Concentration`); both are retired with the matrix. `PsTransfer::opacity`/
   // `.flow` (`opVr`/`prVr`) are now wired -- Part 2 of this phase -- but at
   // `StrokeSession::begin()`, not here: Opacity is a per-STROKE ceiling that
@@ -1123,7 +1128,7 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // rebuilding this very tip from a fresh call to this function every frame
   // -- neither of which this function, called from both `begin()` and
   // `setTip()` with no memory of which, can do on its own. See `begin()`'s
-  // own comment for the full argument. So this is `brush.load`/
+  // own comment for the full argument. So this is `brush.native.load`/
   // `brush.opacity` alone, same as it always was for a brush with no Flow/
   // Concentration link -- the base value Transfer's resolved multiplier
   // scales, not the resolved value itself.
@@ -1131,11 +1136,11 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // Scatter Count (`PsScatter::count`/`countJitter`) is wired too, in
   // `app/StrokeSession.cpp`'s `depositPending()` -- a per-DAB resolution, so
   // it belongs beside Size/Angle/Roundness/Scatter there rather than here.
-  tip.flow = brush.load;
+  tip.flow = brush.native.load;
   // Straight through, unscaled: there is no per-dab Grain dynamic in either
   // the matrix or the model.
   tip.opacity = brush.opacity;
-  tip.grain = brush.grain;
+  tip.grain = brush.native.grain;
 
   // --- the smudge's own block (brush/Smudge.hpp §3b) ----------------------
   //
@@ -1317,14 +1322,45 @@ DynamicInputs dynamicInputsFor(const AppState& st) noexcept {
   return in;
 }
 
+StrokeSample strokeSampleFromPointer(const PointerSample& sample, Vec2 canvasPos) noexcept {
+  StrokeSample out;
+  out.pos = canvasPos;
+  // A mouse sample carries no axes to convert -- `StrokeSample`'s own
+  // defaults (brush/StrokePath.hpp) already ARE a mouse's neutral reading,
+  // so there is nothing left to compute. Written as an early return rather
+  // than relying on `PointerSample`'s own fields happening to already be
+  // neutral for a mouse event (true today, `PointerQueue::push()`'s own
+  // construction in app/PointerQueue.cpp) so that fact is an INVARIANT of this function,
+  // not an accident of two call sites agreeing.
+  if (!sample.isPen) return out;
+  out.pressure = std::clamp(sample.pressure, 0.0f, 1.0f);
+  out.tilt = penTiltNormalised(sample.tiltXDeg, sample.tiltYDeg);
+  out.azimuth = penAzimuthNormalised(sample.tiltXDeg, sample.tiltYDeg);
+  out.barrel = penBarrelNormalised(sample.rotationDeg);
+  return out;
+}
+
+DynamicInputs strokeHardwareInputsFor(const AppState& st) noexcept {
+  DynamicInputs in = dynamicInputsFor(st);
+  in.hasTilt = st.penDown && st.penReportsTilt;
+  in.hasBarrel = st.penDown && st.penReportsBarrel;
+  return in;
+}
+
 void applyPresetToBrush(const BrushPreset& preset, BrushState& brush) {
   // Radius/hardness/spacing/roundness/angle used to be five explicit copies
   // here -- gone along with the fields themselves (brush/Library.hpp's own
   // comment); `brush.model = preset.model` below already carries all five,
   // in lockstep, exactly as `BrushPreset::model`'s own comment always said
   // it would once something read the model to paint.
-  brush.load = preset.load;
-  brush.wetness = preset.wetness;
+  //
+  // `brush.native = preset.native` is the identical lockstep copy for
+  // load/wetness/grain -- one assignment where this used to be three, now
+  // that `brush/NativeBrush.hpp`'s `NativeBrush` holds all three.
+  // `brush.opacity` is deliberately NOT touched: it is per-session
+  // options-bar state a preset does not carry (`NativeBrush`'s own header),
+  // so a painter's lowered opacity survives picking a preset.
+  brush.native = preset.native;
   brush.links = preset.links;
   brush.tipBitmap = preset.tipBitmap;
   // Carried with the bitmap, never separately: an id naming a tip the brush is
@@ -1334,7 +1370,6 @@ void applyPresetToBrush(const BrushPreset& preset, BrushState& brush) {
   brush.dualTip = preset.dualTip;
   brush.dualBlend = preset.dualBlend;
   brush.scatterBothAxes = preset.scatterBothAxes;
-  brush.grain = preset.grain;
   // Carried in lockstep with everything above, for the reason
   // `BrushState::model`'s own comment gives: this is the one direction that,
   // until now, had somewhere to write a model FROM (`BrushPreset::model`) but
@@ -1349,15 +1384,16 @@ BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
   p.name = std::move(name);
   // The mirror of `applyPresetToBrush()`'s own removed five-scalar copy --
   // `p.model = brush.model` below carries all five now.
-  p.load = brush.load;
-  p.wetness = brush.wetness;
+  //
+  // The mirror of `applyPresetToBrush()`'s own `native` copy too, for the
+  // identical reason.
+  p.native = brush.native;
   p.links = brush.links;
   p.tipBitmap = brush.tipBitmap;
   p.dabId = brush.dabId;
   p.dualTip = brush.dualTip;
   p.dualBlend = brush.dualBlend;
   p.scatterBothAxes = brush.scatterBothAxes;
-  p.grain = brush.grain;
   // The other half of the lockstep above. This is the direction that used to
   // not exist at all -- `BrushState` had no `model` field to read -- which is
   // the exact mechanism of the defect `BrushPreset::model`'s comment
@@ -1371,14 +1407,16 @@ BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
 bool brushIsEdited(const BrushState& brush) {
   if (brush.brushLibrary.active >= brush.brushLibrary.presets.size()) return false;
   const BrushPreset& p = brush.brushLibrary.presets[brush.brushLibrary.active];
-  // The five scalars `presetMatches()` still takes as parameters (its own
-  // signature is unchanged -- only where a caller reads them from moved) now
-  // come from `brush.model` rather than from five deleted `BrushState`
-  // fields.
+  // The five scalars `presetMatches()` still takes as parameters now come
+  // from `brush.model` rather than from five deleted `BrushState` fields.
+  // `native` replaces the three loose load/wetness/grain arguments this call
+  // used to pass (the one change to `presetMatches()`'s signature) -- one
+  // `nativeBrushEqual()` call inside `presetMatches()` instead of loose
+  // comparisons. `brush.opacity` is not compared, as it never was: a preset
+  // does not carry it (`NativeBrush`'s own header).
   return !presetMatches(p, brush.model.tip.diameterPx / 2.0f, brush.model.tip.hardness,
                         brush.model.tip.spacingPercent / 100.0f, brush.model.tip.roundness,
-                        brush.model.tip.angleDeg, brush.load, brush.wetness, brush.links,
-                        brush.grain);
+                        brush.model.tip.angleDeg, brush.native, brush.links);
 }
 
 bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& tip, Tool tool,
@@ -1540,8 +1578,13 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // through. Read here rather than inside `rgb_` because `Layer` is what this
   // file already has in hand and `brush/RgbDeposit` deliberately knows nothing
   // about one (its header §5, "No Document, no Layer").
+  // `tip.blend`, latched with the ink/ceiling/lock for the identical reason
+  // (brush/RgbDeposit.hpp §2a): the RGB route is the ONLY one that reads it
+  // -- pigment has no RGBA to blend and erase/heal/clone/smudge/tonal/mask/
+  // pencil do not consult a brush's blend mode in Photoshop either
+  // (`BrushTip::blend`'s own comment names this as the one reader).
   if (route_ == StrokeRoute::RgbDeposit)
-    rgb_.begin(tip.linearRgb, resolvedOpacity, layer.alphaLocked);
+    rgb_.begin(tip.linearRgb, resolvedOpacity, layer.alphaLocked, tip.blend);
   else
     rgb_.end();
 
@@ -1787,6 +1830,19 @@ float StrokeSession::smoothPressure(float rawPressure) noexcept {
   return smoothedPressure_;
 }
 
+float StrokeSession::smoothPressureByDistance(float rawPressure, float distancePx) noexcept {
+  if (!pressureSmoothLatched_) {
+    smoothedPressure_ = rawPressure;  // the identical first-call rule
+                                      // `smoothPressure()` uses, off the
+                                      // SAME shared latch -- see this
+                                      // method's own header comment.
+    pressureSmoothLatched_ = true;
+  } else {
+    smoothedPressure_ = dynamicPressureSmoothedByDistance(smoothedPressure_, rawPressure, distancePx);
+  }
+  return smoothedPressure_;
+}
+
 void StrokeSession::depositPending() {
   frameTiles_.clear();
   if (pending_.empty()) return;
@@ -1870,13 +1926,13 @@ void StrokeSession::depositPending() {
   // about a dab's footprint or a stroke's byte-identical undo has anything to
   // notice.
   size_t frameTexels = 0;
-  for (const Vec2& p : pending_) {
+  for (const StrokeDab& p : pending_) {
     // The seed, latched once from the stroke's very FIRST dab position --
     // brush/Dynamics.hpp's own section comment on why position rather than a
     // counter, and why this must happen here rather than at `begin()`, which
     // has no position yet to latch.
     if (!seedLatched_) {
-      seed_ = strokeSeedFromStart(p.x, p.y);
+      seed_ = strokeSeedFromStart(p.pos.x, p.pos.y);
       seedLatched_ = true;
     }
 
@@ -1892,8 +1948,8 @@ void StrokeSession::depositPending() {
     // reason `stepDist` is: `brush/Dynamics.hpp`'s own comment on
     // `dynamicDirection()` is what makes `std::atan2(0, 0)` the documented,
     // not accidental, answer for "no previous position yet".
-    const float dx = havePrevDab_ ? p.x - prevDabX_ : 0.0f;
-    const float dy = havePrevDab_ ? p.y - prevDabY_ : 0.0f;
+    const float dx = havePrevDab_ ? p.pos.x - prevDabX_ : 0.0f;
+    const float dy = havePrevDab_ ? p.pos.y - prevDabY_ : 0.0f;
     const float stepDist = havePrevDab_ ? std::hypot(dx, dy) : 0.0f;
     distanceTravelled_ += stepDist;
 
@@ -1958,12 +2014,38 @@ void StrokeSession::depositPending() {
       // The six stroke-local signals, fresh every dab -- unchanged from the
       // old `local` this replaces, since Variance needs the identical inputs
       // the matrix did for VELOCITY/FADE/NOISE/RANDOM/DIRECTION/INITIAL
-      // DIRECTION. Seeded from `hardwareInputs_` first so Pressure/Tilt/
-      // Azimuth/Barrel (and their `has*` flags) reach a PenPressure/PenTilt/
-      // Rotation Control -- at the FRAME granularity `begin()`/`setTip()`
-      // latched them at, not resampled per dab (this codebase's own standing
-      // rule; `dynamicInputsFor()`'s header is the argument for it).
+      // DIRECTION.
+      //
+      // **Pressure/Tilt/Azimuth/Barrel now come from THIS DAB, not from
+      // `hardwareInputs_`.** Track A (full-rate pointer input) is why: `p`
+      // (this loop's own `StrokeDab`) carries the axes `brush/StrokePath`
+      // interpolated for its own position, one call to
+      // `strokeSampleFromPointer()`/`dynamicPressureSmoothedByDistance()`
+      // upstream per raw pointer sample rather than one `dynamicInputsFor()`
+      // sample shared by every dab a frame happens to emit -- which used to
+      // be the defect: a 40-dab frame stepped Size/Angle/Roundness in blocks
+      // instead of smoothly. Seeded from `hardwareInputs_` FIRST and only
+      // for its `has*` availability flags, which `depositPending()` has no
+      // per-dab equivalent of and does not need one for: whether a device
+      // reports an axis is a property of the device painting the stroke,
+      // not of one event, so `begin()`/`setTip()`'s per-frame latch of those
+      // three bools (`strokeHardwareInputsFor()` on the interactive route)
+      // is still the right granularity even though the FLOATS they gate are
+      // now resolved fresh every dab. A caller with no per-sample axes of
+      // its own (`app/BrushSheet.cpp`, `app/StrokePreview.cpp`, every
+      // selftest that drives a stroke through the plain `addPoint(x, y)`)
+      // reads the latch here exactly as before, because that wrapper seeds
+      // its `StrokeSample` FROM `hardwareInputs_` -- bit-identical for a
+      // constant latch; for one that `setTip()` changes mid-stroke, the dab
+      // reads the latched values of the two samples bounding its segment,
+      // interpolated, rather than the newest one. `addPoint()`'s own header
+      // comment is where that is argued and measured;
+      // `app/selftest/ActiveLayer.cpp` is the guard on it.
       DynamicInputs local = hardwareInputs_;
+      local.pressure = p.pressure;
+      local.tilt = p.tilt;
+      local.azimuth = p.azimuth;
+      local.barrel = p.barrel;
       local.velocity = dynamicVelocity(stepDist, tip_.radius);
       local.fade = dynamicFade(distanceTravelled_);
       local.noise = dynamicNoiseAt(seed_, distanceTravelled_);
@@ -2040,7 +2122,7 @@ void StrokeSession::depositPending() {
     // per sub-dab today) and SCATTER's own draw read a per-dab index, and
     // only the second actually varies within this loop, via `subIndex` alone.
     for (int32_t subIndex = 0; subIndex < resolvedCount; ++subIndex) {
-      const Vec2 centre = applyPerDabScatter(p, dabTip, seed_, static_cast<uint32_t>(dabs_), dx,
+      const Vec2 centre = applyPerDabScatter(p.pos, dabTip, seed_, static_cast<uint32_t>(dabs_), dx,
                                              dy, static_cast<uint32_t>(subIndex));
 
       // The five routes differ in exactly this call, and each takes
@@ -2118,8 +2200,8 @@ void StrokeSession::depositPending() {
       frameTexels += c.texels;
     }
     ++dabs_;
-    prevDabX_ = p.x;
-    prevDabY_ = p.y;
+    prevDabX_ = p.pos.x;
+    prevDabY_ = p.pos.y;
     havePrevDab_ = true;
   }
   sortUniqueTiles(frameTiles_);
@@ -2133,10 +2215,27 @@ void StrokeSession::depositPending() {
 }
 
 const std::vector<TileCoord>& StrokeSession::addPoint(float x, float y) {
+  // The axes come from `hardwareInputs_`, NOT from `StrokeSample`'s own
+  // neutral defaults -- see this method's header comment for the argument.
+  // In one line: a caller with no per-SAMPLE axes is a caller whose axes are
+  // whatever `begin()`/`setTip()` last latched, which is exactly what
+  // `depositPending()` read for every dab before Track A existed. Seeding the
+  // sample from the latch is what keeps this wrapper's output bit-identical
+  // to the pre-Track-A one rather than merely similar to it.
+  StrokeSample sample;
+  sample.pos = Vec2{x, y};
+  sample.pressure = hardwareInputs_.pressure;
+  sample.tilt = hardwareInputs_.tilt;
+  sample.azimuth = hardwareInputs_.azimuth;
+  sample.barrel = hardwareInputs_.barrel;
+  return addSample(sample);
+}
+
+const std::vector<TileCoord>& StrokeSession::addSample(const StrokeSample& sample) {
   frameTiles_.clear();
   if (doc_ == nullptr) return frameTiles_;
 
-  path_.addPoint(x, y, tip_.spacingPx(), pending_);
+  path_.addPoint(sample, tip_.spacingPx(), pending_);
   depositPending();
 
   // Live feedback, header §3: the revision is what invalidates

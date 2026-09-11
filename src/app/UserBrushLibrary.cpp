@@ -259,8 +259,14 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
         pending.model.tip.spacingPercent = n[2] * 50.0f;
         pending.model.tip.roundness = n[3];
         pending.model.tip.angleDeg = n[4];
-        pending.load = n[5];
-        pending.wetness = n[6];
+        // `load`/`wetness` land on `pending.native` now (brush/NativeBrush.hpp)
+        // -- same two positions of the same seven-float line this file has
+        // always written, so a file saved before `native` existed still
+        // parses exactly as it did (brush/Library.hpp's `NativeBrush native`
+        // comment on why the key names did not move even though the fields
+        // did).
+        pending.native.load = n[5];
+        pending.native.wetness = n[6];
         haveScalars = true;
       }
       // A malformed `scalars` line is not promoted to unknown -- see
@@ -287,17 +293,36 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
 
     if (key == "model") {
       // One line per non-default leaf of `BrushPreset::model` -- Photoshop's
-      // whole Brush Settings panel, 151 addressable fields
+      // whole Brush Settings panel, 149 addressable fields
       // (brush/BrushModelFields.hpp). A SEPARATE keyword for the third time
       // and for the third statement of the same rule: growing `scalars`'
       // required count would make a file written before this existed fail
       // `takeFloats()`'s exact-count contract and drop the whole preset.
       //
-      // **One key repeated, not 151 keys.** The alternative -- a keyword per
+      // **One key repeated, not 149 keys.** The alternative -- a keyword per
       // field -- would put the field list in this parser as well as in the
       // visitor, which is the fork brush/BrushModelFields.hpp exists to
       // prevent. Here the parser knows only that `model` carries "a path and
       // a value" and hands both to the one walk that knows what paths exist.
+      //
+      // **Except the two paths an OLDER build walked and this one retired:**
+      // bare `load` and `wetness`, `BrushModel`'s own last two leaves until
+      // they left for `brush/NativeBrush.hpp` (151 -> 149). A pre-`native`
+      // build wrote `model load <v>`/`model wetness <v>` whenever the
+      // model's copies were non-default -- copies nothing outside a selftest
+      // ever read or wrote; the live values were always `scalars`' trailing
+      // two floats above, and still are. The "a NEWER build's field" argument
+      // below is the wrong one for these (they are an older build's, and
+      // their meaning is known: none), so they are accepted and dropped here
+      // rather than preserved verbatim and re-emitted on every save forever.
+      // Never applied to `pending.native` -- that would let a dead copy
+      // overwrite the live `scalars` value the older build actually painted
+      // with.
+      const std::string modelPath = rest.substr(0, rest.find(' '));
+      if (modelPath == "load" || modelPath == "wetness") {
+        pointMode = PointMode::None;
+        continue;
+      }
       if (!brushModelApplyLine(pending.model, rest)) {
         // **A path this build does not know is a NEWER build's field, and
         // correct data.** Same call the `floor` branch below makes for an
@@ -320,7 +345,7 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
 
     if (key == "grain") {
       // A SEPARATE keyword rather than an eighth `scalars` field --
-      // `BrushPreset::grain`'s own comment gives the reason: growing
+      // `BrushPreset::native.grain`'s own comment gives the reason: growing
       // `scalars`' required count would make a FILE WRITTEN BEFORE this field
       // existed (seven floats, no eighth) fail `takeFloats(rest, 7, ...)`'s
       // exact-count parse and drop the whole preset. A new keyword an older
@@ -330,17 +355,32 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
       // build's save against an older build's read.
       //
       // Malformed is treated like a malformed `link` line, not like a
-      // malformed `scalars` one: `pending.grain` simply keeps its
+      // malformed `scalars` one: `pending.native.grain` simply keeps its
       // default-constructed value (grain OFF), which is always a legal
       // brush, rather than the whole preset being dropped for one bad line.
       float n[5];
       if (takeFloats(rest, 5, n)) {
-        pending.grain.enabled = n[0] != 0.0f;
-        pending.grain.periodX = static_cast<int32_t>(n[1]);
-        pending.grain.periodY = static_cast<int32_t>(n[2]);
-        pending.grain.depth = n[3];
-        pending.grain.strength = n[4];
+        pending.native.grain.enabled = n[0] != 0.0f;
+        pending.native.grain.periodX = static_cast<int32_t>(n[1]);
+        pending.native.grain.periodY = static_cast<int32_t>(n[2]);
+        pending.native.grain.depth = n[3];
+        pending.native.grain.strength = n[4];
       }
+      pointMode = PointMode::None;
+      continue;
+    }
+
+    if (key == "opacity") {
+      // **Accepted and DROPPED, never applied.** An interim build of the
+      // `NativeBrush` migration briefly put `opacity` in `native` and wrote
+      // it here as `opacity <v>`; that was reverted because opacity is
+      // per-session options-bar state a preset does not carry
+      // (brush/NativeBrush.hpp's header). A file that build saved may exist,
+      // so the line is recognised -- not preserved verbatim as an unknown
+      // line (its meaning is known: nothing a preset holds), and not applied
+      // to `BrushState::opacity` either, which no preset load ever touches.
+      // Same treatment as the retired `model load`/`model wetness` paths
+      // above.
       pointMode = PointMode::None;
       continue;
     }
@@ -484,9 +524,12 @@ std::string UserBrushLibraryStore::serialize(const BrushLibrary& lib) const {
     // always used: radius is half of `diameterPx`, and spacing is RADII
     // (`/ 100 * 2`, the inverse of `parse()`'s `* 50` above), not the bare
     // percentage `spacingPercent` stores.
+    // `p.native.load`/`.wetness` (brush/NativeBrush.hpp) -- the same two
+    // trailing floats this line has always written, under the same key,
+    // just read off `native` now instead of two loose `BrushPreset` fields.
     out += "scalars " + f9(p.model.tip.diameterPx / 2.0f) + " " + f9(p.model.tip.hardness) + " " +
            f9(p.model.tip.spacingPercent / 100.0f * 2.0f) + " " + f9(p.model.tip.roundness) + " " +
-           f9(p.model.tip.angleDeg) + " " + f9(p.load) + " " + f9(p.wetness) + "\n";
+           f9(p.model.tip.angleDeg) + " " + f9(p.native.load) + " " + f9(p.native.wetness) + "\n";
     // A preset with grain OFF still writes this line (with `enabled` 0) --
     // consistent with `scalars` above always being written regardless of
     // whether a value sits at its default, and simpler than a second code
@@ -501,13 +544,13 @@ std::string UserBrushLibraryStore::serialize(const BrushLibrary& lib) const {
     // Only the leaves that differ from a default `BrushModel`, so a preset
     // nobody has touched the Photoshop panels on writes nothing at all and
     // stays byte-identical to a file written before this key existed. A
-    // fully-specified imported brush writes on the order of 30-60 lines; 151
+    // fully-specified imported brush writes on the order of 30-60 lines; 149
     // is the ceiling, not the typical cost.
     for (const std::string& modelLine : brushModelToLines(p.model))
       out += "model " + sanitizeOneLine(modelLine) + "\n";
-    out += "grain " + std::string(p.grain.enabled ? "1" : "0") + " " +
-           std::to_string(p.grain.periodX) + " " + std::to_string(p.grain.periodY) + " " +
-           f9(p.grain.depth) + " " + f9(p.grain.strength) + "\n";
+    out += "grain " + std::string(p.native.grain.enabled ? "1" : "0") + " " +
+           std::to_string(p.native.grain.periodX) + " " + std::to_string(p.native.grain.periodY) +
+           " " + f9(p.native.grain.depth) + " " + f9(p.native.grain.strength) + "\n";
     // One `floor <targetOrdinal> <value>` line per non-zero
     // `multiplyFloor` entry -- omitted entirely when zero (the default "no
     // floor" every preset with no Minimum Diameter has), so a preset that

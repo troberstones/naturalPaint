@@ -522,7 +522,17 @@ PathStrokeResult strokePathWithBrush(Layer& target, const std::vector<VectorShap
     // `target.alphaLocked` is threaded in rather than refused --
     // PathConsumers.hpp section 5. brush/RgbDeposit.hpp section 4.5 is the
     // composite it selects.
-    stroke.begin(tip.linearRgb, tip.opacity, target.alphaLocked);
+    //
+    // `tip.blend` is threaded in too, for the reason a live RGB stroke passes
+    // it (app/StrokeSession.cpp's `StrokeSession::begin()`): the brush's own
+    // blend mode is applied to a stroke on an RGB layer, and stroking a path
+    // with that brush is a stroke on an RGB layer. This call used to omit it,
+    // so the defaulted `BlendMode::Normal` painted a Multiply brush as Normal
+    // -- white ink over grey whitened it -- while the Tool Options banner said
+    // the mode was applied. `--selftest`'s path consumers section 10 pins it.
+    // The pigment branch below takes no blend, for `BrushTip::blend`'s stated
+    // reason (a Pigment texel has no RGBA to blend).
+    stroke.begin(tip.linearRgb, tip.opacity, target.alphaLocked, tip.blend);
     const StrokeDeposit d =
         stroke.depositDabs(*target.rgbTiles, tip, dabs, width, height, selection);
     texels = d.texels;

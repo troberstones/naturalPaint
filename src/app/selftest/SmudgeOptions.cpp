@@ -66,7 +66,8 @@ bool runSmudgeOptionsTest() {
     if (tile == nullptr) return {0.0f, 0.0f, 0.0f, 0.0f};
     return tile->readPixel(tileLocalOffset(PixelCoord{x, y}));
   };
-  // A hard disc, so `dabCoverage()` is 1 over the whole footprint and the
+  // A hardness-1 disc, so `dabCoverage()` is exactly 1 over its flat core (the
+  // last `edgePx` of the rim is antialiased, brush/Deposit.hpp §2) and the
   // numbers below are about the carried colour rather than about the falloff --
   // `runSmudgeTest()`'s own fixture convention.
   auto discTip = [](float radius, float flow) {

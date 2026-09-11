@@ -107,7 +107,7 @@ struct AbrSampledTip {
 
 // One decoded pattern from the `patt` block, exposed the same way
 // `AbrSampledTip` exposes a `samp` tip, and for the same reason.
-// `importAbrBrushes()` already resolves a pattern into `BrushPreset::grain`
+// `importAbrBrushes()` already resolves a pattern into `BrushPreset::native.grain`
 // for the presets THIS import decoded (via `grainFromTexture()`, below), but
 // that binding lives only as long as this one `AbrImportResult` does --
 // unload the pack and the paper is gone with it. `id` and `field` are exactly
@@ -222,7 +222,7 @@ struct AbrImportResult {
   // `extractAbrPatterns()` needs them to do it.
   std::vector<AbrPatternSample> patternSamples;
 
-  // Brushes whose Texture is ON and whose paper reached `BrushPreset::grain`,
+  // Brushes whose Texture is ON and whose paper reached `BrushPreset::native.grain`,
   // against those where it did not -- an id this file's `patt` does not
   // contain, or a blend mode with no formula (`linearHeight`). A brush
   // counted in the second paints on no paper at all and says so, rather than

@@ -122,7 +122,8 @@ constexpr const char* kAttrText = "np:text";
 // migration doc's three, for the reason that header gives.
 constexpr const char* kAttrFlats = "np:flats";
 // A Strokes layer's whole content -- every dab record and the id allocator --
-// as one `npdabs1:` hex string (io/StrokesSerial). The deferral this
+// as one `npdabs1:`/`npdabs2:` hex string (io/StrokesSerial, whose header
+// says which version is written when and why the second exists). The deferral this
 // module's own header reserved by name; that header's entry and
 // io/StrokesSerial's say why it is a string and not the format table's
 // `<blob>`.
@@ -2038,7 +2039,28 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     // the list is empty, and no build before this one could save the kind at
     // all -- the refusal above named it -- so there are no earlier bytes for
     // a `!empty()` guard to protect.
-    const bool writesOwnStrokes = layer.kind == LayerKind::Strokes;
+    //
+    // **Except when the load CARRIED an `np:dabs` it could not decode and the
+    // layer has recorded nothing since.** The loader opens such a layer empty
+    // and keeps the attribute in the carry (PRD I10), and until this test the
+    // unconditional write above won: the carry replay below skips a carried
+    // `np:dabs` whenever this build wrote its own, so the next save replaced
+    // a newer build's dab list -- an `npdabs3:` here, or an `npdabs2:` in a
+    // build that reads only `npdabs1:` -- with an EMPTY one, destroying the
+    // records the load had promised to carry. Measured by `--selftest`'s
+    // strokes layer section F (a future-tagged payload through two saves).
+    // "Recorded nothing since" is the loader's own default content -- no dabs
+    // and a fresh allocator -- which is `np:vector`'s `layer.shapes.empty()`
+    // rule: once the user records into the layer, their own records win,
+    // because this build cannot merge them into a payload it cannot read.
+    bool carriesUnreadDabs = false;
+    if (carry && i < carry->layerAttributes.size())
+      for (const NpaintAttribute& a : carry->layerAttributes[i])
+        if (a.name == kAttrStrokes) carriesUnreadDabs = true;
+    const bool writesOwnStrokes =
+        layer.kind == LayerKind::Strokes &&
+        !(carriesUnreadDabs && layer.strokes.dabs.empty() &&
+          layer.strokes.nextDabId == StrokesContent{}.nextDabId);
     if (writesOwnStrokes)
       part.attributes.push_back(stringAttr(kAttrStrokes, serializeStrokesContent(layer.strokes)));
     // **Written only when the layer is actually clipped** (PLAN.md Phase 5
@@ -2841,10 +2863,12 @@ NpaintLoadResult loadNpaint(const std::string& path) {
         maskIdx = 0;
         hasMaskChannel = true;
       }
-      // `np:flats`' rules exactly: a future `npdabs2:` or a corrupt payload
+      // `np:flats`' rules exactly: a future `npdabs3:` or a corrupt payload
       // is not guessed at, the layer opens with no dabs, and the attribute
-      // stays in the carry so saving writes it back verbatim (PRD I10). A
-      // missing attribute is warned about, since this build always writes one.
+      // stays in the carry so saving writes it back verbatim (PRD I10) --
+      // which the writer honours only because `writesOwnStrokes` stands down
+      // for a layer still in this opened-empty state (see it). A missing
+      // attribute is warned about, since this build always writes one.
       if (const NpaintAttribute* d = findAttr(part.attributes, kAttrStrokes);
           d != nullptr && d->type == NpaintAttribute::Type::String) {
         std::string why;

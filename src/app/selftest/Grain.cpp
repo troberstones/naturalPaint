@@ -398,18 +398,16 @@ bool runGrainTest() {
     const bool matchesWhenIdentical =
         presetMatches(preset, preset.model.tip.diameterPx / 2.0f, preset.model.tip.hardness,
                      preset.model.tip.spacingPercent / 100.0f, preset.model.tip.roundness,
-                     preset.model.tip.angleDeg, preset.load, preset.wetness, preset.links,
-                     preset.grain);
+                     preset.model.tip.angleDeg, preset.native, preset.links);
     check(matchesWhenIdentical,
           "grain/edited-badge: identical grain (and everything else) reads as matching");
 
-    GrainParams turnedOn = preset.grain;
-    turnedOn.enabled = true;
+    NativeBrush grainOn = preset.native;
+    grainOn.grain.enabled = true;
     const bool matchesWhenGrainDiffers =
         presetMatches(preset, preset.model.tip.diameterPx / 2.0f, preset.model.tip.hardness,
                      preset.model.tip.spacingPercent / 100.0f, preset.model.tip.roundness,
-                     preset.model.tip.angleDeg, preset.load, preset.wetness, preset.links,
-                     turnedOn);
+                     preset.model.tip.angleDeg, grainOn, preset.links);
     check(!matchesWhenGrainDiffers,
           "grain/edited-badge: turning grain on, with every other field unchanged, reads as "
           "edited");

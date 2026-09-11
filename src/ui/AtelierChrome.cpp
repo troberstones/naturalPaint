@@ -2352,7 +2352,7 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     ImGui::SameLine();
     ImGui::SetNextItemWidth(110.0f);
     pushAtelierMono();
-    ImGui::SliderFloat("##load", &st.brush.load, kBrushLoadMin, kBrushLoadMax, "%.2f");
+    ImGui::SliderFloat("##load", &st.brush.native.load, kBrushLoadMin, kBrushLoadMax, "%.2f");
     popAtelierMono();
 
     bandSeparator();
@@ -2362,7 +2362,7 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     pushAtelierMono();
     // **Same honest-refusal treatment MacPaintUI.cpp's drawBrushSection() gives
     // this same field** (see that comment for the full argument):
-    // `st.brush.wetness` reaches `sim::PaintSim`'s `brushWater` only, through
+    // `st.brush.native.wetness` reaches `sim::PaintSim`'s `brushWater` only, through
     // `applyToolToBrush()`, and that is called only when `strokeRouteFor()`
     // answers `StrokeRoute::PaintSim` -- Water always, or Brush/DryBrush with
     // no document layer to aim at. A locally-scoped `route`, not the band's own
@@ -2376,7 +2376,7 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
       ImGui::BeginDisabled(!wetHonoured);
       // kBrushWetnessMin/Max (app/AppState.hpp) -- the one range for this
       // field, also read by the BRUSH panel's Water slider.
-      ImGui::SliderFloat("##wet", &st.brush.wetness, kBrushWetnessMin, kBrushWetnessMax, "%.2f");
+      ImGui::SliderFloat("##wet", &st.brush.native.wetness, kBrushWetnessMin, kBrushWetnessMax, "%.2f");
       ImGui::EndDisabled();
     }
     popAtelierMono();

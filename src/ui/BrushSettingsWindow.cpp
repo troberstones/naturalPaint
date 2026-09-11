@@ -127,7 +127,10 @@ void drawBrushSettingsWindow(AppState& st, GpuContext& gpu, const MixboxLut& lut
             case BrushSettingsTab::ColorDynamics: drawBrushColorDynamicsGroup(st); break;
             case BrushSettingsTab::Transfer:      drawBrushTransferGroup(st);      break;
             case BrushSettingsTab::ToolOptions:   drawBrushToolOptionsGroup(st);   break;
-            case BrushSettingsTab::Dynamics: drawBrushDynamicsGroup(st);           break;
+            case BrushSettingsTab::Dynamics:
+              drawBrushNativeGroup(st);
+              drawBrushDynamicsGroup(st);
+              break;
             case BrushSettingsTab::Count:    break;
           }
         }

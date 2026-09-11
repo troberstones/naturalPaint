@@ -55,6 +55,28 @@ float sampleBitmapCoverage(const BrushTipBitmap& bmp, float bx, float by) noexce
   return top + (bot - top) * ty;
 }
 
+// Header §2c: which mip level a bitmap tip samples at this `scale` (document
+// pixels per NATIVE texel, `bitmapTipScale()`'s own units) -- Track B / B2.
+// `0` is the original `bmp` itself (not stored in `bmp.mips`), `k > 0` is
+// `bmp.mips[k - 1]`, whose own texel spans `2^k` native texels. Chosen so
+// level `k`'s texel maps to no more than one document pixel, i.e. one output
+// texel covers at most ~2 level texels -- **along the major axis only**: the
+// minor axis of an elliptical tip is squashed by `roundness` after this
+// choice, so there it is up to `2 / roundness` (header §2c says why the level
+// is not chosen from the minor axis instead, with the measurement). At
+// `scale >= 1` (native size or magnified) that is level 0 always,
+// `floor(log2(1/scale))` being `<= 0`; minification is the only case that
+// climbs higher, and never past `bmp.mips.size()` -- an empty chain (a
+// `BrushTipBitmap` nobody has called `buildTipMips()` on) therefore always
+// resolves to level 0, so an un-mipped tip is unaffected by this function
+// existing.
+int32_t bitmapMipLevel(const BrushTipBitmap& bmp, float scale) noexcept {
+  const int32_t maxLevel = static_cast<int32_t>(bmp.mips.size());
+  if (!(scale < 1.0f) || maxLevel <= 0) return 0;
+  const float lvlF = std::floor(std::log2(1.0f / scale));
+  return static_cast<int32_t>(std::clamp(lvlF, 0.0f, static_cast<float>(maxLevel)));
+}
+
 // Header §2c: rotate and squash exactly as §2b does, then map the isotropic
 // `[-radius, radius]` square onto the bitmap's own rectangle, independently
 // per axis. Zero outside `[0,width] x [0,height]` -- a bitmap tip's own
@@ -82,7 +104,21 @@ float bitmapDabCoverage(const BrushTipBitmap& bmp, const BrushTip& tip, float dx
   if (bx < 0.0f || by < 0.0f || bx > static_cast<float>(bmp.width) ||
       by > static_cast<float>(bmp.height))
     return 0.0f;
-  return sampleBitmapCoverage(bmp, bx, by);
+
+  // Track B / B2: `(bx, by)` above is in LEVEL-0 pixel space regardless of
+  // which level is sampled, because it is derived from `bmp.width`/`height`
+  // and `tip.radius` alone -- the footprint gate two lines up already used
+  // it in that space, so the level choice below cannot move where coverage is
+  // zero, only what a nonzero query returns (header's `dabPixelBounds()` note).
+  const int32_t level = bitmapMipLevel(bmp, scale);
+  if (level <= 0) return sampleBitmapCoverage(bmp, bx, by);
+  // Level `level` is `2^level` native texels per its own texel, so the SAME
+  // physical point is at `(bx, by) / 2^level` in that level's own pixel
+  // space -- `sampleBitmapCoverage()` reused unchanged (header's own point:
+  // every level shares `BrushTipBitmap`'s layout).
+  const float divisor = static_cast<float>(int32_t{1} << level);
+  return sampleBitmapCoverage(bmp.mips[static_cast<size_t>(level - 1)], bx / divisor,
+                              by / divisor);
 }
 
 // A single tip's own coverage profile -- §2/§2b/§2c, and everything
@@ -150,11 +186,35 @@ float singleTipCoverage(const BrushTip& tip, float dx, float dy) noexcept {
   if (!(d2 < r2)) return 0.0f;
 
   const float h = std::clamp(tip.hardness, 0.0f, 1.0f);
+
+  // Track B / B1, header §2: the minimum skirt width, in PIXELS, `hardness`
+  // alone cannot express (it is a fraction of `radius`, so a small or hard
+  // tip can specify a skirt under a pixel wide). `hEff <= h` always, so this
+  // can only WIDEN the skirt, never narrow one `hardness` already asked for.
+  //
+  // Bit-identical to plain `h` in the two cases header §2 states and
+  // `app/selftest/TipEdge.cpp` asserts: `tip.edgePx == 0` (the `min` picks
+  // `h` because `1 - 0/r == 1 >= h` always) and `(1 - h) * r >= edgePx` (the
+  // `min` picks `h` because that inequality rearranges to exactly
+  // `h <= 1 - edgePx/r`) -- three of the four built-ins at their default
+  // size (`Round Bristle 03`, `Flat Wash`, `Dry Bristle`), and therefore
+  // `--pigment-stroke-demo` and the `canvas` golden view. NOT `Detail Liner`
+  // (r 5, h 0.95: `hEff` 0.8), which is the tip this floor exists to fix --
+  // header §2 names it as the intended change.
+  //
+  // Applied identically to the round and the elliptical branch above --
+  // `d` is isotropic either way -- and header §2 is the one-line argument for
+  // why the minor axis's narrower physical floor is accepted rather than
+  // corrected.
+  const float hEff = std::clamp(std::min(h, 1.0f - tip.edgePx / r), 0.0f, 1.0f);
+
   const float d = std::sqrt(d2) / r;  // in [0,1)
-  if (d <= h) return 1.0f;
-  // h < d < 1 here, so h < 1 and the divisor is strictly positive -- the one
-  // division in this function, unreachable for the hard-disc tip.
-  const float u = (d - h) / (1.0f - h);
+  if (d <= hEff) return 1.0f;
+  // hEff < d < 1 here, so hEff < 1 and the divisor is strictly positive.
+  // Reached even for `hardness == 1` whenever `edgePx > 0`, since `hEff < 1`
+  // there -- the `DryBrush` end of the range no longer skips this division,
+  // on purpose (header §2).
+  const float u = (d - hEff) / (1.0f - hEff);
   return 1.0f - u * u * (3.0f - 2.0f * u);
 }
 
@@ -252,12 +312,13 @@ bool brushTipEqual(const BrushTip& a, const BrushTip& b) noexcept {
   // 136, and the guard passed while the new field went uncompared. Tested,
   // not assumed -- which is the only reason the weaker version is not still
   // here.
-  const auto& [radius, hardness, roundness, angle, bitmap, dualTip, dualBlend, flow, spacing,
-               scatter, scatterBothAxes, grain, pigment, linearRgb, opacity, smudgeStrength, count,
-               blend] = a;
+  const auto& [radius, hardness, edgePx, roundness, angle, bitmap, dualTip, dualBlend, flow,
+               spacing, scatter, scatterBothAxes, grain, pigment, linearRgb, opacity,
+               smudgeStrength, count, blend] = a;
   // `bitmap` and `dualTip` compare by POINTER, which is `dabPreviewTipsEqual()`'s
   // established convention; its comment carries the argument.
-  return radius == b.radius && hardness == b.hardness && roundness == b.roundness &&
+  return radius == b.radius && hardness == b.hardness && edgePx == b.edgePx &&
+         roundness == b.roundness &&
          angle == b.angle && bitmap == b.bitmap && dualTip == b.dualTip &&
          dualBlend == b.dualBlend && flow == b.flow && spacing == b.spacing &&
          scatter == b.scatter && scatterBothAxes == b.scatterBothAxes &&

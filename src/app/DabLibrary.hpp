@@ -380,7 +380,7 @@ int runDabImport(const char* path);
 // **Extraction: a Photoshop scanned pattern, written out so it survives the
 // pack.** The pattern equivalent of `extractAbrTips()` above, and the same
 // gap: `io/AbrBrushes.cpp`'s `patternsById` map is built fresh inside
-// `importAbrBrushes()`, feeds `BrushPreset::grain` for the presets in THAT
+// `importAbrBrushes()`, feeds `BrushPreset::native.grain` for the presets in THAT
 // import, and is then thrown away -- a paper this build spent real work
 // decoding (io/PsPatterns.hpp: 98-99% of a typical pack's bytes) has never
 // once reached disk. This closes that, and only that: each unique decoded

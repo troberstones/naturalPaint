@@ -50,8 +50,8 @@ BrushPreset makeAuthoredPreset(BrushLibrary& lib, const char* wantedName) {
   p.model.tip.spacingPercent = 18.3f;  // spacing (radii) 0.366 -- /100*2
   p.model.tip.roundness = 0.729f;
   p.model.tip.angleDeg = 47.25f;
-  p.load = 1.14159265f;
-  p.wetness = 0.874321f;
+  p.native.load = 1.14159265f;
+  p.native.wetness = 0.874321f;
 
   BrushLink sizeLink;
   sizeLink.source = DynamicSource::Pressure;
@@ -170,7 +170,8 @@ bool runUserBrushLibraryTest() {
                 back->model.tip.spacingPercent == authored.model.tip.spacingPercent &&
                 back->model.tip.roundness == authored.model.tip.roundness &&
                 back->model.tip.angleDeg == authored.model.tip.angleDeg &&
-                back->load == authored.load && back->wetness == authored.wetness,
+                back->native.load == authored.native.load &&
+                back->native.wetness == authored.native.wetness,
             "userbrushlib: all seven scalars (five of them projections of `model.tip` now) come "
             "back bit-identical -- `%.9g` is what buys that for values that are not round "
             "numbers");
@@ -704,7 +705,7 @@ bool runUserBrushLibraryTest() {
   //
   // The round trip is asserted with `brushModelDiff()` rather than a
   // hand-written field comparison, and that is not a convenience: a
-  // comparison written here would be a SECOND enumeration of the 151 fields,
+  // comparison written here would be a SECOND enumeration of the 149 fields,
   // free to omit exactly the field the writer forgot -- the fork
   // brush/BrushModelFields.hpp exists to prevent. It also means a failure
   // names the field instead of saying "the model did not survive", which is
@@ -735,7 +736,7 @@ bool runUserBrushLibraryTest() {
       else if constexpr (std::is_same_v<T, CoverageBlend>)
         ref = static_cast<CoverageBlend>(tick % 10);
     });
-    check(tick == 151, "userbrushlib/model: the fixture touched all 151 leaves");
+    check(tick == 149, "userbrushlib/model: the fixture touched all 149 leaves");
     check(!brushModelToLines(p.model).empty(),
           "userbrushlib/model: a fully-populated model writes lines at all");
 
@@ -765,7 +766,7 @@ bool runUserBrushLibraryTest() {
           std::printf("      %s\n", differing[i].c_str());
       }
       check(differing.empty(),
-            "userbrushlib/model: all 151 leaves survive save -> load at zero tolerance");
+            "userbrushlib/model: all 149 leaves survive save -> load at zero tolerance");
       check(brushModelEqual(p.model, got->model),
             "userbrushlib/model: and brushModelEqual() agrees with the diff");
     }

@@ -171,6 +171,25 @@
 // snapped by at most half a texel, which at any zoom below 200 % is smaller than
 // the pixel the user clicked in.
 //
+// **An antialiased rim does not relax this rule -- masking is not resampling.**
+// Since `BrushTip::edgePx` (brush/Deposit.hpp §2) a hardness-1 tip is no longer
+// a hard disc: its last document pixel carries fractional coverage, so a cloned
+// edge is antialiased, as Photoshop's is -- the project owner's decision, taken
+// when that field landed. What the fraction scales is HOW MUCH of the source
+// lands (coverage enters `weight`, hence `a`, in §1's composite); it never
+// changes WHICH source value lands. `cloneDab()`'s fetch is still the one texel at
+// `(x, y) + lround(offset)`, unfiltered, on the rim exactly as in the core. So
+// every texel a dab writes over an opaque source lies on the segment
+//
+//     dst' = dst + a * (src_exact - dst),   a in (0, 1]
+//
+// with one `a` for all four channels: the core at `a == 1` (§1's bit-for-bit
+// copy), the rim strictly inside. `--selftest clone stamp` §2b asserts exactly
+// that over every texel of a dab with a fractional offset, and it is the
+// assertion a filtered source fails -- a bilinear fetch would put a value no
+// source texel holds at the far end of the segment, and would do it most
+// quietly on the rim, where the blend already makes the result look soft.
+//
 // ==========================================================================
 // 4. Cloning nothing must COST nothing
 // ==========================================================================

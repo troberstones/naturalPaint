@@ -70,20 +70,91 @@ RgbDepositStep depositRgbTexel(const std::array<float, 4>& dst,
   return out;
 }
 
+RgbDepositStep depositRgbTexelBlended(const std::array<float, 4>& dst0,
+                                      const std::array<float, 3>& straightLinearRgb,
+                                      BlendMode blend, float strokeAlpha, float weight,
+                                      float opacity, bool alphaLocked) noexcept {
+  RgbDepositStep out;
+  // The no-op answer -- `dst0`, for the identical reason `depositRgbTexel()`
+  // returns `dst` unchanged: a refused dab must be indistinguishable from one
+  // that never ran, and the caller never writes this value when `dabAlpha ==
+  // 0` regardless.
+  out.premultiplied = dst0;
+  out.strokeAlpha = strokeAlpha;
+  out.dabAlpha = 0.0f;
+
+  const float cap = std::clamp(opacity, 0.0f, 1.0f);
+  const float a0 = std::clamp(strokeAlpha, 0.0f, 1.0f);
+  const float headroom = 1.0f - a0;
+
+  // Bit-for-bit the same four refusals, on the same guard shape, as
+  // `depositRgbTexel()` -- header §2a's own note on why this is duplicated
+  // rather than shared.
+  if (!(weight > 0.0f)) return out;
+  if (!(cap > 0.0f)) return out;
+  if (!(headroom > 0.0f)) return out;
+  if (!(a0 < cap)) return out;
+
+  float a1 = a0 + weight * headroom;
+  if (a1 > cap) a1 = cap;
+  float a = (a1 - a0) / headroom;
+  if (a > 1.0f) a = 1.0f;
+
+  // Header §2a: the blend target, computed ONCE from the latched `dst0` --
+  // never from a live/intermediate value -- with the ink as an OPAQUE source
+  // (alpha 1). `blendPixel()`'s own three-term Porter-Duff split collapses
+  // under that to exactly `lerp(ink, blend(straight(dst0), ink), dst0.a)`,
+  // which is what makes this line also the "blend over a transparent
+  // destination is the source colour" rule, with no separate branch for it.
+  const std::array<float, 4> opaqueInk{straightLinearRgb[0], straightLinearRgb[1],
+                                       straightLinearRgb[2], 1.0f};
+  const std::array<float, 4> blended = blendPixel(blend, opaqueInk, dst0);
+  const std::array<float, 3> target{blended[0], blended[1], blended[2]};
+
+  // `keep` is against the CUMULATIVE `a1`, not the per-dab `a` -- header
+  // §2a's whole point: the composite is written directly against `dst0` and
+  // the stroke's running total, never against an intermediate write, so it
+  // is exact and order-independent within the stroke.
+  const float keep = 1.0f - a1;
+  if (alphaLocked) {
+    // §2a's re-derivation of §4.5: the identical structure with `dst0` and
+    // `a1` standing in for `dst`/`a`, because the per-dab lerp toward a
+    // CONSTANT target is the same repeated-composite identity, just at the
+    // straight-colour level.
+    out.premultiplied = {dst0[0] * keep + target[0] * a1 * dst0[3],
+                         dst0[1] * keep + target[1] * a1 * dst0[3],
+                         dst0[2] * keep + target[2] * a1 * dst0[3], dst0[3]};
+  } else {
+    // out = dst0*(1-A') + B'*A', B' the (opaque) blend target -- header
+    // §2a's headline formula.
+    out.premultiplied = {target[0] * a1 + dst0[0] * keep, target[1] * a1 + dst0[1] * keep,
+                         target[2] * a1 + dst0[2] * keep, a1 + dst0[3] * keep};
+  }
+  out.strokeAlpha = a1;
+  out.dabAlpha = a;
+  return out;
+}
+
 void RgbStroke::begin(const std::array<float, 3>& straightLinearRgb, float opacity,
-                      bool alphaLocked) noexcept {
+                      bool alphaLocked, BlendMode blend) noexcept {
   ink_ = straightLinearRgb;
   opacity_ = std::clamp(opacity, 0.0f, 1.0f);
   alphaLocked_ = alphaLocked;
+  blend_ = blend;
   // A fresh accumulator, not a cleared one: assigning a default-constructed
   // store drops every `shared_ptr` slot and therefore every tile the previous
   // stroke held, which is `end()`'s free as well as this one's.
   alpha_ = StrokeAlphaStore{};
+  // Likewise §2a's latch store -- fresh, not cleared, and stays a fresh
+  // (empty) store for the stroke's whole life when `blend_ == Normal`: no
+  // code path below ever calls `dst0_.getOrCreate()` in that case.
+  dst0_ = StrokeDst0Store{};
   active_ = true;
 }
 
 void RgbStroke::end() noexcept {
   alpha_ = StrokeAlphaStore{};
+  dst0_ = StrokeDst0Store{};
   active_ = false;
 }
 
@@ -165,6 +236,15 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
       Tile* dst = nullptr;
       StrokeAlphaTile* alphaWrite = nullptr;
 
+      // §2a: the latched-`dst0` store's own read/write handles, hoisted the
+      // identical way -- but ONLY looked up at all when this stroke is
+      // blended, so an unblended stroke pays the extra `find()` nothing (not
+      // even a lookup into an empty map) and its loop is the exact one it
+      // always was.
+      const bool blending = blend_ != BlendMode::Normal;
+      const Tile* dst0Read = blending ? dst0_.find(coord) : nullptr;
+      Tile* dst0Write = nullptr;
+
       for (int32_t y = y0; y <= y1; ++y) {
         const float dy = (static_cast<float>(y) + 0.5f) - centre.y;
         for (int32_t x = x0; x <= x1; ++x) {
@@ -200,9 +280,28 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
           // exactly); and into the ceiling, so *no number of passes* takes that
           // texel past half. The first alone is a speed limit rather than a
           // bound, and a scrubbed stroke walks straight through it.
-          const RgbDepositStep step = depositRgbTexel(before, ink_, accumulated,
-                                                      tip.flow * cov * sel, opacity_ * sel,
-                                                      alphaLocked_);
+          //
+          // §2a's dispatch: `blend_ == Normal` runs the EXACT branch and
+          // arithmetic this loop always ran, against the live `before`.
+          // Otherwise, `dst0` is latched from `before` the first time this
+          // TEXEL is touched THIS STROKE -- `accumulated == 0` is that
+          // signal, the same one `depositRgbTexel()`'s own `a0 < cap` refusal
+          // already reads as "this stroke has not reached it yet" -- and read
+          // back from `dst0Read` every dab after, never from the live tile.
+          RgbDepositStep step;
+          std::array<float, 4> dst0Val{};
+          const bool firstTouch = blending && !(accumulated > 0.0f);
+          if (blending) {
+            dst0Val = firstTouch ? before
+                                 : (dst0Read != nullptr ? dst0Read->readPixel(local)
+                                                        : std::array<float, 4>{0.0f, 0.0f, 0.0f,
+                                                                               0.0f});
+            step = depositRgbTexelBlended(dst0Val, ink_, blend_, accumulated,
+                                          tip.flow * cov * sel, opacity_ * sel, alphaLocked_);
+          } else {
+            step = depositRgbTexel(before, ink_, accumulated, tip.flow * cov * sel,
+                                   opacity_ * sel, alphaLocked_);
+          }
           // The ceiling, the transparent tail of the falloff, and a texel the
           // selection excluded all arrive here as `dabAlpha == 0`, and all three
           // mean the same thing: do not touch this texel, do not allocate its
@@ -226,6 +325,19 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
           }
           alphaWrite->set(local, step.strokeAlpha);
           dst->writePixel(local, step.premultiplied);
+          if (firstTouch) {
+            // Latch `dst0` for every later dab this stroke spends on this
+            // texel -- written ONCE per texel per stroke, exactly when
+            // `accumulated` was 0 above, never again (a second write here
+            // would be latching an already-blended value, the compounding
+            // bug §2a exists not to have).
+            if (dst0Write == nullptr) {
+              dst0Write = &dst0_.getOrCreate(coord);
+              dst0Read = dst0Write;  // see the `srcTile` comment above: same
+                                     // detached-pointer discipline
+            }
+            dst0Write->writePixel(local, dst0Val);
+          }
           ++count.texels;
         }
       }

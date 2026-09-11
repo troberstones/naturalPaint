@@ -39,7 +39,7 @@ std::array<BrushTip, kDabPreviewCells> brushRowIconTips(const BrushRow& row,
   // conversion, not a bare `* 100` (`app/StrokeSession::brushTipFor()`'s
   // `tip.spacing` comment names the same factor of two).
   as.model.tip.spacingPercent = row.spacing * 50.0f;
-  as.load = row.load;
+  as.native.load = row.load;
   // **Emptied, not left as the live brush's.** A row carries no links, and
   // borrowing the current brush's matrix would draw a picture of dynamics this
   // brush does not have -- an icon that changes when you edit an unrelated

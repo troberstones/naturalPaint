@@ -347,12 +347,25 @@ struct AtelierBands {
 // The canvas is clamped at zero and the bands keep their sizes -- chrome that
 // shrinks is chrome that lies about its hit targets, and the honest failure
 // mode for a window too small to hold the design is a canvas you cannot see.
+// `menuBarReservedW` is extra width to reserve between the wordmark and the
+// tab strip, on top of `kTitleWordmarkW`, for menu items drawn INTO this same
+// row. It is 0 on macOS, where `File`/`Edit`/... live in the native AppKit
+// bar instead and the space belongs to the tabs outright -- see
+// ui/MacNativeMenu.hpp. On Linux/Windows, where ui/MacPaintUI.cpp still draws
+// those menus with `ImGui::BeginMenu()` right here, a caller that leaves this
+// at its default of 0 gets the tab strip drawn on top of them: present but
+// invisible, not merely misaligned, since both are opaque and share the row.
+// Defaulted so every existing caller (including every `--selftest` site that
+// asserts this file's band arithmetic) keeps the exact geometry it already
+// has; only the real per-frame chrome call passes a measured, non-zero value.
 AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip,
-                           const AtelierDockExtents& docks);
+                           const AtelierDockExtents& docks,
+                           float menuBarReservedW = 0.0f);
 
 // The default arrangement, for the callers (and the tests) that do not vary
 // the docks. Exactly `atelierLayout(..., kDefaultDockExtents)`.
-AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip);
+AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip,
+                           float menuBarReservedW = 0.0f);
 
 // ------------------------------------------------------------- navigator
 //

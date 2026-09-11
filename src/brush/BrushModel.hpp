@@ -229,10 +229,16 @@ struct BrushModel {
   bool airbrush = false;
   bool brushPose = false;  // `useBrushPose`, on for 0 of 101
 
-  // naturalPaint's own two, which Photoshop has no concept of and which must
-  // not be smuggled into a Photoshop-named section above.
-  float load = 0.9f;     // pigment concentration
-  float wetness = 1.3f;  // water
+  // **naturalPaint's own fields used to live here, and no longer do.**
+  // `load`/`wetness` (pigment concentration, water) were the two Photoshop
+  // has no concept of, apologised for right here as "must not be smuggled
+  // into a Photoshop-named section above" -- and read by nothing outside a
+  // selftest; the live copies were always `BrushPreset::load`/`wetness` and
+  // `BrushState::load`/`wetness`, loose beside this model rather than inside
+  // it. They now live in `brush/NativeBrush.hpp`'s `NativeBrush` struct,
+  // alongside `grain` (which was never on this struct at all) -- one named
+  // home for what naturalPaint adds to a brush that this file must keep
+  // refusing, rather than a second apology every time the list grows.
 };
 
 }  // namespace np
