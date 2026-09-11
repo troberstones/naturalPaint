@@ -1079,6 +1079,20 @@ bool runInpaintTest();
 // Headless and GPU-free, like every ops/ section it sits beside.
 bool runTileableTest();
 
+// brush/NativeBrush -- naturalPaint's own brush section (load, wetness,
+// grain), the seam beside `BrushModel` where Photoshop's shape ends
+// and naturalPaint's own begins. `nativeBrushEqual()`'s per-field
+// discrimination, the two-leaf drop out of `BrushModel`
+// (`brushModelFieldPaths()` no longer names `load`/`wetness`), the
+// `applyPresetToBrush()`/`presetFromBrush()` round trip, a legacy
+// (pre-`NativeBrush`) `user-presets.txt` fixture loading with the expected
+// `native` values (and an interim build's `opacity` line dropped), and
+// `brushTipFor()` building `tip.flow`/`tip.grain` exactly from `native`
+// while `BrushState::opacity` stays out of it: picking a preset leaves a
+// lowered opacity alone and moving OPACITY does not raise EDITED. Headless
+// and GPU-free.
+bool runNativeBrushTest();
+
 // core/SelectionMask (PLAN.md "Phase 7 -- Select and paste"; PRD E1, E2, M1).
 // The antialiased coverage store, its constructors, and PRD M1's
 // coverage-weighted clear. Headless and GPU-free -- pure CPU tile arithmetic.
@@ -1995,7 +2009,7 @@ bool runBrushSettingsWindowTest();
 bool runBrushModelIoTest();
 
 // brush/BrushModelDiff: `brushModelDiff()`/`brushModelEqual()`, the two
-// functions that will let `presetMatches()` compare BrushModel's full ~151
+// functions that will let `presetMatches()` compare BrushModel's full ~149
 // leaves instead of the 14 scalars it checks today, and let a round-trip
 // test name which field did not survive instead of just that one didn't.
 // Both are built on ONE templated visitor (brush/BrushModelDiff.hpp's

@@ -465,8 +465,7 @@ bool runBrushDynamicsTest() {
     const BrushPreset round = presetFromBrush(lib.presets[1].name, brush);
     check(presetMatches(round, brush.model.tip.diameterPx / 2.0f, brush.model.tip.hardness,
                         brush.model.tip.spacingPercent / 100.0f, brush.model.tip.roundness,
-                        brush.model.tip.angleDeg, brush.load, brush.wetness, brush.links,
-                        brush.grain),
+                        brush.model.tip.angleDeg, brush.native, brush.links),
           "library: capturing a brush that was loaded from a preset reproduces that preset");
 
     // Picking a brush must not repaint in another colour or switch tools.

@@ -326,7 +326,7 @@ float grainCoverageAt(const GrainParams& params, float coverage, int32_t x, int3
 // not a tolerance -- `brush/Library.hpp`'s `presetMatches()` convention
 // (every field here arrives from a slider or from a preset load, so two that
 // should be equal are bit-equal already), and this is what that function's
-// own EDITED-badge comparison calls for `BrushPreset::grain`.
+// own EDITED-badge comparison calls for `BrushPreset::native.grain`.
 bool grainParamsEqual(const GrainParams& a, const GrainParams& b) noexcept;
 
 }  // namespace np

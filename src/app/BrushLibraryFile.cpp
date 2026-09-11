@@ -174,7 +174,7 @@ BrushRow brushRowFor(const BrushPreset& preset) {
   // conversion, not a bare `/ 100` (`app/StrokeSession::brushTipFor()`'s
   // `tip.spacing` comment names the same factor of two).
   r.spacing = preset.model.tip.spacingPercent / 100.0f * 2.0f;
-  r.load = preset.load;
+  r.load = preset.native.load;
   r.linkCount = static_cast<uint32_t>(preset.links.links.size());
   // `wetness` is deliberately absent: nothing in a one-dab preview depends on
   // it (app/DabPreview's own §5 -- the deposit simulates no wetness at all),

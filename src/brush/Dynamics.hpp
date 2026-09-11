@@ -115,12 +115,12 @@ const char* sourceDisplay(DynamicSource source, float normalised, char* out, siz
 // (size, angle, roundness, hardness, flow and spacing all read `brush.*`
 // directly) before the DYNAMICS matrix's own §2b closed the gap where angle
 // and roundness were computed but never reached a dab. Concentration is not a
-// seventh field -- it is a second Multiply column onto the SAME `brush.load`
+// seventh field -- it is a second Multiply column onto the SAME `brush.native.load`
 // Flow already reads, exactly as two size links compose in `--selftest`'s own
 // worked example. Scatter, Hue, Saturation and Value were genuinely new: none
 // had a place to land until `BrushTip::scatter` and the sRGB HSV shift in
 // `app/StrokeSession::brushTipFor()` gave them one. Wetness alone stays an
-// honest refusal (`targetUnbuildableReason()`): `BrushState::wetness` exists,
+// honest refusal (`targetUnbuildableReason()`): `BrushState::native.wetness` exists,
 // but no CPU deposit route has anywhere to put a water value -- a Pigment
 // texel's seven channels do not include one, and giving it one is the solver
 // readback bridge's job, not this matrix's.
@@ -132,11 +132,11 @@ enum class DynamicTarget {
   Flow,           // FL -- scales BrushTip::flow
   Scatter,        // SC -- per-dab positional jitter, in radii; additive
   Spacing,        // SP -- scales BrushTip::spacing
-  Concentration,  // CT -- scales BrushState::load ("pigment concentration")
+  Concentration,  // CT -- scales BrushState::native.load ("pigment concentration")
   Hue,            // HU -- hue rotation of the deposited colour; additive
   Saturation,     // SA -- scales saturation
   Value,          // VA -- scales value
-  Wetness,        // WT -- scales BrushState::wetness
+  Wetness,        // WT -- scales BrushState::native.wetness
 };
 
 inline constexpr size_t kDynamicTargetCount = 12;

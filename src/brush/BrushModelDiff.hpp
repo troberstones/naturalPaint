@@ -10,9 +10,9 @@ namespace np {
 // brush/BrushModelDiff -- the two questions `presetMatches()` and a
 // round-trip test both need answered against the FULL model, not the 14
 // scalars `presetMatches()` compares today: "are these the same brush" and,
-// when they are not, "which of its ~151 leaf fields say so."
+// when they are not, "which of its ~149 leaf fields say so."
 //
-// **Why ~151, not the ~117 the model's own header estimates.** That count
+// **Why ~149, not the ~117 the model's own header estimates.** That count
 // treats each of `Variance`'s five fields (`control`, `jitter`, `minimum`,
 // `fadeSteps`, `present`) as four, and it counts `PsTipShape` and `PsScatter`
 // once each even though `PsDualBrush` embeds a second copy of both (its own
@@ -70,7 +70,7 @@ std::vector<std::string> brushModelDiffPaths();
 // ---------------------------------------------------------------------------
 // The visitor this file is built on now lives in brush/BrushModelFields.hpp,
 // because brush/BrushModelIo needs the identical walk and two copies of a
-// 151-field list is three edits per new field with only a count assertion
+// 149-field list is three edits per new field with only a count assertion
 // standing behind the two a reviewer forgets. That header carries the full
 // reasoning; nothing about the functions above changed when it moved.
 

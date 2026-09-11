@@ -1112,7 +1112,7 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
 
   // **Unscaled HERE by anything Photoshop calls Transfer -- not because it
   // stays unscaled, but because this is not where the scaling happens.** The
-  // old code multiplied `brush.load` by two matrix columns (`Flow`,
+  // old code multiplied `brush.native.load` by two matrix columns (`Flow`,
   // `Concentration`); both are retired with the matrix. `PsTransfer::opacity`/
   // `.flow` (`opVr`/`prVr`) are now wired -- Part 2 of this phase -- but at
   // `StrokeSession::begin()`, not here: Opacity is a per-STROKE ceiling that
@@ -1121,7 +1121,7 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // rebuilding this very tip from a fresh call to this function every frame
   // -- neither of which this function, called from both `begin()` and
   // `setTip()` with no memory of which, can do on its own. See `begin()`'s
-  // own comment for the full argument. So this is `brush.load`/
+  // own comment for the full argument. So this is `brush.native.load`/
   // `brush.opacity` alone, same as it always was for a brush with no Flow/
   // Concentration link -- the base value Transfer's resolved multiplier
   // scales, not the resolved value itself.
@@ -1129,11 +1129,11 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // Scatter Count (`PsScatter::count`/`countJitter`) is wired too, in
   // `app/StrokeSession.cpp`'s `depositPending()` -- a per-DAB resolution, so
   // it belongs beside Size/Angle/Roundness/Scatter there rather than here.
-  tip.flow = brush.load;
+  tip.flow = brush.native.load;
   // Straight through, unscaled: there is no per-dab Grain dynamic in either
   // the matrix or the model.
   tip.opacity = brush.opacity;
-  tip.grain = brush.grain;
+  tip.grain = brush.native.grain;
 
   // --- the smudge's own block (brush/Smudge.hpp §3b) ----------------------
   //
@@ -1321,8 +1321,14 @@ void applyPresetToBrush(const BrushPreset& preset, BrushState& brush) {
   // comment); `brush.model = preset.model` below already carries all five,
   // in lockstep, exactly as `BrushPreset::model`'s own comment always said
   // it would once something read the model to paint.
-  brush.load = preset.load;
-  brush.wetness = preset.wetness;
+  //
+  // `brush.native = preset.native` is the identical lockstep copy for
+  // load/wetness/grain -- one assignment where this used to be three, now
+  // that `brush/NativeBrush.hpp`'s `NativeBrush` holds all three.
+  // `brush.opacity` is deliberately NOT touched: it is per-session
+  // options-bar state a preset does not carry (`NativeBrush`'s own header),
+  // so a painter's lowered opacity survives picking a preset.
+  brush.native = preset.native;
   brush.links = preset.links;
   brush.tipBitmap = preset.tipBitmap;
   // Carried with the bitmap, never separately: an id naming a tip the brush is
@@ -1332,7 +1338,6 @@ void applyPresetToBrush(const BrushPreset& preset, BrushState& brush) {
   brush.dualTip = preset.dualTip;
   brush.dualBlend = preset.dualBlend;
   brush.scatterBothAxes = preset.scatterBothAxes;
-  brush.grain = preset.grain;
   // Carried in lockstep with everything above, for the reason
   // `BrushState::model`'s own comment gives: this is the one direction that,
   // until now, had somewhere to write a model FROM (`BrushPreset::model`) but
@@ -1347,15 +1352,16 @@ BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
   p.name = std::move(name);
   // The mirror of `applyPresetToBrush()`'s own removed five-scalar copy --
   // `p.model = brush.model` below carries all five now.
-  p.load = brush.load;
-  p.wetness = brush.wetness;
+  //
+  // The mirror of `applyPresetToBrush()`'s own `native` copy too, for the
+  // identical reason.
+  p.native = brush.native;
   p.links = brush.links;
   p.tipBitmap = brush.tipBitmap;
   p.dabId = brush.dabId;
   p.dualTip = brush.dualTip;
   p.dualBlend = brush.dualBlend;
   p.scatterBothAxes = brush.scatterBothAxes;
-  p.grain = brush.grain;
   // The other half of the lockstep above. This is the direction that used to
   // not exist at all -- `BrushState` had no `model` field to read -- which is
   // the exact mechanism of the defect `BrushPreset::model`'s comment
@@ -1369,14 +1375,16 @@ BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
 bool brushIsEdited(const BrushState& brush) {
   if (brush.brushLibrary.active >= brush.brushLibrary.presets.size()) return false;
   const BrushPreset& p = brush.brushLibrary.presets[brush.brushLibrary.active];
-  // The five scalars `presetMatches()` still takes as parameters (its own
-  // signature is unchanged -- only where a caller reads them from moved) now
-  // come from `brush.model` rather than from five deleted `BrushState`
-  // fields.
+  // The five scalars `presetMatches()` still takes as parameters now come
+  // from `brush.model` rather than from five deleted `BrushState` fields.
+  // `native` replaces the three loose load/wetness/grain arguments this call
+  // used to pass (the one change to `presetMatches()`'s signature) -- one
+  // `nativeBrushEqual()` call inside `presetMatches()` instead of loose
+  // comparisons. `brush.opacity` is not compared, as it never was: a preset
+  // does not carry it (`NativeBrush`'s own header).
   return !presetMatches(p, brush.model.tip.diameterPx / 2.0f, brush.model.tip.hardness,
                         brush.model.tip.spacingPercent / 100.0f, brush.model.tip.roundness,
-                        brush.model.tip.angleDeg, brush.load, brush.wetness, brush.links,
-                        brush.grain);
+                        brush.model.tip.angleDeg, brush.native, brush.links);
 }
 
 bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& tip, Tool tool,

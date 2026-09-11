@@ -976,18 +976,18 @@ void applyToolToBrush(AppState& st) {
   switch (st.brush.tool) {
     case Tool::Water:
       st.sim.brushPigment = 0.0f;
-      st.sim.brushWater = st.brush.wetness * 1.4f;
+      st.sim.brushWater = st.brush.native.wetness * 1.4f;
       st.sim.brushHardness = 0.15f;
       break;
     case Tool::DryBrush:
-      st.sim.brushPigment = st.brush.load * 1.3f;
-      st.sim.brushWater = st.brush.wetness * 0.15f;
+      st.sim.brushPigment = st.brush.native.load * 1.3f;
+      st.sim.brushWater = st.brush.native.wetness * 0.15f;
       st.sim.brushHardness = 0.9f;
       break;
     case Tool::Brush:
     default:
-      st.sim.brushPigment = st.brush.load;
-      st.sim.brushWater = st.brush.wetness;
+      st.sim.brushPigment = st.brush.native.load;
+      st.sim.brushWater = st.brush.native.wetness;
       st.sim.brushHardness = st.brush.model.tip.hardness;
       break;
   }
@@ -5655,10 +5655,10 @@ void drawBrushTipShapeGroup(AppState& st, GpuContext& gpu, const MixboxLut& lut)
 void drawBrushPaintGroup(AppState& st) {
   // kBrushLoadMin/Max (app/AppState.hpp): the one range for this field, also
   // read by the options bar's LOAD slider.
-  ctlSlider("Load", &st.brush.load, kBrushLoadMin, kBrushLoadMax);
+  ctlSlider("Load", &st.brush.native.load, kBrushLoadMin, kBrushLoadMax);
 
   // **WET reaches sim::PaintSim's `brushWater` and nothing else.**
-  // `applyToolToBrush()` (:742) is the only reader of `st.brush.wetness`, and
+  // `applyToolToBrush()` (:742) is the only reader of `st.brush.native.wetness`, and
   // its only call site is the canvas block's `paintTool && ...` branch below,
   // which is reached exclusively when `strokeRouteFor()` answers
   // `StrokeRoute::PaintSim` -- the Water tool always, or Brush/DryBrush with
@@ -5678,7 +5678,7 @@ void drawBrushPaintGroup(AppState& st) {
     ImGui::BeginDisabled(!honoured);
     // kBrushWetnessMin/Max (app/AppState.hpp): the one range for this field,
     // also read by the options bar's WET slider.
-    ctlSlider("Water", &st.brush.wetness, kBrushWetnessMin, kBrushWetnessMax);
+    ctlSlider("Water", &st.brush.native.wetness, kBrushWetnessMin, kBrushWetnessMax);
     ImGui::EndDisabled();
     if (honoured)
       ImGui::TextDisabled("Water content the solver canvas mixes into this stroke.");
@@ -5864,8 +5864,8 @@ void drawBrushTextureGroup(AppState& st, bool ownPage) {
     const StrokeRoute route = strokeRouteFor(st.brush.tool, target);
     const bool honoured = grainReachesRoute(route);
     ImGui::BeginDisabled(!honoured);
-    ImGui::Checkbox("Enabled", &st.brush.grain.enabled);
-    ImGui::BeginDisabled(!st.brush.grain.enabled);
+    ImGui::Checkbox("Enabled", &st.brush.native.grain.enabled);
+    ImGui::BeginDisabled(!st.brush.native.grain.enabled);
     // One slider drives both `periodX` and `periodY` -- `GrainParams`'s own
     // comment on why the struct keeps them separate (the patent's NR/NC are
     // independent) while this, the only control surface that writes them,
@@ -5873,19 +5873,19 @@ void drawBrushTextureGroup(AppState& st, bool ownPage) {
     // thing but not a distinction this panel's first control needs to offer,
     // and one slider is one fewer number for a painter reaching for "make
     // the paper coarser" to reconcile.
-    int period = st.brush.grain.periodX;
+    int period = st.brush.native.grain.periodX;
     if (ctlSliderInt("Scale", &period, 4, 96)) {
-      st.brush.grain.periodX = period;
-      st.brush.grain.periodY = period;
+      st.brush.native.grain.periodX = period;
+      st.brush.native.grain.periodY = period;
     }
-    ctlSlider("Depth", &st.brush.grain.depth, 0.0f, 1.0f);
-    ctlSlider("Strength", &st.brush.grain.strength, 0.0f, 2.0f);
+    ctlSlider("Depth", &st.brush.native.grain.depth, 0.0f, 1.0f);
+    ctlSlider("Strength", &st.brush.native.grain.strength, 0.0f, 2.0f);
     ImGui::EndDisabled();
     ImGui::EndDisabled();
     if (!honoured)
       ImGui::TextDisabled("Grain reaches the layer routes; this stroke goes to %s.",
                           strokeRouteName(route));
-    else if (st.brush.grain.enabled)
+    else if (st.brush.native.grain.enabled)
       ImGui::TextDisabled("Deep valleys fill; peaks get skipped, at the same pressure.");
     else
       ImGui::TextDisabled("Off: every dab covers exactly what its falloff says, paper or not.");
@@ -5893,7 +5893,7 @@ void drawBrushTextureGroup(AppState& st, bool ownPage) {
 
   // --- BrushModel::texture -- Photoshop's imported Texture panel ----------
   //
-  // A DIFFERENT struct from PAPER GRAIN above (`st.brush.grain`): this is
+  // A DIFFERENT struct from PAPER GRAIN above (`st.brush.native.grain`): this is
   // `model.texture`, what a '.abr' file's own Texture panel carries --
   // pattern, scale, depth, blend mode, brightness/contrast. Not yet read at
   // paint time (`BrushModel.hpp`'s own comment: "imported by nothing until
@@ -5918,6 +5918,30 @@ void drawBrushTextureGroup(AppState& st, bool ownPage) {
     if (!enabled)
       ImGui::TextDisabled("Texture is off -- turn it on above to edit these.");
   }
+}
+
+// The NATURALPAINT group: a small seam at the top of the Dynamics tab's own
+// window page for naturalPaint's own brush parameters, beside the shelved
+// matrix this tab has always carried -- see `BrushSettingsTab::Dynamics`'s
+// own comment on why this is the tab that holds it. LOAD/WETNESS bind to
+// `st.brush.native` (brush/NativeBrush.hpp); OPACITY binds to the plain
+// `st.brush.opacity`, which is naturalPaint's own too but deliberately NOT in
+// `native` -- per-session options-bar state a preset does not carry
+// (NativeBrush.hpp's header). NOT drawn in the docked column:
+// `drawBrushSection()` calls `drawBrushDynamicsGroup()` below directly, and
+// `drawBrushPaintGroup()` already shows these same three controls, with their
+// full reasoning, there.
+void drawBrushNativeGroup(AppState& st) {
+  if (!ImGui::CollapsingHeader("NATURALPAINT", ImGuiTreeNodeFlags_DefaultOpen)) return;
+  ctlSlider("Load", &st.brush.native.load, kBrushLoadMin, kBrushLoadMax);
+  const OpenDocument* od = st.documents.active();
+  const Layer* target = od != nullptr ? activeLayerOf(*od) : nullptr;
+  const bool wetHonoured = wetnessReachesSolver(strokeRouteFor(st.brush.tool, target));
+  ImGui::BeginDisabled(!wetHonoured);
+  ctlSlider("Wetness", &st.brush.native.wetness, kBrushWetnessMin, kBrushWetnessMax);
+  ImGui::EndDisabled();
+  if (!wetHonoured) ImGui::TextDisabled("Reaches the wet canvas only.");
+  ctlSlider("Opacity", &st.brush.opacity, 0.0f, 1.0f);
 }
 
 // **The two draws below are gated behind `st.showAdvancedDynamics`.** The

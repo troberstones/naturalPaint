@@ -186,7 +186,7 @@ bool runBrushLibraryFileTest() {
     plain.model.tip.hardness = 0.42f;
     plain.model.tip.roundness = 0.55f;
     plain.model.tip.angleDeg = 21.0f;
-    plain.load = 1.1f;
+    plain.native.load = 1.1f;
     plain.links = BrushLinkSet{};
 
     const DabPreviewImage fromPreset =

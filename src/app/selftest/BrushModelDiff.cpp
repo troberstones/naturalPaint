@@ -14,7 +14,7 @@ namespace {
 
 // A "make this differ" step per leaf type, used by section C below to prove
 // every one of BrushModel's leaves is actually wired into the visitor,
-// without 151 hand-written assignments to do it. Overloaded rather than one
+// without 149 hand-written assignments to do it. Overloaded rather than one
 // function with a big switch, because that is what lets the mutable-visitor
 // call site below stay generic (`bumpValue(av, counter)` resolves by the
 // leaf's own type, whatever it is).
@@ -62,7 +62,7 @@ CoverageBlend bumpValue(CoverageBlend v, int counter) {
 // ---------------------------------------------------------------------------
 // brush/BrushModelDiff: brushModelDiff()/brushModelEqual(), built on ONE
 // templated visitor (brush/BrushModelDiff.hpp's detail::visitBrushModel)
-// walked over BrushModel's ~151 leaves rather than the 14 scalars
+// walked over BrushModel's ~149 leaves rather than the 14 scalars
 // presetMatches() checks today.
 //
 // Section B is the one that matters most and is the least automatable: it
@@ -175,13 +175,15 @@ bool runBrushModelDiffTest() {
   // ==========================================================================
   const auto paths = brushModelDiffPaths();
   {
-    // 151, not the model header's own "roughly 117": that estimate charges
+    // 149, not the model header's own "roughly 117": that estimate charges
     // Variance four leaves (it has five -- control, jitter, minimum,
     // fadeSteps, present) and counts PsTipShape and PsScatter once each even
     // though PsDualBrush embeds a second copy of both. This literal is the
     // real number, and it is what catches a field added to BrushModel with
     // no matching visitor line: the count moves and this line does not.
-    check(paths.size() == 151, "brushModelDiffPaths(): total leaf count pinned at 151");
+    // (151 before naturalPaint's own load/wetness left for
+    // brush/NativeBrush.hpp's NativeBrush.)
+    check(paths.size() == 149, "brushModelDiffPaths(): total leaf count pinned at 149");
 
     std::set<std::string> distinctPaths(paths.begin(), paths.end());
     check(distinctPaths.size() == paths.size(),
@@ -220,7 +222,7 @@ bool runBrushModelDiffTest() {
     }
 
     check(allReachable,
-          "diff/reachability: mutating leaf k alone (all 151, one at a time) names exactly "
+          "diff/reachability: mutating leaf k alone (all 149, one at a time) names exactly "
           "leaf k");
     if (!allReachable) {
       std::printf("    first mismatch at index %zu (%s)\n", firstBadIndex,
@@ -228,7 +230,7 @@ bool runBrushModelDiffTest() {
     }
     check(allEqualAgrees,
           "equal/reachability: brushModelEqual() agrees with brushModelDiff().empty() on "
-          "all 151 single-field mutations");
+          "all 149 single-field mutations");
   }
 
   // ==========================================================================

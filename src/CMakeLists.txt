@@ -297,6 +297,7 @@ add_executable(naturalPaint
   app/selftest/Tileable.cpp
   app/selftest/TipEdge.cpp
   app/selftest/BrushBlendMode.cpp
+  app/selftest/NativeBrush.cpp
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
   app/LayerThumbnail.cpp
@@ -330,6 +331,7 @@ add_executable(naturalPaint
   brush/Grain.cpp
   brush/Library.cpp
   brush/MaskPaint.cpp
+  brush/NativeBrush.cpp
   brush/PencilDeposit.cpp
   brush/PigmentErase.cpp
   brush/RgbDeposit.cpp

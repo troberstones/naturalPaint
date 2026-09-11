@@ -889,7 +889,7 @@ BrushModel brushModelFromDescriptor(
 // The Texture panel, into `GrainParams`.
 //
 // **This is the one place a `.abr`'s own paper reaches the deposit**, and it
-// goes through `BrushPreset::grain` rather than waiting for the model to be
+// goes through `BrushPreset::native.grain` rather than waiting for the model to be
 // consumed -- because `grain` already exists, is already persisted by
 // app/UserBrushLibraryStore, and is already sampled by all four deposit
 // routes. 84 of the 101 presets measured switch Texture on; before this every
@@ -1315,7 +1315,7 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
     const BrushModel& model = preset.model;
     if (model.texture.enabled) {
       std::string why;
-      if (grainFromTexture(model.texture, patternsById, preset.grain, why)) {
+      if (grainFromTexture(model.texture, patternsById, preset.native.grain, why)) {
         ++result.texturesApplied;
       } else {
         ++result.texturesNotApplied;

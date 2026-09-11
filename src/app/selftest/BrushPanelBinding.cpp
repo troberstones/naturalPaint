@@ -13,7 +13,7 @@ namespace np {
 // to add.
 //
 // Before this file, a `BrushModel` leaf (brush/BrushModelFields.hpp's own
-// 151, walked by `visitBrushModelFields()`) could go from "the importer
+// 149, walked by `visitBrushModelFields()`) could go from "the importer
 // fills it in" to "no control anywhere ever draws it" with no warning at
 // all -- `BrushModelFields.hpp`'s own header names this as the third thing
 // its one visitor was always going to need to support, and this is that

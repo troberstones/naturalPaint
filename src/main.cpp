@@ -3127,10 +3127,10 @@ int main(int argc, char** argv) {
     // settings, each carrying its own id.
     const bool brushSettingsWindowOk = np::runBrushSettingsWindowTest();
     // brush/BrushModelIo: the text form of a BrushModel -- one templated
-    // visitor over all 151 leaves rather than 151 hand-written branches, in
+    // visitor over all 149 leaves rather than 149 hand-written branches, in
     // both directions. Headless and GPU-free.
     const bool brushModelIoOk = np::runBrushModelIoTest();
-    // brush/BrushModelDiff: the diff/equal pair over the same 151 leaves,
+    // brush/BrushModelDiff: the diff/equal pair over the same 149 leaves,
     // which presetMatches() and the round-trip proof both need. Headless.
     const bool brushModelDiffOk = np::runBrushModelDiffTest();
     // ui/BrushFieldPresentation: every BrushModel leaf is in exactly one of
@@ -3897,6 +3897,13 @@ int main(int argc, char** argv) {
     // the procedural falloff, and `BrushTipBitmap::mips`' box-filter chain
     // for a minified sampled tip. Headless and GPU-free.
     const bool tipEdgeOk = np::runTipEdgeTest();
+    // brush/NativeBrush: naturalPaint's own brush section (load, wetness,
+    // grain), beside BrushModel. nativeBrushEqual()'s
+    // discrimination, BrushModel's leaf count dropping to 149,
+    // applyPresetToBrush()/presetFromBrush()'s round trip, a legacy
+    // user-presets.txt fixture, and brushTipFor()'s exact reads. Headless and
+    // GPU-free.
+    const bool nativeBrushOk = np::runNativeBrushTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -3965,7 +3972,7 @@ int main(int argc, char** argv) {
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
                     penToolOk && pathOpsOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && tipEdgeOk &&
-                    brushBlendModeOk;
+                    brushBlendModeOk && nativeBrushOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
