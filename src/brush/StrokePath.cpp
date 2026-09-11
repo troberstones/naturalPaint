@@ -103,8 +103,12 @@ Vec2 evalCentripetalCatmullRom(Vec2 P0, Vec2 P1, Vec2 P2, Vec2 P3, float u) {
 // the pen that wobbles slightly during a click. That would have made a
 // deliberate short drag under the slop distance emit a dab it does not emit
 // today, i.e. it would have changed moving strokes, which is exactly what this
-// change is not allowed to do. The wobbly-pen click therefore still deposits
-// nothing; that gap is real and is left open on purpose.
+// change is not allowed to do. **A short drag or wobbly click that crosses
+// this threshold is not left depositing nothing, though**: the origin dab
+// (`addPoint()`'s own comment) fires the instant `movedPx_` passes it, so any
+// real movement, however small, now lays at least that one dab; only a
+// stroke whose samples never cross this threshold at all still reaches
+// flush()'s click branch and its own single dab.
 constexpr float kStationaryPx = 1e-3f;
 
 }  // namespace
@@ -181,8 +185,8 @@ void StrokePath::addPoint(const StrokeSample& sample, float spacingPx,
   // because flush() needs the answer for the stroke as a WHOLE, and pts_ only
   // remembers the last four samples.
   if (numPts_ > 0) movedPx_ += distanceOf(pts_[numPts_ - 1].pos, sample.pos);
-  // Wave 2: a moving stroke's first dab is its own (stabilised) origin, not
-  // one spacing along the curve. Emitted the moment `movedPx_` proves this is
+  // A moving stroke's first dab is its own (stabilised) origin, not one
+  // spacing along the curve. Emitted the moment `movedPx_` proves this is
   // not the stationary-click case flush() handles below, so exactly one of
   // the two ever fires for a given stroke.
   if (haveOrigin_ && !originEmitted_ && movedPx_ > kStationaryPx) {

@@ -1,5 +1,7 @@
 #include "app/selftest/Support.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <vector>
 
 #include "app/DocumentLifecycle.hpp"
@@ -131,6 +133,125 @@ bool runBrushTaperTest() {
           "entry taper with taperFlow on: the origin dab's RADIUS taper is unaffected -- radius "
           "and flow share one multiplier, computed once");
     session.end();
+  }
+
+  // ==========================================================================
+  // Fix 2: a stationary click is never tapered. `distanceTravelled_ == 0` at
+  // the click dab for the identical reason it is 0 at a moving stroke's own
+  // origin dab -- neither has a previous dab to measure arc length from --
+  // but a click is not partway along a ramp toward full size; a pointed
+  // taper (taperMinSize 0) would otherwise zero its radius and paint
+  // nothing.
+  // ==========================================================================
+  {
+    for (const float taperIn : {0.0f, 60.0f}) {
+      BrushState brush;
+      brush.model.tip.diameterPx = 40.0f;
+      brush.native.taperInPx = taperIn;
+      brush.native.taperMinSize = 0.0f;  // pointed
+      MixboxLut noLut;
+      OpenDocument d = makeBlankOpenDocument(256, 256, WorkingSpace{}, "C");
+      applyLayerCommand(d, LayerCommand::NewRgbLayer, d.activeLayer);
+      setActiveLayer(d, 1);
+      StrokeSession s;
+      std::string err;
+      check(s.begin(d, d.activeLayer, brushTipFor(brush, noLut, 1.0f), Tool::Brush, &err, nullptr,
+                    DynamicInputs{}, nullptr, StabiliserParams{}, 1.0f, &brush.native),
+            "fix 2 setup: stroke begins");
+      s.addPoint(100.0f, 100.0f);
+      s.addPoint(100.0f, 100.0f);  // no real movement: still a click
+      s.end();
+      std::printf("  [measured] fix 2 click, taperInPx %g min 0: dabs %zu, texels %zu\n", taperIn,
+                 s.dabCount(), s.texelsWritten());
+      check(s.dabCount() == 1, "fix 2: a click still emits exactly one dab, taper or not");
+      check(s.texelsWritten() > 0,
+            "fix 2: a click with a pointed entry taper (taperMinSize 0) still paints");
+    }
+  }
+
+  // ==========================================================================
+  // Fix 3: "beaded" taper. `tip_.spacingPx() * max(taperMul, 0.05)`, taperMul
+  // at the CURRENT arc length, is what `StrokeSession` now passes to
+  // `path_.addPoint()` (`taperedSpacingPx()`'s own comment) -- reproduced
+  // here at the pure-module level (`StrokePath` + `entryTaperMultiplier()`
+  // directly, no document) so the exact formula can be checked against dab
+  // POSITIONS, which `StrokeSession` does not expose. r=20, spacing 25%
+  // (spacingPx 5), taperInPx 60, min 0: every consecutive dab pair must
+  // overlap (centre gap <= sum of radii) rather than leave a string of
+  // separated beads.
+  // ==========================================================================
+  {
+    const float radius = 20.0f;
+    const float baseSpacingPx = 5.0f;  // 25% of r=20
+    const float taperInPx = 60.0f;
+    const float taperMinPct = 0.0f;
+
+    StrokePath path;
+    path.reset();
+    std::vector<StrokeDab> dabs;
+    std::vector<float> radii;
+    float distanceTravelled = 0.0f;  // mirrors StrokeSession::distanceTravelled_
+    bool havePrevDab = false;
+    float prevDabX = 0.0f;
+    size_t processed = 0;
+    const auto absorbNewDabs = [&]() {
+      // Mirrors depositPending()'s per-dab loop: distanceTravelled_
+      // accumulates dab-to-dab BEFORE this dab's own taper multiplier (and
+      // so its radius) is computed from it.
+      for (; processed < dabs.size(); ++processed) {
+        const float stepDist = havePrevDab ? std::fabs(dabs[processed].pos.x - prevDabX) : 0.0f;
+        distanceTravelled += stepDist;
+        radii.push_back(radius * entryTaperMultiplier(distanceTravelled, taperInPx, taperMinPct));
+        prevDabX = dabs[processed].pos.x;
+        havePrevDab = true;
+      }
+    };
+    for (int i = 0; i <= 90; ++i) {
+      // Mirrors `taperedSpacingPx()`: the spacing for THIS call is scaled by
+      // the taper multiplier at distanceTravelled_ as of the END of the
+      // PREVIOUS call -- the arc length StrokeSession currently knows.
+      const float spacingPx =
+          baseSpacingPx *
+          std::max(entryTaperMultiplier(distanceTravelled, taperInPx, taperMinPct), 0.05f);
+      path.addPoint(StrokeSample{Vec2{static_cast<float>(i), 0.0f}}, spacingPx, dabs);
+      absorbNewDabs();
+    }
+    const float finalSpacingPx =
+        baseSpacingPx *
+        std::max(entryTaperMultiplier(distanceTravelled, taperInPx, taperMinPct), 0.05f);
+    path.flush(finalSpacingPx, dabs);
+    absorbNewDabs();
+
+    // The very first ~11 pairs (measured), all inside the first ~2.75 px of
+    // travel, are disjoint by the strict inequality and always will be for
+    // ANY spacing floor: `taperMinSize 0` makes the origin dab a literal
+    // r=0 point (WAVE2-BRIEF.md's own "0 is a point"), and smoothstep's
+    // derivative is 0 at the origin, so radius grows quadratically from
+    // true zero while the floored spacing is already a non-zero constant
+    // (0.05 * spacingPx). No fixed spacing floor closes a gap against a
+    // radius that starts at exactly 0 -- these dabs are sub-0.13 px, far
+    // below anything a texel or antialiasing can show, i.e. invisible, not
+    // a visible "bead". `sumRadii >= kVisibleRadiusPx` is the cutoff for
+    // "large enough to see a gap between at all"; every pair past it must
+    // overlap.
+    constexpr float kVisibleRadiusPx = 0.5f;
+    int disjointPairs = 0;
+    int comparedPairs = 0;
+    for (size_t i = 1; i < dabs.size(); ++i) {
+      const float sumRadii = radii[i] + radii[i - 1];
+      if (sumRadii < kVisibleRadiusPx) continue;
+      ++comparedPairs;
+      const float gap = std::fabs(dabs[i].pos.x - dabs[i - 1].pos.x);
+      if (gap > sumRadii) ++disjointPairs;
+    }
+    std::printf("  [measured] fix 3 beaded taper: %zu dabs, %d disjoint (gap > sum of radii) "
+               "pair(s) of %d compared (sum of radii >= %.1f px)\n",
+               dabs.size(), disjointPairs, comparedPairs, kVisibleRadiusPx);
+    check(dabs.size() > 10, "fix 3 setup: enough dabs over the taper region to check pairs");
+    check(comparedPairs > 10, "fix 3 setup: enough VISIBLE-radius pairs to check");
+    check(disjointPairs == 0,
+          "fix 3: beaded taper -- every consecutive dab pair with a visible radius overlaps "
+          "(gap <= sum of radii)");
   }
 
   // ==========================================================================

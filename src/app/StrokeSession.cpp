@@ -1326,8 +1326,8 @@ DynamicInputs dynamicInputsFor(const AppState& st) noexcept {
 StrokeSample strokeSampleFromPointer(const PointerSample& sample, Vec2 canvasPos) noexcept {
   StrokeSample out;
   out.pos = canvasPos;
-  // Wave 2: `brush/Stabiliser`'s weighted-average mode is the one reader --
-  // see `app/PointerQueue.hpp` section 2's updated header.
+  // `brush/Stabiliser`'s weighted-average mode is the one reader -- see
+  // `app/PointerQueue.hpp` section 2's own header.
   out.timestamp = sample.timestamp;
   // A mouse sample carries no axes to convert -- `StrokeSample`'s own
   // defaults (brush/StrokePath.hpp) already ARE a mouse's neutral reading,
@@ -1775,8 +1775,8 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // before must not bleed into this one -- brush/StrokePath::reset()'s own
   // contract, and the same call ui/MacPaintUI already makes at pen-down.
   path_.reset();
-  // Wave 2: the resolved stabiliser and entry taper, latched with everything
-  // else at `begin()` -- see this method's own header comment on `stabiliser`/
+  // The resolved stabiliser and entry taper, latched with everything else at
+  // `begin()` -- see this method's own header comment on `stabiliser`/
   // `viewZoom`/`native`.
   stabiliserParams_ = stabiliser;
   stabiliser_.begin(stabiliser, viewZoom);
@@ -1857,9 +1857,16 @@ float StrokeSession::smoothPressureByDistance(float rawPressure, float distanceP
   return smoothedPressure_;
 }
 
-void StrokeSession::depositPending() {
+float StrokeSession::taperedSpacingPx() const noexcept {
+  const float taperMul =
+      std::max(entryTaperMultiplier(distanceTravelled_, taperInPx_, taperMinSize_), 0.05f);
+  return tip_.spacingPx() * taperMul;
+}
+
+void StrokeSession::depositPending(bool isEndFlush) {
   frameTiles_.clear();
   if (pending_.empty()) return;
+  const bool isClickDab = isEndFlush && !havePrevDab_;
 
   Document& doc = doc_->document;
   // The target is re-validated on **every** frame, not just at pen-down: the
@@ -2104,11 +2111,19 @@ void StrokeSession::depositPending() {
           std::clamp(static_cast<int32_t>(std::lround(baseCount_ * countMul)), 1, 16);
     }
 
-    // Wave 2 entry taper: `distanceTravelled_` (just above) is this dab's own
-    // arc length from the stroke's origin. `entryTaperMultiplier()` returns
-    // 1.0f unmodified whenever `taperInPx_ <= 0` (off, the default), which is
+    // Entry taper: `distanceTravelled_` (just above) is this dab's own arc
+    // length from the stroke's origin. `entryTaperMultiplier()` returns 1.0f
+    // unmodified whenever `taperInPx_ <= 0` (off, the default), which is
     // what keeps a non-tapering brush bit-identical.
-    const float taperMul = entryTaperMultiplier(distanceTravelled_, taperInPx_, taperMinSize_);
+    //
+    // **The stationary-click dab is never tapered.** It has `distanceTravelled_
+    // == 0` for the identical reason a moving stroke's own origin dab does --
+    // neither has a previous dab to measure arc length from -- but a click is
+    // not partway along a ramp toward full size, it IS the whole gesture, and
+    // taperMinSize 0 (a point) would otherwise paint it at radius 0, i.e. not
+    // at all.
+    const float taperMul =
+        isClickDab ? 1.0f : entryTaperMultiplier(distanceTravelled_, taperInPx_, taperMinSize_);
     dabTip.radius *= taperMul;
     if (taperFlow_) dabTip.flow *= taperMul;
 
@@ -2258,13 +2273,13 @@ const std::vector<TileCoord>& StrokeSession::addSample(const StrokeSample& sampl
   frameTiles_.clear();
   if (doc_ == nullptr) return frameTiles_;
 
-  // Wave 2: the stabiliser sits here, between the raw sample and the path it
-  // walks. Off mode is an exact passthrough (`Stabiliser::addSample()`'s own
+  // The stabiliser sits here, between the raw sample and the path it walks.
+  // Off mode is an exact passthrough (`Stabiliser::addSample()`'s own
   // comment), so this is bit-identical to feeding `sample` straight to
-  // `path_` whenever the resolved setting is Off -- assertion 10's own claim.
+  // `path_` whenever the resolved setting is Off.
   StrokeSample smoothed;
   stabiliser_.addSample(sample, smoothed);
-  path_.addPoint(smoothed, tip_.spacingPx(), pending_);
+  path_.addPoint(smoothed, taperedSpacingPx(), pending_);
   depositPending();
 
   // Live feedback, header §3: the revision is what invalidates
@@ -2279,7 +2294,7 @@ const std::vector<TileCoord>& StrokeSession::tick(uint64_t nowNs) {
   if (doc_ == nullptr) return frameTiles_;
   StrokeSample smoothed;
   if (!stabiliser_.tick(nowNs, smoothed)) return frameTiles_;
-  path_.addPoint(smoothed, tip_.spacingPx(), pending_);
+  path_.addPoint(smoothed, taperedSpacingPx(), pending_);
   depositPending();
   if (!frameTiles_.empty()) ++doc_->revision;
   return frameTiles_;
@@ -2288,18 +2303,18 @@ const std::vector<TileCoord>& StrokeSession::tick(uint64_t nowNs) {
 const std::vector<TileCoord>& StrokeSession::end() {
   if (doc_ == nullptr) return strokeTiles_;
 
-  // Wave 2 "catch up at end": one last sample, snapped straight to the last
-  // raw position, so the final dab reaches the lift point even though the
-  // nib itself may still be lagging behind it. Off mode never lags in the
-  // first place (`stabiliser_.forceCatchUp()` would just repeat the last
-  // sample, and this call is skipped for it) -- assertion 10 again.
+  // "Catch up at end": one last sample, snapped straight to the last raw
+  // position, so the final dab lands within one spacing of the lift point
+  // even though the nib itself may still be lagging behind it. Off mode
+  // never lags in the first place (`stabiliser_.forceCatchUp()` would just
+  // repeat the last sample, and this call is skipped for it).
   if (stabiliserParams_.mode != StabiliserMode::Off && stabiliserParams_.catchUpAtEnd) {
     StrokeSample snapped;
-    if (stabiliser_.forceCatchUp(snapped)) path_.addPoint(snapped, tip_.spacingPx(), pending_);
+    if (stabiliser_.forceCatchUp(snapped)) path_.addPoint(snapped, taperedSpacingPx(), pending_);
   }
 
   path_.flush(tip_.spacingPx(), pending_);
-  depositPending();
+  depositPending(/*isEndFlush=*/true);
 
   OpenDocument* doc = doc_;
   doc_ = nullptr;  // the session is over before the record, so a re-entrant

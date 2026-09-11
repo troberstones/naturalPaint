@@ -37,11 +37,11 @@ struct StrokeSample {
   float tilt = 0.0f;
   float azimuth = 0.0f;
   float barrel = 0.5f;
-  // Wave 2: `app/PointerQueue`'s event timestamp, carried through
+  // `app/PointerQueue`'s event timestamp, carried through
   // `strokeSampleFromPointer()` for `brush/Stabiliser`'s speed-adaptive
   // filter -- the one place a timestamp shapes the path (`PointerQueue.hpp`
   // section 2's own note). Nothing else downstream of the stabiliser reads
-  // it; a caller with no real clock (every selftest that predates this) may
+  // it; a caller with no real clock (every selftest that predates it) may
   // leave it 0.
   uint64_t timestamp = 0;
 };
@@ -136,10 +136,10 @@ class StrokePath {
   // even sample-to-sample (e.g. pressure-modulated radius) without needing
   // to be fixed for a whole stroke.
   //
-  // **Wave 2: a moving stroke's own first sample is also its own first dab.**
+  // **A moving stroke's own first sample is also its own first dab.**
   // Emitted once, the moment the stroke's total travel proves it is not
-  // going to be the stationary click flush() handles below -- so a drag no
-  // longer starts one full `spacingPx` short of where the pointer went down.
+  // going to be the stationary click flush() handles below -- so a drag does
+  // not start one full `spacingPx` short of where the pointer went down.
   void addPoint(const StrokeSample& sample, float spacingPx, std::vector<StrokeDab>& out);
 
   // Call once at stroke end (pen/mouse up), before the next reset(). The
@@ -174,10 +174,14 @@ class StrokePath {
   // `StrokeSample`/`StrokeDab` (neutral axes) and copies only `.pos` back
   // out, so the geometry these run through -- the curve fit, the arc-length
   // walk, `leftover_`, `movedPx_` -- is the IDENTICAL code the axis-carrying
-  // overloads call, not a second implementation. Dab positions for a given
-  // sample sequence are therefore bit-identical to what this class produced
-  // before this axis-carrying form existed; `app/selftest/StrokePath.cpp`
-  // (`runStrokePathTest()`) is the existing guard and it is unchanged.
+  // overloads call, not a second implementation: a caller through this form
+  // gets bit-identical dab POSITIONS to a caller through the axis-carrying
+  // one fed the same samples, for the reason above, not a separately
+  // maintained one. That is a narrower claim than "unchanged from before
+  // this file existed" -- the origin-dab fix changes what a MOVING stroke's
+  // dab stream looks like through either form equally, and
+  // `app/selftest/StrokePath.cpp`'s `runStrokePathTest()` was updated for
+  // exactly that (its own header comment says which numbers moved and why).
   void addPoint(float x, float y, float spacingPx, std::vector<Vec2>& out);
   void flush(float spacingPx, std::vector<Vec2>& out);
 
@@ -187,7 +191,7 @@ class StrokePath {
 
   StrokeSample pts_[4];
   int numPts_ = 0;
-  // Wave 2 origin dab (see addPoint()/flush() in the .cpp): the stroke's own
+  // The origin dab (see addPoint()/flush() in the .cpp): the stroke's own
   // first sample, and whether it has been emitted yet. Held separately from
   // `pts_[0]` because that slot shifts out once four samples have arrived.
   StrokeSample origin_;

@@ -161,8 +161,15 @@ StrokePreviewImage rasteriseStrokePreview(const BrushState& brush, const MixboxL
   StrokeSession stroke;
   std::string refusal;
   DynamicInputs beginInputs;
+  // `&previewBrush.native`: entry taper is a CPU-route feature and this
+  // preview IS the CPU route, so the taper the painter set is what should
+  // draw here. Stabiliser is the global/per-brush default (`StabiliserParams{}`,
+  // `viewZoom` 1.0) -- a preview has no view to scale against and no separate
+  // "global" of its own to resolve.
   if (!stroke.begin(od, od.document.layers.size() - 1, brushTipFor(previewBrush, lut, beginInputs),
-                    previewBrush.tool, &refusal, &previewBrush.model, beginInputs)) {
+                    previewBrush.tool, &refusal, &previewBrush.model, beginInputs,
+                    /*clone=*/nullptr, /*stabiliser=*/StabiliserParams{}, /*viewZoom=*/1.0f,
+                    &previewBrush.native)) {
     // Not swallowed and not rendered as an empty box: the panel prints this.
     img.refused = true;
     img.refusal = refusal;

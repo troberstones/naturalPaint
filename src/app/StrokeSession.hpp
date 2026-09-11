@@ -1714,9 +1714,9 @@ class StrokeSession {
   // paint, and say so. Borrowed for the duration of `begin()` only: the offset
   // is copied into `brush/CloneStamp`'s own stroke object, so nothing here
   // holds a pointer into `AppState` past this call.
-  // `stabiliser`/`viewZoom`/`native`, Wave 2, all defaulted so no existing
-  // caller changes: `stabiliser` is the RESOLVED effective setting
-  // (`resolveStabiliser()`, app/StrokeSession.cpp's own canvas-block caller
+  // `stabiliser`/`viewZoom`/`native` all defaulted so no existing caller
+  // changes: `stabiliser` is the RESOLVED effective setting
+  // (`resolveStabiliser()`, `ui/MacPaintUI.cpp`'s own canvas-block caller
   // resolves it before calling this, from the global and the brush's own
   // choice -- this class does not read `NativeBrush::stabiliser` itself).
   // `viewZoom` is `stabiliser.scaleWithZoom`'s own unit conversion. `native`
@@ -1943,7 +1943,10 @@ class StrokeSession {
   // this sample's own.
   const std::vector<TileCoord>& addSample(const StrokeSample& sample);
 
-  // Wave 2: once per frame, no new sample, from the canvas block. A no-op
+  // Once per frame, and ONLY on a frame that fed no new sample through
+  // `addSample()` -- calling it on a frame that already did is not "no new
+  // sample this frame" by any reading, and corrupts the NEXT real sample's
+  // own dt (`brush/Stabiliser.cpp`'s `prevRealTsNs_` comment). A no-op
   // (empty return, no deposit) unless the resolved stabiliser is weighted
   // average with "catch up while paused" on -- `brush/Stabiliser::tick()`'s
   // own gate. Otherwise identical contract to `addSample()`: the frame's own
@@ -1988,14 +1991,29 @@ class StrokeSession {
   // ever been deposited by this session.
   float lastDabRadius() const noexcept { return lastDabRadius_; }
 
-  // Wave 2: the "show string" overlay's own read of the resolved setting and
-  // the live nib -- `ui/StabiliserPanel.cpp` draws from this, not from
+  // The "show string" overlay's own read of the resolved setting and the
+  // live nib -- `ui/StabiliserPanel.cpp` draws from this, not from
   // `NativeBrush`/the global prefs directly, so what it draws is what this
   // stroke is actually doing.
   const Stabiliser& stabiliser() const noexcept { return stabiliser_; }
 
  private:
-  void depositPending();
+  // `isEndFlush`: this call is depositing what `path_.flush()` just emitted
+  // at `end()`, as opposed to `addPoint()`'s own per-sample deposit. The one
+  // dab a stationary click emits reaches `depositPending()` this way, and
+  // ONLY this way (`brush/StrokePath.cpp`'s own comment on why a moving
+  // stroke's origin dab can never still be unprocessed by the time `end()`
+  // runs) -- which is what lets the per-dab loop tell "the click" from "a
+  // moving stroke's own first dab" apart and skip entry taper for the former
+  // (a click has no arc length to be partway along a ramp with).
+  void depositPending(bool isEndFlush = false);
+
+  // `tip_.spacingPx()` scaled down by the entry taper's current multiplier
+  // (floored so spacing can never collapse to zero), so tapered dabs pack
+  // closer together instead of leaving gaps between shrunken dabs ("beaded"
+  // taper) -- `entryTaperMultiplier()` is exactly 1.0f whenever taper is
+  // off, so this is bit-identical to `tip_.spacingPx()` then.
+  float taperedSpacingPx() const noexcept;
 
   OpenDocument* doc_ = nullptr;
   size_t layerIndex_ = 0;
@@ -2140,15 +2158,15 @@ class StrokeSession {
   LayerEditTarget editTarget_ = LayerEditTarget::Content;
 
   StrokePath path_;
-  // Wave 2: the resolved effective setting `begin()` was called with (not
+  // The resolved effective setting `begin()` was called with (not
   // `NativeBrush::stabiliser` or the global prefs -- those were already
   // folded into this by `resolveStabiliser()` before `begin()` saw them),
   // and the filter itself. `stabiliserParams_` is read again at `end()` to
   // decide whether "catch up at end" applies.
   StabiliserParams stabiliserParams_;
   Stabiliser stabiliser_;
-  // Wave 2: entry taper, copied out of `NativeBrush` at `begin()` rather
-  // than kept as a pointer -- `begin()`'s own comment on why `model`'s
+  // Entry taper, copied out of `NativeBrush` at `begin()` rather than kept
+  // as a pointer -- `begin()`'s own comment on why `model`'s
   // fields are copied out applies here too.
   float taperInPx_ = 0.0f;
   float taperMinSize_ = 0.0f;

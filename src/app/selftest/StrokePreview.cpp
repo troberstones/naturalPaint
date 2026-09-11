@@ -399,6 +399,30 @@ bool runStrokePreviewTest() {
           "something true instead of showing a blank strip that reads as a broken preview");
   }
 
+  // ======================================================================
+  // Fix 10: entry taper reaches the preview strip. It used to be invisible
+  // there -- `rasteriseStrokePreview()`'s own `stroke.begin()` call left
+  // `native` at its default `nullptr`, so `StrokeSession` never saw
+  // `NativeBrush::taperInPx` and every stroke it painted, tapered brush or
+  // not, was the untapered one.
+  // ======================================================================
+  {
+    BrushState tapered = base;
+    tapered.model.tip.diameterPx = 40.0f;
+    tapered.native.taperInPx = 200.0f;   // most of the strip's own length
+    tapered.native.taperMinSize = 0.0f;  // pointed, so the change is stark
+    BrushState untapered = tapered;
+    untapered.native.taperInPx = 0.0f;
+
+    const StrokePreviewImage withTaper = rasteriseStrokePreview(tapered, lut);
+    const StrokePreviewImage withoutTaper = rasteriseStrokePreview(untapered, lut);
+    std::printf("  [measured] fix 10 taper vs no taper: %zu differing byte(s) of %zu\n",
+               differingBytes(withTaper, withoutTaper), withTaper.rgba.size());
+    check(differingBytes(withTaper, withoutTaper) > 0,
+          "fix 10: entry taper changes the preview strip -- a single dab cannot express a "
+          "changing radius along the stroke, so this rules out every route but the real one");
+  }
+
   std::printf("[selftest] stroke preview %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

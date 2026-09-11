@@ -17,7 +17,7 @@ namespace np {
 // equivalent at all. Before this struct existed they sat as three loose
 // scalars/structs directly on `BrushPreset` and `BrushState` -- correct, but
 // with no shared name and no single place a fourth naturalPaint-only field
-// (stabiliser, taper, paper depth -- Wave 2) could join without repeating the
+// (stabiliser, taper, paper depth) could join without repeating the
 // same three-line dance on both owners again. This struct is that place.
 //
 // **What may live here:** anything naturalPaint invented that a `.abr` file
@@ -72,12 +72,12 @@ struct NativeBrush {
   // unscaled by any DYNAMICS target, the same as `BrushState::opacity`.
   GrainParams grain;
 
-  // Wave 2: this brush's own stabiliser choice (brush/Stabiliser.hpp),
-  // resolved against the global setting by `resolveStabiliser()`.
+  // This brush's own stabiliser choice (brush/Stabiliser.hpp), resolved
+  // against the global setting by `resolveStabiliser()`.
   BrushStabiliserSetting stabiliser;
 
-  // Wave 2: entry taper. `taperInPx` is the arc length over which radius (and
-  // flow, if `taperFlow`) ramps up from the stroke's origin; 0 is off.
+  // Entry taper. `taperInPx` is the arc length over which radius (and flow,
+  // if `taperFlow`) ramps up from the stroke's origin; 0 is off.
   // `taperMinSize` is the fraction (0-100%) of full size the very first dab
   // starts at -- 0 is a point. Applied per dab in
   // `StrokeSession::depositPending()`; exit taper is a later wave.
@@ -86,11 +86,13 @@ struct NativeBrush {
   bool taperFlow = false;
 };
 
-// Bit equality on `load`/`wetness`, `grainParamsEqual()` on `grain` -- the
-// same "no tolerance, every value arrives from a slider or a preset"
-// convention `brush/Library.hpp`'s `presetMatches()` states for itself,
-// extended to this struct now that it holds what that function used to
-// compare as three loose arguments.
+// Bit equality on `load`/`wetness`, `grainParamsEqual()` on `grain`,
+// `stabiliser`'s own field-by-field comparison (and `own`'s five, but only
+// when `mode == Own` -- the other fields are never read then) and
+// `taperInPx`/`taperMinSize`/`taperFlow` -- the same "no tolerance, every
+// value arrives from a slider or a preset" convention `brush/Library.hpp`'s
+// `presetMatches()` states for itself, extended to this struct now that it
+// holds what that function used to compare as three loose arguments.
 bool nativeBrushEqual(const NativeBrush& a, const NativeBrush& b) noexcept;
 
 }  // namespace np
