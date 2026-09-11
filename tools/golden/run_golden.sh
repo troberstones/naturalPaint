@@ -1834,6 +1834,7 @@ run_view_launch() {
       NP_EXPORT_PRESETS="$jdir/export-presets.json" \
       NP_ACTION_DIR="$jdir/actions-root" \
       NP_GRADIENT_DIR="$jdir/gradients-root" \
+      NP_STROKE_PREFERENCES="$jdir/stroke-preferences.txt" \
       "$BIN" ${view_args[$idx]} --screenshot "$fullPng" "${view_frames[$idx]}" \
       > "$jdir/stdout.log" 2> "$jdir/stderr.log"; then
     echo "run_golden.sh: $name: naturalPaint exited nonzero -- see $jdir/stderr.log" >&2

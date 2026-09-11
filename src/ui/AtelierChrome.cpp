@@ -28,6 +28,7 @@
 #include "ui/AtelierTheme.hpp"
 #include "ui/Fonts.hpp"
 #include "ui/MacPaintUI.hpp"
+#include "ui/StabiliserPanel.hpp"
 
 #include "imgui.h"
 
@@ -2380,6 +2381,9 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
       ImGui::EndDisabled();
     }
     popAtelierMono();
+
+    bandSeparator();
+    drawStabiliserPopover(st);
   }
 
   // --- the smudge's own controls -------------------------------------------
