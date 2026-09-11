@@ -9,6 +9,7 @@
 #include "app/StrokeSession.hpp"
 #include "io/GradientPresetFile.hpp"
 #include "ops/Gradient.hpp"
+#include "ui/MacPaintUI.hpp"  // currentGradientStops() -- § 12 calls the real wrapper, not a copy
 
 namespace np {
 
@@ -701,29 +702,31 @@ bool runGradientToolTest() {
           "gradient/default: gradientToolStops() with no custom argument is the untouched "
           "default, unaffected by an in-scope poisoned GradientPresetStops it was never handed");
 
-    // A `GradientToolState` with `hasCustomStops == false` and `customStops`
-    // itself set to poison -- `currentGradientStops()`'s exact input shape
-    // when a user has never opened the editor -- must still resolve to the
-    // default through the SAME ternary all three call sites use
-    // (`ui/MacPaintUI.cpp`'s `currentGradientStops()` and the two `drawUI()`
-    // gradient-commit blocks). This is the "is the flag ACTUALLY read"
-    // reachability check `app/GradientTool.hpp` § 5 promises: sabotaged by
-    // resolving unconditionally against `&gradient.customStops`, this goes
-    // red because the poisoned values leak through.
+    // `currentGradientStops()` (`ui/MacPaintUI.cpp`) is the REAL wrapper all
+    // three readers call, not a copy of its ternary written here -- so this
+    // calls it directly. `hasCustomStops == false` with `customStops` itself
+    // set to poison is that wrapper's exact input shape when a user has
+    // never opened the editor; it must still resolve to the default. This is
+    // the "is the flag ACTUALLY read" reachability check `app/GradientTool.hpp`
+    // § 5 promises: sabotaged by resolving unconditionally against
+    // `&gradient.customStops` inside `currentGradientStops()`, this goes red
+    // because the poisoned values leak through.
+    BrushState brush;
     GradientToolState freshWithPoison;
     freshWithPoison.customStops = poison;
     check(!freshWithPoison.hasCustomStops,
           "gradient/default: a fresh GradientToolState has hasCustomStops == false");
-    const GradientStops throughTheTernary =
-        gradientToolStops(kFg, freshWithPoison.hasCustomStops ? &freshWithPoison.customStops
-                                                              : nullptr);
-    bool untouchedByPoison = throughTheTernary.colorStops.size() == stillDefault.colorStops.size();
-    for (size_t i = 0; untouchedByPoison && i < throughTheTernary.colorStops.size(); ++i)
-      if (throughTheTernary.colorStops[i].color != stillDefault.colorStops[i].color)
+    const GradientStops viaWrapper = currentGradientStops(brush, freshWithPoison);
+    const GradientStops viaDirect = gradientToolStops(foregroundLinearRgba(brush), nullptr);
+    bool untouchedByPoison = viaWrapper.colorStops.size() == viaDirect.colorStops.size() &&
+                             viaWrapper.opacityStops.size() == viaDirect.opacityStops.size();
+    for (size_t i = 0; untouchedByPoison && i < viaWrapper.colorStops.size(); ++i)
+      if (viaWrapper.colorStops[i].color != viaDirect.colorStops[i].color ||
+          viaWrapper.colorStops[i].position != viaDirect.colorStops[i].position)
         untouchedByPoison = false;
     check(untouchedByPoison,
-          "gradient/default: hasCustomStops == false renders the default even with poison "
-          "sitting in customStops");
+          "gradient/default: currentGradientStops() with hasCustomStops == false renders the "
+          "default even with poison sitting in customStops");
   }
 
   // -----------------------------------------------------------------------
