@@ -1000,10 +1000,30 @@ void handlePenEvent(np::AppState& st, const SDL_Event& e) {
     case SDL_EVENT_PEN_DOWN:
       st.penSeen = true;
       st.penDown = true;
+      // Track A: the down event carries the pen's first real position, and
+      // it is the "latest axis value" state above (updated by whichever
+      // SDL_EVENT_PEN_AXIS events happened to arrive before this touch, if
+      // any -- a pen can report pressure before it reports contact) that
+      // this sample snapshots. Queued unconditionally, like the motion case
+      // below; the canvas block is what decides whether a stroke is active
+      // to receive it.
+      st.pointerQueue.push_back(np::PointerSample{e.ptouch.x, e.ptouch.y, st.penPressure,
+                                                   st.penTiltXDeg, st.penTiltYDeg,
+                                                   st.penRotationDeg, /*isPen=*/true});
       break;
     case SDL_EVENT_PEN_UP:
       st.penDown = false;
       st.penPressure = 0.0f;
+      break;
+    case SDL_EVENT_PEN_MOTION:
+      // The only other event that carries a pen POSITION. Axes are each
+      // their own event (SDL_EVENT_PEN_AXIS, below) and arrive independently
+      // of motion, so this snapshots whatever the "latest axis value" state
+      // above currently holds -- exactly what a once-per-frame sample used
+      // to read, just taken once per motion event instead of once per frame.
+      st.pointerQueue.push_back(np::PointerSample{e.pmotion.x, e.pmotion.y, st.penPressure,
+                                                   st.penTiltXDeg, st.penTiltYDeg,
+                                                   st.penRotationDeg, /*isPen=*/true});
       break;
     case SDL_EVENT_PEN_AXIS:
       // Each axis arrives as its own event, which is why the two tilt angles
@@ -1024,11 +1044,41 @@ void handlePenEvent(np::AppState& st, const SDL_Event& e) {
           break;
         case SDL_PEN_AXIS_ROTATION:
           st.penSeen = true;
+          st.penRotationDeg = e.paxis.value;
           st.penBarrel = np::penBarrelNormalised(e.paxis.value);
           break;
         default:
           break;
       }
+      break;
+    default:
+      break;
+  }
+}
+
+// Track A's mouse half of the full-rate pointer queue -- `handlePenEvent()`'s
+// own comment covers the pen half. A mouse reports one position per motion
+// event with no separate axis stream, so there is nothing to snapshot beyond
+// the event's own coordinates; `PointerSample`'s defaults (pressure 1.0, the
+// three degree fields at 0.0, which its own comment shows convert to a
+// mouse's neutral reading) are exactly right with `isPen` left false.
+//
+// `SDL_EVENT_MOUSE_BUTTON_DOWN` is queued alongside `SDL_EVENT_MOUSE_MOTION`
+// for the same reason `isPointerSampleEvent()` below already treats both as
+// pointer samples: a plain click that generates no motion event at all --
+// the OS reports the button down at whatever position the cursor already
+// sat at -- must still queue ONE sample, or `StrokePath::flush()`'s
+// stationary-click rule (brush/StrokePath.hpp) would find zero samples and
+// paint nothing, the exact defect that rule exists to fix.
+void queueMousePointerSample(np::AppState& st, const SDL_Event& e) {
+  switch (e.type) {
+    case SDL_EVENT_MOUSE_MOTION:
+      st.pointerQueue.push_back(
+          np::PointerSample{e.motion.x, e.motion.y, 1.0f, 0.0f, 0.0f, 0.0f, /*isPen=*/false});
+      break;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+      st.pointerQueue.push_back(
+          np::PointerSample{e.button.x, e.button.y, 1.0f, 0.0f, 0.0f, 0.0f, /*isPen=*/false});
       break;
     default:
       break;
@@ -4803,6 +4853,7 @@ int main(int argc, char** argv) {
       pacingSawEvent = true;
       ImGui_ImplSDL3_ProcessEvent(&e);
       handlePenEvent(st, e);
+      queueMousePointerSample(st, e);
       // e.common.timestamp is when SDL generated the event, not when we
       // happened to drain the queue for it — using our own SDL_GetTicksNS()
       // here would understate latency by however long the event sat queued.

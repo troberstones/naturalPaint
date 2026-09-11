@@ -18623,6 +18623,16 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     st.paintingThisFrame = false;
     st.pendingDabs.clear();
 
+    // Track A: this frame's full-rate pointer samples, claimed here whether
+    // or not a stroke ends up painting them -- a sample queued while the
+    // pointer was over a panel, or during a frame no tool below reaches,
+    // must not survive to be fed to a LATER stroke as a catch-up burst of
+    // positions from a different gesture. Every frame owns exactly its own
+    // queue. Converted from window space to canvas space below, through the
+    // same `xform` the single per-frame sample used to go through.
+    std::vector<PointerSample> pointerSamplesThisFrame;
+    pointerSamplesThisFrame.swap(st.pointerQueue);
+
     // Oil's contact -> velocity -> transfer pipeline (PaintSim::frame(),
     // shaders/oil_*.wgsl) still wants a genuine segment, not a point: its
     // tangential brush-velocity term (oil_velocity.wgsl's `vb`) and the
@@ -18735,25 +18745,53 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         st.lastY = ty;
       }
       if (g_stroke.active()) {
-        // Per frame, from this frame's pressure -- the same granularity the
-        // solver route gets, which sets one brushRadius per frame.
+        // The BASE tip, rebuilt once per frame exactly as before --
+        // `StrokeSession::setTip()`'s own comment argues this is still fine:
+        // Size/Angle/Roundness/Scatter/Count resolve per DAB from the model
+        // regardless of how many dabs a frame's samples produce. Reusing
+        // `tip` here rather than rebuilding it from a "smoothed" input is not
+        // an approximation: `brushTipFor(BrushState, MixboxLut,
+        // DynamicInputs)` ignores its `DynamicInputs` argument entirely for
+        // everything this returns (its own `(void)inputs;` -- the four
+        // hardware sources reach a stroke through `begin()`/`setTip()`'s
+        // SEPARATE `hardwareInputs` parameter, not through this), so a
+        // second call with a different `DynamicInputs` would return a
+        // bit-identical `BrushTip`.
+        g_stroke.setTip(tip, live);
+
+        // Track A: drain this frame's full-rate samples instead of the
+        // single per-frame `(tx, ty)` the solver route below still uses.
+        // Each queued window-space sample becomes its own `StrokeSample` --
+        // canvas position plus ITS OWN axes -- so `StrokePath` can
+        // interpolate pressure/tilt/azimuth/barrel per DAB instead of every
+        // dab in a fast frame sharing one frame-latched reading, which is
+        // the defect this track exists to fix.
         //
-        // **Smoothed, not raw.** `g_stroke.smoothPressure()` (PaintCopilot
-        // §3.2's EMA jitter filter, StrokeSession.hpp's own comment) is
-        // called here rather than beside `dynamicInputsFor()` above, on
-        // purpose: this branch only runs once `g_stroke.active()`, which on
-        // a stroke's first painting frame is true only AFTER `begin()` has
-        // already reset the filter's per-stroke state for it -- calling it
-        // any earlier would blend against the previous stroke's last
-        // reading. `tip` above (built from the raw sample, used only to
-        // decide whether `begin()` accepts the stroke) is superseded here
-        // before a single dab is ever emitted from it.
-        DynamicInputs smoothed = live;
-        smoothed.pressure = g_stroke.smoothPressure(live.pressure);
-        g_stroke.setTip(brushTipFor(st.brush, lut, smoothed), smoothed);
-        g_stroke.addPoint(tx, ty);
-        st.lastX = tx;
-        st.lastY = ty;
+        // **A frame with no new samples calls addSample() zero times.**
+        // `StrokePath::flush()`'s stationary-click rule depends on
+        // `movedPx_`, which only advances inside `addPoint()`/`addSample()`
+        // -- feeding a synthetic repeat of `(tx, ty)` here on an empty queue
+        // would cost a call for no reason and, worse, would be answering the
+        // wrong question: "no new sample this frame" and "a sample that
+        // didn't move" are different facts, and only the real queue can
+        // tell them apart.
+        for (const PointerSample& qs : pointerSamplesThisFrame) {
+          const Vec2 canvasPos = xform.toCanvas(Vec2{qs.x, qs.y});
+          StrokeSample ss = strokeSampleFromPointer(qs, canvasPos);
+          // Distance-keyed pressure smoothing
+          // (brush/Dynamics.hpp's `dynamicPressureSmoothedByDistance()`):
+          // `ds` is THIS sample's own travel since the last one this stroke
+          // smoothed, not since the last render frame -- `st.lastX`/
+          // `st.lastY` are updated after every sample below, not once per
+          // frame, so a frame that drains three samples measures three real
+          // per-sample distances rather than one frame-sized jump split
+          // three ways.
+          const float ds = std::hypot(ss.pos.x - st.lastX, ss.pos.y - st.lastY);
+          ss.pressure = g_stroke.smoothPressureByDistance(ss.pressure, ds);
+          g_stroke.addSample(ss);
+          st.lastX = ss.pos.x;
+          st.lastY = ss.pos.y;
+        }
       }
     } else if (strokeTool && down && hovered && inside && !panning && !rotating && !sizingHeld &&
                !st.pendingGuide.has_value() && route == StrokeRoute::None &&

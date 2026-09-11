@@ -618,7 +618,87 @@ DynamicResult evaluateLinks(const BrushLinkSet& set, const DynamicInputs& inputs
 // same defensive clamp `linkContribution()` applies to its own `source`),
 // so a caller cannot hand this a value outside the range every other
 // pressure consumer in this file already assumes.
+//
+// **Still exactly this shape for its remaining callers, and no longer the
+// whole story.** `StrokeSession::smoothPressure()` -- and, through it,
+// `app/BrushSheet.cpp`'s and `app/StrokePreview.cpp`'s synthetic per-sample
+// sweeps -- still call this once per SAMPLE OF THEIRS, which for those two
+// callers is a fixed, evenly spaced sequence with no independent notion of
+// "how far did the pointer move", so a frame-shaped (call-count-shaped)
+// filter is the right one for them and stays exactly as tuned. The
+// interactive canvas block is no longer one of these callers -- see
+// `dynamicPressureSmoothedByDistance()` immediately below for why and what
+// replaced it there.
 float dynamicPressureEma(float previousSmoothed, float rawPressure) noexcept;
+
+// ---------------------------------------------------------------------------
+// DISTANCE-KEYED PRESSURE SMOOTHING -- `dynamicPressureEma()`'s sibling for a
+// caller with no fixed sample cadence
+// ---------------------------------------------------------------------------
+//
+// `dynamicPressureEma()`'s 0.7/0.3 blend has a time constant measured in
+// CALLS, not seconds or pixels -- fine when every caller feeds it exactly one
+// sample per render frame, which is what every caller did until Track A's
+// full-rate pointer queue (`app/AppState::PointerSample`, drained once per
+// raw SDL event rather than once per frame -- brush/StrokePath.hpp's own
+// header on why). A tablet reporting at 133-200 Hz into a 60 Hz frame loop
+// now hands the interactive canvas block two to three samples in some
+// frames and none in others; feeding all of them through the frame-shaped
+// filter above would damp several times harder than PaintCopilot's own
+// tuning intended on exactly the hardware that most needed the extra
+// samples, and feeding none through it on a quiet frame would let the
+// filter stall rather than hold its value -- either way, the SAME physical
+// stroke would smooth differently depending on how the OS happened to batch
+// its events, which is the identical "depends on how the distance was
+// divided" defect ADR-0003 already forbids for dab emission, one input
+// earlier in the pipeline.
+//
+// The fix is the same move ADR-0003 already made: key the filter to
+// DISTANCE MOVED since the previous sample instead of to a call count.
+// `alpha = 1 - exp(-ds / kPressureSmoothingPx)` is a standard first-order
+// low-pass whose effective "sample interval" is measured in pixels of
+// travel rather than frames elapsed, so two runs of the identical physical
+// stroke sampled at different rates converge to the same smoothed pressure
+// at the same arc length -- asserted directly, not merely argued,
+// `app/selftest/StrokeInput.cpp`.
+//
+// **Deriving `kPressureSmoothingPx` from the constant it replaces**, rather
+// than picking a new one from nowhere. The old filter adopted 30% of the
+// raw sample every frame; at a moderate stroke under ordinary painting
+// motion -- roughly 5 px of pointer travel per 60 Hz frame is a defensible,
+// unremarkable figure, well inside the range `dynamicVelocity()`'s own
+// header treats as normal dab-to-dab spacing -- that 30% adoption happened
+// over roughly that same 5 px. Matching the two filters AT that cadence
+// means solving `1 - exp(-ds/k) = 0.3` at `ds = 5`:
+//
+//   exp(-5/k) = 0.7
+//   -5/k = ln(0.7)              (ln(0.7) = -0.356675)
+//   k = -5 / ln(0.7) = 14.02 px
+//
+// Rounded to 14.0 px. The two filters therefore agree at the cadence the
+// original 0.7/0.3 blend was tuned for, and diverge in the direction that
+// fixes the defect above: a burst of closely spaced samples (a fast tablet
+// frame) now damps LESS per sample than the old per-frame filter would have
+// applied to each of them, because ds is small; a single sparse sample after
+// a quiet frame damps MORE, because ds is large -- both exactly the
+// correction a distance-keyed filter is supposed to make.
+inline constexpr float kPressureSmoothingPx = 14.0f;
+
+// One step of the distance-keyed filter. `ds` is the distance in canvas
+// texels since the previous sample THIS STROKE smoothed; `ds <= 0` (two
+// coincident samples, or a caller with nothing better to report) is the
+// identity, since `1 - exp(0) == 0` leaves `previousSmoothed` unchanged --
+// the same "no motion, no update" reading `dynamicVelocity()`'s own 0-
+// distance case already gives.
+//
+// `previousSmoothed` and `rawPressure` are each clamped to [0,1] first, the
+// identical defensive clamp `dynamicPressureEma()` applies to its own two
+// arguments.
+//
+// State ownership is `StrokeSession`'s, exactly as it is for the frame-keyed
+// filter above -- see `StrokeSession::smoothPressureByDistance()`.
+float dynamicPressureSmoothedByDistance(float previousSmoothed, float rawPressure,
+                                        float distancePx) noexcept;
 
 // ---------------------------------------------------------------------------
 // The stroke-local sources -- VELOCITY, FADE, NOISE, RANDOM and DIRECTION
