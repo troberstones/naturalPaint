@@ -65,7 +65,8 @@ CommandCoverage coverageFor(MenuAction action) {
     case MenuAction::Batch:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "opens a dialog. The batch itself is not a step -- it RUNS actions, and an "
-              "action that could contain a batch of itself is a loop with no base case"};    case MenuAction::Quit:
+              "action that could contain a batch of itself is a loop with no base case"};
+    case MenuAction::Quit:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "the process"};
     case MenuAction::Undo:
