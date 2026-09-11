@@ -108,6 +108,53 @@ GradientStops resolveGradientPresetStops(const GradientPresetStops& spec,
                                          const std::array<float, 3>& foregroundLinear);
 
 // ---------------------------------------------------------------------------
+// § 2b. Editor operations -- PRD D24's stop editor, headless
+// ---------------------------------------------------------------------------
+//
+// Every mutation the stop editor's UI performs is a pure function here, so
+// `--selftest` exercises "add keeps stops sorted", "delete refuses below
+// two", "move clamps to [0,1]" and "midpoint clamps" without a frame of
+// ImGui -- `ui/MacPaintUI.cpp`'s dialog is a thin caller of these, per this
+// codebase's own rule for where logic goes (put it in `app/`, keep the UI
+// part thin).
+
+// Clamps a stop's authored POSITION to the strip's own range. `ops/Gradient`
+// itself does not require this -- `Repeat`/`Reflect` are defined for any
+// real `t` (`ops/Gradient.hpp`'s own note on `ColorStop::position`) -- but
+// the editor's strip only spans [0, 1], so a stop dragged past either end is
+// held at it rather than dragged off the strip where nothing could select it
+// again.
+float clampGradientStopPosition(float t) noexcept;
+
+// `applyMidpointSkew()`'s own clamp band (`ops/Gradient.cpp`), exposed here
+// so the editor's midpoint control and the renderer agree on the same number
+// rather than the editor inventing a second one that could drift from it.
+float clampGradientStopMidpoint(float m) noexcept;
+
+// Inserts a colour stop and re-sorts, so the caller's contract
+// (`ops/Gradient.hpp`: "both lists must be sorted ascending") holds
+// immediately rather than until the next edit.
+void addGradientColorStop(GradientPresetStops& stops, float position, bool foreground,
+                          const std::array<float, 3>& color, float midpoint = 0.5f);
+void addGradientOpacityStop(GradientPresetStops& stops, float position, float opacity,
+                            float midpoint = 0.5f);
+
+// Removes the stop at `index`. Refuses -- leaving `stops` untouched and
+// returning false -- when that would drop the list below two: a one-stop
+// ramp has no span to interpolate across, and `GradientStops`'s own header
+// makes the empty cases load-bearing (zero colour stops renders NOTHING,
+// zero opacity stops is FULLY OPAQUE) rather than "an empty ramp", so two is
+// the floor a ramp needs to mean anything at all.
+bool removeGradientColorStop(GradientPresetStops& stops, size_t index);
+bool removeGradientOpacityStop(GradientPresetStops& stops, size_t index);
+
+// Stable-sorts both lists ascending by position -- `sortGradientStops()`'s
+// contract (`ops/Gradient.hpp`), on the authored form. The editor calls this
+// after every drag, exactly as `drawGradientMapDialog()` already does on its
+// own, unwidened stop list.
+void sortGradientPresetStops(GradientPresetStops& stops);
+
+// ---------------------------------------------------------------------------
 // § 3. The tool's own settings
 // ---------------------------------------------------------------------------
 //

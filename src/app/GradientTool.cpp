@@ -1,5 +1,6 @@
 #include "app/GradientTool.hpp"
 
+#include <algorithm>
 #include <type_traits>
 #include <utility>
 
@@ -103,6 +104,62 @@ GradientStops gradientToolStops(const std::array<float, 4>& foregroundLinear,
   stops.opacityStops.push_back(OpacityStop{0.0f, 1.0f, 0.5f});
   stops.opacityStops.push_back(OpacityStop{1.0f, 0.0f, 0.5f});
   return stops;
+}
+
+float clampGradientStopPosition(float t) noexcept { return std::clamp(t, 0.0f, 1.0f); }
+
+float clampGradientStopMidpoint(float m) noexcept {
+  // The exact band `ops/Gradient.cpp`'s `applyMidpointSkew()` clamps to --
+  // copied as a literal rather than shared through a header, because that
+  // function is `ops/Gradient.cpp`'s own file-local `static`, and promoting
+  // it to a header for one constant would be a bigger seam than restating a
+  // number both files already state once each. `--selftest` (Gradient
+  // Editor §C) asserts the two literals still agree.
+  return std::clamp(m, 1e-3f, 1.0f - 1e-3f);
+}
+
+void sortGradientPresetStops(GradientPresetStops& stops) {
+  std::stable_sort(stops.colorStops.begin(), stops.colorStops.end(),
+                   [](const GradientColorStopSpec& a, const GradientColorStopSpec& b) {
+                     return a.position < b.position;
+                   });
+  std::stable_sort(stops.opacityStops.begin(), stops.opacityStops.end(),
+                   [](const GradientOpacityStopSpec& a, const GradientOpacityStopSpec& b) {
+                     return a.position < b.position;
+                   });
+}
+
+void addGradientColorStop(GradientPresetStops& stops, float position, bool foreground,
+                          const std::array<float, 3>& color, float midpoint) {
+  GradientColorStopSpec s;
+  s.position = clampGradientStopPosition(position);
+  s.foreground = foreground;
+  s.color = color;
+  s.midpoint = clampGradientStopMidpoint(midpoint);
+  stops.colorStops.push_back(s);
+  sortGradientPresetStops(stops);
+}
+
+void addGradientOpacityStop(GradientPresetStops& stops, float position, float opacity,
+                            float midpoint) {
+  GradientOpacityStopSpec s;
+  s.position = clampGradientStopPosition(position);
+  s.opacity = std::clamp(opacity, 0.0f, 1.0f);
+  s.midpoint = clampGradientStopMidpoint(midpoint);
+  stops.opacityStops.push_back(s);
+  sortGradientPresetStops(stops);
+}
+
+bool removeGradientColorStop(GradientPresetStops& stops, size_t index) {
+  if (stops.colorStops.size() <= 2 || index >= stops.colorStops.size()) return false;
+  stops.colorStops.erase(stops.colorStops.begin() + static_cast<ptrdiff_t>(index));
+  return true;
+}
+
+bool removeGradientOpacityStop(GradientPresetStops& stops, size_t index) {
+  if (stops.opacityStops.size() <= 2 || index >= stops.opacityStops.size()) return false;
+  stops.opacityStops.erase(stops.opacityStops.begin() + static_cast<ptrdiff_t>(index));
+  return true;
 }
 
 namespace {
