@@ -1646,8 +1646,9 @@ class StrokeSession {
   // `hardwareInputs` therefore still matters for THOSE four flags and for
   // every OTHER caller of `begin()` that has no per-dab samples to offer
   // (`app/BrushSheet.cpp`, `app/StrokePreview.cpp`, every selftest that
-  // drives a stroke through the plain `addPoint(x, y)`, whose neutral axes
-  // fall back to reading this latch for the whole stroke, exactly as before).
+  // drives a stroke through the plain `addPoint(x, y)`, which builds its
+  // sample's axes FROM this latch and so reads it for every dab, exactly as
+  // before -- `addPoint()`'s own header comment is where that is argued).
   // **The solver route is unchanged and out of this track's scope** -- it
   // never reaches `StrokeSession` at all, so it has no analogous granularity
   // to retire.
@@ -1807,16 +1808,31 @@ class StrokeSession {
   // value.
   float smoothPressureByDistance(float rawPressure, float distancePx) noexcept;
 
-  // One raw pointer sample, in document texel coordinates, at neutral axes
-  // (full pressure, no tilt/azimuth, the pen's own rest barrel -- see
-  // `StrokeSample`'s own defaults, brush/StrokePath.hpp). A thin wrapper over
-  // `addSample()` below for every caller with no axes to offer: the solver
-  // route never reaches this class at all, but `app/BrushSheet.cpp`'s per-
-  // sample sweep and every selftest that predates `addSample()` call this,
-  // and the dab positions they produce are bit-identical to what this
-  // returned before `addSample()` existed -- the identical "wraps, copies
-  // only `.pos` back out" discipline `brush/StrokePath`'s own two Vec2
-  // overloads use, for the identical reason.
+  // One raw pointer sample, in document texel coordinates and nothing else.
+  // A thin wrapper over `addSample()` below for every caller with no
+  // per-sample axes to offer: the solver route never reaches this class at
+  // all, but `app/BrushSheet.cpp`'s and `app/StrokePreview.cpp`'s synthetic
+  // sweeps and every selftest that predates `addSample()` call this.
+  //
+  // **The sample it builds carries `hardwareInputs_`'s axes, not
+  // `StrokeSample`'s own neutral defaults.** That is the whole point of the
+  // wrapper and it is not a detail: a caller with no per-sample axes is a
+  // caller whose axes are whatever `begin()`/`setTip()` last latched, which
+  // is EXACTLY what `depositPending()` read for every dab before Track A
+  // existed. Seeding from the latch is therefore what makes this path
+  // bit-identical to the pre-Track-A one -- positions AND pixels, not just
+  // positions. Seeding it from `StrokeSample{}`'s neutral defaults instead
+  // would silently pin every such stroke to full pressure and neutral tilt,
+  // which is a behaviour change for exactly the callers this wrapper exists
+  // to leave alone (`app/selftest/ActiveLayer.cpp` drives a mid-stroke
+  // `setTip()` pressure ramp through this method and is the guard that
+  // catches it).
+  //
+  // A stroke that changes `hardwareInputs_` mid-stroke through `setTip()`
+  // therefore now sees its axes INTERPOLATED between consecutive samples'
+  // latched values rather than stepped at a frame boundary -- strictly
+  // smoother than before, over the identical dab positions, and the same
+  // per-dab resolution the axis-carrying form gets.
   //
   // Deposits whatever dabs `brush/StrokePath` emits for it and returns
   // **this frame's** tile set -- what live feedback must recomposite, sorted
@@ -1830,8 +1846,9 @@ class StrokeSession {
   // once per sample drained from `AppState::pointerQueue` (via
   // `strokeSampleFromPointer()` below). Otherwise identical to `addPoint()`
   // above: same return, same no-op-when-inactive contract, same
-  // `StrokePath::addPoint()` underneath. The two differ only in what they
-  // hand that call -- neutral axes against the sample's own.
+  // `StrokePath::addPoint()` underneath. The two differ only in where the
+  // sample's axes come from -- the frame's latched `hardwareInputs_` against
+  // this sample's own.
   const std::vector<TileCoord>& addSample(const StrokeSample& sample);
 
   // Pen-up. Walks the final segment `addPoint()` always holds back (see

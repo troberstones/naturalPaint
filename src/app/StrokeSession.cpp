@@ -1997,10 +1997,14 @@ void StrokeSession::depositPending() {
       // axis support at the pen, not per event), so `begin()`/`setTip()`'s
       // once-per-stroke/frame latch of those three bools is still the right
       // granularity even though the FLOATS they gate are now resolved fresh
-      // every dab. A caller with no per-dab samples of its own (`addPoint()`
-      // 's neutral-axes wrapper, `app/BrushSheet.cpp`, `app/StrokePreview
-      // .cpp`) feeds every dab the identical neutral/latched reading either
-      // way, so this is a no-op for them -- see `StrokeDab`'s own defaults.
+      // every dab. A caller with no per-sample axes of its own
+      // (`app/BrushSheet.cpp`, `app/StrokePreview.cpp`, every selftest that
+      // drives a stroke through the plain `addPoint(x, y)`) is unaffected by
+      // this, because that wrapper seeds its `StrokeSample` FROM
+      // `hardwareInputs_` -- so `p.pressure` et al. below are the latched
+      // reading those callers always got, and this is a no-op for them. See
+      // `addPoint()`'s own header comment, which is where that decision is
+      // argued; `app/selftest/ActiveLayer.cpp` is the guard on it.
       DynamicInputs local = hardwareInputs_;
       local.pressure = p.pressure;
       local.tilt = p.tilt;
@@ -2172,7 +2176,20 @@ void StrokeSession::depositPending() {
 }
 
 const std::vector<TileCoord>& StrokeSession::addPoint(float x, float y) {
-  return addSample(StrokeSample{Vec2{x, y}});
+  // The axes come from `hardwareInputs_`, NOT from `StrokeSample`'s own
+  // neutral defaults -- see this method's header comment for the argument.
+  // In one line: a caller with no per-SAMPLE axes is a caller whose axes are
+  // whatever `begin()`/`setTip()` last latched, which is exactly what
+  // `depositPending()` read for every dab before Track A existed. Seeding the
+  // sample from the latch is what keeps this wrapper's output bit-identical
+  // to the pre-Track-A one rather than merely similar to it.
+  StrokeSample sample;
+  sample.pos = Vec2{x, y};
+  sample.pressure = hardwareInputs_.pressure;
+  sample.tilt = hardwareInputs_.tilt;
+  sample.azimuth = hardwareInputs_.azimuth;
+  sample.barrel = hardwareInputs_.barrel;
+  return addSample(sample);
 }
 
 const std::vector<TileCoord>& StrokeSession::addSample(const StrokeSample& sample) {
