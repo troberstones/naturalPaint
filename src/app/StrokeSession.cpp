@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "app/PenAxes.hpp"
 #include "brush/ToolOptionsBlend.hpp"
 #include "color/Space.hpp"
 #include "core/StrokesContent.hpp"
@@ -1315,6 +1316,31 @@ DynamicInputs dynamicInputsFor(const AppState& st) noexcept {
   return in;
 }
 
+StrokeSample strokeSampleFromPointer(const PointerSample& sample, Vec2 canvasPos) noexcept {
+  StrokeSample out;
+  out.pos = canvasPos;
+  // A mouse sample carries no axes to convert -- `StrokeSample`'s own
+  // defaults (brush/StrokePath.hpp) already ARE a mouse's neutral reading,
+  // so there is nothing left to compute. Written as an early return rather
+  // than relying on `PointerSample`'s own fields happening to already be
+  // neutral for a mouse event (true today, `queueMousePointerSample()`'s own
+  // construction in main.cpp) so that fact is an INVARIANT of this function,
+  // not an accident of two call sites agreeing.
+  if (!sample.isPen) return out;
+  out.pressure = std::clamp(sample.pressure, 0.0f, 1.0f);
+  out.tilt = penTiltNormalised(sample.tiltXDeg, sample.tiltYDeg);
+  out.azimuth = penAzimuthNormalised(sample.tiltXDeg, sample.tiltYDeg);
+  out.barrel = penBarrelNormalised(sample.rotationDeg);
+  return out;
+}
+
+DynamicInputs strokeHardwareInputsFor(const AppState& st) noexcept {
+  DynamicInputs in = dynamicInputsFor(st);
+  in.hasTilt = st.penDown && st.penReportsTilt;
+  in.hasBarrel = st.penDown && st.penReportsBarrel;
+  return in;
+}
+
 void applyPresetToBrush(const BrushPreset& preset, BrushState& brush) {
   // Radius/hardness/spacing/roundness/angle used to be five explicit copies
   // here -- gone along with the fields themselves (brush/Library.hpp's own
@@ -1790,6 +1816,19 @@ float StrokeSession::smoothPressure(float rawPressure) noexcept {
   return smoothedPressure_;
 }
 
+float StrokeSession::smoothPressureByDistance(float rawPressure, float distancePx) noexcept {
+  if (!pressureSmoothLatched_) {
+    smoothedPressure_ = rawPressure;  // the identical first-call rule
+                                      // `smoothPressure()` uses, off the
+                                      // SAME shared latch -- see this
+                                      // method's own header comment.
+    pressureSmoothLatched_ = true;
+  } else {
+    smoothedPressure_ = dynamicPressureSmoothedByDistance(smoothedPressure_, rawPressure, distancePx);
+  }
+  return smoothedPressure_;
+}
+
 void StrokeSession::depositPending() {
   frameTiles_.clear();
   if (pending_.empty()) return;
@@ -1873,13 +1912,13 @@ void StrokeSession::depositPending() {
   // about a dab's footprint or a stroke's byte-identical undo has anything to
   // notice.
   size_t frameTexels = 0;
-  for (const Vec2& p : pending_) {
+  for (const StrokeDab& p : pending_) {
     // The seed, latched once from the stroke's very FIRST dab position --
     // brush/Dynamics.hpp's own section comment on why position rather than a
     // counter, and why this must happen here rather than at `begin()`, which
     // has no position yet to latch.
     if (!seedLatched_) {
-      seed_ = strokeSeedFromStart(p.x, p.y);
+      seed_ = strokeSeedFromStart(p.pos.x, p.pos.y);
       seedLatched_ = true;
     }
 
@@ -1895,8 +1934,8 @@ void StrokeSession::depositPending() {
     // reason `stepDist` is: `brush/Dynamics.hpp`'s own comment on
     // `dynamicDirection()` is what makes `std::atan2(0, 0)` the documented,
     // not accidental, answer for "no previous position yet".
-    const float dx = havePrevDab_ ? p.x - prevDabX_ : 0.0f;
-    const float dy = havePrevDab_ ? p.y - prevDabY_ : 0.0f;
+    const float dx = havePrevDab_ ? p.pos.x - prevDabX_ : 0.0f;
+    const float dy = havePrevDab_ ? p.pos.y - prevDabY_ : 0.0f;
     const float stepDist = havePrevDab_ ? std::hypot(dx, dy) : 0.0f;
     distanceTravelled_ += stepDist;
 
@@ -1961,12 +2000,38 @@ void StrokeSession::depositPending() {
       // The six stroke-local signals, fresh every dab -- unchanged from the
       // old `local` this replaces, since Variance needs the identical inputs
       // the matrix did for VELOCITY/FADE/NOISE/RANDOM/DIRECTION/INITIAL
-      // DIRECTION. Seeded from `hardwareInputs_` first so Pressure/Tilt/
-      // Azimuth/Barrel (and their `has*` flags) reach a PenPressure/PenTilt/
-      // Rotation Control -- at the FRAME granularity `begin()`/`setTip()`
-      // latched them at, not resampled per dab (this codebase's own standing
-      // rule; `dynamicInputsFor()`'s header is the argument for it).
+      // DIRECTION.
+      //
+      // **Pressure/Tilt/Azimuth/Barrel now come from THIS DAB, not from
+      // `hardwareInputs_`.** Track A (full-rate pointer input) is why: `p`
+      // (this loop's own `StrokeDab`) carries the axes `brush/StrokePath`
+      // interpolated for its own position, one call to
+      // `strokeSampleFromPointer()`/`dynamicPressureSmoothedByDistance()`
+      // upstream per raw pointer sample rather than one `dynamicInputsFor()`
+      // sample shared by every dab a frame happens to emit -- which used to
+      // be the defect: a 40-dab frame stepped Size/Angle/Roundness in blocks
+      // instead of smoothly. Seeded from `hardwareInputs_` FIRST and only
+      // for its `has*` availability flags, which `depositPending()` has no
+      // per-dab equivalent of and does not need one for: whether a device
+      // reports an axis is a property of the device painting the stroke,
+      // not of one event, so `begin()`/`setTip()`'s per-frame latch of those
+      // three bools (`strokeHardwareInputsFor()` on the interactive route)
+      // is still the right granularity even though the FLOATS they gate are
+      // now resolved fresh every dab. A caller with no per-sample axes of
+      // its own (`app/BrushSheet.cpp`, `app/StrokePreview.cpp`, every
+      // selftest that drives a stroke through the plain `addPoint(x, y)`)
+      // reads the latch here exactly as before, because that wrapper seeds
+      // its `StrokeSample` FROM `hardwareInputs_` -- bit-identical for a
+      // constant latch; for one that `setTip()` changes mid-stroke, the dab
+      // reads the latched values of the two samples bounding its segment,
+      // interpolated, rather than the newest one. `addPoint()`'s own header
+      // comment is where that is argued and measured;
+      // `app/selftest/ActiveLayer.cpp` is the guard on it.
       DynamicInputs local = hardwareInputs_;
+      local.pressure = p.pressure;
+      local.tilt = p.tilt;
+      local.azimuth = p.azimuth;
+      local.barrel = p.barrel;
       local.velocity = dynamicVelocity(stepDist, tip_.radius);
       local.fade = dynamicFade(distanceTravelled_);
       local.noise = dynamicNoiseAt(seed_, distanceTravelled_);
@@ -2043,7 +2108,7 @@ void StrokeSession::depositPending() {
     // per sub-dab today) and SCATTER's own draw read a per-dab index, and
     // only the second actually varies within this loop, via `subIndex` alone.
     for (int32_t subIndex = 0; subIndex < resolvedCount; ++subIndex) {
-      const Vec2 centre = applyPerDabScatter(p, dabTip, seed_, static_cast<uint32_t>(dabs_), dx,
+      const Vec2 centre = applyPerDabScatter(p.pos, dabTip, seed_, static_cast<uint32_t>(dabs_), dx,
                                              dy, static_cast<uint32_t>(subIndex));
 
       // The five routes differ in exactly this call, and each takes
@@ -2118,8 +2183,8 @@ void StrokeSession::depositPending() {
       frameTexels += c.texels;
     }
     ++dabs_;
-    prevDabX_ = p.x;
-    prevDabY_ = p.y;
+    prevDabX_ = p.pos.x;
+    prevDabY_ = p.pos.y;
     havePrevDab_ = true;
   }
   sortUniqueTiles(frameTiles_);
@@ -2133,10 +2198,27 @@ void StrokeSession::depositPending() {
 }
 
 const std::vector<TileCoord>& StrokeSession::addPoint(float x, float y) {
+  // The axes come from `hardwareInputs_`, NOT from `StrokeSample`'s own
+  // neutral defaults -- see this method's header comment for the argument.
+  // In one line: a caller with no per-SAMPLE axes is a caller whose axes are
+  // whatever `begin()`/`setTip()` last latched, which is exactly what
+  // `depositPending()` read for every dab before Track A existed. Seeding the
+  // sample from the latch is what keeps this wrapper's output bit-identical
+  // to the pre-Track-A one rather than merely similar to it.
+  StrokeSample sample;
+  sample.pos = Vec2{x, y};
+  sample.pressure = hardwareInputs_.pressure;
+  sample.tilt = hardwareInputs_.tilt;
+  sample.azimuth = hardwareInputs_.azimuth;
+  sample.barrel = hardwareInputs_.barrel;
+  return addSample(sample);
+}
+
+const std::vector<TileCoord>& StrokeSession::addSample(const StrokeSample& sample) {
   frameTiles_.clear();
   if (doc_ == nullptr) return frameTiles_;
 
-  path_.addPoint(x, y, tip_.spacingPx(), pending_);
+  path_.addPoint(sample, tip_.spacingPx(), pending_);
   depositPending();
 
   // Live feedback, header §3: the revision is what invalidates

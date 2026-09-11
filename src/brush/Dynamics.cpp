@@ -462,6 +462,16 @@ float dynamicPressureEma(float previousSmoothed, float rawPressure) noexcept {
   return kRetain * clamp01(previousSmoothed) + kAdopt * clamp01(rawPressure);
 }
 
+// See the header's own section comment for the derivation of
+// `kPressureSmoothingPx` and the state-ownership argument (`app/
+// StrokeSession` holds the previous value; this is only the step).
+float dynamicPressureSmoothedByDistance(float previousSmoothed, float rawPressure,
+                                        float distancePx) noexcept {
+  const float ds = std::max(distancePx, 0.0f);
+  const float alpha = 1.0f - std::exp(-ds / kPressureSmoothingPx);
+  return (1.0f - alpha) * clamp01(previousSmoothed) + alpha * clamp01(rawPressure);
+}
+
 // ---------------------------------------------------------------------------
 // VELOCITY, FADE, NOISE, RANDOM -- see the header's own section comment for
 // the determinism argument. Only the arithmetic is here.

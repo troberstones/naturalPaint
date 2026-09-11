@@ -6396,4 +6396,45 @@ bool runTipEdgeTest();
 // GPU-free, writes no files. See app/selftest/BrushBlendMode.cpp.
 bool runBrushBlendModeTest();
 
+// Track A: full-rate pointer input and per-dab axis interpolation.
+//
+// The defect it guards against is a sampling-rate one, and it is invisible to
+// every other test in this suite because every other test feeds `StrokePath`
+// and `StrokeSession` one sample per "frame" and never asks what happens to
+// the AXES riding along with a position. Before this track, they were latched
+// once per render frame (`StrokeSession::setTip()`'s `hardwareInputs`), so a
+// tablet reporting at 133-200 Hz into a 60 Hz frame collapsed two or three
+// pressure readings into one and every dab that frame -- dozens, on a fast
+// stroke -- shared it. A PenPressure-controlled Size stepped in blocks.
+//
+// **What it PROVES**, as distinct from what it exercises:
+//
+//  * that `brush/StrokePath` interpolates a dab's pressure/tilt/azimuth/
+//    barrel along the segment it lands in, strictly and monotonically for a
+//    monotone input ramp;
+//  * that the interpolation is SAMPLE-RATE INDEPENDENT: the same physical
+//    ramp fed as 2 samples and as 20 emits dabs at the same positions and
+//    the same pressures, within tolerances derived in the file from the
+//    chord-walk error and this fixture's own pressure gradient;
+//  * that distance-keyed pressure smoothing
+//    (`brush/Dynamics.hpp`'s `dynamicPressureSmoothedByDistance()`) reaches
+//    the same smoothed pressure at the same ARC LENGTH regardless of sample
+//    rate -- against a bound computed from the filter's own closed-form
+//    steady-state lag, not a typed constant -- and that a constant-pressure
+//    stroke is its fixed point;
+//  * that the mouse path is bit-exactly what it was: a mouse `PointerSample`
+//    converts to full pressure and neutral axes, and `dynamicInputsFor()`'s
+//    own `has*` flags and four values are untouched by this track;
+//  * that the neutral-axis wrapper `StrokeSession::addPoint(x, y)` and
+//    `addSample()` with a default `StrokeSample` paint BIT-IDENTICAL pixels,
+//    so every pre-existing caller kept its exact output;
+//  * that per-dab axes actually reach a real accumulator: a rising-pressure
+//    stroke through a real `StrokeSession` with a PenPressure-controlled Size
+//    Variance produces RISING dab radii, against a deliberately wrong
+//    constant `hardwareInputs` -- the assertion that goes red if
+//    `depositPending()` ever reads the frame latch again instead of the dab.
+//
+// Headless, GPU-free, writes no files. See app/selftest/StrokeInput.cpp.
+bool runStrokeInputTest();
+
 }  // namespace np

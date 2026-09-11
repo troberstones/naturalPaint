@@ -1000,10 +1000,40 @@ void handlePenEvent(np::AppState& st, const SDL_Event& e) {
     case SDL_EVENT_PEN_DOWN:
       st.penSeen = true;
       st.penDown = true;
+      // Track A: the down event carries the pen's first real position, and
+      // it is the "latest axis value" state above (updated by whichever
+      // SDL_EVENT_PEN_AXIS events happened to arrive before this touch, if
+      // any -- a pen can report pressure before it reports contact) that
+      // this sample snapshots. It opens the run of samples the canvas block
+      // may paint: the motion case below queues only while `penDown`, so
+      // nothing a hovering pen reported before this touch reaches a stroke.
+      st.pointerQueue.push_back(np::PointerSample{e.ptouch.x, e.ptouch.y, st.penPressure,
+                                                   st.penTiltXDeg, st.penTiltYDeg,
+                                                   st.penRotationDeg, /*isPen=*/true});
       break;
     case SDL_EVENT_PEN_UP:
       st.penDown = false;
       st.penPressure = 0.0f;
+      break;
+    case SDL_EVENT_PEN_MOTION:
+      // The only other event that carries a pen POSITION. Axes are each
+      // their own event (SDL_EVENT_PEN_AXIS, below) and arrive independently
+      // of motion, so this snapshots whatever the "latest axis value" state
+      // above currently holds -- exactly what a once-per-frame sample used
+      // to read, just taken once per motion event instead of once per frame.
+      //
+      // Only while the pen is in CONTACT. A hovering pen reports motion
+      // continuously, and the frame a stroke begins on would otherwise drain
+      // every hover sample that arrived before this frame's PEN_DOWN and paint
+      // them as the stroke's opening -- a streak from wherever the pen was
+      // hovering a few milliseconds before it touched. Discarding at the
+      // source, rather than tagging and filtering at the drain, keeps the
+      // queue's own contract simple: everything in it was captured while the
+      // pointer was down.
+      if (!st.penDown) break;
+      st.pointerQueue.push_back(np::PointerSample{e.pmotion.x, e.pmotion.y, st.penPressure,
+                                                   st.penTiltXDeg, st.penTiltYDeg,
+                                                   st.penRotationDeg, /*isPen=*/true});
       break;
     case SDL_EVENT_PEN_AXIS:
       // Each axis arrives as its own event, which is why the two tilt angles
@@ -1017,6 +1047,8 @@ void handlePenEvent(np::AppState& st, const SDL_Event& e) {
         case SDL_PEN_AXIS_XTILT:
         case SDL_PEN_AXIS_YTILT:
           st.penSeen = true;
+          st.penReportsTilt = true;  // AppState's own comment: the only
+                                     // capability evidence SDL 3.2 offers
           if (e.paxis.axis == SDL_PEN_AXIS_XTILT) st.penTiltXDeg = e.paxis.value;
           else st.penTiltYDeg = e.paxis.value;
           st.penTilt = np::penTiltNormalised(st.penTiltXDeg, st.penTiltYDeg);
@@ -1024,11 +1056,73 @@ void handlePenEvent(np::AppState& st, const SDL_Event& e) {
           break;
         case SDL_PEN_AXIS_ROTATION:
           st.penSeen = true;
+          st.penReportsBarrel = true;
+          st.penRotationDeg = e.paxis.value;
           st.penBarrel = np::penBarrelNormalised(e.paxis.value);
           break;
         default:
           break;
       }
+      break;
+    default:
+      break;
+  }
+}
+
+// Track A's mouse half of the full-rate pointer queue -- `handlePenEvent()`'s
+// own comment covers the pen half. A mouse reports one position per motion
+// event with no separate axis stream, so there is nothing to snapshot beyond
+// the event's own coordinates; `PointerSample`'s defaults (pressure 1.0, the
+// three degree fields at 0.0, which its own comment shows convert to a
+// mouse's neutral reading) are exactly right with `isPen` left false.
+//
+// `SDL_EVENT_MOUSE_BUTTON_DOWN` is queued alongside `SDL_EVENT_MOUSE_MOTION`
+// for the same reason `isPointerSampleEvent()` below already treats both as
+// pointer samples: a plain click that generates no motion event at all --
+// the OS reports the button down at whatever position the cursor already
+// sat at -- must still queue ONE sample, or `StrokePath::flush()`'s
+// stationary-click rule (brush/StrokePath.hpp) would find zero samples and
+// paint nothing, the exact defect that rule exists to fix.
+//
+// **A pen's own synthesized mouse events are filtered out, and this is not
+// optional.** SDL offers "a virtual mouse device for touch and pen input"
+// (SDL_mouse.h's own header comment) and delivers it as ordinary
+// `SDL_EVENT_MOUSE_*` with `which == SDL_PEN_MOUSEID`, alongside the real
+// `SDL_EVENT_PEN_*` stream -- so every pen motion arrives here TWICE. Queued
+// unfiltered, each pen sample would be followed by a duplicate of itself at
+// `PointerSample`'s mouse defaults (pressure 1.0, neutral axes), which is
+// precisely the reading that erases the pressure the pen event just
+// reported: a tablet stroke would alternate real pressure and full pressure
+// sample by sample, and `StrokePath` would dutifully interpolate between
+// them. SDL's own documentation says as much -- "apps that care about
+// touch/pen separately from mouse input should filter out events with a
+// `which` field of SDL_TOUCH_MOUSEID/SDL_PEN_MOUSEID."
+//
+// `SDL_TOUCH_MOUSEID` is deliberately NOT filtered. Touch has no separate
+// event stream feeding this queue (`handlePenEvent()` covers pens only), so
+// its synthesized mouse events are the only samples a finger ever produces
+// -- dropping them would stop touch painting outright, where dropping the
+// pen's duplicates only removes a second copy of something already queued.
+//
+// **Only while the LEFT button is held**, the canvas block's own `down`
+// (`ImGui::IsMouseDown(ImGuiMouseButton_Left)`) -- the mouse analogue of the
+// pen's `penDown` gate in `handlePenEvent()`, for the identical reason: a
+// frame whose click arrived after some plain cursor motion must open its
+// stroke at the click, not at wherever the cursor passed through earlier in
+// the same frame. `e.motion.state` is the button mask AT THE EVENT, not now.
+void queueMousePointerSample(np::AppState& st, const SDL_Event& e) {
+  switch (e.type) {
+    case SDL_EVENT_MOUSE_MOTION:
+      if (e.motion.which == SDL_PEN_MOUSEID) break;
+      if ((e.motion.state & SDL_BUTTON_LMASK) == 0) break;
+      st.pointerQueue.push_back(
+          np::PointerSample{e.motion.x, e.motion.y, 1.0f, 0.0f, 0.0f, 0.0f, /*isPen=*/false});
+      break;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+      if (e.button.which == SDL_PEN_MOUSEID) break;
+      if (e.button.button != SDL_BUTTON_LEFT) break;
+      st.pointerQueue.push_back(
+          np::PointerSample{e.button.x, e.button.y, 1.0f, 0.0f, 0.0f, 0.0f, /*isPen=*/false});
       break;
     default:
       break;
@@ -3904,6 +3998,12 @@ int main(int argc, char** argv) {
     // user-presets.txt fixture, and brushTipFor()'s exact reads. Headless and
     // GPU-free.
     const bool nativeBrushOk = np::runNativeBrushTest();
+    // Track A: full-rate pointer input and per-dab axis interpolation --
+    // StrokePath's axis-carrying StrokeSample/StrokeDab, distance-keyed
+    // pressure smoothing, and depositPending() resolving Pressure/Tilt/
+    // Azimuth/Barrel from each dab rather than from one frame-latched
+    // reading. Headless and GPU-free (app/SelfTest.hpp's own comment on it).
+    const bool strokeInputOk = np::runStrokeInputTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -3972,7 +4072,8 @@ int main(int argc, char** argv) {
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
                     penToolOk && pathOpsOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && tipEdgeOk &&
-                    brushBlendModeOk && nativeBrushOk;
+                    brushBlendModeOk && nativeBrushOk &&
+                    strokeInputOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -4821,6 +4922,7 @@ int main(int argc, char** argv) {
       pacingSawEvent = true;
       ImGui_ImplSDL3_ProcessEvent(&e);
       handlePenEvent(st, e);
+      queueMousePointerSample(st, e);
       // e.common.timestamp is when SDL generated the event, not when we
       // happened to drain the queue for it — using our own SDL_GetTicksNS()
       // here would understate latency by however long the event sat queued.
@@ -5390,6 +5492,18 @@ int main(int argc, char** argv) {
         frameTrace && st.documents.active() ? st.documents.active()->revision : 0;
 
     np::drawUI(st, sim, gpu, lut, kCanvasW, kCanvasH);
+
+    // Track A: "every frame owns exactly its own pointer queue" is an
+    // invariant of THIS loop, not of the canvas block that usually drains it.
+    // That block sits inside `if (ImGui::Begin("##canvas", ...))` and so does
+    // not run on a frame where the canvas window is collapsed or clipped
+    // away -- and a queue that survived such a frame would either grow
+    // without bound while the user waved the pointer around, or reach a later
+    // stroke as a catch-up burst of positions from a different gesture. One
+    // unconditional clear here rules out both, and is a no-op on every frame
+    // the canvas block already emptied it (`AppState::pointerQueue`'s own
+    // comment).
+    st.pointerQueue.clear();
 
     const uint64_t drawUiNs = frameTrace ? SDL_GetTicksNS() : 0;
     const uint64_t revisionAfterUI =

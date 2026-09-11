@@ -298,6 +298,7 @@ add_executable(naturalPaint
   app/selftest/TipEdge.cpp
   app/selftest/BrushBlendMode.cpp
   app/selftest/NativeBrush.cpp
+  app/selftest/StrokeInput.cpp
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
   app/LayerThumbnail.cpp
