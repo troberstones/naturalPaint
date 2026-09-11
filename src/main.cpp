@@ -2647,6 +2647,19 @@ int main(int argc, char** argv) {
   if (strokePreviewOut != nullptr)
     return np::runStrokePreviewDump(strokePreviewOut, strokePreviewRadius, strokePreviewSpacing);
 
+  // SDL's X11 backend tags every "normal" window _NET_WM_BYPASS_COMPOSITOR=1
+  // by default -- a standing request for the window manager to unredirect
+  // it (unrelated to fullscreen; it fires for this window at its ordinary
+  // 1480x940 size). Under KWin's X11 backend on NVIDIA's proprietary driver,
+  // honouring that request means the compositor has to fully re-redirect
+  // and recomposite every window on the desktop when this one closes --
+  // observed as every window and the wallpaper blanking and redrawing.
+  // vkcube and a bare SDL_CreateWindow with this hint off do not trigger it;
+  // an otherwise-identical SDL window with the hint left at its default
+  // does, every time. Harmless to set unconditionally: it is an X11-only
+  // hint SDL ignores on every other platform.
+  SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
+
   if (!SDL_Init(SDL_INIT_VIDEO)) {
     std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
     return 1;
