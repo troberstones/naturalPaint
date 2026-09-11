@@ -17890,8 +17890,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
             pathEditEnd(&st.pathEdit, pathLayer->shapes);
           } else {
-            const PathEditChange changed =
-                pathEditUpdate(&st.pathEdit, &pathLayer->shapes, PathPoint{tx, ty});
+            // Shift read LIVE, every frame -- app/PenTool.hpp's own rule for
+            // this parameter, matching every other modifier this canvas
+            // block reads during a live drag (`gnomonSuppressed` above,
+            // `how`'s Alt/Shift, both read fresh rather than latched at
+            // pen-down). It locks a Corner scale to uniform and snaps a
+            // Rotate to 15 degrees; every other drag kind ignores it.
+            const PathEditChange changed = pathEditUpdate(
+                &st.pathEdit, &pathLayer->shapes, PathPoint{tx, ty}, ImGui::GetIO().KeyShift);
             // recordEdit on the FIRST frame that moves anything and amendEdit
             // after, so a drag is ONE undo step and a click that never moved
             // leaves no entry at all (app/DocumentLifecycle.hpp's rule, and the
