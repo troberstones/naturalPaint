@@ -1098,10 +1098,26 @@ bool runCommandsImageTest() {
       check(added.ok, "delete_selection: fixture can add a Pigment layer");
       if (added.ok) {
         setActiveLayer(pig, added.selected);
+        // Real mass under the fixture's own selection, not an empty layer --
+        // `r.ok` alone would stay true even if this row silently skipped
+        // `pigmentTiles` altogether (the applier's own success does not
+        // depend on having cleared anything), so the claim under test is
+        // read back from the mass itself.
+        PigmentTile& tile =
+            pig.document.layers[pig.activeLayer].pigmentTiles->getOrCreate(TileCoord{0, 0});
+        PigmentTexel painted;
+        painted.latent.c[0] = 0.3f;
+        painted.mass = 1.0f;
+        for (int32_t y = 8; y < 48; ++y)
+          for (int32_t x = 8; x < 48; ++x) tile.writeTexel(PixelCoord{x, y}, painted);
         const CommandResult r = applyCommand(pig, Command{"delete_selection", JsonValue::object()});
-        check(r.ok,
-              "delete_selection: available on a Pigment layer, unlike the shared pixel-op "
-              "bridge that would refuse it");
+        const PigmentTexel after =
+            pig.document.layers[pig.activeLayer].pigmentTiles->find(TileCoord{0, 0})->readTexel(
+                PixelCoord{20, 20});
+        check(r.ok && r.texelsChanged > 0 && after.mass == 0.0f,
+              "delete_selection: available on a Pigment layer, and the mass under the "
+              "selection is actually cleared -- not merely an 'ok' the shared pixel-op "
+              "bridge would also have refused to give");
       }
     }
     // A locked layer is refused, by name.
