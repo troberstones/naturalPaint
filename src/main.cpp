@@ -1103,15 +1103,37 @@ void runUiMergeDemo(np::OpenDocument& od, std::string_view list) {
   }
 }
 
+// The latest-wins pen scalars on `AppState` (`penPressure`, `penTilt`,
+// `penDown`, ...), which the DYNAMICS gutter, `dynamicInputsFor()`,
+// `strokeHardwareInputsFor()` and `--latency` read. **Queueing is not done
+// here any more**: every pen and mouse event also goes to
+// `st.pointerQueue.push()` (app/PointerQueue.hpp), which makes every
+// decision about what a stroke receives -- which events queue a sample, which
+// report a PEN_AXIS event belongs to, and which gesture a sample is part of.
+// That module's header documents SDL's per-backend event order this relies
+// on; the short version for this function is that its values end up the
+// same as the queue's `latestAxes()`, because both take each event's own
+// number.
 void handlePenEvent(np::AppState& st, const SDL_Event& e) {
   switch (e.type) {
     case SDL_EVENT_PEN_DOWN:
+      // Contact. The position this event carries is SDL's PREVIOUS pen
+      // position on macOS (SDL_pen.c reads `pen->x/y` before the same
+      // report's motion moves it), and its axes have not arrived yet on most
+      // backends -- the report's PEN_AXIS events follow it. Neither matters
+      // here any more: the stroke's opening sample is built and patched by
+      // `PointerQueue`, not snapshotted from these scalars.
       st.penSeen = true;
       st.penDown = true;
       break;
     case SDL_EVENT_PEN_UP:
+      // No longer zeroes `penPressure`. That zero used to be what the first
+      // sample of the NEXT stroke snapshotted on macOS (the wave-1 review's
+      // finding 1). Nothing else relied on it: the lift's own report carries
+      // pressure 0 on every backend that reports pressure, so the gutter
+      // still reads 0 after a lift -- and for a pen that reports no pressure
+      // at all the zero was the only reading its later strokes ever got.
       st.penDown = false;
-      st.penPressure = 0.0f;
       break;
     case SDL_EVENT_PEN_AXIS:
       // Each axis arrives as its own event, which is why the two tilt angles
@@ -1125,6 +1147,8 @@ void handlePenEvent(np::AppState& st, const SDL_Event& e) {
         case SDL_PEN_AXIS_XTILT:
         case SDL_PEN_AXIS_YTILT:
           st.penSeen = true;
+          st.penReportsTilt = true;  // AppState's own comment: the only
+                                     // capability evidence SDL 3.2 offers
           if (e.paxis.axis == SDL_PEN_AXIS_XTILT) st.penTiltXDeg = e.paxis.value;
           else st.penTiltYDeg = e.paxis.value;
           st.penTilt = np::penTiltNormalised(st.penTiltXDeg, st.penTiltYDeg);
@@ -1132,6 +1156,7 @@ void handlePenEvent(np::AppState& st, const SDL_Event& e) {
           break;
         case SDL_PEN_AXIS_ROTATION:
           st.penSeen = true;
+          st.penReportsBarrel = true;
           st.penBarrel = np::penBarrelNormalised(e.paxis.value);
           break;
         default:
@@ -1140,6 +1165,61 @@ void handlePenEvent(np::AppState& st, const SDL_Event& e) {
       break;
     default:
       break;
+  }
+}
+
+// ImGui's input-event sequence numbers, which is how `PointerQueue` learns
+// which frame ImGui gets round to each press (app/PointerQueue.hpp section
+// 3). Both read `imgui_internal.h` state -- `InputEventsNextEventId` and the
+// pending `InputEventsQueue` -- because ImGui exposes no public "how far have
+// you got" query, and the alternative (counting `IsMouseClicked()` edges)
+// desynchronises permanently the first time ImGui turns a Ctrl+click into a
+// right click or clears its buttons on focus loss.
+//
+// The next sequence number ImGui will hand out. Read immediately BEFORE an
+// event is given to ImGui: everything that event produces is >= this.
+uint32_t imguiNextInputSeq() { return GImGui->InputEventsNextEventId; }
+
+// The sequence number of the first input event ImGui has NOT processed, read
+// after `ImGui::NewFrame()` (which consumes a prefix of its queue, stopping
+// where input trickling says to). Every event numbered below it has been
+// processed. Mouse-viewport events carry no number (id 0) and are skipped.
+uint32_t imguiInputProcessedBound() {
+  for (const ImGuiInputEvent& ev : GImGui->InputEventsQueue)
+    if (ev.EventId != 0) return ev.EventId;
+  return GImGui->InputEventsNextEventId;
+}
+
+// SDL -> `np::PointerEvent`, one line per event type; false for events the
+// queue does not take. Every decision about them is `PointerQueue::push()`'s.
+bool pointerEventFromSdl(const SDL_Event& e, uint32_t uiSeq, np::PointerEvent& out) {
+  using K = np::PointerEventKind;
+  const uint64_t ts = e.common.timestamp;
+  switch (e.type) {
+    case SDL_EVENT_PEN_DOWN: out = {K::PenDown, ts, uiSeq, e.ptouch.x, e.ptouch.y}; return true;
+    case SDL_EVENT_PEN_UP: out = {K::PenUp, ts, uiSeq, e.ptouch.x, e.ptouch.y}; return true;
+    case SDL_EVENT_PEN_MOTION: out = {K::PenMotion, ts, uiSeq, e.pmotion.x, e.pmotion.y}; return true;
+    case SDL_EVENT_PEN_AXIS: {
+      const np::PointerAxis axis = e.paxis.axis == SDL_PEN_AXIS_PRESSURE ? np::PointerAxis::Pressure
+                                   : e.paxis.axis == SDL_PEN_AXIS_XTILT  ? np::PointerAxis::TiltX
+                                   : e.paxis.axis == SDL_PEN_AXIS_YTILT  ? np::PointerAxis::TiltY
+                                   : e.paxis.axis == SDL_PEN_AXIS_ROTATION ? np::PointerAxis::Rotation
+                                                                           : np::PointerAxis::Other;
+      out = {K::PenAxis, ts, uiSeq, e.paxis.x, e.paxis.y, axis, e.paxis.value};
+      return true;
+    }
+    case SDL_EVENT_MOUSE_MOTION:
+      out = {K::MouseMotion, ts, uiSeq, e.motion.x, e.motion.y, np::PointerAxis::Other, 0.0f,
+             (e.motion.state & SDL_BUTTON_LMASK) != 0, e.motion.which == SDL_PEN_MOUSEID};
+      return true;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+      out = {e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? K::MouseButtonDown : K::MouseButtonUp, ts,
+             uiSeq, e.button.x, e.button.y, np::PointerAxis::Other, 0.0f,
+             e.button.button == SDL_BUTTON_LEFT, e.button.which == SDL_PEN_MOUSEID};
+      return true;
+    default:
+      return false;
   }
 }
 
@@ -3283,10 +3363,10 @@ int main(int argc, char** argv) {
     // settings, each carrying its own id.
     const bool brushSettingsWindowOk = np::runBrushSettingsWindowTest();
     // brush/BrushModelIo: the text form of a BrushModel -- one templated
-    // visitor over all 151 leaves rather than 151 hand-written branches, in
+    // visitor over all 149 leaves rather than 149 hand-written branches, in
     // both directions. Headless and GPU-free.
     const bool brushModelIoOk = np::runBrushModelIoTest();
-    // brush/BrushModelDiff: the diff/equal pair over the same 151 leaves,
+    // brush/BrushModelDiff: the diff/equal pair over the same 149 leaves,
     // which presetMatches() and the round-trip proof both need. Headless.
     const bool brushModelDiffOk = np::runBrushModelDiffTest();
     // ui/BrushFieldPresentation: every BrushModel leaf is in exactly one of
@@ -3718,6 +3798,12 @@ int main(int argc, char** argv) {
     // independence at zero tolerance, the selection as a bound rather than a
     // speed limit, and paint landing on the active layer and on no other.
     const bool rgbDepositOk = np::runRgbDepositTest();
+    // brush/RgbDeposit.hpp §2a -- the brush's own blend mode (Photoshop's
+    // `Md `) reaching an RGB layer, STROKE-level against the texel latched
+    // before the stroke began, never per-dab against the live layer. Normal
+    // bit-identical to the pre-existing path, Multiply/Darken hand-checked,
+    // no compounding across overlapping dabs, alpha lock's freeze re-derived.
+    const bool brushBlendModeOk = np::runBrushBlendModeTest();
     // PRD F9/F10 (both P0), ADR-0007 -- the eraser on a plain RGB layer, which
     // until this step did NOTHING: Tool::Eraser sat in the not-built routing
     // list, so a drag with it reached no layer and said nothing about why.
@@ -4051,6 +4137,24 @@ int main(int argc, char** argv) {
     // PLAN.md phase 16 (ADR-0009): the flatting library absorbed from
     // autoFlats, bit-exact against its reference on the shared fixtures.
     const bool flatsOk = np::runFlatsTest();
+    // Track B / B1+B2: `BrushTip::edgePx`'s pixel-wide antialiasing floor on
+    // the procedural falloff, and `BrushTipBitmap::mips`' box-filter chain
+    // for a minified sampled tip. Headless and GPU-free.
+    const bool tipEdgeOk = np::runTipEdgeTest();
+    // brush/NativeBrush: naturalPaint's own brush section (load, wetness,
+    // grain), beside BrushModel. nativeBrushEqual()'s
+    // discrimination, BrushModel's leaf count dropping to 149,
+    // applyPresetToBrush()/presetFromBrush()'s round trip, a legacy
+    // user-presets.txt fixture, and brushTipFor()'s exact reads. Headless and
+    // GPU-free.
+    const bool nativeBrushOk = np::runNativeBrushTest();
+    // Track A: full-rate pointer input and per-dab axis interpolation --
+    // StrokePath's axis-carrying StrokeSample/StrokeDab, distance-keyed
+    // pressure smoothing, and depositPending() resolving Pressure/Tilt/
+    // Azimuth/Barrel from each dab rather than from one frame-latched
+    // reading. Headless and GPU-free (app/SelfTest.hpp's own comment on it).
+    const bool strokeInputOk = np::runStrokeInputTest();
+    const bool pointerQueueOk = np::runPointerQueueTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4118,7 +4222,9 @@ int main(int argc, char** argv) {
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk && dialogModuleOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
                     penToolOk && pathOpsOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
-                    textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk;
+                    textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && tipEdgeOk &&
+                    brushBlendModeOk && nativeBrushOk &&
+                    strokeInputOk && pointerQueueOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -4995,8 +5101,12 @@ int main(int argc, char** argv) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
       pacingSawEvent = true;
+      // Read BEFORE ImGui sees the event: this is where the event sits in
+      // ImGui's own input stream (app/PointerQueue.hpp section 3).
+      const uint32_t uiSeq = imguiNextInputSeq();
       ImGui_ImplSDL3_ProcessEvent(&e);
       handlePenEvent(st, e);
+      if (np::PointerEvent pe; pointerEventFromSdl(e, uiSeq, pe)) st.pointerQueue.push(pe);
       // e.common.timestamp is when SDL generated the event, not when we
       // happened to drain the queue for it — using our own SDL_GetTicksNS()
       // here would understate latency by however long the event sat queued.
@@ -5469,11 +5579,32 @@ int main(int argc, char** argv) {
                           bands.canvas.y + bands.canvas.h * 0.25f);
         const ImVec2 to(bands.canvas.x + bands.canvas.w * 0.75f,
                         bands.canvas.y + bands.canvas.h * 0.75f);
-        io.AddMousePosEvent(from.x + (to.x - from.x) * u, from.y + (to.y - from.y) * u);
+        const float px = from.x + (to.x - from.x) * u;
+        const float py = from.y + (to.y - from.y) * u;
+        // **The pointer queue is fed the same input, stamped the same way the
+        // SDL poll loop stamps a real event** -- the motion a real mouse would
+        // have reported (held from the second step on) and the press/release.
+        // The canvas's CPU route paints only what `st.pointerQueue` hands it
+        // (app/PointerQueue.hpp), so injecting into ImGui alone -- which is
+        // all this block did after Track A -- left this demo, the one
+        // end-to-end driver of that path, painting nothing, and made the
+        // `--transform-demo 0 --pen-demo` golden case (a live gizmo suppresses
+        // every paint route) unable to fail on the CPU route.
+        const bool held = step < kPenDemoSteps;
+        using K = np::PointerEventKind;
+        const uint64_t nowNs = SDL_GetTicksNS();
+        const uint32_t posSeq = imguiNextInputSeq();
+        io.AddMousePosEvent(px, py);
+        st.pointerQueue.push({K::MouseMotion, nowNs, posSeq, px, py, np::PointerAxis::Other, 0.0f,
+                              /*left held=*/step > 0, false});
         // Down on the first step and held; released one step past the end, so
         // the pen-up branch runs on a frame the pointer is still over the
         // canvas rather than on the frame the demo happens to stop moving.
-        io.AddMouseButtonEvent(ImGuiMouseButton_Left, step < kPenDemoSteps);
+        const uint32_t buttonSeq = imguiNextInputSeq();
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, held);
+        if (step == 0 || !held)
+          st.pointerQueue.push({held ? K::MouseButtonDown : K::MouseButtonUp, nowNs, buttonSeq,
+                                px, py, np::PointerAxis::Other, 0.0f, /*left=*/true, false});
       }
     }
 
@@ -5545,6 +5676,10 @@ int main(int argc, char** argv) {
 
     ImGui::NewFrame();
     const uint64_t newFrameNs = frameTrace ? SDL_GetTicksNS() : 0;
+    // How far through its input queue this frame's `NewFrame()` got -- which
+    // presses `ImGui::IsMouseDown()` now reflects, and so which gestures' samples
+    // the canvas block may be offered (app/PointerQueue.hpp section 3).
+    st.pointerQueue.beginFrame(imguiInputProcessedBound());
 
     // docs/testing-issues.md T5, reversed 2026-09-08: "painting the bare
     // canvas is a supported workflow" no longer holds -- with no document
@@ -5591,6 +5726,18 @@ int main(int argc, char** argv) {
         frameTrace && st.documents.active() ? st.documents.active()->revision : 0;
 
     np::drawUI(st, sim, gpu, lut, kCanvasW, kCanvasH);
+
+    // The pointer queue's end of frame (app/PointerQueue.hpp section 3): every
+    // sample of a press ImGui has already reported that the canvas did not take
+    // this frame is dropped, and every gesture ImGui has seen released is
+    // forgotten. Here in the loop rather than in the canvas block, because that
+    // block sits inside `if (ImGui::Begin("##canvas", ...))` and does not run
+    // on a frame the canvas window is collapsed or clipped away -- the rule has
+    // to hold on those frames too. It is no longer an unconditional clear:
+    // samples of a press ImGui has NOT processed yet (it trickles a press a
+    // frame or more behind a wheel event or an earlier release) wait for the
+    // frame it does, which is what the clear used to throw away.
+    st.pointerQueue.endFrame();
 
     const uint64_t drawUiNs = frameTrace ? SDL_GetTicksNS() : 0;
     const uint64_t revisionAfterUI =

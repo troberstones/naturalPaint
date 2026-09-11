@@ -112,7 +112,7 @@ bool runActiveLayerTest() {
   // form, and no longer reads its own `inputs` parameter at all
   // (`(void)inputs;`, its own comment) -- Size/Angle/Roundness are base-only
   // there, resolved per dab only inside a real `StrokeSession`, and Flow is
-  // `brush.load` unscaled, deliberately. So what this section proves now is
+  // `brush.native.load` unscaled, deliberately. So what this section proves now is
   // the opposite claim: the tip `brushTipFor()` returns is the model's own
   // base values, AT EVERY PRESSURE, full stop.
   {
@@ -120,12 +120,12 @@ bool runActiveLayerTest() {
     BrushState brush;
     brush.model.tip.diameterPx = 80.0f;  // radius 40
     brush.model.tip.hardness = 0.5f;
-    brush.load = 0.8f;
+    brush.native.load = 0.8f;
     brush.model.tip.spacingPercent = 30.0f;
     brush.pigment = 6;  // Ultramarine Blue, BrushState's own default
 
     const BrushTip full = brushTipFor(brush, noLut, 1.0f);
-    check(full.radius == brush.model.tip.diameterPx / 2.0f && full.flow == brush.load,
+    check(full.radius == brush.model.tip.diameterPx / 2.0f && full.flow == brush.native.load,
           "at full pressure the tip is the model's base values, unmodified");
     // `full.spacing` is RADII (`brush/Deposit.hpp`'s own comment);
     // `spacingPercent` is a percentage OF THE DIAMETER, so `/ 100 * 2` is the
@@ -259,7 +259,7 @@ bool runActiveLayerTest() {
     MixboxLut noLut;
     BrushState brush;
     brush.model.tip.diameterPx = 60.0f;  // radius 30
-    brush.load = 1.0f;
+    brush.native.load = 1.0f;
     // **`brushTipFor()`'s own pressure argument no longer widens anything**
     // (Part D above, just proved) -- pressure now reaches a per-dab radius
     // only through `model.shape.size`'s own `Variance`, resolved inside

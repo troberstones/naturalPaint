@@ -111,8 +111,11 @@ bool runTonalBrushTest() {
     }
   };
 
-  // A hard disc, so `dabCoverage()` is exactly 1.0f over the whole core and
+  // A hardness-1 tip, so `dabCoverage()` is exactly 1.0f over the whole core and
   // every number below is about the tonal shift rather than about the falloff.
+  // Since BrushTip::edgePx the core ends `edgePx` (1 px) short of the radius
+  // and the last pixel is an antialiased rim -- no longer a hard disc; section
+  // 3's "once" claims are the ones that had to be restated for it.
   auto discTip = [](float radius, float flow) {
     BrushTip t;
     t.radius = radius;
@@ -356,6 +359,18 @@ bool runTonalBrushTest() {
   // tolerance -- with flow 1 the first dab reaches the cap, so the second writes
   // nothing at all and the two strokes produce the same binary16 words rather
   // than merely similar ones.
+  //
+  // **"The first dab reaches the cap" is now true of the dab's CORE, not of
+  // every texel it covers, and the assertions below say so.** It was true of
+  // every texel while a hardness-1 tip was a hard disc. `BrushTip::edgePx`
+  // (brush/Deposit.hpp §2) gave it an antialiased last pixel, whose coverage
+  // `c < 1` makes the rim's weight `flow * c < 1`: one dab takes a rim texel
+  // only to `c`, not to the cap, so a second dab of the same stroke
+  // legitimately shifts the rim further -- toward the SAME ceiling, never past
+  // it. The one "wrote nothing" claim therefore becomes three: the second dab
+  // leaves the whole core bit-identical to the one-dab stroke; everything it
+  // did write is rim; and scrubbing on still stops altogether, within a bound
+  // derived from the faintest rim texel.
   {
     const float midLinear = srgbDecode(0.5f);
     const std::array<float, 4> paint{midLinear, midLinear * 0.5f, midLinear * 0.25f, 1.0f};
@@ -374,27 +389,95 @@ bool runTonalBrushTest() {
     s1.toneDab(one, t, Vec2{128.0f, 128.0f}, 256, 256, nullptr, nullptr);
     s1.end();
 
+    // Every texel of the footprint, classified by the engine's own coverage:
+    // the core (exactly 1) and the antialiased rim (strictly between).
+    const Vec2 centre{128.0f, 128.0f};
+    const PixelBounds bb = dabPixelBounds(t, centre, 256, 256);
+    std::vector<PixelCoord> coreTexels;
+    size_t rimCount = 0;
+    float minCov = 1.0f;
+    for (int32_t y = bb.y0; y <= bb.y1; ++y)
+      for (int32_t x = bb.x0; x <= bb.x1; ++x) {
+        const float cov = dabCoverage(t, (static_cast<float>(x) + 0.5f) - centre.x,
+                                      (static_cast<float>(y) + 0.5f) - centre.y);
+        if (cov == 1.0f) {
+          coreTexels.push_back(PixelCoord{x, y});
+        } else if (cov > 0.0f) {
+          ++rimCount;
+          minCov = std::min(minCov, cov);
+        }
+      }
+
     TonalStroke s2;
     s2.begin(0.6f, TonalDirection::Dodge);
-    s2.toneDab(two, t, Vec2{128.0f, 128.0f}, 256, 256, nullptr, nullptr);
-    const DepositCount second =
-        s2.toneDab(two, t, Vec2{128.0f, 128.0f}, 256, 256, nullptr, nullptr);
+    s2.toneDab(two, t, centre, 256, 256, nullptr, nullptr);
+    // The accumulator moves exactly when a texel is written (TonalBrush.cpp
+    // sets `strokeTone` only on the `changed` path), so an unchanged core
+    // accumulator across dab two IS "dab two wrote no core texel".
+    std::vector<float> coreTone(coreTexels.size());
+    for (size_t i = 0; i < coreTexels.size(); ++i) coreTone[i] = s2.strokeToneAt(coreTexels[i]);
+    const DepositCount second = s2.toneDab(two, t, centre, 256, 256, nullptr, nullptr);
+    size_t coreWritten = 0;
+    for (size_t i = 0; i < coreTexels.size(); ++i)
+      if (s2.strokeToneAt(coreTexels[i]) != coreTone[i]) ++coreWritten;
+
+    size_t coreDiffer = 0, rimDiffer = 0, diffOutsideRim = 0;
+    for (int32_t y = bb.y0 - 1; y <= bb.y1 + 1; ++y)
+      for (int32_t x = bb.x0 - 1; x <= bb.x1 + 1; ++x) {
+        if (readAt(one, x, y) == readAt(two, x, y)) continue;
+        const float cov = dabCoverage(t, (static_cast<float>(x) + 0.5f) - centre.x,
+                                      (static_cast<float>(y) + 0.5f) - centre.y);
+        if (cov == 1.0f)
+          ++coreDiffer;
+        else if (cov > 0.0f)
+          ++rimDiffer;
+        else
+          ++diffOutsideRim;
+      }
+    const size_t coreCount = coreTexels.size();
+
+    // Scrub on with the same stroke until a dab writes nothing. While `T <
+    // cap` one dab adds `flow * c * (1 - T) >= flow * c * (1 - cap)`, and a
+    // texel the shift does not move keeps its `T` (TonalBrush.cpp's `next ==
+    // dst` skip) and so never moves again -- either way a texel of coverage `c`
+    // stops within `ceil(cap / (flow * c * (1 - cap)))` dabs.
+    constexpr float kCap = 0.6f;
+    const size_t silentBound =
+        static_cast<size_t>(std::ceil(kCap / (t.flow * minCov * (1.0f - kCap)))) + 1;
+    size_t dabsUntilSilent = 0;  // 1-based, counting the two dabs above
+    DepositCount silent;
+    for (size_t k = 3; k <= 4000 && dabsUntilSilent == 0; ++k) {
+      const DepositCount dc = s2.toneDab(two, t, centre, 256, 256, nullptr, nullptr);
+      if (dc.texels == 0) {
+        dabsUntilSilent = k;
+        silent = dc;
+      }
+    }
     s2.end();
 
-    bool identical = true;
+    bool identical = coreDiffer == 0;
     for (int32_t x = 110; x <= 146; ++x)
       if (readAt(one, x, 128) != readAt(two, x, 128)) identical = false;
-    std::printf("  [measured] one dab vs two overlapping dabs of one stroke: identical over "
-                "the row = %s; the second dab wrote %zu texels and %zu tiles\n",
-                identical ? "yes" : "no", second.texels, second.tiles);
-    check(identical,
+    std::printf("  [measured] one dab vs two overlapping dabs of one stroke: %zu of %zu core "
+                "texels differ, %zu of %zu rim texels differ, %zu outside the disc; the second "
+                "dab wrote %zu texels (%zu of them core) and %zu tiles; dab %zu was the first "
+                "to write nothing (bound %zu from the faintest rim coverage %.6f)\n",
+                coreDiffer, coreCount, rimDiffer, rimCount, diffOutsideRim, second.texels,
+                coreWritten, second.tiles, dabsUntilSilent, silentBound,
+                static_cast<double>(minCov));
+    check(coreCount > 1000 && identical,
           "once: a two-dab overlapping stroke and a ONE-dab stroke leave BIT-IDENTICAL "
-          "texels across the whole dab, at zero tolerance -- a stroke's shift belongs to the "
-          "stroke, not to how many times it crossed itself");
-    check(second.texels == 0 && second.tiles == 0,
-          "once: and the second dab wrote nothing and reported no tile -- at the ceiling the "
-          "module stops dirtying the tile it is scrubbing over, so live feedback stops "
-          "re-uploading it");
+          "texels across the dab's whole flat CORE, at zero tolerance -- a stroke's shift "
+          "belongs to the stroke, not to how many times it crossed itself (the core, since "
+          "edgePx gave the tip an antialiased rim that one dab does not take to the cap)");
+    check(coreWritten == 0 && second.texels <= rimCount && diffOutsideRim == 0,
+          "once: and the second dab wrote NO core texel -- everything it wrote is antialiased "
+          "rim still short of the ceiling. Was 'wrote nothing and reported no tile', true only "
+          "while a hardness-1 tip was a hard disc");
+    check(dabsUntilSilent > 2 && dabsUntilSilent <= silentBound && silent.tiles == 0,
+          "once: and scrubbing on over the same spot still STOPS -- within the bound derived "
+          "from the faintest rim texel, a dab writes nothing and reports no tile, so live "
+          "feedback stops re-uploading a tile the stroke has finished with");
     check(readAt(one, 128, 128)[0] != before[0],
           "once: checked against a stroke that actually shifted something -- two untouched "
           "layers are also bit-identical");
@@ -408,29 +491,59 @@ bool runTonalBrushTest() {
     constexpr float kStrength = 0.5f;
     constexpr int kDabs = 50;
     const BrushTip slow = discTip(20.0f, 0.35f);
-    fillRect(store, 110, 120, 145, 136, {midLinear, midLinear, midLinear, 1.0f});
+    constexpr int32_t kPaintX0 = 110, kPaintX1 = 145, kPaintY0 = 120, kPaintY1 = 136;
+    fillRect(store, kPaintX0, kPaintY0, kPaintX1, kPaintY1,
+             {midLinear, midLinear, midLinear, 1.0f});
     const float d0 = displayOf(readAt(store, 128, 128), 0);
+
+    // **"Only a handful wrote" is counted over the painted CORE** -- the same
+    // latent defect review finding 7 found in runRgbEraseTest()'s floor, in
+    // the same fixture. Counting dabs that wrote ANY texel measured 4 against
+    // `< 5` only because the painted rectangle's corners (110,136) and
+    // (145,136) sit at d = 19.455, in the tip's antialiased last pixel, where
+    // a texel of coverage 0.567 needs exactly 4 dabs to reach the ceiling; a
+    // corner at d = 19.8 would need far more with the ceiling intact. The
+    // core (coverage exactly 1) is where the claim lives; that the rim then
+    // falls silent too is the "once:" block's derived-bound assertion above.
+    std::vector<PixelCoord> ceilingCore;
+    for (int32_t y = kPaintY0; y <= kPaintY1; ++y)
+      for (int32_t x = kPaintX0; x <= kPaintX1; ++x)
+        if (dabCoverage(slow, (static_cast<float>(x) + 0.5f) - 128.0f,
+                        (static_cast<float>(y) + 0.5f) - 128.0f) == 1.0f)
+          ceilingCore.push_back(PixelCoord{x, y});
+    std::vector<float> ceilingBefore(ceilingCore.size());
 
     TonalStroke scrub;
     scrub.begin(kStrength, TonalDirection::Dodge);
-    size_t writingDabs = 0;
+    size_t writingDabs = 0;      // wrote ANY texel -- printed, no longer asserted
+    size_t coreWritingDabs = 0;  // wrote a painted CORE texel
     float perDabExponent = 1.0f;  // the rejected model's running exponent
     for (int i = 0; i < kDabs; ++i) {
+      for (size_t j = 0; j < ceilingCore.size(); ++j)
+        ceilingBefore[j] = scrub.strokeToneAt(ceilingCore[j]);
       const DepositCount c =
           scrub.toneDab(store, slow, Vec2{128.0f, 128.0f}, 256, 256, nullptr, nullptr);
       if (c.texels > 0) ++writingDabs;
+      bool coreChanged = false;
+      for (size_t j = 0; j < ceilingCore.size(); ++j)
+        if (scrub.strokeToneAt(ceilingCore[j]) != ceilingBefore[j]) coreChanged = true;
+      if (coreChanged) ++coreWritingDabs;
       perDabExponent *= std::exp2(-slow.flow * kStrength);
     }
     const float appliedTone = scrub.strokeToneAt(PixelCoord{128, 128});
     const float wantDisplay = std::pow(d0, scrub.ceilingGamma());
     const float gotDisplay = displayOf(readAt(store, 128, 128), 0);
     const float badDisplay = std::pow(d0, perDabExponent);
-    const float bound = 2.0f * static_cast<float>(writingDabs) * kHalfRel;
+    // (128,128) is a core texel, written `coreWritingDabs` times -- the count
+    // the per-write rounding bound is about.
+    const float bound = 2.0f * static_cast<float>(coreWritingDabs) * kHalfRel;
     std::printf("  [measured] %d overlapping dabs at strength %.2f: tone accumulated %.9f, "
-                "display %.6f -> %.6f (closed form %.6f); only %zu dabs wrote\n",
+                "display %.6f -> %.6f (closed form %.6f); %zu dabs wrote the %zu-texel "
+                "painted core, %zu wrote anything (the rim)\n",
                 kDabs, static_cast<double>(kStrength), static_cast<double>(appliedTone),
                 static_cast<double>(d0), static_cast<double>(gotDisplay),
-                static_cast<double>(wantDisplay), writingDabs);
+                static_cast<double>(wantDisplay), coreWritingDabs, ceilingCore.size(),
+                writingDabs);
     std::printf("  [measured] the REJECTED per-dab model on the identical inputs reaches "
                 "display %.6f -- white\n",
                 static_cast<double>(badDisplay));
@@ -438,10 +551,10 @@ bool runTonalBrushTest() {
           "ceiling: 50 overlapping dabs accumulate EXACTLY the strength and no further, at "
           "zero tolerance -- the accumulator is the memory, so the ceiling is exact rather "
           "than approached");
-    check(writingDabs > 0 && writingDabs < 5,
-          "ceiling: and only a handful of those 50 dabs wrote anything -- once the ceiling is "
-          "reached the rest are free, which is what stops a scrubbed stroke re-uploading a "
-          "tile it is not changing");
+    check(ceilingCore.size() > 400 && coreWritingDabs > 0 && coreWritingDabs < 5,
+          "ceiling: and only a handful of those 50 dabs wrote the painted CORE -- once the "
+          "ceiling is reached the rest are free there. Counted over the core since edgePx: "
+          "how many dabs an antialiased rim texel needs is rim geometry, not the ceiling");
     check(nearRel(gotDisplay, wantDisplay, bound),
           "ceiling: the stored texel matches the CLOSED FORM d0^(kFullGamma^-strength) "
           "within one binary16 rounding per writing dab, amplified by the gamma -- the "

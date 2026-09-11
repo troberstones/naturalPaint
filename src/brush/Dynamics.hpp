@@ -67,7 +67,9 @@ enum class DynamicSource {
   // one, RE-SAMPLED EVERY DAB. Stroke-local like the four above it
   // (`sourceIsStrokeLocal()`), for the identical reason: a dab's direction
   // of travel is not known until its own position is, so this cannot be
-  // sampled once per frame the way Pressure/Tilt/Azimuth/Barrel are. See
+  // read off the pen the way Pressure/Tilt/Azimuth/Barrel are (once per
+  // render frame on the solver route; once per pointer sample, interpolated
+  // per dab, on the CPU route -- the stroke-local sources' section below). See
   // this header's own "DIRECTION" section, below the other four
   // stroke-local sources, for the normalisation, the wrap point, and the
   // first-dab default.
@@ -115,12 +117,12 @@ const char* sourceDisplay(DynamicSource source, float normalised, char* out, siz
 // (size, angle, roundness, hardness, flow and spacing all read `brush.*`
 // directly) before the DYNAMICS matrix's own §2b closed the gap where angle
 // and roundness were computed but never reached a dab. Concentration is not a
-// seventh field -- it is a second Multiply column onto the SAME `brush.load`
+// seventh field -- it is a second Multiply column onto the SAME `brush.native.load`
 // Flow already reads, exactly as two size links compose in `--selftest`'s own
 // worked example. Scatter, Hue, Saturation and Value were genuinely new: none
 // had a place to land until `BrushTip::scatter` and the sRGB HSV shift in
 // `app/StrokeSession::brushTipFor()` gave them one. Wetness alone stays an
-// honest refusal (`targetUnbuildableReason()`): `BrushState::wetness` exists,
+// honest refusal (`targetUnbuildableReason()`): `BrushState::native.wetness` exists,
 // but no CPU deposit route has anywhere to put a water value -- a Pigment
 // texel's seven channels do not include one, and giving it one is the solver
 // readback bridge's job, not this matrix's.
@@ -132,11 +134,11 @@ enum class DynamicTarget {
   Flow,           // FL -- scales BrushTip::flow
   Scatter,        // SC -- per-dab positional jitter, in radii; additive
   Spacing,        // SP -- scales BrushTip::spacing
-  Concentration,  // CT -- scales BrushState::load ("pigment concentration")
+  Concentration,  // CT -- scales BrushState::native.load ("pigment concentration")
   Hue,            // HU -- hue rotation of the deposited colour; additive
   Saturation,     // SA -- scales saturation
   Value,          // VA -- scales value
-  Wetness,        // WT -- scales BrushState::wetness
+  Wetness,        // WT -- scales BrushState::native.wetness
 };
 
 inline constexpr size_t kDynamicTargetCount = 12;
@@ -618,16 +620,115 @@ DynamicResult evaluateLinks(const BrushLinkSet& set, const DynamicInputs& inputs
 // same defensive clamp `linkContribution()` applies to its own `source`),
 // so a caller cannot hand this a value outside the range every other
 // pressure consumer in this file already assumes.
+//
+// **Still exactly this shape for its remaining callers, and no longer the
+// whole story.** `StrokeSession::smoothPressure()` -- and, through it,
+// `app/BrushSheet.cpp`'s and `app/StrokePreview.cpp`'s synthetic per-sample
+// sweeps -- still call this once per SAMPLE OF THEIRS, which for those two
+// callers is a fixed, evenly spaced sequence with no independent notion of
+// "how far did the pointer move", so a frame-shaped (call-count-shaped)
+// filter is the right one for them and stays exactly as tuned. The
+// interactive canvas block is no longer one of these callers -- see
+// `dynamicPressureSmoothedByDistance()` immediately below for why and what
+// replaced it there.
 float dynamicPressureEma(float previousSmoothed, float rawPressure) noexcept;
+
+// ---------------------------------------------------------------------------
+// DISTANCE-KEYED PRESSURE SMOOTHING -- `dynamicPressureEma()`'s sibling for a
+// caller with no fixed sample cadence
+// ---------------------------------------------------------------------------
+//
+// `dynamicPressureEma()`'s 0.7/0.3 blend has a time constant measured in
+// CALLS, not seconds or pixels -- fine when every caller feeds it exactly one
+// sample per render frame, which is what every caller did until Track A's
+// full-rate pointer queue (`app/PointerQueue`: one `PointerSample` per
+// raw SDL position event rather than one per frame -- brush/StrokePath.hpp's own
+// header on why). A tablet reporting at 133-200 Hz into a 60 Hz frame loop
+// now hands the interactive canvas block two to three samples in some
+// frames and none in others. Feeding each of them through the call-shaped
+// filter above would damp two to three times harder per frame than
+// PaintCopilot's tuning intended, on exactly the hardware that most needed
+// the extra samples -- and the old once-per-frame call was already
+// time-dependent the other way, since a pen held still kept stepping the
+// filter every frame. Either way the SAME physical stroke smooths
+// differently depending on how the OS batched its events or how fast the
+// render loop ran, which is the identical "depends on how the distance was
+// divided" defect ADR-0003 already forbids for dab emission, one input
+// earlier in the pipeline.
+//
+// The fix is the same move ADR-0003 already made: key the filter to
+// DISTANCE MOVED since the previous sample instead of to a call count.
+// `alpha = 1 - exp(-ds / kPressureSmoothingPx)` is a standard first-order
+// low-pass whose effective "sample interval" is measured in pixels of
+// travel rather than frames elapsed, so two runs of the identical physical
+// stroke sampled at different rates converge to the same smoothed pressure
+// at the same arc length. Exactly so for a constant pressure (a fixed point
+// at any `ds`) and for the retention over any run of samples (next
+// paragraph); for a CHANGING pressure, up to the first-order sampling term
+// every discrete low-pass has -- the steady-state lag behind a ramp of slope
+// `m` is `m*ds*exp(-ds/k)/(1-exp(-ds/k))`, which tends to `m*k` as `ds -> 0`
+// and differs from it by O(ds). `app/selftest/StrokeInput.cpp` asserts the
+// 2x-rate case against a bound computed from that closed form.
+//
+// **Deriving `kPressureSmoothingPx` from the constant it replaces**, rather
+// than picking a new one from nowhere. The old filter adopted 30% of the
+// raw sample every frame. The ASSUMED cadence it was tuned at is a moderate,
+// deliberate stroke: about 5 px of pointer travel per 60 Hz frame (300 px/s
+// in canvas texels) -- a design choice, not a measurement, and the one
+// number here to revisit if smoothing ever feels too heavy or too light.
+// At that cadence the 30% adoption happened over 5 px, so matching the two
+// filters there means solving `1 - exp(-ds/k) = 0.3` at `ds = 5`:
+//
+//   exp(-5/k) = 0.7
+//   -5/k = ln(0.7)              (ln(0.7) = -0.356675)
+//   k = -5 / ln(0.7) = 14.02 px
+//
+// Rounded to 14.0 px. The two filters therefore agree at the cadence the
+// original 0.7/0.3 blend was assumed to run at, and the new one's damping
+// is a fixed amount PER PIXEL rather than per call. That is what makes it
+// indifferent to how the travel was divided: N samples covering a total
+// `D` px retain `prod exp(-ds_i/k) = exp(-D/k)` of the old value, whatever
+// N is -- five 1 px samples retain exactly what one 5 px sample does (each
+// of the five adopts less, together they adopt the same 30%). The two
+// filters diverge only where the old one was wrong: a FAST frame (20 px of
+// travel) now adopts 1 - exp(-20/14) = 76% rather than a frame-count's
+// fixed 30%, and a SLOW one (1 px) adopts 7% rather than 30% -- pressure
+// follows the pen over distance, not over frames. A frame with no samples
+// runs no step at all and holds its value.
+inline constexpr float kPressureSmoothingPx = 14.0f;
+
+// One step of the distance-keyed filter. `ds` is the distance in canvas
+// texels since the previous sample THIS STROKE smoothed; `ds <= 0` (two
+// coincident samples, or a caller with nothing better to report) is the
+// identity, since `1 - exp(0) == 0` leaves `previousSmoothed` unchanged --
+// the same "no motion, no update" reading `dynamicVelocity()`'s own 0-
+// distance case already gives.
+//
+// `previousSmoothed` and `rawPressure` are each clamped to [0,1] first, the
+// identical defensive clamp `dynamicPressureEma()` applies to its own two
+// arguments.
+//
+// State ownership is `StrokeSession`'s, exactly as it is for the frame-keyed
+// filter above -- see `StrokeSession::smoothPressureByDistance()`.
+float dynamicPressureSmoothedByDistance(float previousSmoothed, float rawPressure,
+                                        float distancePx) noexcept;
 
 // ---------------------------------------------------------------------------
 // The stroke-local sources -- VELOCITY, FADE, NOISE, RANDOM and DIRECTION
 // ---------------------------------------------------------------------------
 //
-// The other four (Pressure, Tilt, Azimuth, Barrel) are hardware readings:
-// `app/StrokeSession::dynamicInputsFor()` samples them straight off a pen,
-// once per render frame, before a stroke's geometry is even known. These five
-// cannot be -- they are properties of the stroke itself (how fast it moved,
+// The other four (Pressure, Tilt, Azimuth, Barrel) are hardware readings,
+// known before a stroke's geometry is. How often they are read depends on the
+// route, and this paragraph used to claim the solver's answer for both:
+//   * the SOLVER route (`sim::PaintSim`, watercolour/oil) still reads them
+//     once per render frame, through `app/StrokeSession::dynamicInputsFor()`
+//     -- the latest-wins `AppState` scalars;
+//   * the CPU deposit route reads them once per POINTER SAMPLE: each queued
+//     sample carries the axes of its own device report (`app/PointerQueue`
+//     patches them in), and `brush/StrokePath` interpolates them per DAB
+//     between the two samples a dab lies between -- linearly for pressure
+//     and tilt, along the short arc for azimuth and barrel.
+// These five cannot be either -- they are properties of the stroke itself (how fast it moved,
 // how far it has travelled, a value that should wander smoothly or jump
 // freshly along it, which way it is currently heading) -- so they are
 // resolved once per DAB, inside the deposit loop, and are pure functions here

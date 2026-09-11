@@ -97,7 +97,8 @@ bool runPigmentSelectionTest() {
   Latent kRed;
   kRed.c = {0.0f, 0.0f, 1.0f};
 
-  // A hard disc, so `dabCoverage()` is exactly 1.0f over the whole footprint and
+  // A hardness-1 disc, so `dabCoverage()` is exactly 1.0f over its flat core
+  // (the last `edgePx` of the rim is antialiased, brush/Deposit.hpp §2) and
   // every number below is about the selection rather than about the falloff.
   // runPigmentDepositTest() is where the falloff itself is checked.
   auto discTip = [](float radius, float flow, const Latent& z) {
@@ -163,9 +164,10 @@ bool runPigmentSelectionTest() {
   // against a version that treated the selection as a bitmask (PRD E2).
   //
   // The excluded texels are inside the dab's footprint by construction: the tip
-  // is a radius-30 hard disc centred at (64,64), so `dabCoverage()` is exactly
-  // 1.0 at (50,64) and (60,64), fourteen and four texels from the centre. What
-  // stops the paint there is the selection and nothing else.
+  // is a radius-30 hardness-1 disc centred at (64,64), so `dabCoverage()` is
+  // exactly 1.0 at (50,64) and (60,64), fourteen and four texels from the
+  // centre -- well inside its flat core (only the last `edgePx` of the rim is
+  // antialiased). What stops the paint there is the selection and nothing else.
   Selection sel = selectRectangle(64.25f, 0.0f, 200.0f, 256.0f);
   const float partial = selectionCoverageAt(&sel, PixelCoord{64, 64});
   {

@@ -9,6 +9,7 @@
 #include "brush/BrushModel.hpp"
 #include "brush/Dynamics.hpp"
 #include "brush/Library.hpp"
+#include "brush/NativeBrush.hpp"
 #include "app/DabLibrary.hpp"
 #include "app/BrushLibraryFile.hpp"
 #include "app/CloseDecision.hpp"
@@ -17,6 +18,7 @@
 #include "app/BatchDialog.hpp"
 #include "app/PanelLayout.hpp"
 #include "app/PenTool.hpp"
+#include "app/PointerQueue.hpp"
 #include "app/TextTool.hpp"
 #include "app/TilePreview.hpp"
 #include "app/DocumentLifecycle.hpp"
@@ -389,8 +391,29 @@ struct BrushState {
   // migration's own commit message names. `load`/`wetness` are NOT among
   // them (`brush/Variance`/`BrushModel` have no field for either yet -- a
   // deferred divergence, not an oversight).
-  float load = 0.9f;      // pigment concentration
-  float wetness = 1.3f;   // water deposited
+  //
+  // **`load`, `wetness` and `grain` used to be three more loose
+  // scalars/structs here, and are gone too -- folded into `native` below,
+  // one member instead of three.** `brush/NativeBrush.hpp`'s own header
+  // carries the full argument for the struct; each field's comment below is
+  // carried over from where it used to sit on this struct, not rewritten.
+  //
+  //   * `load` -- pigment concentration per dab; `brushTipFor()`'s `tip.flow`.
+  //   * `wetness` -- water deposited; reaches the solver route only
+  //     (`StrokeSession::wetnessReachesSolver()`).
+  //   * `grain` -- paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp), OFF
+  //     by default. The BRUSH EDITOR's PAPER GRAIN section
+  //     (`ui/MacPaintUI.cpp`'s `drawBrushSection()`) is the one control
+  //     surface that writes this; `brushTipFor()` copies it straight into
+  //     the tip it builds, unscaled by any DYNAMICS target -- there is no
+  //     `DynamicTarget::Grain` for the identical reason there is no
+  //     `DynamicTarget::Opacity` (`opacity`'s own comment below).
+  //
+  // **`opacity` is deliberately NOT in `native`** and stays a plain field of
+  // its own further down this struct: it is per-session options-bar state
+  // that a preset does not carry, so picking a preset leaves it where the
+  // painter put it. `brush/NativeBrush.hpp`'s header says why in full.
+  NativeBrush native;
 
   // A `.abr` sampled bitmap tip (brush/Deposit.hpp §2c), or null for the
   // procedural round/elliptical tip every other field above already
@@ -540,15 +563,6 @@ struct BrushState {
   // survive a save if there ever is one -- it is an id, not a bitmap, exactly
   // as `BrushState::dabId` above is.
   SmudgeParams smudge;
-
-  // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp) -- OFF by default,
-  // `GrainParams`'s own default. The BRUSH EDITOR's PAPER GRAIN section
-  // (`ui/MacPaintUI.cpp`'s `drawBrushSection()`) is the one control surface
-  // that writes this; `brushTipFor()` copies it straight into the tip it
-  // builds, unscaled by any DYNAMICS target -- there is no
-  // `DynamicTarget::Grain` for the identical reason there is no
-  // `DynamicTarget::Opacity` (`opacity`'s own comment above).
-  GrainParams grain;
 };
 
 // PLAN.md Phase 2 step 11 ("View controls", PRD Q1-Q4): zoom/pan plus
@@ -1559,6 +1573,35 @@ struct AppState {
   // once -- an x-tilt event alone cannot compute an azimuth.
   float penTiltXDeg = 0.0f;
   float penTiltYDeg = 0.0f;
+  // (Track A kept a raw `penRotationDeg` here for its samples to snapshot.
+  // The raw axis state a sample snapshots now lives in `pointerQueue` below
+  // -- `PointerQueue::latestAxes()` -- and nothing else read this copy, so it
+  // is gone; `penBarrel` above is the reading the rest of the app uses.)
+
+  // Whether the pen has EVER reported a tilt axis (either of
+  // SDL_PEN_AXIS_XTILT/YTILT) or a barrel-rotation axis this session. SDL
+  // 3.2 exposes no pen capability query, so "has sent the axis" is the only
+  // honest evidence that a device reports it -- and `brush/Dynamics.hpp`'s
+  // `DynamicInputs::hasTilt`/`hasBarrel` exist precisely so an axis the
+  // device cannot report contributes its target's identity rather than a
+  // zero (reachability audit B7: a TILT->Size brush painting nothing with a
+  // tilt-less device). Read only by `strokeHardwareInputsFor()`
+  // (app/StrokeSession.hpp), which also requires `penDown`, so a mouse
+  // stroke after the pen has been used still reads as a mouse.
+  bool penReportsTilt = false;
+  bool penReportsBarrel = false;
+
+  // The full-rate pointer queue (app/PointerQueue.hpp, whose header is the
+  // whole argument). `main.cpp`'s SDL poll loop pushes every pointer event
+  // into it, dates ImGui's progress through its own input queue once per frame
+  // (`beginFrame()`), and calls `endFrame()` after `drawUI()`; the canvas block
+  // in `ui/MacPaintUI.cpp` claims a gesture when it begins a stroke and takes
+  // only that gesture's samples. It replaced a plain per-frame vector that
+  // was cleared every frame and ignored gesture boundaries (wave-1 review,
+  // finding 2). The latest-wins scalars above stay as they are -- other code
+  // reads them (the DYNAMICS gutter, `dynamicInputsFor()`, `--latency`) -- and
+  // are still written by `main.cpp`'s `handlePenEvent()` from the same events.
+  PointerQueue pointerQueue;
 
   // Freshest pointer-input timestamp (SDL_GetTicksNS) seen during this
   // frame's poll loop; 0 if no pen/mouse sample arrived this frame. Feeds

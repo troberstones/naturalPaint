@@ -91,7 +91,8 @@ bool runSmudgeTest() {
     }
   };
 
-  // A hard disc, so `dabCoverage()` is exactly 1.0f over the whole footprint and
+  // A hardness-1 disc, so `dabCoverage()` is exactly 1.0f over its flat core
+  // (the last `edgePx` of the rim is antialiased, brush/Deposit.hpp §2) and
   // every number below is about the smudge rather than about the falloff.
   auto discTip = [](float radius, float flow) {
     BrushTip t;
@@ -371,11 +372,16 @@ bool runSmudgeTest() {
   // 5. Both endpoints of STRENGTH, end to end
   // ======================================================================
   {
-    // **Strength 1 carries indefinitely, at zero tolerance.** flow 1 and a hard
-    // disc make the write weight exactly 1, so each dab assigns the finger
-    // outright; strength 1 means the finger is never updated after the first dab
-    // loads it; and the fixture colour is f16-exact. So the far end of the drag
-    // holds the colour picked up at pen-down, bit for bit.
+    // **Strength 1 carries indefinitely, at zero tolerance.** flow 1 and a
+    // hardness-1 disc make the write weight exactly 1 over the disc's flat
+    // CORE -- out to `radius - edgePx`; since BrushTip::edgePx the last pixel
+    // is antialiased and weighs less, so this used to overstate it as "the
+    // write weight" everywhere -- and each dab assigns the finger outright
+    // there; strength 1 means the finger is never updated after the first dab
+    // loads it; and the fixture colour is f16-exact. The two probes below sit
+    // on the drag's spine (y = 64, the dab centres' own row), inside every
+    // dab's core, so the rim's lighter weight never reaches them and the far
+    // end of the drag holds the colour picked up at pen-down, bit for bit.
     OpenDocument od = makeRgbDoc(256, 128);
     TileStore& store = *od.document.layers[0].rgbTiles;
     fillRect(store, 0, 0, 63, 127, kPaint);

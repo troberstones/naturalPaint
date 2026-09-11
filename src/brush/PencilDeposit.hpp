@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "brush/Deposit.hpp"
@@ -32,6 +33,45 @@
 // hard round tip's coverage is **already** a two-valued function. Photoshop's
 // own answer, transplanted here unexamined, would have produced a module whose
 // distinguishing feature was a `hardness` the brush panel can already set.
+//
+// **`BrushTip::edgePx` (Track B / B1, `brush/Deposit.hpp` §2) is the one
+// later addition that would have quietly reopened this question.** It adds
+// a minimum-pixel-wide smoothstep skirt to the SHARED procedural profile --
+// so `hardness == 1` alone no longer guarantees `d <= h` covers the whole
+// disc at `d < 1`, the fact the paragraph above rests on. Every other route
+// keeps that skirt (the project owner's decision: a cloned, healed or brushed
+// hard edge is antialiased). `drawDab()` below zeroes it on **both tips a dab
+// can be shaped by** before ever calling `dabCoverage()`: on a local copy of
+// the primary tip, and on a zeroed copy of its Dual Brush tip (`dualTip`,
+// §2d of brush/Deposit.hpp -- evaluated by the same `singleTipCoverage()`,
+// so its skirt shrinks the combined coverage just as the primary's would).
+// The dual tip is shared and immutable, so its zeroed copy is built once per
+// stroke, on the first dab that carries it, and reused by every later dab --
+// never allocated per dab. The first version of this exemption zeroed only
+// the primary: a hard r=12 pencil with a hard r=6 Multiply dual then drew 88
+// texels instead of 112 (review finding 5, pinned by
+// `runPencilDepositTest`'s section 10). **And the reason is not merely
+// "a pencil is aliased" -- the threshold would alias an antialiased rim
+// anyway. The reason is WHERE it would alias it.** The skirt is laid INSIDE
+// the radius (`[radius - edgePx, radius]`, so the footprint never grows), and
+// §1 cuts coverage at 0.5, which on that skirt's smoothstep sits at
+// `radius - edgePx/2`. So with the skirt left on, the pencil's edge would move
+// from `radius` in to `radius - 0.5` at the shipped `edgePx == 1`: every
+// hard-tip pencil mark silently half a pixel smaller in radius -- about a
+// texel narrower across a line -- and every tip whose own skirt is under a
+// pixel wide shrunk by less, with no control changed and every mark still
+// perfectly binary, so nothing about the result would look wrong. That
+// is the footprint this route refuses to lose, and `runPencilDepositTest`'s
+// assertions pass unchanged because of it.
+//
+// The cost, stated rather than hidden: a hard BRUSH's own half-height contour
+// did move in by that half pixel (it is a soft edge there, which is the point
+// of the skirt), so on a hardness-1 tip the pencil and the brush no longer
+// agree to the texel about where the mark's edge is -- §1's "same size" claim
+// now holds to within `edgePx / 2`, not exactly. Keeping the pencil at the
+// radius-`r` disc it has always drawn is the choice; shrinking it to match
+// a brush whose rim is a blend would trade a real, measurable footprint for a
+// half-pixel agreement nobody can see on an antialiased edge.
 //
 // The real difference is one step further out, and it is the difference
 // between an aliased **dab** and an aliased **mark**:
@@ -98,7 +138,14 @@
 // one radius make marks of the same *size*, differing only in whether the rim
 // is antialiased. And on a hard tip the two rules agree exactly (coverage is
 // already 1 or 0, and `1 >= 0.5`), so this choice is invisible to precisely
-// the tip where §0 says there was nothing to choose.
+// the tip where §0 says there was nothing to choose. **That last sentence is
+// true of the pencil's own coverage only because `drawDab()` zeroes
+// `BrushTip::edgePx` first** (§0's edgePx paragraph): with the one-pixel skirt
+// left on, a hard tip would not be two-valued, the 0.5 cut would land half a
+// pixel inside the radius, and the two rules would disagree by exactly that
+// half pixel. It is also why "the same size as a brush" is now true to within
+// `edgePx / 2` rather than exactly, on the hard tip only -- §0 says why that is
+// accepted.
 //
 // **Why it is applied LAST, to whatever coverage the tip and the paper
 // produced together, rather than inside `dabCoverage()`.** The threshold is a
@@ -393,12 +440,25 @@ class PencilStroke {
   size_t accumulatorTiles() const noexcept { return alpha_.occupiedTileCount(); }
   size_t accumulatorBytes() const noexcept { return alpha_.tileBytes(); }
 
+  // The zeroed-`edgePx` copy of the Dual Brush tip this stroke is drawing
+  // with (§0's edgePx paragraph), or null before the first dual-tipped dab
+  // and after `begin()`/`end()`. Exposed for `--selftest` for the reason the
+  // two counts above are: "built once per stroke, never per dab" is a claim
+  // about allocation that no pixel can show, and a pointer that stays the
+  // same object across dabs is the observable form of it.
+  const BrushTip* aliasedDualTip() const noexcept { return aliasedDual_.get(); }
+
  private:
   std::array<float, 3> ink_{};
   float opacity_ = 1.0f;
   bool alphaLocked_ = false;
   bool active_ = false;
   StrokeAlphaStore alpha_;
+  // The dual tip the zeroed copy below was built from -- held, not merely
+  // remembered as an address, so the comparison in `drawDab()` cannot be
+  // fooled by a freed tip's address being reused -- and the copy itself.
+  std::shared_ptr<const BrushTip> dualSource_;
+  std::shared_ptr<const BrushTip> aliasedDual_;
 };
 
 }  // namespace np

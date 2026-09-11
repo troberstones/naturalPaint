@@ -953,7 +953,7 @@ inline bool strokeRouteWritesLayer(StrokeRoute route) noexcept {
          route == StrokeRoute::StrokesErase || route == StrokeRoute::StrokesRecord;
 }
 
-// Reachability audit B2: `BrushState::wetness` (the WET slider, drawn in both
+// Reachability audit B2: `BrushState::native.wetness` (the WET slider, drawn in both
 // `ui/AtelierChrome.cpp`'s options bar and `ui/MacPaintUI.cpp`'s BRUSH panel)
 // reaches exactly one place -- `applyToolToBrush()`'s write to
 // `sim::PaintSim::brushWater`, called only on the route that paints the
@@ -1510,6 +1510,54 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
 // paints at full strength rather than at whatever `penPressure` last held.
 DynamicInputs dynamicInputsFor(const AppState& st) noexcept;
 
+// Track A: converts one queued `PointerSample` (window-space, raw axis
+// degrees -- what `app/PointerQueue`'s `takeForStroke()` returns) into a `StrokeSample`
+// (canvas-space position, normalised [0,1] axes -- `brush/StrokePath.hpp`'s
+// own input type). `canvasPos` is the caller's own `xform.toCanvas(Vec2{
+// sample.x, sample.y})`, not re-derived here, for `ui/MacPaintUI.cpp`'s
+// `canvasMouse`'s own stated reason: one view-transform inverse, not a
+// second, independently hand-derived one.
+//
+// Axes cross from raw hardware units to the normalised ones
+// `brush/Dynamics.hpp` consumes EXACTLY ONCE, here, through
+// `app/PenAxes.hpp`'s conversions -- nothing downstream (`brush/StrokePath`,
+// `StrokeSession::depositPending()`) re-derives them. For a mouse sample
+// (`sample.isPen == false`) this returns `canvasPos` at `StrokeSample`'s own
+// default axes unchanged: those defaults ARE a mouse's neutral reading
+// (that struct's own header comment), so there is nothing left to compute.
+StrokeSample strokeSampleFromPointer(const PointerSample& sample, Vec2 canvasPos) noexcept;
+
+// Track A: what the interactive CPU route latches as a stroke's
+// `hardwareInputs` (`StrokeSession::begin()`/`setTip()`) -- `dynamicInputsFor()`
+// plus the `has*` availability flags set for the device actually painting.
+//
+// **Why this exists at all.** `depositPending()` now resolves Pressure/Tilt/
+// Azimuth/Barrel from each dab's own interpolated axes but keeps the latch's
+// `has*` flags (its own comment), and `dynamicInputsFor()` has never set
+// `hasTilt`/`hasBarrel` for anyone -- so without this, every per-dab tilt,
+// azimuth and barrel value `brush/StrokePath` interpolates would reach
+// `varianceScale()` only to be ignored as "no device reports this", and a
+// PenTilt/Rotation Control could never read a real pen on this route.
+//
+// The rule, per `brush/Dynamics.hpp`'s `DynamicInputs` flag comment ("which
+// pen axes the current device actually REPORTS"):
+//  * the pointer painting is the pen iff `st.penDown` -- a mouse stroke made
+//    after the pen was used is still a mouse stroke, with a mouse's flags;
+//  * a pen reports tilt/barrel iff it has sent that axis this session
+//    (`AppState::penReportsTilt`/`penReportsBarrel`) -- a tilt-less pen keeps
+//    `hasTilt == false` and its Tilt Controls contribute identity, never the
+//    zero that made reachability audit B7's brush paint nothing;
+//  * `hasPressure` stays `DynamicInputs`' own default `true`: a pen reports
+//    it and a mouse's per-sample 1.0 is its truthful reading.
+// For a mouse this is therefore bit-identical to `dynamicInputsFor()`, which
+// `app/selftest/StrokeInput.cpp` asserts.
+//
+// **Deliberately a sibling, not a change to `dynamicInputsFor()` itself**:
+// that function also feeds the solver route's `evaluateLinks()` and the
+// DYNAMICS gutter, which are outside this track's scope and keep exactly the
+// flags they had.
+DynamicInputs strokeHardwareInputsFor(const AppState& st) noexcept;
+
 // SCATTER's own axis (reachability audit B5). `centre` is the dab's
 // pre-scatter position; `seed`/`dabIndex` are the stroke's own per-dab draw,
 // identically to every other stroke-local source; `stepDx`/`stepDy` is the
@@ -1631,13 +1679,29 @@ class StrokeSession {
   // what exercises the non-null path against a real stroke.
   //
   // `hardwareInputs`, latched with it: the Pressure/Tilt/Azimuth/Barrel
-  // sample (and its `has*` availability flags) that built `tip` -- what the
-  // per-dab loop feeds `varianceScale()`/`varianceOffset()` so a
-  // PenPressure/PenTilt/Rotation Control still reads the pen, at the SAME
-  // frame granularity `dynamicInputsFor()`'s own header describes (this
-  // codebase does not resample pressure per dab, and this does not change
-  // that). Defaults to a plain `DynamicInputs{}` -- a mouse at full pressure,
-  // which is the neutral reading for every caller that does not care.
+  // sample (and its `has*` availability flags) `dynamicInputsFor()` read this
+  // FRAME -- what the per-dab loop feeds `varianceScale()`/`varianceOffset()`
+  // so a PenPressure/PenTilt/Rotation Control still reads the pen. Defaults
+  // to a plain `DynamicInputs{}` -- a mouse at full pressure, which is the
+  // neutral reading for every caller that does not care.
+  //
+  // **This used to say the per-dab loop reads this sample "at the SAME frame
+  // granularity `dynamicInputsFor()`'s own header describes -- this codebase
+  // does not resample pressure per dab, and this does not change that."**
+  // Track A (full-rate pointer input) is what changed that, for the CPU
+  // route this class owns: `depositPending()` now resolves Pressure, Tilt,
+  // Azimuth and Barrel from each DAB's own interpolated axes
+  // (`pending_`'s `StrokeDab`s), keeping only `hardwareInputs_`'s `has*`
+  // flags from what is latched here -- see `depositPending()`'s own comment.
+  // `hardwareInputs` therefore still matters for THOSE four flags and for
+  // every OTHER caller of `begin()` that has no per-dab samples to offer
+  // (`app/BrushSheet.cpp`, `app/StrokePreview.cpp`, every selftest that
+  // drives a stroke through the plain `addPoint(x, y)`, which builds its
+  // sample's axes FROM this latch and so reads it for every dab, exactly as
+  // before -- `addPoint()`'s own header comment is where that is argued).
+  // **The solver route is unchanged and out of this track's scope** -- it
+  // never reaches `StrokeSession` at all, so it has no analogous granularity
+  // to retire.
   //
   // `clone`, read only on the `StrokeRoute::CloneStamp` route: where the
   // source is, and whether there is one at all (§1b). **Defaulted to `nullptr`
@@ -1679,15 +1743,38 @@ class StrokeSession {
 
   bool active() const noexcept { return doc_ != nullptr; }
 
-  // Replace the tip mid-stroke, which is how **pressure** reaches a CPU
-  // deposit.
+  // Replace the tip mid-stroke, which is how **pressure** used to reach a CPU
+  // deposit and how Size/Angle/Roundness/Scatter/Count's BASE values (before
+  // per-dab Variance resolution) still do.
   //
-  // Frame granularity, deliberately, and it is parity rather than a
-  // compromise: `ui/MacPaintUI`'s solver route sets one `sim.brushRadius` per
-  // frame from the current pen pressure and every dab that frame shares it.
-  // This is the same rule on the same schedule -- the UI rebuilds the tip from
-  // this frame's pressure and calls this before `addPoint()`. Within a frame a
-  // batch of dabs shares one tip, in both routes.
+  // **Frame granularity, deliberately, and that argument has narrowed rather
+  // than gone away.** This used to read "parity with the solver route: `ui/
+  // MacPaintUI`'s solver route sets one `sim.brushRadius` per frame from the
+  // current pen pressure and every dab that frame shares it, and this is the
+  // same rule on the same schedule." That parity claim is retired for THIS,
+  // the CPU route -- Track A (full-rate pointer input) is what retires it:
+  // `depositPending()`'s per-dab loop now resolves PenPressure/PenTilt/
+  // Rotation-Control sources from each DAB's own interpolated axes
+  // (`pending_`'s `StrokeDab`s), not from a value this call latched once for
+  // the whole frame, so "every dab that frame shares one pressure" is no
+  // longer true here and was exactly the defect this track exists to fix.
+  // **The solver route is unchanged and still makes the original claim** --
+  // it sets one `sim.brushRadius` per frame from the current pen pressure,
+  // unmodified by this track (out of scope: `ui/MacPaintUI.cpp`'s solver
+  // branch, `app/BrushSheet.cpp`, `app/StrokePreview.cpp`), so the two routes
+  // now genuinely differ in dynamics granularity where they used to agree by
+  // construction.
+  //
+  // What frame granularity is STILL fine for, on this route: Size, Angle,
+  // Roundness, Hardness, Flow, Scatter and Count's BASE values -- the tip
+  // `setTip()` replaces here -- because every one of the sources that vary
+  // per DAB (Velocity, Fade, Noise, Random, Direction, Initial Direction, and
+  // now Pressure/Tilt/Azimuth/Barrel too) is resolved inside
+  // `depositPending()`'s own per-dab loop regardless of how often this base
+  // tip changes; a preset with nothing linked to any of those seven reads
+  // this call's tip completely unmodified, dab for dab, exactly as before.
+  // The UI still rebuilds this from the current frame's brush state and
+  // calls this before draining the frame's samples.
   //
   // `StrokePath` already takes its spacing per call, so a tip whose radius
   // changed also changes the spacing from that point on rather than keeping
@@ -1706,45 +1793,141 @@ class StrokeSession {
   const BrushTip& tip() const noexcept { return tip_; }
 
   // PRESSURE SMOOTHING (brush/Dynamics.hpp's `dynamicPressureEma()`, from
-  // PaintCopilot §3.2): this stroke's own exponential moving average over
-  // the once-per-FRAME raw pressure sample, before it drives `brushTipFor()`.
+  // PaintCopilot §3.2): this stroke's own exponential moving average over a
+  // fixed-cadence raw pressure sample, before it drives `brushTipFor()`.
   //
-  // **This is the state `dynamicPressureEma()`'s own header comment says
-  // belongs to a stroke's owner, not to that pure function.** The caller
-  // (`ui/MacPaintUI.cpp`'s canvas block, `app/BrushSheet.cpp`'s per-sample
-  // loop) calls this once per frame/sample with the RAW pressure it would
-  // otherwise have fed `brushTipFor()` directly, and feeds `brushTipFor()`
-  // the SMOOTHED result this returns instead.
+  // **No longer what the interactive canvas block calls** -- Track A's
+  // full-rate pointer queue means that block now feeds a variable number of
+  // samples per frame (0 to several, from a real tablet's own event rate)
+  // rather than exactly one, and a filter whose damping is tuned per CALL
+  // rather than per unit of pointer travel would damp a fast tablet several
+  // times harder than PaintCopilot's own tuning intended -- exactly the
+  // "depends on how the distance was divided" defect ADR-0003 already
+  // forbids for dab emission. `smoothPressureByDistance()` below is what the
+  // canvas block calls now, once per QUEUED sample rather than once per
+  // frame.
+  //
+  // **Still exactly what it always was for the two callers with a genuinely
+  // fixed sample cadence of their own**: `app/BrushSheet.cpp`'s and
+  // `app/StrokePreview.cpp`'s synthetic preview sweeps, which walk a fixed,
+  // evenly spaced sequence of synthetic samples with no independent pointer
+  // to measure distance from. This is the state `dynamicPressureEma()`'s own
+  // header comment says belongs to a stroke's owner, not to that pure
+  // function; those two callers call this once per SAMPLE OF THEIRS with the
+  // RAW pressure they would otherwise have fed `brushTipFor()` directly, and
+  // feed `brushTipFor()` the SMOOTHED result this returns instead.
   //
   // The first call after `begin()` returns `rawPressure` unchanged -- there
   // is no previous smoothed value to blend from yet, and manufacturing one
   // (starting the filter at 0, say) would make every stroke's opening dabs
   // fade in from nothing regardless of how hard the stroke started, which
   // is a soft-start artefact the paper's jitter filter was never meant to
-  // add. Every call after the first is the plain recursion.
+  // add. Every call after the first is the plain recursion. This latch is
+  // shared with `smoothPressureByDistance()` below -- see that method's own
+  // comment for why sharing it is correct rather than merely convenient.
   //
   // **Must be called AFTER `begin()`, never before, on a stroke's first
   // painting frame.** `begin()` resets the latch below; a caller that reads
-  // this frame's smoothed pressure before calling `begin()` (to build the
-  // very tip `begin()` itself is handed) would still be blending against
-  // the PREVIOUS stroke's last smoothed value, which is exactly the
-  // cross-stroke leak the design brief for this feature calls out as "the
-  // reset...least likely to be noticed." `ui/MacPaintUI.cpp`'s canvas block
-  // avoids this by building `begin()`'s own bootstrap tip from the raw
-  // sample and only calling `smoothPressure()` afterwards, once
-  // `g_stroke.active()` is true -- the same tip is then rebuilt and handed
-  // to `setTip()` on that same frame, so the bootstrap tip is live for zero
-  // frames, never painted.
+  // this frame's smoothed pressure before calling `begin()` would still be
+  // blending against the PREVIOUS stroke's last smoothed value, which is
+  // exactly the cross-stroke leak the design brief for this feature calls
+  // out as "the reset...least likely to be noticed."
   float smoothPressure(float rawPressure) noexcept;
 
-  // One raw pointer sample, in document texel coordinates. Deposits whatever
-  // dabs `brush/StrokePath` emits for it and returns **this frame's** tile
-  // set -- what live feedback must recomposite, sorted (y, x) and unique.
-  // The reference is valid until the next call.
+  // The distance-keyed sibling (brush/Dynamics.hpp's
+  // `dynamicPressureSmoothedByDistance()`) -- what the interactive canvas
+  // block calls now, once per sample DRAINED FROM THE QUEUE rather than once
+  // per frame. `distancePx` is that sample's own travel, in canvas texels,
+  // since the previous sample THIS call smoothed -- the caller's to measure,
+  // since only it knows the previous sample's position (`StrokeSession` does
+  // not track raw sample positions, only dab ones, and a dab position is not
+  // this).
+  //
+  // **Shares `smoothPressure()`'s own latch, deliberately, rather than
+  // keeping a second one.** A single stroke takes exactly one of the two
+  // pressure-smoothing paths -- the interactive canvas block calls this one
+  // and never `smoothPressure()`, `app/BrushSheet.cpp`/`app/StrokePreview.cpp`
+  // call `smoothPressure()` and never this one -- so there is never a
+  // moment where both would need independent history, and one shared "the
+  // last smoothed value, and whether one exists yet" is what both filters'
+  // own first-call rule already reduces to.
+  //
+  // Same first-call rule as `smoothPressure()`: the first call after
+  // `begin()` returns `rawPressure` unchanged regardless of `distancePx`.
+  //
+  // **What that rule does and does not promise.** It promises that THIS
+  // filter adds no soft start: the stroke's first sample reaches its opening
+  // dab at exactly the pressure that sample carries, not blended from 0 or
+  // from the previous stroke. It cannot make that pressure right -- that is
+  // the sample's job, and for one wave it was not: every pen sample
+  // snapshotted the axes as they stood when its POSITION event arrived, SDL
+  // delivers a report's PEN_AXIS events after its position (every backend,
+  // `app/PointerQueue.hpp` section 2 has the orders), so the opening sample
+  // of every macOS stroke carried the 0 the previous lift left behind, and
+  // this unsmoothed first call faithfully painted the opening dab at 0 and
+  // ramped up from there (wave-1 review, finding 1). The promise holds again
+  // because `PointerQueue` now patches each sample with its own report's
+  // axes before any stroke can take it: the first sample carries the
+  // pressure the pen reported at contact, exactly, on macOS, Wayland,
+  // Windows, X11, Android and iOS. (That section lists where its rule is
+  // approximate. The only case that can reach a first sample is rule (b)'s
+  // stationary-report one on X11/Android/Web: an axis the contact report did
+  // NOT change, changing in the next report while the pen has not moved. For
+  // pressure that needs a contact at exactly the pressure already held --
+  // after a lift, 0 -- so in practice it is tilt or rotation at a stationary
+  // contact that can take the next report's value, one report later.)
+  float smoothPressureByDistance(float rawPressure, float distancePx) noexcept;
+
+  // One raw pointer sample, in document texel coordinates and nothing else.
+  // A thin wrapper over `addSample()` below for every caller with no
+  // per-sample axes to offer: the solver route never reaches this class at
+  // all, but `app/BrushSheet.cpp`'s and `app/StrokePreview.cpp`'s synthetic
+  // sweeps and every selftest that predates `addSample()` call this.
+  //
+  // **The sample it builds carries `hardwareInputs_`'s axes, not
+  // `StrokeSample`'s own neutral defaults.** That is the whole point of the
+  // wrapper and it is not a detail: a caller with no per-sample axes is a
+  // caller whose axes are whatever `begin()`/`setTip()` last latched, which
+  // is EXACTLY what `depositPending()` read for every dab before Track A
+  // existed. Seeding from the latch is therefore what makes this path
+  // bit-identical to the pre-Track-A one -- positions AND pixels -- for any
+  // stroke whose latch is constant, which is every caller but one kind.
+  // Seeding it from `StrokeSample{}`'s neutral defaults instead would
+  // silently pin every such stroke to full pressure and neutral tilt, which
+  // is a behaviour change for exactly the callers this wrapper exists to
+  // leave alone (`app/selftest/ActiveLayer.cpp` drives a mid-stroke
+  // `setTip()` pressure ramp through this method and is the guard that
+  // catches it: pinned, its ramp wrote 31108 texels, identical to its flat
+  // stroke, and went red).
+  //
+  // **The one kind that is NOT bit-identical, deliberately**: a stroke that
+  // changes `hardwareInputs_` mid-stroke through `setTip()`. Each sample
+  // now carries the latch as of ITS OWN call, and a dab is interpolated
+  // between the two samples whose segment it lies on -- where before, every
+  // dab a call emitted read whatever the latch held at that call, i.e. the
+  // value of the sample one AHEAD of the segment being walked (`StrokePath`
+  // lags one sample, its own header). Same dab positions; pressures that
+  // now belong to the segment they are painted on, and step less.
+  // Measured on ActiveLayer's 0.2 -> 1.0 ramp: 15572 texels before, 13664
+  // after (its flat stroke: 1232 both, bit-identical).
+  //
+  // Deposits whatever dabs `brush/StrokePath` emits for it and returns
+  // **this frame's** tile set -- what live feedback must recomposite, sorted
+  // (y, x) and unique. The reference is valid until the next call.
   //
   // A no-op returning an empty set when the session is not active, so a UI
   // that calls it on a frame the stroke ended does not have to guard.
   const std::vector<TileCoord>& addPoint(float x, float y);
+
+  // The axis-carrying form -- what the interactive canvas block calls now,
+  // once per sample of the stroke's own gesture that `AppState::pointerQueue`
+  // hands it (app/PointerQueue.hpp; via `strokeSampleFromPointer()` above).
+  // Otherwise identical to `addPoint()`
+  // above: same return, same no-op-when-inactive contract, same
+  // `StrokePath::addPoint()` underneath. The two differ only in where the
+  // sample's axes come from -- the frame's latched `hardwareInputs_` against
+  // this sample's own.
+  const std::vector<TileCoord>& addSample(const StrokeSample& sample);
 
   // Pen-up. Walks the final segment `addPoint()` always holds back (see
   // `StrokePath::flush()`), deposits it, records **exactly one** history entry
@@ -1930,7 +2113,13 @@ class StrokeSession {
   LayerEditTarget editTarget_ = LayerEditTarget::Content;
 
   StrokePath path_;
-  std::vector<Vec2> pending_;
+  // Dabs `path_` emitted since the last `depositPending()` call, each
+  // carrying its OWN interpolated axes -- `StrokeDab` rather than `Vec2`
+  // since Track A, so `depositPending()`'s per-dab loop can resolve
+  // PenPressure/PenTilt/Rotation-Control sources from the dab that is
+  // actually being painted rather than from one frame-latched sample shared
+  // by every dab the frame happened to emit.
+  std::vector<StrokeDab> pending_;
   std::vector<TileCoord> frameTiles_;
   std::vector<TileCoord> strokeTiles_;
   size_t dabs_ = 0;

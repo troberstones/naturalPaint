@@ -20,7 +20,11 @@ namespace np {
 //   * **The design question this tool had to answer.** "A pencil is aliased"
 //     is not, on its own, a difference from `brush/RgbDeposit` in THIS
 //     codebase: `singleTipCoverage()` at `hardness == 1` already returns only
-//     1 or 0. Section 3 below is the assertion that finds the real difference
+//     1 or 0 -- at `edgePx == 0`, which the pencil forces on its own copy of
+//     the tip and section 3 sets for both engines; since BrushTip::edgePx a
+//     default brush's hard tip has a 1 px antialiased rim instead
+//     (brush/PencilDeposit.hpp §0 says why the pencil opts out). Section 3
+//     below is the assertion that finds the real difference
 //     -- a hard *dab* is not a hard *mark*, because at `flow < 1` a texel near
 //     a stroke's rim is covered by fewer dabs than one on its spine and
 //     therefore ends the stroke at a lower alpha. It runs a hardness-1
@@ -237,6 +241,15 @@ bool runPencilDepositTest() {
       BrushTip t;
       t.radius = 6.0f;
       t.hardness = 1.0f;  // a HARD tip for both -- section 2's difference, disabled
+      // ...and `edgePx` 0 for both, which since BrushTip::edgePx is the other
+      // half of "disabled": at the default 1 px the BRUSH's hard dab has an
+      // antialiased last pixel (brush/Deposit.hpp §2), so its distinct alphas
+      // below would count the rim's coverage as well as the flow grading this
+      // section is about. The pencil zeroes it itself, so this changes nothing
+      // on that side; on the brush side it keeps the dab two-valued, which is
+      // the premise this file's header states ("at hardness == 1 ... only 1 or
+      // 0" -- true at edgePx == 0, which this line makes the case here).
+      t.edgePx = 0.0f;
       t.flow = 0.25f;     // the whole of section 3: a rate the pencil must not have
       t.spacing = 0.25f;
       // 40 dabs along a straight horizontal line, generated here rather than
@@ -668,6 +681,85 @@ bool runPencilDepositTest() {
     check(readAt(store, 65, 69) == std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f},
           "alpha lock: and a texel the dab covers with no alpha to paint inside stays exactly "
           "transparent black -- not the ink at zero alpha, which is malformed");
+  }
+
+  // ======================================================================
+  // 10. The edgePx exemption covers the Dual Brush tip too
+  // ======================================================================
+  //
+  // brush/PencilDeposit.hpp §0's edgePx paragraph: the pencil zeroes
+  // `BrushTip::edgePx` so its 0.5 threshold cuts at the radius, not half a
+  // pixel inside it. The first version zeroed the PRIMARY tip only, and a
+  // Dual Brush tip -- evaluated by the same `singleTipCoverage()` -- kept the
+  // default 1 px skirt (`io/AbrBrushes.cpp` builds procedural dual tips at
+  // the default), so the combined mark shrank anyway. Review finding 5's
+  // fixture: a hard r=12 primary with a hard r=6 Multiply dual, one dab
+  // centred on a texel corner. The Multiply leaves exactly the r=6 disc,
+  // which at `edgePx == 0` is 112 texels: 28 per quadrant, counting texel
+  // centres (i+0.5, j+0.5) with (i+0.5)^2 + (j+0.5)^2 < 36 -- i = 0..5 admit
+  // j <= 5, 5, 4, 4, 3, 1, so 6+6+5+5+4+2. With the dual's skirt left on the
+  // review measured 88.
+  {
+    auto dualFixture = [](float dualEdgePx) {
+      BrushTip t;
+      t.radius = 12.0f;
+      t.hardness = 1.0f;
+      t.flow = 1.0f;
+      auto dual = std::make_shared<BrushTip>();
+      dual->radius = 6.0f;
+      dual->hardness = 1.0f;
+      dual->edgePx = dualEdgePx;
+      t.dualTip = dual;
+      t.dualBlend = DualBrushBlend::Multiply;
+      return t;
+    };
+    // The shipped dual tip: `edgePx` at its default, as the importer builds it.
+    const BrushTip shipped = dualFixture(BrushTip{}.edgePx);
+
+    // The oracle, computed from `dabCoverage()` and the threshold alone on a
+    // tip with BOTH skirts zeroed -- the pre-edgePx pencil, which is the
+    // footprint the exemption exists to preserve.
+    BrushTip oracleTip = dualFixture(0.0f);
+    oracleTip.edgePx = 0.0f;
+    size_t oracleCount = 0;
+    for (int32_t y = 40; y < 88; ++y)
+      for (int32_t x = 40; x < 88; ++x)
+        if (pencilCoverage(dabCoverage(oracleTip, static_cast<float>(x) + 0.5f - 64.0f,
+                                       static_cast<float>(y) + 0.5f - 64.0f)) == 1.0f)
+          ++oracleCount;
+
+    TileStore store;
+    PencilStroke p;
+    p.begin(kInk, 1.0f);
+    const DepositCount c = p.drawDab(store, shipped, Vec2{64.0f, 64.0f}, 128, 128, nullptr,
+                                     nullptr);
+    const BrushTip* latched = p.aliasedDualTip();
+    std::printf("  [measured] pencil, hard r=12 + hard r=6 Multiply dual (dual edgePx %.1f): "
+                "%zu texels; the edgePx-0 oracle says %zu\n",
+                static_cast<double>(shipped.dualTip->edgePx), c.texels, oracleCount);
+    check(shipped.dualTip->edgePx > 0.0f && oracleCount == 112,
+          "dual: premise -- the fixture's dual tip carries the shipped 1 px skirt, and the "
+          "pre-edgePx footprint of this dab is the hand-counted 112 texels");
+    check(c.texels == 112 && c.texels == oracleCount,
+          "dual: a pencil with a Dual Brush draws EXACTLY the pre-edgePx footprint (112 texels, "
+          "not 88) -- the exemption zeroes the dual tip's skirt as well as the primary's");
+    check(latched != nullptr && latched != shipped.dualTip.get() && latched->edgePx == 0.0f &&
+              latched->radius == shipped.dualTip->radius &&
+              shipped.dualTip->edgePx == BrushTip{}.edgePx,
+          "dual: the zeroed dual tip is a COPY -- the shared tip the brush holds is untouched, "
+          "so every other route still gets its antialiased skirt");
+
+    // Once per stroke: a second dab, elsewhere, with the same (shared) dual
+    // tip, must reuse the copy rather than build another.
+    const DepositCount c2 = p.drawDab(store, shipped, Vec2{20.0f, 100.0f}, 128, 128, nullptr,
+                                      nullptr);
+    check(c2.texels == 112 && p.aliasedDualTip() == latched,
+          "dual: and the copy is built ONCE PER STROKE -- a second dab draws the same footprint "
+          "through the very same zeroed tip object, so no dab after the first allocates");
+    p.end();
+    check(p.aliasedDualTip() == nullptr,
+          "dual: pen-up drops the copy with the accumulator, so the next stroke latches its "
+          "own brush's dual tip rather than this one's");
   }
 
   std::printf("[selftest] pencil deposit %s\n", ok ? "PASS" : "FAIL");

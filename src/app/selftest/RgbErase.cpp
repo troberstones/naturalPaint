@@ -300,35 +300,97 @@ bool runRgbEraseTest() {
     constexpr int kDabs = 50;
     const BrushTip t = discTip(20.0f, 0.35f);
 
-    // Two starting alphas under one dab, both in its flat core.
-    fillRect(store, 110, 120, 130, 136, {0.2f, 0.4f, 0.8f, 1.0f});
-    fillRect(store, 131, 120, 145, 136, {0.06f, 0.12f, 0.24f, 0.3f});
+    // Two starting alphas under one dab. The two PROBE texels, (120,128) and
+    // (138,128), are in its flat core; the painted rectangles' outer corners
+    // are not -- see the restated "write NOTHING" claim below.
+    constexpr int32_t kOpaqueX0 = 110, kOpaqueX1 = 130, kFaintX0 = 131, kFaintX1 = 145;
+    constexpr int32_t kPaintY0 = 120, kPaintY1 = 136;
+    fillRect(store, kOpaqueX0, kPaintY0, kOpaqueX1, kPaintY1, {0.2f, 0.4f, 0.8f, 1.0f});
+    fillRect(store, kFaintX0, kPaintY0, kFaintX1, kPaintY1, {0.06f, 0.12f, 0.24f, 0.3f});
     const float opaque0 = readAt(store, 120, 128)[3];
     const float faint0 = readAt(store, 138, 128)[3];
 
+    // **The "remaining dabs write NOTHING" claim is restated for the CORE, the
+    // way runRgbDepositTest()'s opacity-cap check was (review finding 7).** It
+    // used to count dabs that wrote ANY texel and demand fewer than 5 of the
+    // 50 -- which passed by a margin of ONE, for a reason that had nothing to
+    // do with the floor: the painted rectangles' corners (110,136) and
+    // (145,136) sit at d = 19.455, inside the tip's antialiased last pixel
+    // (BrushTip::edgePx) at coverage 0.567, where `E' = E + w(1 - E)` needs
+    // exactly 4 writing dabs to reach the floor. A fixture corner at d = 19.6
+    // needs 6 and at 19.8 needs 19 -- red, with the floor intact. So:
+    //
+    //   1. The CORE (painted texels at coverage exactly 1) stops being written
+    //      within a handful of dabs -- the floor claim, on texels whose weight
+    //      is `flow` and nothing else, so no rim geometry reaches it.
+    //   2. Scrubbing still TERMINATES over the whole painted footprint: while
+    //      `E < cap` one dab adds `flow * c * (1 - E) >= flow * c * (1 - cap)`,
+    //      so the faintest painted texel `c_min` reaches the cap within
+    //      `ceil(cap / (flow * c_min * (1 - cap)))` dabs and the dab after
+    //      writes nothing. `c_min` is measured from the fixture, not typed, so
+    //      moving a corner moves the bound with it rather than the verdict.
+    //   3. Section 5 below asserts a 3%-coverage rim texel lands on the SAME
+    //      floor as the centre; it is not repeated here.
+    std::vector<PixelCoord> coreTexels;
+    float minCov = 1.0f;
+    for (int32_t y = kPaintY0; y <= kPaintY1; ++y)
+      for (int32_t x = kOpaqueX0; x <= kFaintX1; ++x) {
+        const float cov =
+            dabCoverage(t, (static_cast<float>(x) + 0.5f) - 128.0f,
+                        (static_cast<float>(y) + 0.5f) - 128.0f);
+        if (cov == 1.0f) coreTexels.push_back(PixelCoord{x, y});
+        if (cov > 0.0f) minCov = std::min(minCov, cov);
+      }
+    const size_t silentBound =
+        static_cast<size_t>(std::ceil(kStrength / (t.flow * minCov * (1.0f - kStrength)))) + 1;
+
     RgbEraseStroke stroke;
     stroke.begin(kStrength);
-    size_t writingDabs = 0;
+    constexpr size_t kMaxDabs = 4000;
+    size_t writingDabs = 0;      // of the first kDabs, how many wrote ANY texel
+    size_t coreWritingDabs = 0;  // of the first kDabs, how many wrote a CORE texel
+    size_t dabsUntilSilent = 0;  // 1-based index of the first dab that wrote nothing
+    float removedOpaque = 0.0f, removedFaint = 0.0f, storedOpaque = 0.0f, storedFaint = 0.0f;
+    std::vector<float> coreBefore(coreTexels.size());
     // The model this build rejected, run on the same numbers: each dab removes
     // `flow * cov * strength` with no memory of the ones before, so the retained
     // fraction is a plain geometric decay with no floor at all.
     float perDabRetained = 1.0f;
-    for (int i = 0; i < kDabs; ++i) {
+    for (size_t i = 0; i < kMaxDabs; ++i) {
+      for (size_t j = 0; j < coreTexels.size(); ++j)
+        coreBefore[j] = stroke.strokeEraseAt(coreTexels[j]);
       const DepositCount c =
           stroke.eraseDab(store, t, Vec2{128.0f, 128.0f}, 256, 256, nullptr, nullptr);
-      if (c.texels > 0) ++writingDabs;
-      perDabRetained *= (1.0f - t.flow * kStrength);
+      bool coreChanged = false;
+      for (size_t j = 0; j < coreTexels.size(); ++j)
+        if (stroke.strokeEraseAt(coreTexels[j]) != coreBefore[j]) coreChanged = true;
+      if (i < static_cast<size_t>(kDabs)) {
+        if (c.texels > 0) ++writingDabs;
+        if (coreChanged) ++coreWritingDabs;
+        perDabRetained *= (1.0f - t.flow * kStrength);
+      }
+      if (i + 1 == static_cast<size_t>(kDabs)) {
+        removedOpaque = stroke.strokeEraseAt(PixelCoord{120, 128});
+        removedFaint = stroke.strokeEraseAt(PixelCoord{138, 128});
+        storedOpaque = readAt(store, 120, 128)[3];
+        storedFaint = readAt(store, 138, 128)[3];
+      }
+      if (c.texels == 0 && dabsUntilSilent == 0) dabsUntilSilent = i + 1;
+      if (dabsUntilSilent != 0 && i + 1 >= static_cast<size_t>(kDabs)) break;
     }
 
-    const float removedOpaque = stroke.strokeEraseAt(PixelCoord{120, 128});
-    const float removedFaint = stroke.strokeEraseAt(PixelCoord{138, 128});
-    const float storedOpaque = readAt(store, 120, 128)[3];
-    const float storedFaint = readAt(store, 138, 128)[3];
-    const float bound = static_cast<float>(writingDabs) * kHalfRel;
+    // Both probes are core texels, so each was written exactly
+    // `coreWritingDabs` times -- the count the f16 drift bound is about. It
+    // used to be `writingDabs`, which was the same number while every painted
+    // texel was core.
+    const float bound = static_cast<float>(coreWritingDabs) * kHalfRel;
     std::printf("  [measured] %d overlapping dabs at strength %.2f: removed fraction %.9f "
-                "(opaque texel) and %.9f (alpha-0.3 texel); only %zu of them wrote anything\n",
+                "(opaque texel) and %.9f (alpha-0.3 texel); %zu of them wrote the %zu-texel "
+                "painted core, %zu wrote anything; dab %zu was the first to write nothing at "
+                "all (bound %zu from the faintest painted coverage %.6f)\n",
                 kDabs, static_cast<double>(kStrength), static_cast<double>(removedOpaque),
-                static_cast<double>(removedFaint), writingDabs);
+                static_cast<double>(removedFaint), coreWritingDabs, coreTexels.size(),
+                writingDabs, dabsUntilSilent, silentBound, static_cast<double>(minCov));
     std::printf("  [measured] alpha %.6f -> %.9f (floor %.9f, |err| %.3e, bound %.3e); "
                 "alpha %.6f -> %.9f (floor %.9f)\n",
                 static_cast<double>(opaque0), static_cast<double>(storedOpaque),
@@ -354,10 +416,15 @@ bool runRgbEraseTest() {
           "floor: the rejected per-dab model is *checked to be wrong* on these numbers -- it "
           "grinds the texel to under 1% of itself, so the assertion above cannot pass against "
           "it and prove nothing");
-    check(writingDabs < 5 && writingDabs > 0,
-          "floor: once the floor is reached the remaining dabs write NOTHING -- not a value "
-          "equal to what is there, nothing at all, so a scrubbed erase stops dirtying tiles "
-          "and live feedback stops re-uploading them");
+    check(coreTexels.size() > 400 && coreWritingDabs < 5 && coreWritingDabs > 0,
+          "floor: once the painted CORE reaches the floor the remaining dabs write NOTHING "
+          "there -- not a value equal to what is there, nothing at all. Restated for the core "
+          "(coverage exactly 1) since edgePx: a rim texel's weight is below flow, so how many "
+          "dabs it needs is rim geometry, not the floor");
+    check(dabsUntilSilent > 0 && dabsUntilSilent <= silentBound && silentBound < kMaxDabs,
+          "floor: and the whole painted footprint, rim included, then stops too -- within the "
+          "bound derived from the faintest painted texel's coverage a dab writes no texel at "
+          "all, so a scrubbed erase stops dirtying tiles and live feedback stops re-uploading");
 
     // The colour at the floor is still the colour -- an erase must not be a
     // recolour. Checked as the un-premultiplied ratio, which is the quantity a

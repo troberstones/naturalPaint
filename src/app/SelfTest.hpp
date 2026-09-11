@@ -1079,6 +1079,20 @@ bool runInpaintTest();
 // Headless and GPU-free, like every ops/ section it sits beside.
 bool runTileableTest();
 
+// brush/NativeBrush -- naturalPaint's own brush section (load, wetness,
+// grain), the seam beside `BrushModel` where Photoshop's shape ends
+// and naturalPaint's own begins. `nativeBrushEqual()`'s per-field
+// discrimination, the two-leaf drop out of `BrushModel`
+// (`brushModelFieldPaths()` no longer names `load`/`wetness`), the
+// `applyPresetToBrush()`/`presetFromBrush()` round trip, a legacy
+// (pre-`NativeBrush`) `user-presets.txt` fixture loading with the expected
+// `native` values (and an interim build's `opacity` line dropped), and
+// `brushTipFor()` building `tip.flow`/`tip.grain` exactly from `native`
+// while `BrushState::opacity` stays out of it: picking a preset leaves a
+// lowered opacity alone and moving OPACITY does not raise EDITED. Headless
+// and GPU-free.
+bool runNativeBrushTest();
+
 // core/SelectionMask (PLAN.md "Phase 7 -- Select and paste"; PRD E1, E2, M1).
 // The antialiased coverage store, its constructors, and PRD M1's
 // coverage-weighted clear. Headless and GPU-free -- pure CPU tile arithmetic.
@@ -2067,7 +2081,7 @@ bool runBrushSettingsWindowTest();
 bool runBrushModelIoTest();
 
 // brush/BrushModelDiff: `brushModelDiff()`/`brushModelEqual()`, the two
-// functions that will let `presetMatches()` compare BrushModel's full ~151
+// functions that will let `presetMatches()` compare BrushModel's full ~149
 // leaves instead of the 14 scalars it checks today, and let a round-trip
 // test name which field did not survive instead of just that one didn't.
 // Both are built on ONE templated visitor (brush/BrushModelDiff.hpp's
@@ -4163,7 +4177,10 @@ bool runRgbDepositTest();
 // answers it.** "A pencil is aliased" is not, on its own, a difference from
 // `brush/RgbDeposit` in this codebase -- `singleTipCoverage()` at
 // `hardness == 1` already returns only 1 or 0, so a hard brush's *dab* is
-// already two-valued. The real difference is one step out: a hard dab is not a
+// already two-valued (at `edgePx == 0`: since BrushTip::edgePx a default hard
+// tip has a 1 px antialiased rim, which the pencil zeroes on its own copy and
+// section 3 zeroes for both engines -- brush/PencilDeposit.hpp §0 says why).
+// The real difference is one step out: a hard dab is not a
 // hard *mark*, because `RgbDeposit` accumulates `flow * coverage` per dab and a
 // texel on a stroke's rim is covered by fewer dabs than one on its spine, so at
 // any `flow < 1` the mark has graded shoulders however hard the tip. So the
@@ -6438,5 +6455,128 @@ bool runTextKeyCaptureTest();
 //
 // Headless, GPU-free, writes no files. See app/selftest/CommandCallsites.cpp.
 bool runCommandCallsitesTest();
+
+// Track B / B1+B2 (brush/Deposit.hpp §2, §2c): `BrushTip::edgePx`'s minimum
+// pixel-wide smoothstep skirt on the procedural falloff, and
+// `BrushTipBitmap::mips`' box-filter chain for a sampled bitmap tip.
+// Headless, GPU-free, writes no files. See app/selftest/TipEdge.cpp for the
+// six sections and what each proves.
+bool runTipEdgeTest();
+
+// The brush's own blend mode (Photoshop's `Md `) reaching a plain RGB layer
+// -- brush/RgbDeposit.hpp §2a, and the routing edge that feeds it
+// (`app/StrokeSession.cpp`'s `RgbStroke::begin(..., tip.blend)`, on the RGB
+// deposit route only; `brush/ToolOptionsBlend.hpp` still refuses `linearBurn`
+// and `Dslv` by name, and no other route reads `BrushTip::blend` at all).
+//
+// **What it proves**, distinct from app/selftest/RgbDeposit.cpp's own §§1-15
+// (which already cover the unblended composite at length and are not
+// repeated here):
+//
+//  - **Normal is bit-identical to the pre-existing path**, at zero tolerance,
+//    reached by DISPATCH (`blend_ != Normal`) rather than by coincidence of
+//    shared arithmetic -- and the latched-`dst0` colour plane holds zero
+//    tiles and zero bytes for the whole life of a Normal stroke, checked
+//    while the stroke is still active rather than only after cleanup.
+//  - **Multiply and Darken (Min) match hand-checkable cases**: white ink
+//    over an opaque mid grey is the identity; black ink over it is exact
+//    black; Darken keeps whichever of a texel and the ink is darker,
+//    channel-wise, and leaves the darker one UNCHANGED.
+//  - **No compounding, the headline claim**: two dabs at flow 0.4 and one
+//    dab built to the SAME final accumulator value (read back from the real
+//    two-dab run, not hand-derived) write the BIT-IDENTICAL texel over a
+//    non-trivial opaque background, for both Multiply and Darken -- the
+//    property that fails first and most visibly if a blended dab reads the
+//    live (already-blended) tile instead of the texel latched at the
+//    stroke's first touch.
+//  - **A transparent destination** yields the ink exactly, for both modes,
+//    as a consequence of `core::blendPixel()`'s own three-term split rather
+//    than a separate branch for it.
+//  - **Alpha lock's freeze re-derived for a blend**: alpha exactly frozen at
+//    its pre-stroke value, colour moving to the value the re-derived
+//    `dst0*(1-A') + target*A'*dst0.a` rule predicts, checked against that
+//    formula computed by hand and cross-checked against `blendPixel()`.
+//  - **The selection is still a BOUND, not a speed limit, under a blend
+//    mode**: 40 scrubbing dabs through a partially selected texel reach
+//    exactly `opacity * sel`, at zero tolerance -- the blend mode changes
+//    what gets written at the bound, never the bound itself.
+//  - **The latched-`dst0` store's lifetime**, measured on both sides of
+//    pen-up: one 128 KiB `core::Tile` per touched tile while a BLENDED
+//    stroke is painting, zero afterwards.
+//
+// Driven through `RgbStroke` directly on a bare `TileStore`. Headless,
+// GPU-free, writes no files. See app/selftest/BrushBlendMode.cpp.
+bool runBrushBlendModeTest();
+
+// Track A: full-rate pointer input and per-dab axis interpolation.
+//
+// The defect it guards against is a sampling-rate one, and it is invisible to
+// every other test in this suite because every other test feeds `StrokePath`
+// and `StrokeSession` one sample per "frame" and never asks what happens to
+// the AXES riding along with a position. Before this track, they were latched
+// once per render frame (`StrokeSession::setTip()`'s `hardwareInputs`), so a
+// tablet reporting at 133-200 Hz into a 60 Hz frame collapsed two or three
+// pressure readings into one and every dab that frame -- dozens, on a fast
+// stroke -- shared it. A PenPressure-controlled Size stepped in blocks.
+//
+// **What it PROVES**, as distinct from what it exercises:
+//
+//  * that `brush/StrokePath` interpolates a dab's pressure/tilt/azimuth/
+//    barrel along the segment it lands in, strictly and monotonically for a
+//    monotone input ramp;
+//  * that the interpolation is SAMPLE-RATE INDEPENDENT: the same physical
+//    ramp fed as 2 samples and as 20 emits dabs at the same positions and
+//    the same pressures, within tolerances derived in the file from the
+//    chord-walk error and this fixture's own pressure gradient;
+//  * that distance-keyed pressure smoothing
+//    (`brush/Dynamics.hpp`'s `dynamicPressureSmoothedByDistance()`) reaches
+//    the same smoothed pressure at the same ARC LENGTH regardless of sample
+//    rate -- against a bound computed from the filter's own closed-form
+//    steady-state lag, not a typed constant -- and that a constant-pressure
+//    stroke is its fixed point;
+//  * that the mouse path is bit-exactly what it was: a mouse `PointerSample`
+//    converts to full pressure and neutral axes, and `dynamicInputsFor()`'s
+//    own `has*` flags and four values are untouched by this track;
+//  * that the neutral-axis wrapper `StrokeSession::addPoint(x, y)` and
+//    `addSample()` with a default `StrokeSample` paint BIT-IDENTICAL pixels,
+//    so every pre-existing caller kept its exact output;
+//  * that per-dab axes actually reach a real accumulator: a rising-pressure
+//    stroke through a real `StrokeSession` with a PenPressure-controlled Size
+//    Variance produces RISING dab radii, against a deliberately wrong
+//    constant `hardwareInputs` -- the assertion that goes red if
+//    `depositPending()` ever reads the frame latch again instead of the dab.
+//
+// Headless, GPU-free, writes no files. See app/selftest/StrokeInput.cpp.
+bool runStrokeInputTest();
+
+// Fix wave 1 (F1-input): the pointer queue between SDL's events and the
+// canvas's strokes -- `app/PointerQueue`, extracted from main.cpp and the
+// canvas block precisely so this path can be tested at all. It replays SDL
+// 3.2.24's own per-backend event ORDER (macOS, Wayland, Windows, X11) through
+// a model of SDL's pen core, and ImGui 1.92.9b's trickled frame boundaries as
+// measured headless, and asserts:
+//  1. every queued pen sample carries its OWN report's axes -- SDL sends a
+//     report's PEN_AXIS events after its position on every backend, and the
+//     opening sample of every macOS stroke used to carry the previous lift's
+//     pressure 0 (wave-1 review, finding 1);
+//  2. a press-and-hold dot (one sample, no motion) carries the contact's
+//     pressure, and later stationary reports do not rewrite it;
+//  3. a click ImGui holds back a frame behind a wheel event still reaches
+//     the stroke that begins on it, including a click whose release arrived
+//     in the same poll (finding 2);
+//  4. a lift and re-touch inside one frame gives stroke 1 only its own tail
+//     and stroke 2 its own down sample first -- no bridge (finding 2);
+//  5. a gesture the canvas never began a stroke for -- a panel click, a pan
+//     -- is never delivered to a later stroke;
+//  6. the Track A behaviours the review found correct: the pen's
+//     synthesised mouse events and every button-up queue nothing, touch-
+//     generated mouse events are kept, hover is never queued;
+//  7. barrel and azimuth interpolate along the short arc through their seam
+//     (finding 3), and a barrel held at exactly +180 degrees stays 1.0;
+//  8. the queue's stated memory bound holds against 10 000 unclaimed samples
+//     and 10 000 unprocessed clicks.
+//
+// Headless, GPU-free, writes no files. See app/selftest/PointerQueue.cpp.
+bool runPointerQueueTest();
 
 }  // namespace np

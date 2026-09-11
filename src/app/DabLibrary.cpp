@@ -8,6 +8,7 @@
 #include <sstream>
 #include <unordered_map>
 
+#include "brush/TipMips.hpp"
 #include "color/Space.hpp"
 #include "io/AbrBrushes.hpp"
 #include "io/GimpBrush.hpp"
@@ -393,6 +394,10 @@ bool DabLibrary::decodeFile(const std::string& root, DabRoot which, const std::s
     e.spacingPercent = spacing;
     e.sizeBytes = sizeBytes;
     e.mtimeNs = mtimeNs;
+    // Track B / B2: built here, on the still-mutable local `bmp`, before it
+    // is wrapped `const` two lines below -- the shared construction point for
+    // every GIMP (.gbr/.gih) and generic-image dab this function decodes.
+    buildTipMips(bmp);
     e.bitmap = std::make_shared<const BrushTipBitmap>(std::move(bmp));
     out.push_back(std::move(e));
   };
@@ -474,6 +479,9 @@ bool DabLibrary::decodeFile(const std::string& root, DabRoot which, const std::s
     e.fingerprint = dabFingerprint(bmp);
     e.sizeBytes = sizeBytes;
     e.mtimeNs = mtimeNs;
+    // Track B / B2: the second (and last) construction site in this file --
+    // the extracted-.abr-tip path, which bypasses `push()` above.
+    buildTipMips(bmp);
     e.bitmap = std::make_shared<const BrushTipBitmap>(std::move(bmp));
     out.push_back(std::move(e));
     return true;

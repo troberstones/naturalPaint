@@ -63,14 +63,22 @@ bool contentSamplesBelow(const StrokesContent& content) noexcept {
 }
 
 // The stored shape fields, as the `BrushTip` `dabCoverage()` takes. The whole
-// bridge between the two dab types, and deliberately four lines long: a
+// bridge between the two dab types, and deliberately five lines long: a
 // stored dab carries no bitmap and no dual tip (core/StrokesContent §1), so
 // those members keep their null defaults and `dabCoverage()` takes its
 // procedural path.
+//
+// **`edgePx` is the record's, not `BrushTip`'s default.** It used to be left
+// at the default -- the record had no field for it -- which replayed every
+// stored dab, including those saved before the field existed, at whatever rim
+// width the running build defaulted to (review finding 6; core/StrokesContent's
+// `DabRecord::edgePx` comment has the measurement). An `npdabs1` record reads
+// back with `edgePx == 0`, the hard rim it was painted with.
 BrushTip tipOf(const DabRecord& d) noexcept {
   BrushTip tip;
   tip.radius = d.radius;
   tip.hardness = d.hardness;
+  tip.edgePx = d.edgePx;
   tip.roundness = d.roundness;
   tip.angle = d.angle;
   return tip;

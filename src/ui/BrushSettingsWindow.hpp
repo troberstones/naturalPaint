@@ -105,10 +105,10 @@ namespace np {
 //
 // `ui/BrushFieldPresentation.hpp` is what makes growing this enum to eight
 // (nine, with Dynamics) tabs safe against the failure the OLD comment above
-// was guarding against: every one of `BrushModel`'s 151 leaves is either in
+// was guarding against: every one of `BrushModel`'s 149 leaves is either in
 // that file's presentation table (a tab below draws it) or its omission
 // table (a one-line reason it does not), and `--selftest`
-// (`runBrushPanelBindingTest()`) asserts the two account for all 151 with no
+// (`runBrushPanelBindingTest()`) asserts the two account for all 149 with no
 // overlap and no stale entry -- a leaf now cannot go from "the importer
 // fills it in" to "no control anywhere" without turning the suite red.
 enum class BrushSettingsTab : uint8_t {
@@ -125,7 +125,7 @@ enum class BrushSettingsTab : uint8_t {
   // Pattern, scale, depth, blend mode, brightness/contrast. **This is
   // `BrushModel::texture` (Photoshop's imported panel), a different struct
   // from the paper-tooth PAPER GRAIN section this tab also carries
-  // (`st.brush.grain`, wired since before this phase) -- see
+  // (`st.brush.native.grain`, wired since before this phase) -- see
   // `drawBrushTextureGroup()`'s own comment on why one tab holds both.
   Texture,
 
@@ -163,6 +163,14 @@ enum class BrushSettingsTab : uint8_t {
   // live "N LINKS" count with the flag off, and a painter who has used it
   // before should still be able to find it. See `ui/DynamicsMatrixPanel.hpp`
   // for what would have to happen for it to drive a stroke again.
+  //
+  // **naturalPaint's own, and the one tab this file's own header above does
+  // not describe as mirroring a Photoshop panel.** It now also opens with a
+  // small NATURALPAINT group (`drawBrushNativeGroup()`) -- LOAD/WATER bound
+  // to `st.brush.native` and OPACITY bound to `st.brush.opacity`, the same
+  // three the docked column's Paint group already shows, given a home in the
+  // window too since this tab is where naturalPaint's own settings, as
+  // opposed to Photoshop's, belong.
   Dynamics,
 
   Count,
@@ -235,12 +243,21 @@ void drawBrushPaintGroup(AppState& st);
 //
 // **Also gates `BrushModel::texture`'s own 16 leaves** (`ui/
 // BrushFieldPresentation`'s table), appended after PAPER GRAIN -- a
-// DIFFERENT struct (`st.brush.grain`) that this same tab has always shown.
-// Drawn only when `ownPage` for the identical column-space reason PAPER
-// GRAIN's own header is: the docked column has no room for 16 more controls,
-// so the generic section is window-only, same as the five tabs below.
+// DIFFERENT struct (`st.brush.native.grain`) that this same tab has always
+// shown. Drawn only when `ownPage` for the identical column-space reason
+// PAPER GRAIN's own header is: the docked column has no room for 16 more
+// controls, so the generic section is window-only, same as the five tabs
+// below.
 void drawBrushTextureGroup(AppState& st, bool ownPage);
 void drawBrushDynamicsGroup(AppState& st);
+// The NATURALPAINT group: LOAD/WATER sliders bound to `st.brush.native` and
+// OPACITY bound to `st.brush.opacity` (deliberately not in `native` --
+// brush/NativeBrush.hpp's header), drawn only at the top of the Dynamics
+// tab's own page (window-only, never the docked column --
+// `drawBrushPaintGroup()` above already shows these three there, and this
+// group would duplicate them). See
+// `ui/BrushSettingsWindow.cpp`'s `BrushSettingsTab::Dynamics` case.
+void drawBrushNativeGroup(AppState& st);
 
 // The six window-only, presentation-table-driven groups -- see the comment
 // above this block and each panel's own comment on `BrushSettingsTab`.

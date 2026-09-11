@@ -189,9 +189,38 @@ bool runPigmentDepositTest() {
     check(dabCoverage(soft, 8.0f, 8.0f) > 0.0f && dabCoverage(soft, 12.0f, 12.0f) == 0.0f,
           "falloff: the disc is round -- (8,8) is inside r=16 and (12,12) is outside it");
 
-    check(dabCoverage(tip(16.0f, 1.0f, 1.0f, kBlue), 15.99f, 0.0f) == 1.0f &&
-              dabCoverage(tip(16.0f, 1.0f, 1.0f, kBlue), 16.0f, 0.0f) == 0.0f,
-          "falloff: hardness 1 degenerates to a hard disc -- 1 up to the rim, 0 at it");
+    // **Hardness 1 is no longer a hard disc, and these two assertions replace
+    // the one that said it was** ("1 up to the rim, 0 at it", probed at 15.99
+    // of r = 16). `BrushTip::edgePx` floors the smoothstep skirt at one
+    // document pixel (brush/Deposit.hpp §2), so at hardness 1 the flat core
+    // ends at `radius - edgePx` and the last pixel is antialiased. The old
+    // probe sat in that pixel. What did NOT move is the footprint: coverage is
+    // still exactly 0 at and beyond the radius (the squared comparison is
+    // untouched), so §3's containment fact and `dabPixelBounds()` stand.
+    //
+    // Probed at exactly `radius - edgePx` = 15, which is safe at THIS radius
+    // and not in general: 15/16 and 1 - 1/16 are both exact in binary, so the
+    // engine's `d <= hEff` compares 0.9375 with 0.9375 and the boundary texel is
+    // in the core by the algebra rather than by a rounding coin-toss.
+    {
+      const BrushTip hard = tip(16.0f, 1.0f, 1.0f, kBlue);
+      const float coreEnd = hard.radius - hard.edgePx;  // 15.0
+      bool rimFractional = true;
+      for (float dx : {15.01f, 15.25f, 15.5f, 15.75f, 15.99f}) {
+        const float c = dabCoverage(hard, dx, 0.0f);
+        if (!(c > 0.0f && c < 1.0f)) rimFractional = false;
+      }
+      check(hard.edgePx == 1.0f && dabCoverage(hard, 0.0f, 0.0f) == 1.0f &&
+                dabCoverage(hard, coreEnd, 0.0f) == 1.0f &&
+                dabCoverage(hard, 0.0f, -coreEnd) == 1.0f,
+            "falloff: hardness 1 is EXACTLY 1.0 out to radius - edgePx (15 of r=16), in every "
+            "direction -- a flat core, one pixel short of the rim since BrushTip::edgePx");
+      check(rimFractional && dabCoverage(hard, 16.0f, 0.0f) == 0.0f &&
+                dabCoverage(hard, 1e9f, 0.0f) == 0.0f,
+            "falloff: and STRICTLY between 0 and 1 across its last pixel, reaching exactly 0.0f "
+            "at and beyond the radius -- hardness 1 used to be 1 right up to the rim; the rim "
+            "is now antialiased, while the footprint (Deposit.hpp 3, fact 1) is unchanged");
+    }
     check(dabCoverage(tip(0.0f, 0.5f, 1.0f, kBlue), 0.0f, 0.0f) == 0.0f &&
               dabCoverage(tip(-4.0f, 0.5f, 1.0f, kBlue), 0.0f, 0.0f) == 0.0f,
           "falloff: a zero or negative radius deposits nothing rather than dividing by it");

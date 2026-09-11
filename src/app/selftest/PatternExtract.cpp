@@ -15,7 +15,7 @@ namespace np {
 // **The claim, restated from extractAbrPatterns()'s own header comment**: a
 // `.abr`'s scanned paper used to live only inside `patternsById`, a map built
 // fresh inside `importAbrBrushes()` and thrown away the moment that call
-// returned -- feeding `BrushPreset::grain` for THAT import's own presets and
+// returned -- feeding `BrushPreset::native.grain` for THAT import's own presets and
 // nothing that survived a relaunch. This is what proves the fix: a decoded
 // `PaperField` written to `patterns-imported/<uuid>.png` round-trips byte for
 // byte, a second import of the same uuid leaves the file alone, and a

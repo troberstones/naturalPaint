@@ -76,9 +76,12 @@ bool runRgbDepositTest() {
     return tile->readPixel(tileLocalOffset(PixelCoord{x, y}));
   };
 
-  // A hard disc, so `dabCoverage()` is exactly 1.0f over the whole core and
+  // A hardness-1 tip, so `dabCoverage()` is exactly 1.0f over the whole core and
   // every number below is about the deposit rather than about the falloff.
-  // Section 3 is where the falloff itself is checked.
+  // Section 3 is where the falloff itself is checked. Since BrushTip::edgePx
+  // the core ends `edgePx` (1 px) short of the radius and the last pixel is an
+  // antialiased rim -- no longer a hard disc; section 4 is the one place here
+  // whose claim had to be restated for that.
   auto discTip = [](float radius, float flow, const std::array<float, 3>& rgb) {
     BrushTip t;
     t.radius = radius;
@@ -252,28 +255,91 @@ bool runRgbDepositTest() {
     constexpr float kCeiling = 0.5f;
     constexpr int kDabs = 50;
 
+    const Vec2 centre{128.0f, 128.0f};
+
+    // **The "remaining dabs write NOTHING" claim below had to be restated when
+    // `BrushTip::edgePx` antialiased this hardness-1 tip's last pixel, and the
+    // restatement is three claims, each true as written.** It used to count
+    // dabs that wrote ANY texel and demand fewer than 5 of the 50: true while
+    // every texel had coverage 1 and so reached the ceiling in the same two
+    // dabs. The rim's coverage `c` is now below 1, its weight is `flow * c`,
+    // and `1 - A` shrinks by only `(1 - flow * c)` per dab -- so a rim texel
+    // takes MORE dabs to reach the same ceiling, correctly. What the claim
+    // protects (a scrubbed stroke stops dirtying tiles) survives; it is now
+    // about the whole footprint converging, not about dab two:
+    //
+    //   1. The CORE (coverage exactly 1) stops being written within a handful
+    //      of dabs -- the original claim, on the texels it was always about.
+    //   2. Scrubbing still TERMINATES: while `A < cap` one dab adds
+    //      `flow * c * (1 - A) >= flow * c * (1 - cap)`, so the faintest
+    //      covered texel `c_min` reaches the cap within
+    //      `ceil(cap / (flow * c_min * (1 - cap)))` dabs and the dab after
+    //      writes nothing. `c_min` is measured, not typed: centred on a texel
+    //      corner, the outermost texel inside r = 20 sits at d^2 = 398.5, where
+    //      c ~= 0.004 -- far above the float floor where an increment could
+    //      round away and stall a texel short of the cap.
+    //   3. Section 5 below already asserts that a 3%-coverage rim texel lands
+    //      on the SAME ceiling as the centre; it is not repeated here.
+    std::vector<PixelCoord> coreTexels;
+    float minCov = 1.0f;
+    {
+      const PixelBounds bb = dabPixelBounds(t, centre, 256, 256);
+      for (int32_t y = bb.y0; y <= bb.y1; ++y)
+        for (int32_t x = bb.x0; x <= bb.x1; ++x) {
+          const float cov = dabCoverage(t, (static_cast<float>(x) + 0.5f) - centre.x,
+                                        (static_cast<float>(y) + 0.5f) - centre.y);
+          if (cov == 1.0f) coreTexels.push_back(PixelCoord{x, y});
+          if (cov > 0.0f) minCov = std::min(minCov, cov);
+        }
+    }
+    const size_t silentBound = static_cast<size_t>(std::ceil(
+                                   kCeiling / (t.flow * minCov * (1.0f - kCeiling)))) + 1;
+
     RgbStroke stroke;
     stroke.begin(t.linearRgb, kCeiling);
-    size_t writingDabs = 0;
+    constexpr size_t kMaxDabs = 4000;
+    size_t writingDabs = 0;      // of the first kDabs, how many wrote ANY texel
+    size_t coreWritingDabs = 0;  // of the first kDabs, how many wrote a CORE texel
+    size_t dabsUntilSilent = 0;  // 1-based index of the first dab that wrote nothing
+    float accumulated = 0.0f;
+    float stored = 0.0f;
+    std::vector<float> coreBefore(coreTexels.size());
     // The model this build rejected, run on the same numbers: each dab
     // composites at `flow * cov * opacity` with no memory of the ones before.
     float perDab = 0.0f;
-    for (int i = 0; i < kDabs; ++i) {
-      const DepositCount c =
-          stroke.depositDab(store, t, Vec2{128.0f, 128.0f}, 256, 256, nullptr, nullptr);
-      if (c.texels > 0) ++writingDabs;
-      const float a = t.flow * kCeiling;
-      perDab = a + perDab * (1.0f - a);
+    for (size_t i = 0; i < kMaxDabs; ++i) {
+      for (size_t j = 0; j < coreTexels.size(); ++j)
+        coreBefore[j] = stroke.strokeAlphaAt(coreTexels[j]);
+      const DepositCount c = stroke.depositDab(store, t, centre, 256, 256, nullptr, nullptr);
+      bool coreChanged = false;
+      for (size_t j = 0; j < coreTexels.size(); ++j)
+        if (stroke.strokeAlphaAt(coreTexels[j]) != coreBefore[j]) coreChanged = true;
+      if (i < static_cast<size_t>(kDabs)) {
+        if (c.texels > 0) ++writingDabs;
+        if (coreChanged) ++coreWritingDabs;
+        const float a = t.flow * kCeiling;
+        perDab = a + perDab * (1.0f - a);
+      }
+      if (i + 1 == static_cast<size_t>(kDabs)) {
+        accumulated = stroke.strokeAlphaAt(PixelCoord{128, 128});
+        stored = readAt(store, 128, 128)[3];
+      }
+      if (c.texels == 0 && dabsUntilSilent == 0) dabsUntilSilent = i + 1;
+      if (dabsUntilSilent != 0 && i + 1 >= static_cast<size_t>(kDabs)) break;
     }
 
-    const float accumulated = stroke.strokeAlphaAt(PixelCoord{128, 128});
-    const float stored = readAt(store, 128, 128)[3];
-    const float bound = static_cast<float>(writingDabs) * kHalfRel * kCeiling;
+    // (128,128) is a core texel, so it was written exactly `coreWritingDabs`
+    // times -- the count the f16 drift bound is about. It used to be
+    // `writingDabs`, which was the same number while every texel was core.
+    const float bound = static_cast<float>(coreWritingDabs) * kHalfRel * kCeiling;
     std::printf("  [measured] %d overlapping dabs at opacity %.2f: accumulator %.9f, stored "
-                "%.9f (|err| %.3e, bound %.3e); only %zu of them wrote anything\n",
+                "%.9f (|err| %.3e, bound %.3e); %zu of them wrote the %zu-texel core, %zu wrote "
+                "anything (the rim); dab %zu was the first to write nothing at all (bound %zu "
+                "from the faintest rim coverage %.6f)\n",
                 kDabs, static_cast<double>(kCeiling), static_cast<double>(accumulated),
                 static_cast<double>(stored), static_cast<double>(std::fabs(stored - accumulated)),
-                static_cast<double>(bound), writingDabs);
+                static_cast<double>(bound), coreWritingDabs, coreTexels.size(), writingDabs,
+                dabsUntilSilent, silentBound, static_cast<double>(minCov));
     std::printf("  [measured] the REJECTED per-dab model reaches %.6f on the identical "
                 "numbers -- a \"50%%\" stroke that is 100%% opaque\n",
                 static_cast<double>(perDab));
@@ -290,10 +356,14 @@ bool runRgbDepositTest() {
           "opacity cap: the rejected per-dab model is *checked to be wrong* on these "
           "numbers -- otherwise the assertion above would pass against it too and prove "
           "nothing");
-    check(writingDabs < 5 && writingDabs > 0,
-          "opacity cap: once the ceiling is reached the remaining dabs write NOTHING -- not "
-          "a value equal to what is there, nothing at all, so a scrubbed stroke stops "
-          "dirtying tiles and live feedback stops re-uploading them");
+    check(coreTexels.size() > 1000 && coreWritingDabs < 5 && coreWritingDabs > 0,
+          "opacity cap: once the dab's CORE reaches the ceiling the remaining dabs write NOTHING "
+          "there -- not a value equal to what is there, nothing at all. Restated for the core "
+          "since edgePx: the antialiased rim's weight is below flow, so it gets there later");
+    check(dabsUntilSilent > 0 && dabsUntilSilent <= silentBound && silentBound < kMaxDabs,
+          "opacity cap: and the whole footprint, rim included, then stops too -- within the "
+          "bound derived from the faintest rim texel's coverage a dab writes no texel at all, "
+          "so a scrubbed stroke stops dirtying tiles and live feedback stops re-uploading them");
 
     // The colour, at the cap, is still the ink -- a capped stroke must not be
     // a differently-coloured stroke.

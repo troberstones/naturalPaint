@@ -128,7 +128,11 @@ bool refusalIsUsable(const std::string& msg, const char* mustName) {
 BrushTip testTip() {
   BrushTip t;
   t.radius = 6.0f;
-  t.hardness = 1.0f;  // a hard disc: section 7's off-line assertion needs a rim it can trust
+  // Hardness 1: section 7's off-line assertion needs a rim it can trust. Since
+  // BrushTip::edgePx the last pixel is antialiased rather than hard, but the
+  // footprint -- exactly 0 at and beyond the radius -- did not move, and that
+  // is the part of the rim section 7 trusts.
+  t.hardness = 1.0f;
   t.spacing = 0.25f;
   t.flow = 1.0f;
   t.opacity = 1.0f;
@@ -826,8 +830,24 @@ bool runPathConsumersTest() {
         strokePathWithBrush(openTarget, {filledShape(line, {1, 1, 1, 1})}, fine, nullptr, W, H);
     check(so.ok && pixelAt(*openTarget.rgbTiles, 120, 128)[3] > 0.5f,
           "premise: the fine tip paints the middle of an open subpath");
-    check(so.ok && pixelAt(*openTarget.rgbTiles, 201, 128)[3] > 0.5f,
-          "  and the LAST texel the tip can reach from the final anchor is painted");
+    // **Painted at all (> 0), where this used to demand > 0.5.** The probe
+    // has to be the LAST covered texel (above), and since BrushTip::edgePx the
+    // last covered texel of a hardness-1 tip lies in its antialiased last
+    // pixel: at r = 2 the flat core ends at d = 1, and x=201's centre is ~1.58
+    // px from the final anchor, where one dab's coverage is well under a half.
+    // Lowering the threshold keeps the probe on the edge texel rather than
+    // moving it inward -- which is what made an earlier version of this block
+    // blind to the sabotage -- and it still discriminates: without `flush()`
+    // the last dab lags behind 200, x=201's centre is then at or past the
+    // radius, and its coverage is exactly 0 (the squared comparison, unmoved
+    // by edgePx), not merely small.
+    const float lastAlpha = so.ok ? pixelAt(*openTarget.rgbTiles, 201, 128)[3] : 0.0f;
+    std::printf("  [measured] the last texel's alpha from the final anchor: %.6f\n",
+                static_cast<double>(lastAlpha));
+    check(so.ok && lastAlpha > 0.0f,
+          "  and the LAST texel the tip can reach from the final anchor is painted -- at the "
+          "antialiased rim's fractional alpha since edgePx, so 'painted' means nonzero now, "
+          "not over half");
     check(so.ok && pixelAt(*openTarget.rgbTiles, 202, 128)[3] == 0.0f,
           "  premise: one texel further is past the tip, so the probe above is the edge");
 
@@ -951,6 +971,90 @@ bool runPathConsumersTest() {
           "a stroke crossing the edge paints inside the selection");
     check(s.ok && pixelAt(*strokeTarget.rgbTiles, 200, 128)[3] == 0.0f,
           "  and paints nothing outside it");
+  }
+
+  // ==========================================================================
+  // 10. The brush's own blend mode reaches a path stroke (review finding 4)
+  // ==========================================================================
+  //
+  // `strokePathWithBrush()` used to call `RgbStroke::begin()` without
+  // `tip.blend`, so the defaulted Normal painted a Multiply brush as Normal
+  // along a path -- while the Tool Options banner said Blend Mode was applied
+  // on an RGB layer. White ink is the discriminating fixture: under Multiply
+  // it is the identity (`dst * 1 == dst`), so the grey must come back
+  // unchanged, and under Normal it is the one ink that moves a 0.2 grey the
+  // furthest (to 1.0). A second ink, 0.5, proves Multiply is actually being
+  // computed rather than the stroke being dropped.
+  //
+  // Tolerance: the layer is binary16, so a stored value can differ from the
+  // exact product by one round-to-nearest, 2^-11 relative plus a 2^-25
+  // subnormal floor -- the derivation runRgbDepositTest() states for the same
+  // `core::Tile`. The probe texel (120, 128) is on the path's spine, in the
+  // hardness-1 tip's flat core (coverage exactly 1 at flow 1), so the stroke's
+  // `A'` there is exactly 1 and brush/RgbDeposit.hpp §2a's composite reduces to
+  // `blend(dst0, ink)` with no partial-coverage term to budget for.
+  std::printf("  -- 10. stroke path honours the brush's blend mode --\n");
+  {
+    constexpr float kHalfRel = 4.8828125e-04f;    // 2^-11
+    constexpr float kHalfFloor = 2.9802322e-08f;  // 2^-25
+    auto nearHalf = [&](float got, float want) {
+      return std::fabs(got - want) <= std::fabs(want) * kHalfRel + kHalfFloor;
+    };
+    Path line;
+    SubPath sub;
+    for (float x : {40.0f, 200.0f}) {
+      Anchor a;
+      a.pt = PathPoint{x, 128.0f};
+      a.in = a.pt;
+      a.out = a.pt;
+      sub.anchors.push_back(a);
+    }
+    line.subpaths.push_back(sub);
+
+    // One stroke over a fresh opaque 0.2-grey layer, returning the probe
+    // texel before and after.
+    auto strokeOverGrey = [&](BlendMode mode, float ink, std::array<float, 4>* before,
+                              bool* strokeOk) {
+      Layer target = makeRgb("blend over grey", W, H);
+      for (int32_t y = 96; y < 160; ++y)
+        for (int32_t x = 0; x < W; ++x) {
+          const PixelCoord at{x, y};
+          target.rgbTiles->getOrCreate(tileCoordAt(at))
+              .writePixel(tileLocalOffset(at), {0.2f, 0.2f, 0.2f, 1.0f});
+        }
+      *before = pixelAt(*target.rgbTiles, 120, 128);
+      BrushTip tip = testTip();
+      tip.linearRgb = {ink, ink, ink};
+      tip.blend = mode;
+      const PathStrokeResult s =
+          strokePathWithBrush(target, {filledShape(line, {1, 1, 1, 1})}, tip, nullptr, W, H);
+      *strokeOk = s.ok;
+      return pixelAt(*target.rgbTiles, 120, 128);
+    };
+
+    std::array<float, 4> greyN{}, greyM{}, greyM5{};
+    bool okN = false, okM = false, okM5 = false;
+    const std::array<float, 4> normalWhite = strokeOverGrey(BlendMode::Normal, 1.0f, &greyN, &okN);
+    const std::array<float, 4> multWhite =
+        strokeOverGrey(BlendMode::Multiply, 1.0f, &greyM, &okM);
+    const std::array<float, 4> multHalf =
+        strokeOverGrey(BlendMode::Multiply, 0.5f, &greyM5, &okM5);
+    std::printf("  [measured] white ink over %.6f grey: Normal -> %.6f, Multiply -> %.6f; "
+                "0.5 ink under Multiply -> %.6f (want %.6f)\n",
+                static_cast<double>(greyM[0]), static_cast<double>(normalWhite[0]),
+                static_cast<double>(multWhite[0]), static_cast<double>(multHalf[0]),
+                static_cast<double>(greyM5[0] * 0.5f));
+    check(okN && nearHalf(normalWhite[0], 1.0f) && nearHalf(normalWhite[3], 1.0f),
+          "blend: premise -- a NORMAL white stroke over the grey whitens it to 1.0, so the "
+          "fixture can tell the two modes apart");
+    check(okM && nearHalf(multWhite[0], greyM[0]) && nearHalf(multWhite[1], greyM[1]) &&
+              nearHalf(multWhite[2], greyM[2]) && multWhite[3] == greyM[3],
+          "blend: a MULTIPLY brush's white ink stroked along a path leaves the 0.2 grey at 0.2 "
+          "-- the path stroke reads the brush's own blend mode, as a live RGB stroke does");
+    check(okM5 && nearHalf(multHalf[0], greyM5[0] * 0.5f) &&
+              nearHalf(multHalf[2], greyM5[2] * 0.5f),
+          "blend: and a 0.5 ink under the same Multiply lands on grey * 0.5 -- the mode is "
+          "computed, not the stroke dropped");
   }
 
   std::printf("[selftest] path consumers %s\n", ok ? "PASS" : "FAIL");

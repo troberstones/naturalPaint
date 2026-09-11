@@ -488,7 +488,7 @@ bool runDynamicsSourcesTest() {
       BrushState scatterBrush;
       scatterBrush.model.tip.diameterPx = 40.0f;
       scatterBrush.model.tip.hardness = 0.4f;
-      scatterBrush.load = 0.5f;
+      scatterBrush.native.load = 0.5f;
       scatterBrush.model.scatter.scatter.jitter = 0.9f;  // most of a radius,
                                                           // so the effect is
                                                           // not lost in noise
@@ -528,14 +528,14 @@ bool runDynamicsSourcesTest() {
     // (`evaluateLinksFiltered(brush.links, ..., wantStrokeLocal=false)`);
     // that call is gone (`app/StrokeSession.cpp`'s own comment on
     // `brushTipFor()`), and `BrushModel` has no per-dab wiring for any of
-    // the four yet -- `tip.flow = brush.load` unscaled, HSV set to identity
+    // the four yet -- `tip.flow = brush.native.load` unscaled, HSV set to identity
     // `(0,0,0)`, both with a comment naming this a deliberately deferred
     // divergence, not an oversight. A `BrushLinkSet` populated with the
     // identical links this section used to prove LIVE now proves the
     // opposite: they no longer move `brushTipFor()`'s output at all.
     {
       BrushState brush;
-      brush.load = 0.5f;
+      brush.native.load = 0.5f;
       brush.pigment = 0;
       DynamicInputs in;
       in.pressure = 1.0f;
@@ -591,7 +591,7 @@ bool runDynamicsSourcesTest() {
       BrushState brush;
       brush.model.tip.diameterPx = 48.0f;
       brush.model.tip.hardness = 0.35f;
-      brush.load = 0.4f;
+      brush.native.load = 0.4f;
       if (withVariance) {
         brush.model.shape.size.jitter = 0.4f;
         brush.model.shape.angle.jitter = 0.6f;
@@ -944,7 +944,7 @@ bool runDynamicsSourcesTest() {
         BrushState brush;
         brush.model.tip.diameterPx = 44.0f;
         brush.model.tip.hardness = 0.4f;
-        brush.load = 0.5f;
+        brush.native.load = 0.5f;
         // Visibly non-round. ANGLE has NO effect at roundness 1.0
         // (brush/Deposit.cpp's own round-tip branch skips the rotation
         // arithmetic outright, deliberately, to keep every existing
@@ -1092,7 +1092,7 @@ bool runDynamicsSourcesTest() {
       BrushState brush;
       brush.model.tip.diameterPx = 44.0f;
       brush.model.tip.hardness = 0.4f;
-      brush.load = 0.5f;
+      brush.native.load = 0.5f;
       // ANGLE has no visible effect at roundness 1.0 (brush/Deposit.cpp's
       // own round-tip branch skips the rotation arithmetic outright) --
       // section 9e's own reasoning, restated for this section's own tip.
@@ -1172,7 +1172,7 @@ bool runDynamicsSourcesTest() {
       BrushState fixedBrush;
       fixedBrush.model.tip.diameterPx = 44.0f;
       fixedBrush.model.tip.hardness = 0.4f;
-      fixedBrush.load = 0.5f;
+      fixedBrush.native.load = 0.5f;
       fixedBrush.model.tip.roundness = 0.35f;
       // The independently-computed answer, assigned straight onto the
       // model's own base angle -- no Variance control, no `brushTipFor()`
