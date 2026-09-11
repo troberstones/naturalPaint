@@ -64,7 +64,6 @@
 //     preset My Custom Wash
 //     scalars 30.5 0.62 0.18 0.7 12 1.1 2.4
 //     grain 1 24 24 0.35 1
-//     opacity 0.8
 //     floor 0 0.2
 //     link 0 4 0.2 1 0 1
 //     point 0 0
@@ -73,7 +72,6 @@
 //     preset Detail Liner 2
 //     scalars 6 0.9 0.08 1 0 1.2 0.5
 //     grain 0 24 24 0.35 1
-//     opacity 1
 //
 // `preset` opens a scope exactly as `library` does in the sibling file: the
 // rest of the line is the name (no quoting, no escaping -- app/
@@ -117,12 +115,15 @@
 // treated like a malformed `link` line (below), not like a malformed
 // `scalars` one: it costs only itself, not the whole preset.
 //
-// **`opacity 0.8` -- `BrushPreset::native.opacity` -- is the same move a
-// second time.** A preset had no opacity at all before `native` existed (the
-// OPACITY slider's value lived only on `BrushState` and was never captured),
-// so a file with no `opacity` line -- every file written before this key --
-// loads at `NativeBrush`'s default 1.0, the value every preset effectively
-// had. Malformed costs only itself, as `grain` above.
+// **There is no `opacity` key, and the reader drops one if it finds it.** A
+// preset does not carry opacity: `BrushState::opacity` is per-session
+// options-bar state that survives picking a preset (brush/NativeBrush.hpp's
+// header on why it was deliberately left out of `native`). An interim build
+// of the `NativeBrush` migration briefly wrote an `opacity <v>` line per
+// preset; this build accepts and DROPS it -- not applied to anything, not
+// preserved as an unknown line -- the same treatment as the two retired
+// `model` paths below, so a file that build saved loads cleanly and the line
+// disappears on the next save.
 //
 // **Two `model` paths are retired: bare `load` and `wetness`.** They were
 // `BrushModel`'s last two leaves until brush/NativeBrush.hpp took them (151

@@ -1122,8 +1122,8 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // -- neither of which this function, called from both `begin()` and
   // `setTip()` with no memory of which, can do on its own. See `begin()`'s
   // own comment for the full argument. So this is `brush.native.load`/
-  // `brush.native.opacity` alone, same as it always was for a brush with no
-  // Flow/Concentration link -- the base value Transfer's resolved multiplier
+  // `brush.opacity` alone, same as it always was for a brush with no Flow/
+  // Concentration link -- the base value Transfer's resolved multiplier
   // scales, not the resolved value itself.
   //
   // Scatter Count (`PsScatter::count`/`countJitter`) is wired too, in
@@ -1132,7 +1132,7 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   tip.flow = brush.native.load;
   // Straight through, unscaled: there is no per-dab Grain dynamic in either
   // the matrix or the model.
-  tip.opacity = brush.native.opacity;
+  tip.opacity = brush.opacity;
   tip.grain = brush.native.grain;
 
   // --- the smudge's own block (brush/Smudge.hpp §3b) ----------------------
@@ -1323,11 +1323,11 @@ void applyPresetToBrush(const BrushPreset& preset, BrushState& brush) {
   // it would once something read the model to paint.
   //
   // `brush.native = preset.native` is the identical lockstep copy for
-  // load/wetness/opacity/grain -- one assignment where this used to be three
-  // (load, wetness, grain; `opacity` had nowhere on `preset` to come from at
-  // all) now that `brush/NativeBrush.hpp`'s `NativeBrush` holds all four.
-  // `brush/Library.hpp`'s `presetMatches()` comment has the full argument for
-  // why `opacity` joining this copy is a deliberate, stated behaviour change.
+  // load/wetness/grain -- one assignment where this used to be three, now
+  // that `brush/NativeBrush.hpp`'s `NativeBrush` holds all three.
+  // `brush.opacity` is deliberately NOT touched: it is per-session
+  // options-bar state a preset does not carry (`NativeBrush`'s own header),
+  // so a painter's lowered opacity survives picking a preset.
   brush.native = preset.native;
   brush.links = preset.links;
   brush.tipBitmap = preset.tipBitmap;
@@ -1378,11 +1378,10 @@ bool brushIsEdited(const BrushState& brush) {
   // The five scalars `presetMatches()` still takes as parameters now come
   // from `brush.model` rather than from five deleted `BrushState` fields.
   // `native` replaces the three loose load/wetness/grain arguments this call
-  // used to pass (the one change to `presetMatches()`'s signature), and
-  // brings `opacity` into the comparison for the first time -- one
+  // used to pass (the one change to `presetMatches()`'s signature) -- one
   // `nativeBrushEqual()` call inside `presetMatches()` instead of loose
-  // comparisons (brush/Library.hpp's `presetMatches()` comment on why
-  // `opacity` joining is deliberate).
+  // comparisons. `brush.opacity` is not compared, as it never was: a preset
+  // does not carry it (`NativeBrush`'s own header).
   return !presetMatches(p, brush.model.tip.diameterPx / 2.0f, brush.model.tip.hardness,
                         brush.model.tip.spacingPercent / 100.0f, brush.model.tip.roundness,
                         brush.model.tip.angleDeg, brush.native, brush.links);
@@ -1662,7 +1661,7 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // This line used to read the same slider as the four `begin()`s above it, on
   // the argument that a strength and a stroke ceiling are one quantity; they
   // are not, and the price of pretending so was that the smudge inherited
-  // `BrushState::native.opacity`'s default of 1, which is the single value at which
+  // `BrushState::opacity`'s default of 1, which is the single value at which
   // the tool provably never fades. The field it reads now has its own default
   // (0.5) and its own control, and there is deliberately no Transfer variance
   // applied to it: `opVr` is an opacity dynamic and this is not an opacity.

@@ -10,13 +10,14 @@
 namespace np {
 
 // brush/NativeBrush -- naturalPaint's own brush section (load, wetness,
-// opacity, grain), beside `BrushModel` (Photoshop's). This is the dedicated
-// selftest for the struct itself and for the migration that created it:
-// `BrushModel` losing its own `load`/`wetness` leaves, `BrushPreset`/
-// `BrushState` gaining one `native` member apiece in place of the four loose
-// fields, and `user-presets.txt` round-tripping both the old (pre-`native`)
-// format and the new one. See brush/NativeBrush.hpp's own header for the
-// full argument for why this struct exists.
+// grain), beside `BrushModel` (Photoshop's). This is the dedicated selftest
+// for the struct itself and for the migration that created it: `BrushModel`
+// losing its own `load`/`wetness` leaves, `BrushPreset`/`BrushState` gaining
+// one `native` member apiece in place of the three loose fields, and
+// `user-presets.txt` round-tripping both the old (pre-`native`) format and
+// the new one. It also pins what the migration must NOT do: move
+// `BrushState::opacity`, which stays session state outside `native` (see
+// brush/NativeBrush.hpp's own header for both arguments).
 bool runNativeBrushTest() {
   bool ok = true;
   auto check = [&](bool cond, const char* what) {
@@ -31,7 +32,6 @@ bool runNativeBrushTest() {
     NativeBrush base;
     base.load = 0.63f;
     base.wetness = 1.05f;
-    base.opacity = 0.82f;
     base.grain.enabled = true;
     base.grain.periodX = 30;
     base.grain.periodY = 18;
@@ -49,11 +49,6 @@ bool runNativeBrushTest() {
     diffWetness.wetness = base.wetness + 0.01f;
     check(!nativeBrushEqual(base, diffWetness),
           "nativeBrushEqual: wetness alone differing -- no match");
-
-    NativeBrush diffOpacity = base;
-    diffOpacity.opacity = base.opacity + 0.01f;
-    check(!nativeBrushEqual(base, diffOpacity),
-          "nativeBrushEqual: opacity alone differing -- no match");
 
     NativeBrush diffGrain = base;
     diffGrain.grain.strength = base.grain.strength + 0.01f;
@@ -86,7 +81,6 @@ bool runNativeBrushTest() {
     preset.name = "Native Round Trip";
     preset.native.load = 1.23456789f;
     preset.native.wetness = 0.234567f;
-    preset.native.opacity = 0.777f;
     preset.native.grain.enabled = true;
     preset.native.grain.periodX = 40;
     preset.native.grain.periodY = 12;
@@ -102,35 +96,64 @@ bool runNativeBrushTest() {
     // carry back, rather than accidentally proving the copy by leaving the
     // brush untouched.
     brush.native.load = 0.05f;
-    brush.native.opacity = 0.11f;
+    brush.native.wetness = 0.11f;
     brush.native.grain.strength = 0.02f;
 
     const BrushPreset roundTripped = presetFromBrush("Round Tripped", brush);
     check(nativeBrushEqual(roundTripped.native, brush.native),
           "presetFromBrush: preset.native matches the (perturbed) brush.native bit-identically");
-    check(roundTripped.native.load == 0.05f && roundTripped.native.opacity == 0.11f &&
+    check(roundTripped.native.load == 0.05f && roundTripped.native.wetness == 0.11f &&
               roundTripped.native.grain.strength == 0.02f,
           "presetFromBrush: the perturbed fields specifically came back exactly");
+  }
 
-    // The EDITED badge, end to end through `brushIsEdited()`, for the one
-    // field that is NEW to it: `opacity` had nowhere on `BrushPreset` to be
-    // compared against before `native` existed (brush/Library.hpp's
-    // `presetMatches()` comment calls this a deliberate, stated behaviour
-    // change). Section A proves `nativeBrushEqual()` sees opacity; this
-    // proves the badge a painter actually sees does too.
+  // ========================================================================
+  std::printf("  -- C2. BrushState::opacity is session state, NOT preset state --\n");
+  // ========================================================================
+  {
+    // `opacity` was deliberately left OUT of `native` (brush/NativeBrush.hpp's
+    // header): it is options-bar state a preset does not carry, so a painter
+    // who lowered it keeps it across preset picks, and the EDITED badge has
+    // no preset value for it to disagree with. These are the two
+    // painter-visible consequences, asserted end to end.
+    BrushPreset preset;
+    preset.name = "Opacity Is Sticky";
+    preset.native.load = 0.66f;
+
+    // Every built-in plus the hand-made preset above: none of them may move
+    // a lowered opacity. Zero tolerance: the claim is "untouched", and
+    // nothing between the write of 0.4f and the read does arithmetic on it.
+    std::vector<BrushPreset> picks = defaultBrushLibrary().presets;
+    picks.push_back(preset);
+    bool allKept = true;
+    for (const BrushPreset& p : picks) {
+      BrushState painter;
+      painter.opacity = 0.4f;
+      applyPresetToBrush(p, painter);
+      if (painter.opacity != 0.4f) allKept = false;
+    }
+    check(allKept,
+          "applyPresetToBrush: picking a preset leaves a lowered brush.opacity (0.4) exactly "
+          "where it was -- every built-in and a hand-made one");
+
     BrushState picked;
     picked.brushLibrary.presets = {preset};
     picked.brushLibrary.active = 0;
     applyPresetToBrush(preset, picked);
     check(!brushIsEdited(picked), "brushIsEdited: a freshly picked preset is not EDITED");
-    picked.native.opacity = preset.native.opacity * 0.5f;
+    picked.opacity = 0.4f;
+    check(!brushIsEdited(picked),
+          "brushIsEdited: moving OPACITY alone does NOT raise EDITED -- a preset carries no "
+          "opacity to disagree with");
+    // The control that keeps the assertion above from passing vacuously: the
+    // same badge on the same brush DOES rise for a field a preset carries.
+    picked.native.load = preset.native.load * 0.5f;
     check(brushIsEdited(picked),
-          "brushIsEdited: moving OPACITY alone raises EDITED -- new with native, never compared "
-          "before");
+          "brushIsEdited: control -- moving LOAD (a `native` field) does raise EDITED");
   }
 
   // ========================================================================
-  std::printf("  -- D. user-presets.txt: an old (pre-NativeBrush) file still loads --\n");
+  std::printf("  -- D. user-presets.txt: old (pre-NativeBrush) and interim files load --\n");
   // ========================================================================
   {
     // Hand-written in the exact shape `f82626d`'s `UserBrushLibraryStore::
@@ -138,10 +161,8 @@ bool runNativeBrushTest() {
     // (radius, hardness, spacing-in-radii, roundness, angle, load, wetness),
     // the `model` lines `brushModelToLines()` emitted for every non-default
     // leaf -- including the two retired ones, `load`/`wetness`, which that
-    // build's visitor still walked -- and a `grain` line. No `opacity` line
-    // -- that key did not exist yet, `BrushPreset` had no field for it to
-    // come from. No `dab`/`link`/`floor` lines -- this fixture does not
-    // exercise them.
+    // build's visitor still walked -- and a `grain` line. No `dab`/`link`/
+    // `floor` lines -- this fixture does not exercise them.
     //
     // The two `model` values deliberately DIFFER from `scalars`' trailing
     // pair: the old build painted with `scalars`' (its `BrushModel::load`/
@@ -177,10 +198,6 @@ bool runNativeBrushTest() {
                 back->native.grain.strength == 1.25f,
             "legacy fixture: the `grain` line lands on `native.grain`, under the unchanged "
             "`grain` key");
-      check(back->native.opacity == 1.0f,
-            "legacy fixture: with no `opacity` line (the key did not exist yet), "
-            "`native.opacity` is NativeBrush's own default -- the value every preset's opacity "
-            "always was before this key could say otherwise");
       // Accepted AND dropped: not preserved as an unknown line (which would
       // re-emit them on every save, forever), because their meaning is known
       // -- they are an older build's dead copies, not a newer build's field.
@@ -195,15 +212,49 @@ bool runNativeBrushTest() {
             "dropped -- not preserved as unknown, not written back on save");
     }
 
+    // The INTERIM build's shape: the first cut of this migration briefly put
+    // `opacity` in `native` and wrote an `opacity <v>` line after `grain`
+    // (and had already stopped writing `model load`/`model wetness`). That
+    // was reverted -- opacity is session state a preset does not carry -- but
+    // a file that build saved may exist. It must load with every other value
+    // intact, and its `opacity` line must be accepted and DROPPED exactly as
+    // the retired `model` paths above are: not preserved as unknown, not
+    // written back on save.
+    const std::string interimFixture =
+        "naturalPaint-user-presets 1\n"
+        "preset Interim Wash\n"
+        "scalars 33.5 0.618034 0.366 0.729 47.25 1.14159265 0.874321\n"
+        "grain 1 32 18 0.5 1.25\n"
+        "opacity 0.4\n";
+    UserBrushLibraryStore interimStore;
+    BrushLibrary interimLib;
+    interimStore.parse(interimFixture, interimLib);
+    const BrushPreset* interim = nullptr;
+    for (const BrushPreset& p : interimLib.presets)
+      if (p.name == "Interim Wash") interim = &p;
+    check(interim != nullptr && interim->native.load == 1.14159265f &&
+              interim->native.wetness == 0.874321f && interim->native.grain.enabled &&
+              interim->native.grain.strength == 1.25f,
+          "interim fixture: a file with an `opacity` line still loads, `native` intact");
+    if (interim != nullptr) {
+      const auto& interimUnknown = interimStore.presetUnknownLines();
+      BrushLibrary interimResaveLib;
+      interimResaveLib.presets.push_back(*interim);
+      const std::string interimResaved = interimStore.serialize(interimResaveLib);
+      check(interimUnknown.find("Interim Wash") == interimUnknown.end() &&
+                interimResaved.find("\nopacity") == std::string::npos,
+            "interim fixture: the `opacity` line is accepted and dropped -- not preserved as "
+            "unknown, not written back on save");
+    }
+
     // The inverse direction, briefly: a file THIS build writes reads back
-    // bit-identically, opacity included -- the fuller round trip (links,
-    // model, dab id) is app/selftest/UserBrushLibrary.cpp's own job; this is
-    // just `native`'s share of it, including the field that file predates.
+    // bit-identically -- the fuller round trip (links, model, dab id) is
+    // app/selftest/UserBrushLibrary.cpp's own job; this is just `native`'s
+    // share of it. And it writes no `opacity` line: a preset has none.
     BrushPreset fresh;
     fresh.name = "Fresh";
     fresh.native.load = 0.41f;
     fresh.native.wetness = 1.87f;
-    fresh.native.opacity = 0.63f;
     fresh.native.grain.enabled = true;
     fresh.native.grain.periodX = 20;
     fresh.native.grain.periodY = 20;
@@ -220,17 +271,19 @@ bool runNativeBrushTest() {
     for (const BrushPreset& p : reloadedLib.presets)
       if (p.name == "Fresh") reloaded = &p;
     check(reloaded != nullptr && nativeBrushEqual(reloaded->native, fresh.native),
-          "new-format round trip: a file this build writes (opacity line included) reads "
-          "`native` back bit-identically");
+          "new-format round trip: a file this build writes reads `native` back "
+          "bit-identically");
+    check(written.find("\nopacity") == std::string::npos,
+          "new-format writer: no `opacity` line -- a preset does not carry opacity");
   }
 
   // ========================================================================
-  std::printf("  -- E. brushTipFor(): tip.flow/opacity/grain come from native, exactly --\n");
+  std::printf("  -- E. brushTipFor(): flow/grain from native, opacity from BrushState --\n");
   // ========================================================================
   {
     BrushState brush;
     brush.native.load = 0.37f;
-    brush.native.opacity = 0.59f;
+    brush.opacity = 0.59f;
     brush.native.grain.enabled = true;
     brush.native.grain.periodX = 16;
     brush.native.grain.periodY = 48;
@@ -241,8 +294,8 @@ bool runNativeBrushTest() {
                           // native, not pigment (app/selftest/UserBrushLibrary.cpp's own note).
     const BrushTip tip = brushTipFor(brush, lut, /*pressure=*/1.0f);
     check(tip.flow == brush.native.load, "brushTipFor: tip.flow == native.load, exactly");
-    check(tip.opacity == brush.native.opacity,
-          "brushTipFor: tip.opacity == native.opacity, exactly");
+    check(tip.opacity == brush.opacity,
+          "brushTipFor: tip.opacity == BrushState::opacity, exactly (as at base)");
     check(grainParamsEqual(tip.grain, brush.native.grain),
           "brushTipFor: tip.grain == native.grain, exactly");
   }

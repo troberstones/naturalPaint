@@ -5725,7 +5725,7 @@ void drawBrushPaintGroup(AppState& st) {
     const bool toning = route == StrokeRoute::TonalBrush;
     // **The smudge USED to read this slider as its STRENGTH, and no longer
     // does** -- brush/Smudge.hpp §3b. That reading is what shipped the tool at
-    // `BrushState::native.opacity`'s default of 1, which is the one strength at which a
+    // `BrushState::opacity`'s default of 1, which is the one strength at which a
     // smear provably never fades and never reloads; the user report that
     // section quotes is what it cost. STRENGTH is `st.brush.smudge.strength`
     // now, with its own default and its own control in the options bar, so this
@@ -5746,7 +5746,7 @@ void drawBrushPaintGroup(AppState& st) {
     const bool honoured = erasing || toning || route == StrokeRoute::RgbDeposit ||
                           route == StrokeRoute::CloneStamp || route == StrokeRoute::Heal;
     ImGui::BeginDisabled(!honoured);
-    ctlSlider("Opacity", &st.brush.native.opacity, 0.0f, 1.0f);
+    ctlSlider("Opacity", &st.brush.opacity, 0.0f, 1.0f);
     ImGui::EndDisabled();
     if (erasing)
       ImGui::TextDisabled("Flow is how fast it bites; opacity is how much it takes.");
@@ -5921,12 +5921,16 @@ void drawBrushTextureGroup(AppState& st, bool ownPage) {
 }
 
 // The NATURALPAINT group: a small seam at the top of the Dynamics tab's own
-// window page for naturalPaint's own brush parameters
-// (brush/NativeBrush.hpp), beside the shelved matrix this tab has always
-// carried -- see `BrushSettingsTab::Dynamics`'s own comment on why this is
-// the tab that holds it. NOT drawn in the docked column: `drawBrushSection()`
-// calls `drawBrushDynamicsGroup()` below directly, and `drawBrushPaintGroup()`
-// already shows these same three controls, with their full reasoning, there.
+// window page for naturalPaint's own brush parameters, beside the shelved
+// matrix this tab has always carried -- see `BrushSettingsTab::Dynamics`'s
+// own comment on why this is the tab that holds it. LOAD/WETNESS bind to
+// `st.brush.native` (brush/NativeBrush.hpp); OPACITY binds to the plain
+// `st.brush.opacity`, which is naturalPaint's own too but deliberately NOT in
+// `native` -- per-session options-bar state a preset does not carry
+// (NativeBrush.hpp's header). NOT drawn in the docked column:
+// `drawBrushSection()` calls `drawBrushDynamicsGroup()` below directly, and
+// `drawBrushPaintGroup()` already shows these same three controls, with their
+// full reasoning, there.
 void drawBrushNativeGroup(AppState& st) {
   if (!ImGui::CollapsingHeader("NATURALPAINT", ImGuiTreeNodeFlags_DefaultOpen)) return;
   ctlSlider("Load", &st.brush.native.load, kBrushLoadMin, kBrushLoadMax);
@@ -5937,7 +5941,7 @@ void drawBrushNativeGroup(AppState& st) {
   ctlSlider("Wetness", &st.brush.native.wetness, kBrushWetnessMin, kBrushWetnessMax);
   ImGui::EndDisabled();
   if (!wetHonoured) ImGui::TextDisabled("Reaches the wet canvas only.");
-  ctlSlider("Opacity", &st.brush.native.opacity, 0.0f, 1.0f);
+  ctlSlider("Opacity", &st.brush.opacity, 0.0f, 1.0f);
 }
 
 // **The two draws below are gated behind `st.showAdvancedDynamics`.** The

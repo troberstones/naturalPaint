@@ -159,7 +159,7 @@ bool runSmudgeOptionsTest() {
     st.brush.smudge.strength = 0.31f;
     // The hostile half. If anything still routed the smudge's strength through
     // the opacity slider, this is the value it would carry.
-    st.brush.native.opacity = 1.0f;
+    st.brush.opacity = 1.0f;
     const BrushTip smudgeTip = brushTipFor(st.brush, lut, 1.0f);
     check(smudgeTip.smudgeStrength == 0.31f && smudgeTip.opacity == 1.0f,
           "resolve: brushTipFor() carries smudge.strength into BrushTip::smudgeStrength and "
@@ -168,7 +168,7 @@ bool runSmudgeOptionsTest() {
     // The other direction: moving the OPACITY slider must not move the smudge's
     // strength by so much as a bit. This is the assertion that fails against a
     // repair that merely renamed the field it read.
-    st.brush.native.opacity = 0.02f;
+    st.brush.opacity = 0.02f;
     const BrushTip afterOpacity = brushTipFor(st.brush, lut, 1.0f);
     check(afterOpacity.smudgeStrength == 0.31f,
           "resolve: dragging OPACITY from 1.00 to 0.02 does not move the smudge's strength "

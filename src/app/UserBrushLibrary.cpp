@@ -371,16 +371,16 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
     }
 
     if (key == "opacity") {
-      // `NativeBrush::opacity` -- new with `native` (brush/Library.hpp's
-      // `presetMatches()` comment: it never had anywhere to live on a
-      // preset before). A SEPARATE keyword, for the identical reason `grain`
-      // and `dab` are -- growing `scalars` would break every file written
-      // before this line existed. Malformed is treated the same as a
-      // malformed `grain` line: `pending.native.opacity` simply keeps its
-      // default-constructed value (1.0, "reaches the colour it is loaded
-      // with"), not a reason to drop the whole preset.
-      float n[1];
-      if (takeFloats(rest, 1, n)) pending.native.opacity = n[0];
+      // **Accepted and DROPPED, never applied.** An interim build of the
+      // `NativeBrush` migration briefly put `opacity` in `native` and wrote
+      // it here as `opacity <v>`; that was reverted because opacity is
+      // per-session options-bar state a preset does not carry
+      // (brush/NativeBrush.hpp's header). A file that build saved may exist,
+      // so the line is recognised -- not preserved verbatim as an unknown
+      // line (its meaning is known: nothing a preset holds), and not applied
+      // to `BrushState::opacity` either, which no preset load ever touches.
+      // Same treatment as the retired `model load`/`model wetness` paths
+      // above.
       pointMode = PointMode::None;
       continue;
     }
@@ -551,16 +551,6 @@ std::string UserBrushLibraryStore::serialize(const BrushLibrary& lib) const {
     out += "grain " + std::string(p.native.grain.enabled ? "1" : "0") + " " +
            std::to_string(p.native.grain.periodX) + " " + std::to_string(p.native.grain.periodY) +
            " " + f9(p.native.grain.depth) + " " + f9(p.native.grain.strength) + "\n";
-    // `NativeBrush::opacity` -- new with `native` (`presetMatches()`'s own
-    // comment above `native`'s declaration in brush/Library.hpp: it never
-    // had anywhere to be saved before). Written unconditionally, the same as
-    // `scalars`/`grain` above and for the identical reason: it is a real
-    // per-preset value even at its default, not a sometimes-present thing
-    // like `dab`/`floor` below. A file written before this key existed has
-    // no `opacity` line and loads with `native.opacity` at its
-    // default-constructed 1.0, which is what every preset's opacity always
-    // was before this line could say otherwise.
-    out += "opacity " + f9(p.native.opacity) + "\n";
     // One `floor <targetOrdinal> <value>` line per non-zero
     // `multiplyFloor` entry -- omitted entirely when zero (the default "no
     // floor" every preset with no Minimum Diameter has), so a preset that

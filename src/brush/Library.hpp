@@ -284,24 +284,24 @@ BrushLibrary defaultBrushLibrary();
 // eight fields already checked can never agree while either of those two
 // disagree.
 //
-// **`native` (load, wetness, opacity, grain -- brush/NativeBrush.hpp) IS a
+// **`native` (load, wetness, grain -- brush/NativeBrush.hpp) IS a
 // parameter here, compared in one `nativeBrushEqual()` call rather than as
-// loose arguments.** Each of its four fields has its own control (the BRUSH
-// EDITOR's LOAD/WATER/OPACITY sliders and PAPER GRAIN section,
-// `ui/MacPaintUI.cpp`) that moves it independently of picking a whole preset,
-// exactly as `radius` and every scalar already checked does -- leaving any of
-// the four out would mean dragging that one slider alone left the preset
-// header lying that nothing had changed, the identical failure this
-// function's own header paragraph exists to prevent for every other
-// independently-driven field. `opacity` joins this call for the first time
-// here: it had no field on `BrushPreset` to be compared against before
-// `native` existed, which was the same shape of gap `grain`'s own comment
-// used to call out for itself, above, before it was fixed. That is a real,
-// deliberate change to what `brushIsEdited()` reports -- picking a preset now
-// restores the opacity that preset was saved at, and changing OPACITY alone
-// now raises the EDITED badge -- not a silent one; `applyPresetToBrush()`/
-// `presetFromBrush()` (app/StrokeSession.cpp) carry `native` as one unit for
-// the identical reason.
+// loose arguments.** Each of its three fields has its own control (the BRUSH
+// EDITOR's LOAD/WATER sliders and PAPER GRAIN section, `ui/MacPaintUI.cpp`)
+// that moves it independently of picking a whole preset, exactly as `radius`
+// and every scalar already checked does -- leaving any of the three out would
+// mean dragging that one slider alone left the preset header lying that
+// nothing had changed, the identical failure this function's own header
+// paragraph exists to prevent for every other independently-driven field.
+// (This paragraph used to make that argument for `grain` alone, as its own
+// loose parameter; it now covers all three.)
+//
+// **`BrushState::opacity` is NOT compared, and that is not the same gap.**
+// A preset does not carry opacity at all -- it is per-session options-bar
+// state that survives picking a preset (brush/NativeBrush.hpp's header on why
+// it was deliberately left out of `native`) -- so there is no preset value
+// for the OPACITY slider to disagree with, and moving it alone does not raise
+// the EDITED badge.
 bool presetMatches(const BrushPreset& preset, float radius, float hardness, float spacing,
                    float roundness, float angle, const NativeBrush& native,
                    const BrushLinkSet& links);
