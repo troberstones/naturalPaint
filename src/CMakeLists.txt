@@ -711,9 +711,11 @@ endif()
 # io/OiioBackend.hpp, which is what made this reversal a CMake change rather
 # than a source-wide one.
 #
-# NP_USE_OIIO is still defined, unconditionally, so the ~230 `#if
-# defined(NP_USE_OIIO)` sites across src/ keep telling the truth. Removing
-# those guards and their now-dead `#else` branches is a separate change.
+# NP_USE_OIIO is still defined, unconditionally. It was kept so the ~230
+# `#if defined(NP_USE_OIIO)` sites across src/ kept telling the truth until
+# their now-dead `#else` branches were removed; that has since happened
+# (5b28695, 8f4aa1e), no source file tests the macro any more, and the
+# define below is inert.
 #
 # Both OpenImageIO::OpenImageIO and OpenImageIO::OpenImageIO_Util are linked
 # explicitly. The config package's imported target does chain the Util

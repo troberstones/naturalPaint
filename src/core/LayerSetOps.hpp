@@ -32,17 +32,21 @@
 //   **set properties as a set**  BUILT: visibility, lock, clip, blend, opacity,
 //                  colour label, link.
 //
-//   **transform**  **REFUSED.** There is no geometric transform of a layer
-//                  anywhere in this codebase and this step did not add one.
-//                  What it added is an *integer-pixel translate*, which is the
-//                  degenerate case that needs no resampling; rotate, scale,
-//                  skew and sub-pixel offset all do. core/LayerGeometry.hpp
-//                  section 1 lists exactly what would have to exist first: a
-//                  filter kernel choice, a premultiplied-alpha argument, and --
-//                  on a Pigment layer -- a decision about whether a latent
-//                  triple may be interpolated at all, which DESIGN-imaging.md
-//                  §3 makes a document-level invariant rather than a coding
-//                  detail. That is PLAN.md phase 6 ("Filter and transform it").
+//   **transform**  **REFUSED, as a set.** This step added only an
+//                  *integer-pixel translate*, the degenerate case that needs
+//                  no resampling. When it was written there was no geometric
+//                  transform of a layer anywhere in this codebase, and
+//                  core/LayerGeometry.hpp section 1 listed what would have to
+//                  exist first: a filter kernel choice, a premultiplied-alpha
+//                  argument, and -- on a Pigment layer -- a decision about
+//                  whether a latent triple may be interpolated at all.
+//                  PLAN.md phase 6 has since built all three for ONE layer:
+//                  `transformLayer()` in ops/DocumentTransform (with
+//                  `LatentKernel` answering the Pigment question), driven by
+//                  app/TransformSession. What is still missing is the set:
+//                  a session holds a single `layerIndex_`, so a multi-layer
+//                  selection cannot be rotated or scaled together. That is
+//                  the whole of what stands between C12 and this verb now.
 //
 //   **group**      **BUILT** (PLAN.md Phase 5's C7/C12 follow-on). This
 //                  section used to say "REFUSED", and the argument for the
