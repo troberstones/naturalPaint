@@ -363,6 +363,28 @@ bool runCommandTest() {
           "coverage: no known gap is left, and no new one has appeared");
     check(notRecordable > registered,
           "coverage: most menu actions are session state, which is the rule doing its job");
+
+    // The five rows this track closed, named exactly -- `everyIdResolves`
+    // above already proves each of their ids is a real registered command,
+    // but not that it is THIS one: a copy-paste that pointed two of these at
+    // the same row would still leave `everyIdResolves` true.
+    auto rowFor = [](MenuAction a) { return coverageFor(a); };
+    const CommandCoverage inpaint = rowFor(MenuAction::Inpaint);
+    const CommandCoverage gradient = rowFor(MenuAction::RemoveLightingGradient);
+    const CommandCoverage offset = rowFor(MenuAction::Offset);
+    const CommandCoverage del = rowFor(MenuAction::DeleteSelection);
+    const CommandCoverage xform = rowFor(MenuAction::NumericTransform);
+    auto isRegisteredAs = [](const CommandCoverage& c, const char* id) {
+      return c.kind == CommandCoverageKind::Registered && c.commandId != nullptr &&
+            std::string(c.commandId) == id;
+    };
+    check(isRegisteredAs(inpaint, "filter_inpaint") &&
+              isRegisteredAs(gradient, "filter_remove_lighting_gradient") &&
+              isRegisteredAs(offset, "filter_offset") &&
+              isRegisteredAs(del, "delete_selection") &&
+              isRegisteredAs(xform, "numeric_transform"),
+          "coverage: each of the five closed gaps is Registered under its OWN id, not a "
+          "neighbour's");
   }
 
   std::printf("  -- H. selectionBounded, over the whole table --\n");
