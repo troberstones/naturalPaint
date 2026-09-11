@@ -442,16 +442,16 @@
 // this is the arithmetic of moving colour around a `core::TileStore`, and the
 // stroke lifecycle belongs to `app/StrokeSession`.
 //
-// **No Pigment smudge.** `strokeRouteFor()` refuses it by name and
-// `app/StrokeSession.hpp` §1 carries the argument: a Pigment texel is a
-// Kubelka-Munk latent plus a mass, not a premultiplied quadruple, and §2's
-// coverage-weighted arithmetic mean is not what mixing two latents means --
-// `depositTexel()` mixes them with a *mass*-weighted lerp whose idempotence in
-// hue is `brush/Deposit` §1's whole load-bearing invariant. Averaging latents
-// linearly would be a second, unproven mixing rule sitting beside the one this
-// application exists for. The refusal is conditional and names its condition,
-// exactly as the Pigment *erase* row did before `brush/PigmentErase` paid it
-// off.
+// **No Pigment smudge IN THIS MODULE -- it is `brush/PigmentSmudge`.** A
+// Pigment texel is a Kubelka-Munk latent plus a mass, not a premultiplied
+// quadruple, and §2's coverage-weighted arithmetic mean is not what mixing two
+// latents means -- `depositTexel()` mixes them with a *mass*-weighted lerp
+// whose idempotence in hue is `brush/Deposit` §1's whole load-bearing
+// invariant. `strokeRouteFor()` refused the Pigment row by name on exactly that
+// condition until `brush/PigmentSmudge` §1 decided the mass-weighted mean and
+// `--selftest` asserted it, the way `brush/PigmentErase` paid off the Pigment
+// *erase* row. It is a sibling module rather than an overload here for that
+// header's §0 reason: the finger is a different type on each storage.
 //
 // **No Finger Painting.** Photoshop's smudge has a checkbox that loads the
 // finger with the *foreground colour* at pen-down instead of with the canvas.

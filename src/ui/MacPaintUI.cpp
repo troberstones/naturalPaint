@@ -5823,7 +5823,9 @@ void drawBrushPaintGroup(AppState& st) {
     // slider is **dead** on the smudge route and is dimmed accordingly -- the
     // same disabled-rather-than-hidden treatment the pigment deposit gets, and
     // the treatment this block exists to apply.
-    const bool smudging = route == StrokeRoute::Smudge;
+    // Both smudge routes: the Pigment one reads the same STRENGTH field
+    // (brush/PigmentSmudge §3), so this slider is just as dead there.
+    const bool smudging = route == StrokeRoute::Smudge || route == StrokeRoute::PigmentSmudge;
     // The clone reads it as its per-stroke ceiling too -- the same slider and
     // the same meaning, "the fraction of the maximum effect one stroke may
     // reach" (brush/CloneStamp §1's accumulator is brush/RgbDeposit §2's). Left
@@ -19329,9 +19331,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // not coming. That row says which tool they actually want.
       // Each tool that refuses a layer kind the BRUSH accepts needs its own
       // sentence, or the shared "Pick a Pigment or RGB layer" sends the user to
-      // a kind that just refused them. The pencil, the tonal pair and the
-      // smudge are all in that position; the eraser is here for the older
-      // reason its own paragraph gives.
+      // a kind that just refused them. The pencil and the tonal pair are in
+      // that position; the smudge was until brush/PigmentSmudge, and keeps a
+      // sentence of its own for the alpha-locked row; the eraser is here for
+      // the older reason its own paragraph gives.
       const char* tonalVerb = st.brush.tool == Tool::Burn ? "burned" : "dodged";
       g_strokeRefusal =
           strokeTarget == nullptr
@@ -19388,11 +19391,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                     layerKindName(strokeTarget->kind) +
                     " and cannot be drawn on with the pencil. The pencil draws a hard-edged "
                     "alpha mark; only an RGB layer has alpha. Pick an RGB layer in LAYERS."
+          // Pigment is no longer in this sentence's reach -- it takes
+          // `StrokeRoute::PigmentSmudge` -- so "Pick a Pigment or RGB layer" is
+          // now true, and the old "only an RGB layer" would send a user away
+          // from the default layer kind that works.
           : smudgeTool
               ? std::string("\"") + strokeTarget->name + "\" is " +
                     layerKindName(strokeTarget->kind) +
-                    " and cannot be smudged. Smudging drags colour AND alpha together, which "
-                    "only an RGB layer holds. Pick an RGB layer in LAYERS."
+                    " and cannot be smudged. Pick a Pigment or RGB layer in LAYERS."
           : cloneTool
               ? std::string("\"") + strokeTarget->name + "\" is " +
                     layerKindName(strokeTarget->kind) +

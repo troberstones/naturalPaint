@@ -233,6 +233,11 @@ bool runChromeConsistencyTest() {
           "fixture: the new layer is Pigment-kind");
     check(grainReachesRoute(strokeRouteFor(Tool::Brush, pigTarget)),
           "Brush onto a Pigment layer: CpuDeposit, grain's original home -- still honoured");
+    // And the smudge's Pigment route, asked rather than inherited: its two
+    // passes call `grainCoverageAt()` on the same lines brush/Smudge's do.
+    check(grainReachesRoute(strokeRouteFor(Tool::Smudge, pigTarget)),
+          "Smudge onto a Pigment layer: brush/PigmentSmudge calls grainCoverageAt() in both "
+          "its passes -- PAPER GRAIN honoured");
 
     // A locked layer routes to None, which writes nothing and therefore
     // grains nothing. Not a special case in the predicate -- a consequence of
@@ -265,7 +270,7 @@ bool runChromeConsistencyTest() {
                                 StrokeRoute::PencilDeposit,
                                 StrokeRoute::TonalBrush,
                                 StrokeRoute::CloneStamp,
-                                StrokeRoute::Smudge})
+                                StrokeRoute::Smudge, StrokeRoute::PigmentSmudge})
       if (grainReachesRoute(r) == wetnessReachesSolver(r) && r != StrokeRoute::None)
         everDisagree = true;
     check(!everDisagree,

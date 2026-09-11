@@ -577,12 +577,17 @@ bool runSmudgeTest() {
           "the solver has no smudge step, so a smudge sent there would deposit the loaded "
           "foreground pigment instead of moving anything");
 
-    check(strokeRouteFor(Tool::Smudge, &pigment) == StrokeRoute::None &&
+    // **This row used to assert a refusal**, by name and on a stated
+    // condition (an arithmetic mean of latents is not a Kubelka-Munk mix).
+    // brush/PigmentSmudge paid the condition off, and runPigmentSmudgeTest()
+    // is where that engine is proven; what belongs here is only that the
+    // Pigment row now reaches it and NOT the RGB route -- a Pigment layer sent
+    // to `StrokeRoute::Smudge` would dereference an rgb store it does not have.
+    check(strokeRouteFor(Tool::Smudge, &pigment) == StrokeRoute::PigmentSmudge &&
               strokeRouteFor(Tool::Eraser, &pigment) == StrokeRoute::PigmentErase &&
               strokeRouteFor(Tool::Brush, &pigment) == StrokeRoute::CpuDeposit,
-          "routing: a Pigment layer refuses the smudge BY NAME while it still takes the "
-          "brush and the eraser -- the arithmetic mean of Kubelka-Munk latents is not what "
-          "mixing those paints means here");
+          "routing: a Pigment layer takes the smudge on its OWN route, pigment-smudge, beside "
+          "the brush and the eraser -- never the RGB smudge, whose store it does not have");
 
     rgb.locked = true;
     check(strokeRouteFor(Tool::Smudge, &rgb) == StrokeRoute::None,

@@ -773,8 +773,10 @@ struct BrushTip {
   // default is what makes the shipped behaviour a decision rather than a
   // coincidence of two unrelated meanings sharing one slider.
   //
-  // Read by exactly one route (`StrokeRoute::Smudge`, latched at
-  // `StrokeSession::begin()`), and unscaled by anything Photoshop calls
+  // Read by the two smudge routes and nothing else (`StrokeRoute::Smudge` and
+  // `StrokeRoute::PigmentSmudge`, each latched at `StrokeSession::begin()` --
+  // one tool, one STRENGTH, whichever storage is under it), and unscaled by
+  // anything Photoshop calls
   // Transfer unlike `opacity` directly above: `opVr` is a per-stroke OPACITY
   // dynamic and this is not an opacity, so running it through that multiplier
   // would be inventing a link no `.abr` contains.

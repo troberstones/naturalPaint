@@ -233,6 +233,7 @@ add_executable(naturalPaint
   app/selftest/RgbErase.cpp
   app/selftest/Smudge.cpp
   app/selftest/SmudgeOptions.cpp
+  app/selftest/PigmentSmudge.cpp
   app/selftest/SaveReadback.cpp
   app/selftest/Scatter.cpp
   app/selftest/ScatterCount.cpp
@@ -335,6 +336,7 @@ add_executable(naturalPaint
   brush/MaskPaint.cpp
   brush/PencilDeposit.cpp
   brush/PigmentErase.cpp
+  brush/PigmentSmudge.cpp
   brush/RgbDeposit.cpp
   brush/RgbErase.cpp
   brush/Smudge.cpp

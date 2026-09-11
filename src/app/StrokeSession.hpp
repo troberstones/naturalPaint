@@ -14,6 +14,7 @@
 #include "brush/MaskPaint.hpp"
 #include "brush/PencilDeposit.hpp"
 #include "brush/PigmentErase.hpp"
+#include "brush/PigmentSmudge.hpp"
 #include "brush/RgbDeposit.hpp"
 #include "brush/RgbErase.hpp"
 #include "brush/Smudge.hpp"
@@ -101,11 +102,12 @@
 //   Smudge      RGB, with tiles, writable        Smudge      <- new; the rows
 //                                                               below it are
 //                                                               this tool's
-//                                                               four refusals
-//   Smudge      Pigment, with tiles, writable    None        <- a refusal by
-//                                                               name, and it
-//                                                               names its
-//                                                               condition
+//                                                               refusals, bar
+//                                                               the next one
+//   Smudge      Pigment, with tiles, writable    PigmentSmudge <- was a refusal
+//                                                                 by name; its
+//                                                                 condition is
+//                                                                 now paid off
 //   Smudge      RGB, **alpha-locked**            None
 //   Smudge      **any layer, locked**            None
 //   Smudge      Adjustment / Media / Text / ...  None
@@ -419,33 +421,40 @@
 // takes the tool's own label so the sentence names the tool the user has
 // selected rather than the one the struct is named after.
 //
-// **The Smudge rows, and why five of the six are refusals.** `brush/Smudge` is
+// **The Smudge rows, and why four of the six are refusals.** `brush/Smudge` is
 // the engine; `Tool::Smudge` sat in the not-built list below beside the rest of
 // the name/icon/slot-only cells, so a drag with it reached nothing at all. It
 // is the first route whose dabs are not independent -- it carries a colour from
 // dab to dab (that header's §1) -- but the routing question it asks is the
 // familiar one, and the answers differ from the eraser's in exactly two places.
 //
-//   * **An RGB layer is the only destination.** Smudge reads and writes the
-//     same premultiplied quadruple `brush/RgbDeposit` and `brush/RgbErase` do,
-//     and the whole of `brush/Smudge` §2 is arithmetic on that storage.
+//   * **An RGB layer takes `Smudge`.** Smudge reads and writes the same
+//     premultiplied quadruple `brush/RgbDeposit` and `brush/RgbErase` do, and
+//     the whole of `brush/Smudge` §2 is arithmetic on that storage.
 //
-//   * **A Pigment layer refuses BY NAME, on a stated condition**, exactly as
-//     the Pigment *erase* row did before `brush/PigmentErase` paid it off --
-//     and it is a refusal rather than a silent fallthrough for the same reason
-//     that one was: the layer kind `Document::createBlank()` makes is Pigment,
-//     so this is the row a user is most likely to meet first, and it must say
-//     why. The condition is not plumbing. A Pigment texel is a Kubelka-Munk
-//     latent plus a mass (`core/Pigment.hpp`), and `brush/Smudge` §2's pick-up
-//     is a coverage-weighted **arithmetic mean**. The mean of two latents is
-//     not what mixing two paints means in this build: `depositTexel()` mixes
-//     them with a *mass*-weighted lerp whose exactness at `m == 0` is what
-//     makes `brush/Deposit` §1's idempotence-in-hue invariant assertable at
-//     zero tolerance. A linear average would be a second, unproven mixing rule
-//     sitting next to the one this application exists for, and it would be
-//     wrong in the way that is hardest to see -- plausible colours, drifting
-//     hue. The row opens when someone decides what the mass-weighted mean of a
-//     footprint of latents is and asserts it, not before.
+//   * **A Pigment layer takes `PigmentSmudge`, and this row used to be a
+//     refusal BY NAME on a stated condition** -- exactly as the Pigment *erase*
+//     row was before `brush/PigmentErase` paid it off. The condition was never
+//     plumbing: `brush/Smudge` §2's pick-up is a coverage-weighted ARITHMETIC
+//     mean, and an arithmetic mean of Kubelka-Munk latents would have been a
+//     second, unproven mixing rule beside `depositTexel()`'s mass-weighted
+//     lerp -- plausible colours, drifting hue. The refusal said the row opens
+//     "when someone decides what the mass-weighted mean of a footprint of
+//     latents is and asserts it". `brush/PigmentSmudge` §1 is that decision --
+//     the brush's own running mass-weighted mean, `sum(z*m)/sum(m)`, taken over
+//     the footprint and accumulated as a lerp so one pigment in is that
+//     pigment out at zero tolerance -- and `app/selftest/PigmentSmudge.cpp`
+//     asserts it, including against `depositTexel()` itself. PRD F7's Pigment
+//     half.
+//
+//     **It stays a separate route from `Smudge`**, for the erase pair's reason
+//     (the `StrokeRoute` comment below): the finger is a different type on each
+//     storage, and the two disagree about what an emptied texel may hold.
+//
+//     **`alphaLocked` is deliberately not consulted on this row**, which is the
+//     pigment eraser's position too: the flag freezes an alpha channel and a
+//     Pigment layer has none (core/Layer.hpp; `setLayerAlphaLocked()` refuses to
+//     set it there), so the alpha-lock refusal below is an RGB row only.
 //
 //   * **An alpha-locked RGB layer refuses**, the same way the eraser's row
 //     does and for a sharper version of the same reason. `alphaLocked` freezes
@@ -776,6 +785,13 @@ enum class StrokeRoute {
                  // and the layer is both source and destination. The first
                  // route in this table whose dabs are not independent of each
                  // other (that header's §1)
+  PigmentSmudge,  // brush/PigmentSmudge, the same drag over the target layer's
+                  // PIGMENT tiles, mixing what it carries under Kubelka-Munk.
+                  // Two routes and not one with a flag for the erase pair's
+                  // reason: the finger is four premultiplied floats on one
+                  // storage and a straight latent beside a mass on the other,
+                  // and the two disagree about what an emptied texel may hold
+                  // (brush/PigmentSmudge §0)
   PaintSim,      // sim::PaintSim's dense canvas texture, and only when there is
                  // no document layer to have aimed at -- see §1's last paragraph
   MaskPaint,     // brush/MaskPaint, into the target layer's MASK tiles rather
@@ -904,7 +920,8 @@ LayerEditTarget resolveLayerEditTarget(bool maskRequested, const Layer* layer) n
 // unshares copy-on-write tiles, moves the revision, dirties tiles for the
 // incremental composite and owes exactly one history entry, and it can allocate
 // tiles a stroke passes over, which the erase deliberately cannot
-// (brush/Smudge §§5-6).
+// (brush/Smudge §§5-6). **`PigmentSmudge` answers the same four questions the
+// same way**, over a 224 KiB tile rather than a 128 KiB one.
 //
 // **`MaskPaint` is in here, and it is the first entry that writes a store the
 // word "layer" does not obviously cover.** It writes `Layer::mask`, not
@@ -931,7 +948,8 @@ inline bool strokeRouteWritesLayer(StrokeRoute route) noexcept {
          route == StrokeRoute::RgbErase || route == StrokeRoute::PigmentErase ||
          route == StrokeRoute::PencilDeposit || route == StrokeRoute::TonalBrush ||
          route == StrokeRoute::CloneStamp || route == StrokeRoute::Heal ||
-         route == StrokeRoute::Smudge || route == StrokeRoute::MaskPaint ||
+         route == StrokeRoute::Smudge || route == StrokeRoute::PigmentSmudge ||
+         route == StrokeRoute::MaskPaint ||
          route == StrokeRoute::StrokesErase || route == StrokeRoute::StrokesRecord;
 }
 
@@ -1573,8 +1591,9 @@ class StrokeSession {
   // background, which ADR-0007 exists to reject, and on a Pigment layer would
   // deposit white, which under Kubelka-Munk is opaque paint.
   //
-  // For a **smudge** it latches the same `tip.opacity` as that route's
-  // **strength** (brush/Smudge.hpp §3), one more reading of the one slider:
+  // For a **smudge**, on either smudge route, it latches `tip.smudgeStrength`
+  // -- NOT `tip.opacity`, which it read until brush/Smudge.hpp §3b -- as the
+  // route's **strength** (brush/Smudge.hpp §3; brush/PigmentSmudge §2):
   // there it is how far the carried colour dominates the canvas, and the
   // stroke's carried colour is only meaningful against the strength it was
   // carried with, so the two are bound together at this one call for
@@ -1846,6 +1865,11 @@ class StrokeSession {
   // file-static in `brush/Smudge.cpp` would have been small enough to look
   // harmless and would have leaked one document's colour into another's stroke.
   SmudgeStroke smudge_;
+  // The Pigment smudge route's carried paint -- a latent and a mass rather than
+  // four premultiplied floats (brush/PigmentSmudge §0) -- latched the same way
+  // and dropped the same way, for the same reason: what it holds after an
+  // interrupted drag is a colour.
+  PigmentSmudgeStroke pigSmudge_;
   // The mask route's per-stroke fraction accumulator, latched target coverage
   // and latched ceiling (brush/MaskPaint §3). A seventh member for the reason
   // there are six above -- exactly one of them is ever live, and each

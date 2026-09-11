@@ -4436,9 +4436,10 @@ bool runTonalBrushTest();
 //    and record no entry -- while a *loaded* finger over blank canvas does
 //    allocate and write, which is why brush/RgbErase's unconditional skip could
 //    not simply be copied.
-//  - **The routing table's Smudge rows**, including the four that are refusals
-//    with reasons: a Pigment layer refuses by name while still taking the brush
-//    and the eraser, an alpha-locked layer refuses while still taking the brush,
+//  - **The routing table's Smudge rows**, including the refusals with reasons:
+//    a Pigment layer takes its OWN route, `PigmentSmudge`, and never this one
+//    (it refused by name until brush/PigmentSmudge -- `runPigmentSmudgeTest()`
+//    below), an alpha-locked layer refuses while still taking the brush,
 //    no target at all is `None` and not `PaintSim`, and Adjustment/storeless
 //    refuse through the shared body. Plus the route name, the "smudge" history
 //    label, and `toolBeginsStroke()`/`toolImplemented()`/
@@ -4498,6 +4499,41 @@ bool runSmudgeTest();
 // Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
 // it reads no file at all. Headless and GPU-free; writes no files.
 bool runSmudgeOptionsTest();
+// **The smudge on a Pigment layer** (brush/PigmentSmudge; PRD F7's Pigment
+// half) -- a row `strokeRouteFor()` refused by name until someone decided
+// "what the mass-weighted mean of a footprint of latents is and asserts it".
+//
+// What this section proves:
+//
+//  - **The pick-up IS the brush's mixing rule.** A footprint of blue at mass 1
+//    beside yellow at mass 0.25 picks up the latent `depositTexel()` makes of
+//    those two paints in that proportion, within a bound counted from the
+//    footprint's own texels, and nowhere near the unweighted 50/50.
+//  - **Emptiness thins and never bleaches.** Half a footprint of absent tile
+//    picks up exactly half the mass and the hue bit-for-bit; half a footprint
+//    of ERASED yellow (mass 0, stale hue) contributes no hue at all -- with the
+//    rejected arithmetic mean walked over the identical footprint and asserted
+//    to resurrect the yellow.
+//  - **One pigment in, that pigment out, at ZERO tolerance**: after a whole
+//    smudge every painted texel on the layer holds the latent it started with.
+//  - **Two paints meet on the line between them**: blue dragged into yellow
+//    leaves latents strictly between the two and on the segment joining them,
+//    within a per-write binary16 bound, and mass 1 exactly at every texel --
+//    paint moved, none added or removed.
+//  - The write and the finger as pure functions, with both strength endpoints
+//    exact, the first-dab latch, an empty finger thinning paint without moving
+//    its hue, and a loaded finger laying its own hue over an erased texel.
+//  - Direction (carried past the boundary, monotone falloff, nothing when run
+//    backwards), strength 0 as a whole-stroke no-op, PRD E1's selection gate
+//    bit-identical outside the ants, and an empty finger crossing blank canvas
+//    AND an erased patch allocating nothing and recording nothing.
+//  - The routing row (plus locked, storeless and alpha-locked), and the session
+//    end to end: STRENGTH read with OPACITY at 0, the selection read live, one
+//    history entry labelled "smudge".
+//
+// Headless and GPU-free; reads and writes no files, so it runs identically in
+// every build configuration.
+bool runPigmentSmudgeTest();
 // **The active selection on a Pigment layer** (brush/Deposit §4; PRD E1, **P0**)
 // and **the eraser that gate unblocked** (brush/PigmentErase; PRD F9/F10, both
 // **P0**; ADR-0007's Pigment row).

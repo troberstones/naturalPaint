@@ -3763,6 +3763,14 @@ int main(int argc, char** argv) {
     // unconfigured AppState and requires the fade, with the identical drag at
     // strength 1 measured beside it as the negative.
     const bool smudgeOptionsOk = np::runSmudgeOptionsTest();
+    // brush/PigmentSmudge -- the smudge on a Pigment layer, which the routing
+    // table refused by name until the mass-weighted mean of a footprint of
+    // latents was decided and asserted. Asserted three ways: one pigment in is
+    // that pigment out at zero tolerance over a whole stroke, an erased or empty
+    // texel thins the finger without bleaching it (the rejected arithmetic mean
+    // measured beside it), and a mixed footprint picks up exactly what
+    // depositTexel() makes of the same two paints.
+    const bool pigmentSmudgeOk = np::runPigmentSmudgeTest();
     // PRD E1 (P0) on the layer kind that never had it, and ADR-0007's Pigment
     // eraser row that gate unblocked. brush/Deposit.hpp did not contain the word
     // "Selection", so a natural-media stroke on a Pigment layer painted straight
@@ -4091,7 +4099,7 @@ int main(int argc, char** argv) {
                     pencilDepositOk &&
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk && tonalBrushOk &&
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk && smudgeOk &&
-                    smudgeOptionsOk &&
+                    smudgeOptionsOk && pigmentSmudgeOk &&
                     pigmentSelectionOk && bucketRefusalOk &&
                     pigmentSelectionOk && cloneStampOk && healOk && bucketRefusalOk &&
                     layerMultiSelectOk && layerPanel2aOk && layerListHeightOk &&
