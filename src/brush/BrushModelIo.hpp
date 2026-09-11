@@ -33,7 +33,7 @@ namespace np {
 
 // **The walk lives in brush/BrushModelFields.hpp**, not here. This file had
 // its own copy of it until integration, and so did brush/BrushModelDiff --
-// two independently written enumerations of the same 151 leaves, which is
+// two independently written enumerations of the same 149 leaves, which is
 // three edits per new field and two chances to forget one. That header also
 // deduces constness, so `brushModelToLines()` no longer needs the
 // `const_cast` that reusing a mutable-only walk for reading required.

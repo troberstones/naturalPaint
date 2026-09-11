@@ -708,7 +708,7 @@ bool runAbrSampledTipsTest() {
     // The documented blind spot: presetMatches() does not compare tipBitmap
     // (brush/Library.hpp's comment on why). Proven here rather than only
     // asserted in prose -- two presets differing ONLY in their bitmap read
-    // as matching by the eight fields presetMatches() actually checks.
+    // as matching by the fields presetMatches() actually checks.
     BrushPreset other = dup;
     auto differentBmp = std::make_shared<BrushTipBitmap>();
     differentBmp->width = 3;
@@ -717,8 +717,7 @@ bool runAbrSampledTipsTest() {
     other.tipBitmap = differentBmp;
     check(presetMatches(other, brush.model.tip.diameterPx / 2.0f, brush.model.tip.hardness,
                         brush.model.tip.spacingPercent / 100.0f, brush.model.tip.roundness,
-                        brush.model.tip.angleDeg, brush.load, brush.wetness, brush.links,
-                        brush.grain),
+                        brush.model.tip.angleDeg, brush.native, brush.links),
           "abr-samp/roundtrip: presetMatches() DELIBERATELY cannot tell `other`'s different "
           "bitmap apart from `brush`'s -- documented on BrushPreset::tipBitmap and on "
           "presetMatches() itself, because nothing today can move a live bitmap independently "

@@ -310,9 +310,10 @@ struct BrushRow {
   float roundness = 1.0f;
   float angle = 0.0f;
   float spacing = 0.25f;
-  // `BrushState::load`, which `brushTipFor()` turns into the tip's `flow`.
-  // Cached because it changes the icon -- a heavily loaded brush lays a flat
-  // saturated core where a light one lays a ramp (app/DabPreview §4).
+  // `BrushState::native.load` (brush/NativeBrush.hpp), which `brushTipFor()`
+  // turns into the tip's `flow`. Cached because it changes the icon -- a
+  // heavily loaded brush lays a flat saturated core where a light one lays a
+  // ramp (app/DabPreview §4).
   float load = 0.9f;
   // Not drawn as a picture; said as a number, so a row can admit that its
   // dynamics have not been read yet (§4's honest limit).

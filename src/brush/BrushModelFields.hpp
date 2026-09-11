@@ -7,15 +7,16 @@
 // brush/BrushModelFields -- **the one place BrushModel's field list is
 // written down**, and the walk every other module reads it through.
 //
-// A `BrushModel` is Photoshop's Brush Settings panel as a struct: 151 leaves
+// A `BrushModel` is Photoshop's Brush Settings panel as a struct: 149 leaves
 // once every `Variance` is expanded and the Dual Brush's own tip and scatter
-// are counted as the second copies they are. Three things now need to walk
-// that list -- writing it to `user-presets.txt` (brush/BrushModelIo),
-// comparing two of them for the EDITED indicator and for round-trip proofs
-// (brush/BrushModelDiff), and eventually drawing a control per field
-// (Photoshop-shaped panels).
+// are counted as the second copies they are. (151 until naturalPaint's own
+// `load`/`wetness` left for `brush/NativeBrush.hpp` -- see `visitBrushModel()`
+// below.) Three things now need to walk that list -- writing it to
+// `user-presets.txt` (brush/BrushModelIo), comparing two of them for the
+// EDITED indicator and for round-trip proofs (brush/BrushModelDiff), and
+// eventually drawing a control per field (Photoshop-shaped panels).
 //
-// **They walk THIS list or the list forks.** Two copies of a 151-field
+// **They walk THIS list or the list forks.** Two copies of a 149-field
 // enumeration is not a hypothetical drift: it is three edits per new field,
 // two of which a reviewer has to notice are missing. The pinned counts in
 // both selftests would catch a forgotten field -- but they would catch it as
@@ -205,10 +206,16 @@ bool visitToolOptions(const std::string& prefix, A& a, B& b, Visit& visit) {
 }
 
 // BrushModel itself -- the eight named panels, each already handled above,
-// plus the checkbox tail and naturalPaint's own load/wetness. THIS is the
-// one function a new top-level BrushModel field costs one line in; every
-// nested struct's own field costs one line in the visitor function for
-// THAT struct, above.
+// plus the checkbox tail. THIS is the one function a new top-level
+// BrushModel field costs one line in; every nested struct's own field costs
+// one line in the visitor function for THAT struct, above.
+//
+// **naturalPaint's own `load`/`wetness` used to be visited here too, as the
+// last two leaves.** They are gone along with the fields themselves
+// (`BrushModel`'s own comment) -- naturalPaint's additions now live in
+// `brush/NativeBrush.hpp`'s `NativeBrush`, a struct this visitor does not
+// walk, because it is not part of Photoshop's panel. The leaf count this
+// walk produces dropped from 151 to 149 when they left.
 template <typename A, typename B, typename Visit>
 bool visitBrushModel(A& a, B& b, Visit& visit) {
   if (!visitTipShape("tip", a.tip, b.tip, visit)) return false;
@@ -223,8 +230,6 @@ bool visitBrushModel(A& a, B& b, Visit& visit) {
   if (!visit("wetEdges", a.wetEdges, b.wetEdges)) return false;
   if (!visit("airbrush", a.airbrush, b.airbrush)) return false;
   if (!visit("brushPose", a.brushPose, b.brushPose)) return false;
-  if (!visit("load", a.load, b.load)) return false;
-  if (!visit("wetness", a.wetness, b.wetness)) return false;
   return true;
 }
 

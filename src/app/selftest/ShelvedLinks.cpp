@@ -99,7 +99,7 @@ bool runShelvedLinksTest() {
     withLinks.model.tip.roundness = 0.6f;
     withLinks.model.tip.angleDeg = 15.0f;
     withLinks.model.tip.spacingPercent = 30.0f;
-    withLinks.load = 0.8f;
+    withLinks.native.load = 0.8f;
     withLinks.pigment = 3;
 
     // Aggressively different from identity: a Pressure -> Size link that

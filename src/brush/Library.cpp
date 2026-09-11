@@ -66,8 +66,8 @@ bool linkSetsEqual(const BrushLinkSet& a, const BrushLinkSet& b) {
 }
 
 bool presetMatches(const BrushPreset& preset, float radius, float hardness, float spacing,
-                   float roundness, float angle, float load, float wetness,
-                   const BrushLinkSet& links, const GrainParams& grain) {
+                   float roundness, float angle, const NativeBrush& native,
+                   const BrushLinkSet& links) {
   // Radius/hardness/spacing/roundness/angle now live on `preset.model`
   // (`brush/Library.hpp`'s own comment on why the five scalars this function
   // used to compare directly are gone) -- projected back into the same units
@@ -79,8 +79,7 @@ bool presetMatches(const BrushPreset& preset, float radius, float hardness, floa
          preset.model.tip.hardness == hardness &&
          preset.model.tip.spacingPercent / 100.0f == spacing &&
          preset.model.tip.roundness == roundness && preset.model.tip.angleDeg == angle &&
-         preset.load == load && preset.wetness == wetness &&
-         linkSetsEqual(preset.links, links) && grainParamsEqual(preset.grain, grain);
+         nativeBrushEqual(preset.native, native) && linkSetsEqual(preset.links, links);
 }
 
 std::string uniquePresetName(const BrushLibrary& lib, const std::string& wanted) {
@@ -149,8 +148,8 @@ BrushLibrary defaultBrushLibrary() {
   wash.model.tip.spacingPercent = 12.0f;
   wash.model.tip.roundness = 0.28f;
   wash.model.tip.angleDeg = 35.0f;
-  wash.load = 0.7f;
-  wash.wetness = 2.4f;
+  wash.native.load = 0.7f;
+  wash.native.wetness = 2.4f;
   addLink(wash.links, makeLink(DynamicSource::Pressure, DynamicTarget::Flow, 0.2f, 1.0f));
   // Tilt widens it, which is the flat's whole behaviour: rolled onto its edge
   // it draws thin, laid down it draws its full width.
@@ -172,8 +171,8 @@ BrushLibrary defaultBrushLibrary() {
   dry.model.tip.diameterPx = 36.0f;
   dry.model.tip.hardness = 0.85f;
   dry.model.tip.spacingPercent = 55.0f;
-  dry.load = 0.55f;
-  dry.wetness = 0.25f;
+  dry.native.load = 0.55f;
+  dry.native.wetness = 0.25f;
   addLink(dry.links, makeLink(DynamicSource::Pressure, DynamicTarget::Size, 0.55f, 1.0f));
   addLink(dry.links, makeLink(DynamicSource::Random, DynamicTarget::Scatter, 0.0f, 0.45f));
   addLink(dry.links, makeLink(DynamicSource::Random, DynamicTarget::Flow, 0.35f, 1.0f));
@@ -194,8 +193,8 @@ BrushLibrary defaultBrushLibrary() {
   liner.model.tip.diameterPx = 10.0f;
   liner.model.tip.hardness = 0.95f;
   liner.model.tip.spacingPercent = 8.0f;
-  liner.load = 1.4f;
-  liner.wetness = 0.6f;
+  liner.native.load = 1.4f;
+  liner.native.wetness = 0.6f;
   addLink(liner.links, makeLink(DynamicSource::Pressure, DynamicTarget::Size, 0.08f, 1.0f,
                                 EasingPreset::SCurve));
   addLink(liner.links, makeLink(DynamicSource::Pressure, DynamicTarget::Flow, 0.4f, 1.0f));

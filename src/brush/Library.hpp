@@ -9,6 +9,7 @@
 #include "brush/BrushModel.hpp"
 #include "brush/Deposit.hpp"
 #include "brush/Dynamics.hpp"
+#include "brush/NativeBrush.hpp"
 
 namespace np {
 
@@ -83,10 +84,15 @@ struct BrushPreset {
   // for angle -- and every reader of the old fields was moved to read the
   // model equivalent instead, mechanically, at the same relocation
   // `tipBitmap`/`dualTip`/`grain` below already went through when THEY
-  // gained a durable home. `load` and `wetness` stay: naturalPaint's own two
-  // concepts, not Photoshop's, with no equivalent in `BrushModel`.
-  float load = 0.9f;
-  float wetness = 1.3f;
+  // gained a durable home.
+  //
+  // **`load`, `wetness` and `grain` (further down this struct) are gone from
+  // here too, folded into `native` below.** naturalPaint's own two concepts
+  // plus paper tooth -- not Photoshop's, with no equivalent in `BrushModel`
+  // -- used to be three loose members with three separate migration stories;
+  // `brush/NativeBrush.hpp`'s own header is the argument for why one named
+  // struct replaces them.
+  NativeBrush native;
   BrushLinkSet links;
 
   // Mirrors `BrushTip::scatterBothAxes` -- Photoshop's Scatter panel "Both
@@ -181,19 +187,19 @@ struct BrushPreset {
   // Only meaningful when `dualTip` is set.
   DualBrushBlend dualBlend = DualBrushBlend::Multiply;
 
-  // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp). Unlike `tipBitmap`
-  // and `dualTip` above, this DOES have its own slider (the BRUSH EDITOR's
-  // PAPER GRAIN section) and is therefore compared by `presetMatches()`
-  // below, the same as `radius`/`hardness`/every other field a control moves
-  // independently -- and persisted by `app/UserBrushLibraryStore`, as its own
-  // `grain` line rather than as a fourth `scalars` count: growing that line's
-  // required field count would make an OLDER `user-presets.txt` (seven
-  // floats, no eighth) fail to parse at all under `takeFloats()`'s
-  // exact-count contract, dropping the whole preset it belongs to. A new,
-  // separate keyword an older build does not recognise is instead preserved
-  // verbatim by that parser's own forward-compatible "a key this version does
-  // not know" branch -- no code needed here to earn that.
-  GrainParams grain;
+  // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp) now lives at
+  // `native.grain` -- see `native`'s own comment above. It still has its own
+  // slider (the BRUSH EDITOR's PAPER GRAIN section) and is still therefore
+  // compared, via `nativeBrushEqual()`, by `presetMatches()` below, the same
+  // as `radius`/`hardness`/every other field a control moves independently
+  // -- and it is still persisted by `app/UserBrushLibraryStore` under the
+  // identical `grain` keyword this comment always named, for the identical
+  // reason: growing `scalars`' required field count would make an OLDER
+  // `user-presets.txt` fail to parse at all under `takeFloats()`'s
+  // exact-count contract, dropping the whole preset it belongs to, where a
+  // new, separate keyword an older build does not recognise is instead
+  // preserved verbatim by that parser's own forward-compatible "a key this
+  // version does not know" branch.
 
   // Photoshop's own Brush Settings panel, in its own shape (brush/BrushModel.hpp),
   // carried beside the fourteen scalars/pointers above rather than folded into
@@ -278,17 +284,27 @@ BrushLibrary defaultBrushLibrary();
 // eight fields already checked can never agree while either of those two
 // disagree.
 //
-// **`grain` IS a parameter here, unlike `tipBitmap`/`dualTip` above, and for
-// the mirror-image reason: it has its own control** (the BRUSH EDITOR's
-// PAPER GRAIN section, `ui/MacPaintUI.cpp`) that moves it independently of
-// picking a whole preset, exactly as `radius` and every scalar already
-// checked does. Leaving it out would mean dragging the GRAIN slider alone
-// left the preset header lying that nothing had changed -- the identical
-// failure this function's own header paragraph exists to prevent for every
-// other independently-driven field.
+// **`native` (load, wetness, opacity, grain -- brush/NativeBrush.hpp) IS a
+// parameter here, compared in one `nativeBrushEqual()` call rather than as
+// loose arguments.** Each of its four fields has its own control (the BRUSH
+// EDITOR's LOAD/WATER/OPACITY sliders and PAPER GRAIN section,
+// `ui/MacPaintUI.cpp`) that moves it independently of picking a whole preset,
+// exactly as `radius` and every scalar already checked does -- leaving any of
+// the four out would mean dragging that one slider alone left the preset
+// header lying that nothing had changed, the identical failure this
+// function's own header paragraph exists to prevent for every other
+// independently-driven field. `opacity` joins this call for the first time
+// here: it had no field on `BrushPreset` to be compared against before
+// `native` existed, which was the same shape of gap `grain`'s own comment
+// used to call out for itself, above, before it was fixed. That is a real,
+// deliberate change to what `brushIsEdited()` reports -- picking a preset now
+// restores the opacity that preset was saved at, and changing OPACITY alone
+// now raises the EDITED badge -- not a silent one; `applyPresetToBrush()`/
+// `presetFromBrush()` (app/StrokeSession.cpp) carry `native` as one unit for
+// the identical reason.
 bool presetMatches(const BrushPreset& preset, float radius, float hardness, float spacing,
-                   float roundness, float angle, float load, float wetness,
-                   const BrushLinkSet& links, const GrainParams& grain);
+                   float roundness, float angle, const NativeBrush& native,
+                   const BrushLinkSet& links);
 
 // Whether two link sets describe the same relationships. Order-insensitive:
 // the set is a flat vector, but a matrix cell is a cell, so two sets holding

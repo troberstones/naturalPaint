@@ -1309,7 +1309,7 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
     const BrushModel& model = preset.model;
     if (model.texture.enabled) {
       std::string why;
-      if (grainFromTexture(model.texture, patternsById, preset.grain, why)) {
+      if (grainFromTexture(model.texture, patternsById, preset.native.grain, why)) {
         ++result.texturesApplied;
       } else {
         ++result.texturesNotApplied;

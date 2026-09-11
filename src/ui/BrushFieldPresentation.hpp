@@ -6,7 +6,7 @@
 namespace np {
 
 // ui/BrushFieldPresentation -- the ONE table that decides what a painter sees
-// for each of `BrushModel`'s 151 leaves (brush/BrushModelFields.hpp), and the
+// for each of `BrushModel`'s 149 leaves (brush/BrushModelFields.hpp), and the
 // ONE list that accounts for every leaf that gets no control on purpose.
 //
 // ==========================================================================
@@ -72,16 +72,17 @@ namespace np {
 //     contradicts itself, and there is no control here that also clears or
 //     sets the tip to match -- the same "nowhere sensible to go yet" shape
 //     as the override Variances above.
-//   * `load` / `wetness` (2 paths, the bare top-level ones -- NOT
-//     `transfer.*`) -- `AppState.hpp`'s own comment on `BrushState::load`/
-//     `wetness`: a deferred divergence. The stroke reads
-//     `BrushState::load`/`wetness` (the Paint tab's Load/Water sliders,
-//     `StrokeSession::brushTipFor()`'s `tip.flow = brush.load` and
-//     `applyToolToBrush()`'s water write), never `BrushModel::load`/
-//     `wetness`. A second live slider bound to the model's copy would look
-//     identical to the Paint tab's and silently not be the same number.
+//   * `load` / `wetness` used to be a fifth reason here (2 paths, the bare
+//     top-level ones -- NOT `transfer.*`): a deferred divergence between
+//     `BrushModel::load`/`wetness` and the live `BrushState::native.load`/
+//     `.wetness` the Paint tab's sliders actually drove. That divergence is
+//     gone --
+//     `load`/`wetness` are no longer `BrushModel` fields at all, having
+//     moved to `brush/NativeBrush.hpp`'s `NativeBrush` (which also holds
+//     `opacity`/`grain`, never `BrushModel` fields either) -- so there is no
+//     longer a leaf here to omit.
 //
-// Total: 20 + 10 + 11 + 2 + 2 = 45 omitted, 151 - 45 = 106 shown.
+// Total: 20 + 10 + 11 + 2 = 43 omitted, 149 - 43 = 106 shown.
 //
 // ==========================================================================
 // `Variance::fadeSteps` -- shown, not omitted, but conditionally

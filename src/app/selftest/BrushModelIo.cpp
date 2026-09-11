@@ -158,8 +158,11 @@ BrushModel makeFixture() {
   m.wetEdges = true;
   m.airbrush = true;
   m.brushPose = true;
-  m.load = c.nextF();
-  m.wetness = c.nextF();
+  // `m.load`/`m.wetness` used to be set here too -- gone along with the
+  // fields themselves (brush/BrushModel.hpp's own comment): they moved to
+  // `brush/NativeBrush.hpp`'s `NativeBrush`, which is not part of this
+  // fixture at all, since this file's whole subject is `BrushModel`'s own
+  // leaves.
 
   return m;
 }
@@ -256,12 +259,16 @@ bool runBrushModelIoTest() {
     // field added to `BrushModel` with no matching call in
     // `visitBrushModelFields()` must fail a comparison against a number
     // written down here, or this assertion would silently track whatever the
-    // visitor happens to produce and prove nothing. 151 = 66 scalar/enum/
+    // visitor happens to produce and prove nothing. 149 = 64 scalar/enum/
     // string leaves (`PsTipShape`'s 10 x 2 instances -- `tip`, `dual.tip` --
     // plus `PsScatter`'s 3 x 2 instances -- `scatter`, `dual.scatter` --
-    // plus 40 more that appear once each) + 17 `Variance` instances x 5
+    // plus 38 more that appear once each) + 17 `Variance` instances x 5
     // leaves apiece (control, jitter, minimum, fadeSteps, present) = 85.
-    constexpr size_t kExpectedPathCount = 151;
+    // (151 before naturalPaint's own `load`/`wetness` left for
+    // `brush/NativeBrush.hpp`'s `NativeBrush` -- two of the "38 more" above,
+    // and the two leaves this file's own fixture used to fill and round-trip
+    // check, in the sections below.)
+    constexpr size_t kExpectedPathCount = 149;
     check(paths.size() == kExpectedPathCount,
           "brushModelFieldPaths: path count matches the count pinned in this test");
 
@@ -373,8 +380,10 @@ bool runBrushModelIoTest() {
     check(fixture.wetEdges == restored.wetEdges, "wetEdges round-trips");
     check(fixture.airbrush == restored.airbrush, "airbrush round-trips");
     check(fixture.brushPose == restored.brushPose, "brushPose round-trips");
-    check(fixture.load == restored.load, "load round-trips exactly");
-    check(fixture.wetness == restored.wetness, "wetness round-trips exactly");
+    // `fixture.load`/`.wetness` round-trip checks used to sit here too --
+    // gone along with the fields (see the fixture builder's own comment
+    // above). `app/selftest/NativeBrush.cpp` is where `NativeBrush`'s own
+    // round trip is proven now.
   }
 
   // ==========================================================================
@@ -451,7 +460,7 @@ bool runBrushModelIoTest() {
   // **Every other section in this file is self-consistent, and a sabotage
   // proved it.** Swapping the path strings of `texture.brightness` and
   // `texture.contrast` in the field list left the suite entirely green: the
-  // count is still 151, no path is duplicated, and the round trip still
+  // count is still 149, no path is duplicated, and the round trip still
   // passes because it writes and reads through the SAME mislabelled walk.
   // Section C's per-field check is generated from that walk too, so it
   // inherits the lie.

@@ -168,8 +168,8 @@ bool runStrokePreviewTest() {
     // GRAIN is keyed to ABSOLUTE document position, so it needs a mark that
     // travels before it reads as paper rather than as one sampled patch.
     BrushState grainy = base;
-    grainy.grain.enabled = true;
-    grainy.grain.depth = 0.5f;
+    grainy.native.grain.enabled = true;
+    grainy.native.grain.depth = 0.5f;
     check(differingBytes(rasteriseStrokePreview(grainy, lut), ref) > 0,
           "turning PAPER GRAIN on changes the strip");
   }
@@ -297,7 +297,7 @@ bool runStrokePreviewTest() {
     BrushState roundness = base;
     roundness.model.tip.roundness = 0.3f;
     BrushState grain = base;
-    grain.grain.enabled = true;
+    grain.native.grain.enabled = true;
     BrushState linked = base;
     linked.model.scatter.scatter.jitter = 0.6f;
 

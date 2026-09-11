@@ -70,7 +70,7 @@ const std::vector<BrushFieldSpec>& brushFieldPresentationTable() {
 
       // ---------------------------------------------------------------------
       // texture.* -- Texture tab, appended after the existing PAPER GRAIN
-      // section (`st.brush.grain`, a different and already-wired mechanism --
+      // section (`st.brush.native.grain`, a different and already-wired mechanism --
       // see drawBrushTextureGroup()'s own comment on the two).
       // ---------------------------------------------------------------------
       {"texture.enabled", "Enabled"},
@@ -244,13 +244,14 @@ const std::vector<BrushFieldOmission>& brushFieldOmissionTable() {
       {"tip.computed", "derived classification, not independently settable -- PsTipShape's own comment"},
       {"dual.tip.computed", "derived classification, not independently settable -- PsTipShape's own comment"},
 
-      // AppState.hpp's own comment on BrushState::load/wetness: a deferred
-      // divergence. The stroke reads BrushState::load/wetness (this
-      // window's Paint tab), never BrushModel::load/wetness -- a second
-      // live slider here would look identical and silently not be the same
-      // number.
-      {"load", "shadowed by the Paint tab's own Load slider -- AppState.hpp's own comment"},
-      {"wetness", "shadowed by the Paint tab's own Water slider -- AppState.hpp's own comment"},
+      // `load`/`wetness` used to be two bare top-level rows here (the
+      // "deferred divergence" AppState.hpp's own comment used to describe).
+      // They are gone from this table because they are gone from
+      // `BrushModel` entirely -- `brush/NativeBrush.hpp`'s `NativeBrush`, not
+      // a shadowed `BrushModel` leaf, is where `load`/`wetness` (and
+      // `opacity`/`grain`, never on `BrushModel` at all) live now, and this
+      // table only accounts for leaves `brushModelFieldPaths()` still
+      // produces.
   };
   return table;
 }

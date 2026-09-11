@@ -9,6 +9,7 @@
 #include "brush/BrushModel.hpp"
 #include "brush/Dynamics.hpp"
 #include "brush/Library.hpp"
+#include "brush/NativeBrush.hpp"
 #include "app/DabLibrary.hpp"
 #include "app/BrushLibraryFile.hpp"
 #include "app/CloseDecision.hpp"
@@ -389,8 +390,56 @@ struct BrushState {
   // migration's own commit message names. `load`/`wetness` are NOT among
   // them (`brush/Variance`/`BrushModel` have no field for either yet -- a
   // deferred divergence, not an oversight).
-  float load = 0.9f;      // pigment concentration
-  float wetness = 1.3f;   // water deposited
+  //
+  // **`load`, `wetness`, `opacity` and `grain` used to be four more loose
+  // scalars/structs here, and are gone too -- folded into `native` below,
+  // one member instead of four.** `brush/NativeBrush.hpp`'s own header
+  // carries the full argument for the struct; each field's comment below is
+  // carried over from where it used to sit on this struct, not rewritten.
+  //
+  //   * `load` -- pigment concentration per dab; `brushTipFor()`'s `tip.flow`.
+  //   * `wetness` -- water deposited; reaches the solver route only
+  //     (`StrokeSession::wetnessReachesSolver()`).
+  //   * `opacity` -- **the ceiling one stroke can reach on an RGB layer**, in
+  //     [0,1] -- deliberately NOT the same quantity as `load`, which is how
+  //     much a single dab lays down. brush/RgbDeposit.hpp §2 carries the
+  //     whole argument; the short form is that at the default 0.25-radius
+  //     spacing every dab overlaps its neighbours about four deep, so a
+  //     brush that applied its opacity per dab would have no setting at all
+  //     that produces a flat 50% pass. 1.0 rather than a lower default
+  //     because a brush that does not reach the colour it is loaded with is
+  //     the surprising one. This is also the place the DYNAMICS matrix would
+  //     multiply if a `DynamicTarget::Opacity` is ever added (there is none
+  //     today, which is why `brushTipFor()` copies this straight through
+  //     rather than scaling it). Read by more than the RGB deposit route:
+  //     the RGB erase, the pigment erase, the tonal brushes and the clone
+  //     stamp each latch it too, as their own headers say -- one slider, one
+  //     meaning, "the fraction of the maximum effect one stroke may reach".
+  //     The SMUDGE used to be a sixth reader and no longer is -- it read
+  //     this field as its `strength`, which is a different quantity in
+  //     different units, and inherited the 1.0 default under which a smear
+  //     provably never fades (`brush/Smudge.hpp` §3b is the whole account);
+  //     `smudge.strength` below is where that lives now, and the OPACITY
+  //     slider is drawn disabled while the smudge is selected.
+  //   * `grain` -- paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp), OFF
+  //     by default. The BRUSH EDITOR's PAPER GRAIN section
+  //     (`ui/MacPaintUI.cpp`'s `drawBrushSection()`) is the one control
+  //     surface that writes this; `brushTipFor()` copies it straight into
+  //     the tip it builds, unscaled by any DYNAMICS target -- there is no
+  //     `DynamicTarget::Grain` for the identical reason there is no
+  //     `DynamicTarget::Opacity` above.
+  //
+  // **New since `native` existed: `opacity` is now compared by
+  // `presetMatches()`/`brushIsEdited()` and carried by
+  // `applyPresetToBrush()`/`presetFromBrush()` (app/StrokeSession.cpp) along
+  // with the other three.** It never had anywhere to be captured on
+  // `BrushPreset` before -- `brush/Library.hpp`'s `presetMatches()` comment
+  // has the full argument for why that was the same shape of gap `grain`'s
+  // own comment used to name for itself. A deliberate, stated behaviour
+  // change, not a silent one: picking a preset now restores the opacity it
+  // was saved at, and moving the OPACITY slider alone now raises the EDITED
+  // badge.
+  NativeBrush native;
 
   // A `.abr` sampled bitmap tip (brush/Deposit.hpp §2c), or null for the
   // procedural round/elliptical tip every other field above already
@@ -488,39 +537,9 @@ struct BrushState {
   // `model.tip.spacingPercent / 100.0f` is its replacement, in the same
   // units of the current brush radius this field always used.
 
-  // **The ceiling one stroke can reach on an RGB layer**, in [0,1] --
-  // deliberately NOT the same quantity as `load` above, which is how much a
-  // single dab lays down. brush/RgbDeposit.hpp §2 carries the whole argument;
-  // the short form is that at the default 0.25-radius spacing every dab
-  // overlaps its neighbours about four deep, so a brush that applied its
-  // opacity per dab would have no setting at all that produces a flat 50 %
-  // pass.
-  //
-  // 1.0 rather than a lower default because a brush that does not reach the
-  // colour it is loaded with is the surprising one. This is also the place the
-  // DYNAMICS matrix would multiply if a `DynamicTarget::Opacity` is ever added
-  // (there is none today, which is why `brushTipFor()` copies this straight
-  // through rather than scaling it).
-  //
-  // **Two stale claims used to sit here and both mattered**, so they are
-  // corrected rather than deleted. It said "No UI control yet": the BRUSH
-  // panel's OPACITY slider (`ui/MacPaintUI.cpp`'s `drawBrushPaintGroup()`) has
-  // written this field for some time. And it said "Read only by the RGB deposit
-  // route": the RGB erase, the pigment erase, the tonal brushes and the clone
-  // stamp each latch it too, as their own headers say -- one slider, one
-  // meaning, "the fraction of the maximum effect one stroke may reach".
-  //
-  // **The SMUDGE used to be a sixth reader and no longer is.** It read this
-  // field as its `strength`, which is a different quantity in different units,
-  // and inherited the 1.0 above as a default under which a smear provably never
-  // fades -- `brush/Smudge.hpp` §3b is the whole account. `smudge.strength`
-  // below is where that lives now, and the OPACITY slider is drawn disabled
-  // while the smudge is selected.
-  float opacity = 1.0f;
-
   // **The smudge's own settings** (`brush/Smudge.hpp` §3b): the strength that
-  // used to be `opacity` directly above, and the dab this tool drags if the
-  // user has picked one.
+  // used to be `opacity` (now `native.opacity`, above), and the dab this tool
+  // drags if the user has picked one.
   //
   // On `BrushState` rather than beside `magicWand`/`paintBucket` on `AppState`
   // proper, and the reason is `brushTipFor()`. That function already takes a
@@ -540,15 +559,6 @@ struct BrushState {
   // survive a save if there ever is one -- it is an id, not a bitmap, exactly
   // as `BrushState::dabId` above is.
   SmudgeParams smudge;
-
-  // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp) -- OFF by default,
-  // `GrainParams`'s own default. The BRUSH EDITOR's PAPER GRAIN section
-  // (`ui/MacPaintUI.cpp`'s `drawBrushSection()`) is the one control surface
-  // that writes this; `brushTipFor()` copies it straight into the tip it
-  // builds, unscaled by any DYNAMICS target -- there is no
-  // `DynamicTarget::Grain` for the identical reason there is no
-  // `DynamicTarget::Opacity` (`opacity`'s own comment above).
-  GrainParams grain;
 };
 
 // PLAN.md Phase 2 step 11 ("View controls", PRD Q1-Q4): zoom/pan plus
