@@ -21020,6 +21020,53 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     }
     // === END Tool::Crop overlay ============================================
 
+    // === BEGIN Tool::Frame / Tool::Slice overlay (app/RegionTool) ==========
+    //
+    // Outlines with a name label, drawn while either tool is active, and
+    // also whenever View > Show Frames and Slices is on (`st.showRegions`) --
+    // `AppState::showRegions`'s own comment: "a view toggle beside the
+    // tool-active condition that already draws the same overlay, not a
+    // replacement for it." No shield: unlike Crop, a region is not
+    // destructive, so there is nothing to darken the rest of the picture
+    // against.
+    //
+    // Frame and Slice are styled with two already-blessed design tokens
+    // (`ui/AtelierTheme.hpp`) rather than an invented third colour --
+    // `kAccent` (the active-tool / dirty-marker colour) for Frame,
+    // `kWarning` for Slice -- so the two read as distinct without adding a
+    // hue this design language does not already have a role for.
+    {
+      const OpenDocument* overlayDoc = st.documents.active();
+      if (overlayDoc != nullptr &&
+          (toolCreatesRegions(st.brush.tool) || st.showRegions) &&
+          !overlayDoc->document.regions.empty()) {
+        const ImVec2 bandMin(paintOrigin.x, paintOrigin.y);
+        const ImVec2 bandMax(paintOrigin.x + avail.x, paintOrigin.y + avail.y);
+        dl->PushClipRect(bandMin, bandMax, true);
+        for (const Region& r : overlayDoc->document.regions) {
+          const Vec2 s0 =
+              xform.toScreen(Vec2{static_cast<float>(r.x), static_cast<float>(r.y)});
+          const Vec2 s1 = xform.toScreen(
+              Vec2{static_cast<float>(r.x + static_cast<int32_t>(r.width)),
+                   static_cast<float>(r.y + static_cast<int32_t>(r.height))});
+          const ImVec2 p0(std::min(s0.x, s1.x), std::min(s0.y, s1.y));
+          const ImVec2 p1(std::max(s0.x, s1.x), std::max(s0.y, s1.y));
+          const bool isSelected =
+              st.region.selectedId == r.id && toolCreatesRegions(st.brush.tool);
+          const ImU32 color = atelierToken(r.kind == RegionKind::Frame ? kAccent : kWarning);
+          dl->AddRect(p0, p1, color, 0.0f, 0, isSelected ? 2.5f : 1.5f);
+          // The name label, above the top-left corner. Clipped by the
+          // band's own `PushClipRect` above, so a region dragged mostly
+          // off-screen does not paint its label into the panels beside the
+          // canvas.
+          const ImVec2 textPos(p0.x, p0.y - ImGui::GetTextLineHeight() - 2.0f);
+          dl->AddText(textPos, color, r.name.c_str());
+        }
+        dl->PopClipRect();
+      }
+    }
+    // === END Tool::Frame / Tool::Slice overlay ==============================
+
     // === BEGIN Tool::Measure ruler (app/MeasureLine) =======================
     //
     // Drawn from `xform`, like the marquee band and the transform wireframe

@@ -18,12 +18,14 @@
 #include "app/GradientTool.hpp"
 #include "app/Memory.hpp"
 #include "app/MoveTool.hpp"
+#include "app/RegionTool.hpp"
 #include "app/StrokeSession.hpp"
 #include "app/ZoomAndSize.hpp"
 #include "color/Space.hpp"
 #include "core/TileStore.hpp"
 #include "ui/AtelierTheme.hpp"
 #include "ui/Fonts.hpp"
+#include "ui/LabelledControl.hpp"  // ctlInputText() -- the region NAME field
 #include "ui/MacPaintUI.hpp"
 
 #include "imgui.h"
@@ -1303,10 +1305,69 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     return;
   }
 
+  // --- Tool::Frame / Tool::Slice: the selected region's name and rectangle --
+  //
+  // The fifth early return in this band, Crop's own reason immediately
+  // above: neither `app/RegionTool` nor `core::RegionOps` reads a
+  // `BrushTip`, so the four brush sliders would be live controls over
+  // nothing.
+  //
+  // **The rectangle is read-only here; only the name is editable**, the
+  // brief's own words ("the selected region's name (editable) and
+  // x/y/w/h"). A region's rectangle is set by the same drag gesture Crop's
+  // own SIZE readout describes -- typing four numbers into an options-bar
+  // field is a second way to move a shape this build already has a precise
+  // one for (the corner handles), and that second way is not built here.
+  if (toolCreatesRegions(st.brush.tool)) {
+    bandSeparator();
+    OpenDocument* od = st.documents.active();
+    const Region* selected =
+        od != nullptr ? findRegionById(od->document, st.region.selectedId) : nullptr;
+    if (selected == nullptr) {
+      capsLabel("REGION");
+      ImGui::SameLine();
+      ImGui::TextDisabled("Nothing selected -- drag on the canvas to create one.");
+      return;
+    }
+
+    capsLabel("NAME");
+    ImGui::SameLine();
+    // The ACTIONS panel's own idiom (`drawActionsSection()`): synced from the
+    // model on every frame the field is NOT active, so switching which
+    // region is selected shows its own name immediately, and a name typed
+    // mid-edit is never overwritten by a stray resync.
+    static char nameBuf[128] = "";
+    if (!ImGui::IsItemActive())
+      std::snprintf(nameBuf, sizeof(nameBuf), "%s", selected->name.c_str());
+    ImGui::SetNextItemWidth(160.0f);
+    if (ctlInputText("##regionName", nameBuf, sizeof(nameBuf),
+                     ImGuiInputTextFlags_EnterReturnsTrue) &&
+        od != nullptr) {
+      const size_t index = indexOfRegionId(od->document, selected->id);
+      if (index < od->document.regions.size())
+        recordLayerEdit(*od, renameRegion(od->document, index, nameBuf));
+    }
+
+    bandSeparator();
+    capsLabel(selected->kind == RegionKind::Frame ? "FRAME" : "SLICE");
+    ImGui::SameLine();
+    pushAtelierMono();
+    ImGui::Text("%d, %d   %u x %u", selected->x, selected->y, selected->width, selected->height);
+    popAtelierMono();
+
+    bandSeparator();
+    if (ImGui::Button("Delete") && od != nullptr) {
+      recordLayerEdit(*od, regionDeleteSelected(st.region, od->document));
+    }
+    ImGui::SetItemTooltip("Delete this region. Backspace does the same.");
+    return;
+  }
+
 
   // --- Tool::Text: FONT, SIZE, style, ALIGN and COLOUR --------------------
   //
-  // **The fifth early return in this band, and docs/ui.md section 4b's test
+  // **The sixth early return in this band (`Tool::Frame`/`Tool::Slice`,
+  // immediately above, is now the fifth), and docs/ui.md section 4b's test
   // settles it without argument.** That test is not "does this tool have
   // settings" but *would the four brush sliders be live controls over
   // something this tool provably never reads*, and the Text tool reads none
