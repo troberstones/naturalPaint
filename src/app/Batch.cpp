@@ -48,6 +48,24 @@ std::string lowerAscii(std::string_view s) {
 //                                document texels"
 //   fill_with_pattern.origin_x   ops/Pattern.hpp:187, "where the pattern's own
 //     / .origin_y                (0, 0) lands in document space"
+//   filter_inpaint.radius        ops/Inpaint.hpp, "Telea's eps in texels"
+//   filter_remove_lighting_      app/FilterOps.hpp, "sigma is the dialog's own
+//     gradient.sigma             field, in document texels"
+//   numeric_transform.translate_ the numeric-entry Transform dialog's Move X
+//     x / .translate_y           and Move Y fields, in document texels --
+//                                added on top of the pivoted rotate/scale
+//                                independently of the layer's own extent.
+//
+// **What is deliberately NOT here, beyond §2's own document-geometry list.**
+// `filter_offset`'s `dx_fraction`/`dy_fraction` are a FRACTION of the canvas,
+// not texels -- app/CommandsImage.cpp's `doOffset()` argues why at length,
+// and the short form is the same one this section already makes for
+// `image_size`: a value whose MEANING already scales with the resolution does
+// not belong in a table that exists to warn about ones that do not.
+// `numeric_transform`'s `rotate_degrees`, `scale_x_percent` and
+// `scale_y_percent` are the same case one level over: a rotation in degrees
+// and a scale as a fraction of the ORIGINAL size mean the same thing on a 2k
+// plate and an 8k one, by construction, with nothing here to correct.
 //
 // **What is deliberately NOT here**, because the distinction is the rule
 // itself: `image_size` and `canvas_size` carry a width and a height counted in
@@ -91,6 +109,16 @@ constexpr PixelUnitParam kPixelUnitParams[] = {
     // thing at every resolution.
     {"select_grow", "radius"},         {"select_shrink", "radius"},
     {"select_feather", "radius"},
+    // `filter_inpaint`, `filter_remove_lighting_gradient` and
+    // `numeric_transform` -- app/CommandCoverage.cpp's last three gaps,
+    // closed together. `radius` and `sigma` reuse names already in this
+    // table (a growing selection's radius, a blur's sigma); `translate_x`/
+    // `translate_y` are new names, added because they are pixel-unit for the
+    // same reason `filter_emboss`'s `dx`/`dy` are -- a length recorded in
+    // document texels.
+    {"filter_inpaint", "radius"},
+    {"filter_remove_lighting_gradient", "sigma"},
+    {"numeric_transform", "translate_x"}, {"numeric_transform", "translate_y"},
 };
 
 // "filter_gaussian_blur's sigma" for every pixel-unit parameter `action`

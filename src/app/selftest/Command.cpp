@@ -347,24 +347,20 @@ bool runCommandTest() {
     // have given each of them a fake justification and made the table look
     // complete -- see app/CommandCoverage.hpp §2.
     std::printf("      %zu document edits are classified as not-yet-registered\n", notYet);
-    // Was eight. Six closed at once: PRD E4/E8/E9's five refines were
-    // registered (app/CommandsOpStack.cpp §4), and `SelectUndoRefine` --
-    // listed beside them as a sixth gap -- turned out on reading the code not
-    // to be one at all. It pops `OpenDocument::refineUndoStack`, which that
-    // member's own comment is explicit is per-session state outside both
-    // core::History and the file, so it is NotRecordable for the reason Undo
-    // and Redo are. The two left are `NumericTransform` and `DeleteSelection`,
-    // each of which states what it is waiting for.
-    // **Raised 2 -> 5 by the phase 8/9 merge, deliberately and by hand**, which
-    // is the review this header says the number exists to force. The three new
-    // ones are Inpaint, Remove Lighting Gradient and Offset: pixel ops of the
-    // same shape as the seven registered filters, written on a branch that
-    // forked before step 2's migration existed to be written against. Each
-    // states the parameter work it needs, and two of the three state a
-    // resolution-policy question that app/Batch's pixel-unit list is where the
-    // answer goes. None of them is blocked on anything unbuilt.
-    check(notYet == 5,
-          "coverage: exactly the five known gaps, and no new one has appeared");
+    // Was eight, then five (see the history this comment used to carry, and
+    // docs/automation.md §8's own updated note). All five of the last wave --
+    // `NumericTransform`, `DeleteSelection`, `Inpaint`, `RemoveLightingGradient`
+    // and `Offset` -- are registered now (`numeric_transform`,
+    // `delete_selection`, `filter_inpaint`, `filter_remove_lighting_gradient`,
+    // `filter_offset`; app/CommandsImage.cpp has every runner). Zero is not
+    // "nothing left to decide" -- `applyFlatsExpand()` and the six layer call
+    // sites docs/automation.md §8 still names have no `MenuAction` to force
+    // this switch to notice them at all, which is §7's own stated blind spot --
+    // it is "no menu action currently reachable through this switch is still
+    // waiting". The number stays asserted for the same reason it always was:
+    // it cannot creep back up without a human editing this literal.
+    check(notYet == 0,
+          "coverage: no known gap is left, and no new one has appeared");
     check(notRecordable > registered,
           "coverage: most menu actions are session state, which is the rule doing its job");
   }
@@ -400,13 +396,33 @@ bool runCommandTest() {
 
     // **The number is the review**, the discipline section G uses for the
     // coverage gaps. `crop_to_selection` is bounded and does not go through
-    // the pixel bridge -- the region it crops to IS the selection. It is the
-    // only such row, and a second one has to be added to this literal by a
-    // human who has thought about it.
+    // the pixel bridge -- the region it crops to IS the selection.
+    //
+    // **Two more joined it, both added by hand after reading the code rather
+    // than by copying the pattern.** `filter_inpaint` (`inpaintUnavailable()`)
+    // and `delete_selection` (`deleteSelectionUnavailable()`) each need a
+    // precondition the shared `pixelOpUnavailable()` cannot state --
+    // `inpaintRefusal()`'s `NoSelection` for the first (an absent selection is
+    // a hard refusal, not "the whole canvas", app/FilterOps.hpp's own point),
+    // and acceptance of a Pigment layer's `pigmentTiles` for the second (the
+    // shared bridge requires `rgbTiles` specifically). Both are still
+    // `selectionBounded`: what the flag actually buys, the recorder's
+    // channel-match refusal under an unsaved live marquee
+    // (app/Recorder.hpp §4), is exactly the protection each of them needs, even
+    // though neither fits the flag's textbook description ("absent means whole
+    // canvas") the way `crop_to_selection` also does not. A fourth has to be
+    // looked at by a human who has thought about it, the same as this literal
+    // always asked of the first three.
     for (const std::string& id : boundedWithoutTheBridge)
       std::printf("      bounded outside the pixel bridge: %s\n", id.c_str());
-    check(boundedWithoutTheBridge.size() == 1 && boundedWithoutTheBridge[0] == "crop_to_selection",
-          "bounded: exactly one row is bounded outside the pixel bridge, and it is the crop");
+    bool exactlyTheThree = boundedWithoutTheBridge.size() == 3;
+    for (const char* id : {"crop_to_selection", "filter_inpaint", "delete_selection"})
+      exactlyTheThree = exactlyTheThree && std::find(boundedWithoutTheBridge.begin(),
+                                                     boundedWithoutTheBridge.end(),
+                                                     std::string(id)) != boundedWithoutTheBridge.end();
+    check(exactlyTheThree,
+          "bounded: exactly three rows are bounded outside the pixel bridge, and they are the "
+          "crop, the inpaint and the delete");
 
     // The by-name half, in both directions, because a structural rule that
     // happened to be vacuous -- no row bounded at all -- would pass everything
@@ -417,7 +433,8 @@ bool runCommandTest() {
     };
     check(boundedById("filter_gaussian_blur") && boundedById("adjust_levels") &&
               boundedById("adjust_invert") && boundedById("fill_with_pattern") &&
-              boundedById("crop_to_selection"),
+              boundedById("crop_to_selection") && boundedById("filter_inpaint") &&
+              boundedById("filter_remove_lighting_gradient") && boundedById("delete_selection"),
           "bounded: the destructive ops that act through the selection are bounded");
 
     // The rows the field was added for. Each acts on the whole document; none
@@ -426,9 +443,16 @@ bool runCommandTest() {
     // reason that does not apply to them; `flatten_image` belongs with them by
     // meaning and escaped only because `fromLayerEdit()` never set
     // `changesPixels` (app/selftest/Recorder.cpp section G says so where it is
-    // asserted).
+    // asserted). `numeric_transform` joins them for the same reason -- it acts
+    // on the whole active layer -- and `filter_offset` joins them for the
+    // OPPOSITE reason from `crop_to_selection`/`filter_inpaint`/
+    // `delete_selection` above: it is not merely unbounded by an absent
+    // selection, it refuses outright under a PRESENT one
+    // (`offsetRefusalFor()`'s `SelectionActive`), so "absent means whole
+    // canvas" was never a reading this op could have.
     check(!boundedById("flatten_image") && !boundedById("image_size") &&
-              !boundedById("canvas_size") && !boundedById("trim_to_content"),
+              !boundedById("canvas_size") && !boundedById("trim_to_content") &&
+              !boundedById("numeric_transform") && !boundedById("filter_offset"),
           "bounded: the whole-document ops are NOT bounded by the selection");
 
     // The commands that operate ON the selection are not bounded BY it. The

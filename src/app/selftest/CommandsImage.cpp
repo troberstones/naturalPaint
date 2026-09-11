@@ -196,6 +196,20 @@ std::vector<ImageCommandFixture> imageCommandFixtures() {
     p.set("angle_radians", num(0.5));
     add("filter_motion_blur", p);
   }
+  {
+    JsonValue p = JsonValue::object();
+    p.set("radius", num(4));
+    add("filter_inpaint", p);
+  }
+  {
+    JsonValue p = JsonValue::object();
+    p.set("sigma", num(8.0));
+    add("filter_remove_lighting_gradient", p);
+  }
+  // `filter_offset` is NOT here -- see section A's comment on why it cannot
+  // share this file's one fixture document (a live selection is standing on
+  // every other row's behalf, and `filter_offset` refuses under any selection
+  // at all). It has its own section further down.
 
   // ---- Image > Adjustments ----
   {
@@ -401,13 +415,25 @@ bool runCommandsImageTest() {
     // and states that they are a closed set of four), so they are named -- a
     // FIFTH unprefixed document command would need a line here, which is the
     // one gap in this loop and is stated rather than hidden.
+    //
+    // **`filter_offset` is named OUT, deliberately, despite the prefix.**
+    // `makeImageCommandDocument()` below carries a live selection so
+    // `crop_to_selection` has a region to crop to, and every other row in this
+    // section is bounded BY a selection -- it runs fine under one. `filter_offset`
+    // is the opposite: `offsetRefusalFor()` refuses OUTRIGHT under any live
+    // selection (app/CommandsImage.cpp's `doOffset()` and its row comment
+    // explain why), so it cannot share this section's one fixture document
+    // with the other thirty-two rows and is exercised on its own instead
+    // (this file's own dedicated Offset/Inpaint/DeleteSelection/
+    // NumericTransform section, further down).
     bool everyRowCovered = true;
     size_t covered = 0;
     for (const CommandSpec& row : allCommands()) {
       const std::string id = row.id;
-      const bool mine = hasPrefix(id, "filter_") || hasPrefix(id, "adjust_") ||
-                        id == "image_size" || id == "canvas_size" || id == "crop_to_selection" ||
-                        id == "trim_to_content";
+      const bool mine = (hasPrefix(id, "filter_") || hasPrefix(id, "adjust_") ||
+                         id == "image_size" || id == "canvas_size" ||
+                         id == "crop_to_selection" || id == "trim_to_content") &&
+                        id != "filter_offset";
       if (!mine) continue;
       ++covered;
       bool found = false;
