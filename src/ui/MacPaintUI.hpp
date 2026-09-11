@@ -408,7 +408,14 @@ int rgbColorPickerFlags() noexcept;
 // chances to pass the wrong colour, and a swatch that shows one ramp while
 // the canvas takes another. With it there is one expression, called three
 // times.
-GradientStops currentGradientStops(const BrushState& brush);
+//
+// Widened for PRD D24's presets to take the whole `GradientToolState`: when
+// `gradient.hasCustomStops` is set, its `customStops` -- not the built-in
+// default -- is what all three readers draw. `gradientToolStops()`'s own
+// null-vs-non-null branch (`app/GradientTool.hpp` § 5) is what still
+// guarantees the untouched-default case is bit-identical to before this
+// parameter existed.
+GradientStops currentGradientStops(const BrushState& brush, const GradientToolState& gradient);
 
 // ------------------------------------------------------- the eyedropper
 //

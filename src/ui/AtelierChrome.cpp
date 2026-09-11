@@ -1036,7 +1036,7 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     // far darker than the paint it is promising. Alpha is a coverage fraction
     // and is not a colour, so it is passed through untouched; encoding it
     // would make the fade reach halfway across the swatch instead of a third.
-    const GradientStops stops = currentGradientStops(st.brush);
+    const GradientStops stops = currentGradientStops(st.brush, st.gradient);
     const int columns = static_cast<int>(rampW);
     for (int i = 0; i < columns; ++i) {
       // Sampled at the column's CENTRE. Sampling at its left edge puts the

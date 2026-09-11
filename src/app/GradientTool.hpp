@@ -2,6 +2,8 @@
 
 #include <array>
 #include <cstddef>
+#include <string>
+#include <vector>
 
 #include "ops/Gradient.hpp"
 
@@ -50,6 +52,60 @@ namespace np {
 // pairs the two, and it is what all three readers above actually call --
 // so § 1's "one function" survives the layering split rather than being
 // quietly reintroduced as two.
+//
+// § 2a. The AUTHORED ramp is not `ops/Gradient::GradientStops`
+// -------------------------------------------------------------------------
+// PRD D24's editor lets a colour stop be a fixed colour OR "Foreground",
+// tracking the swatch at the moment the gradient is drawn -- that is the only
+// way today's default (§ 5) stays expressible once a second ramp exists to
+// choose instead of it. `ops/Gradient::ColorStop` has no room for that: its
+// `color` is a concrete linear RGB triple, on purpose (`ops/Gradient.hpp` § 2
+// -- the op is headless and has never heard of a foreground swatch). So the
+// authored form is a parallel, tool-level struct that CAN say "follow the
+// foreground", and `resolveGradientPresetStops()` below is the one place that
+// turns one of those into the concrete `GradientStops` the op actually reads
+// -- the same "one function" shape as § 1, one level up: an editor, a JSON
+// file and the preview all hold a `GradientPresetStops`, and only the final
+// hop to pixels ever substitutes a colour.
+struct GradientColorStopSpec {
+  float position = 0.0f;
+  // When true, `color` is ignored and the resolved stop takes whatever
+  // `resolveGradientPresetStops()` is handed as the foreground -- so a preset
+  // saved with a Foreground stop still tracks the swatch after a save/load
+  // round trip, exactly as today's built-in default does.
+  bool foreground = false;
+  std::array<float, 3> color{0.0f, 0.0f, 0.0f};
+  float midpoint = 0.5f;
+};
+
+// No `foreground` flag here: an opacity value has no swatch to follow, so
+// every opacity stop is already fully concrete.
+struct GradientOpacityStopSpec {
+  float position = 0.0f;
+  float opacity = 1.0f;
+  float midpoint = 0.5f;
+};
+
+// The authored ramp: what the stop editor edits, what a preset file holds,
+// and what `GradientToolState::customStops` below stores. Mirrors
+// `ops/Gradient::GradientStops`'s two-list shape (§ 1 of that header) for the
+// same reason -- colour and opacity are positioned independently -- with
+// colour stops widened to `GradientColorStopSpec`.
+struct GradientPresetStops {
+  std::vector<GradientColorStopSpec> colorStops;
+  std::vector<GradientOpacityStopSpec> opacityStops;
+};
+
+// Turns an authored ramp into the concrete stops `renderGradient()` (and the
+// swatch, and the live preview) actually read, substituting `foregroundLinear`
+// for every colour stop marked `foreground`. Position and midpoint pass
+// through unchanged; `ops/Gradient.hpp`'s sorted-ascending contract is the
+// caller's to keep here exactly as it is everywhere else in this build (an
+// editor sorts after a drag with `sortGradientStops()`; this function does not
+// sort defensively, for the reason `ops/Gradient.hpp` gives at its own stop
+// lists).
+GradientStops resolveGradientPresetStops(const GradientPresetStops& spec,
+                                         const std::array<float, 3>& foregroundLinear);
 
 // ---------------------------------------------------------------------------
 // § 3. The tool's own settings
@@ -78,6 +134,23 @@ struct GradientToolState {
   // a big canvas and has not thought about spread means "fill the rest with
   // the ends", never "tile my ramp forty times".
   GradientSpread spread = GradientSpread::Pad;
+
+  // The chosen ramp, PRD D24's editor and presets. `hasCustomStops == false`
+  // is "use the built-in Foreground-to-Transparent ramp" -- § 5 below -- and
+  // is the only state that guarantees § 5's bit-identical promise, because it
+  // takes the untouched original code path rather than a resolved copy of it.
+  // `customStops` is otherwise ignored, so switching this flag off and back on
+  // (picking the built-in preset, then re-picking a saved one) cannot lose the
+  // edit sitting in it.
+  bool hasCustomStops = false;
+  GradientPresetStops customStops;
+
+  // The name of the preset `customStops` was loaded from or last saved as,
+  // empty for an edited-but-unsaved ramp or the built-in default. Purely a
+  // label for the options-bar picker -- nothing downstream reads it, which is
+  // § 5a's whole point: a renamed or deleted preset file cannot desync the
+  // ramp actually in `customStops`.
+  std::string presetName;
 };
 
 // ---------------------------------------------------------------------------
@@ -187,23 +260,67 @@ const char* gradientSpreadLabel(GradientSpread spread);
 // § 5. The ramp
 // ---------------------------------------------------------------------------
 //
-// **Foreground to transparent**, which is the only default this build can
-// honestly offer: `docs/ui.md` deliberately has no BG half to the swatch
-// (nothing fills with a background colour until PRD D25/D26), so "foreground
-// to background" would name a colour that does not exist.
+// **Foreground to transparent** is the BUILT-IN default, and used to be the
+// only ramp this build could honestly offer: `docs/ui.md` deliberately has no
+// BG half to the swatch (nothing fills with a background colour until PRD
+// D25/D26), so "foreground to background" would still name a colour that
+// does not exist. PRD D24's stop editor and presets (§ 2a, § 5a) are what let
+// a user reach any OTHER ramp; this function's own default path is
+// unchanged, which is what makes it the one thing every custom ramp is
+// judged against rather than a second guess that happens to agree today.
 //
-// The colour stops hold ONE colour at both ends and the OPACITY stops do the
-// fading -- which is exactly why `ops/Gradient` keeps the two lists
-// independent, and is what stops the ramp darkening toward a transparent
-// black that was never a stop. Getting this wrong is invisible on a white
-// canvas and obvious on a dark one, which is the kind of bug that ships.
+// The default's colour stops hold ONE colour at both ends and the OPACITY
+// stops do the fading -- which is exactly why `ops/Gradient` keeps the two
+// lists independent, and is what stops the ramp darkening toward a
+// transparent black that was never a stop. Getting this wrong is invisible on
+// a white canvas and obvious on a dark one, which is the kind of bug that
+// ships.
 //
 // `foregroundLinear` is STRAIGHT scene-linear RGBA, as `ColorStop` wants
 // (`ops/Gradient.hpp` § 2). Its alpha is ignored: the opacity stops below own
 // the ramp's alpha entirely, and letting a foreground alpha multiply into
 // them would mean the swatch and the canvas disagreed the moment the colour
 // panel grew an alpha slider.
-GradientStops gradientToolStops(const std::array<float, 4>& foregroundLinear);
+//
+// `custom`, when non-null, names the ramp instead: the built-in branch below
+// is skipped ENTIRELY and the result is
+// `resolveGradientPresetStops(*custom, {foregroundLinear[0..2]})`. That
+// branch split -- rather than always resolving a `GradientPresetStops` that
+// happens to equal the default when no preset is chosen -- is what makes
+// "no custom gradient chosen is bit-identical to today's output" a fact about
+// which CODE ran rather than a claim that two paths agree; `--selftest`
+// checks the fact, not the claim.
+GradientStops gradientToolStops(const std::array<float, 4>& foregroundLinear,
+                                const GradientPresetStops* custom = nullptr);
+
+// ---------------------------------------------------------------------------
+// § 5a. Built-in presets
+// ---------------------------------------------------------------------------
+//
+// PRD D24's picker offers these beside whatever `io/GradientPresetFile`'s
+// library holds, and they are never written to that library: a fresh install
+// has no `gradients/` directory at all, and a picker with nothing in it on
+// first launch is the "engine capability with no control" gap this whole file
+// exists to close (§ 3's comment on `GradientToolState::kind`, repeated one
+// level up). "Foreground to Transparent" is § 5's own default, expressed as
+// data so the picker's first row and `gradientToolStops(fg, nullptr)`'s
+// hard-coded path describe the same ramp -- checked by `--selftest`, which is
+// the same discipline `kGradientKinds`/`kGradientSpreads` (§ 4) already keep.
+struct GradientBuiltInPreset {
+  const char* name;
+  GradientPresetStops stops;
+};
+
+// A function rather than a `static const` table: `GradientPresetStops` holds
+// `std::vector`s, and a function returning a fresh one each call needs no
+// static-initialisation-order reasoning at all, at the cost of an allocation
+// no caller here makes more than once a frame.
+std::vector<GradientBuiltInPreset> builtInGradientPresets();
+
+// The label the picker shows for "no custom gradient chosen" -- the first
+// entry `builtInGradientPresets()` returns, named so a caller does not have
+// to know it is index 0.
+const char* defaultGradientPresetName();
 
 // ---------------------------------------------------------------------------
 // § 6. The aim

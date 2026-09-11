@@ -6572,8 +6572,9 @@ VectorStyle penVectorStyle(const AppState& st) {
   return style;
 }
 
-GradientStops currentGradientStops(const BrushState& brush) {
-  return gradientToolStops(foregroundLinearRgba(brush));
+GradientStops currentGradientStops(const BrushState& brush, const GradientToolState& gradient) {
+  return gradientToolStops(foregroundLinearRgba(brush),
+                           gradient.hasCustomStops ? &gradient.customStops : nullptr);
 }
 
 EyedropperPick applyEyedropperPick(AppState& st, PixelCoord at) {
@@ -18948,7 +18949,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                              gradientToolGeometry(st.gradient, st.gradientDrag.x0,
                                                   st.gradientDrag.y0, st.gradientDrag.x1,
                                                   st.gradientDrag.y1),
-                             currentGradientStops(st.brush),
+                             currentGradientStops(st.brush, st.gradient),
                              previewSel);
               setFilterPreview(FilterPreviewOwner::GradientTool, od->id, *previewLayer,
                                std::move(scratch));
@@ -18995,7 +18996,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                                  gradientToolGeometry(st.gradient, st.gradientDrag.x0,
                                                       st.gradientDrag.y0, st.gradientDrag.x1,
                                                       st.gradientDrag.y1),
-                                 currentGradientStops(st.brush), sel) > 0) {
+                                 currentGradientStops(st.brush, st.gradient), sel) > 0) {
                 od->recordEdit("gradient", EditKind::Content);
               }
             }

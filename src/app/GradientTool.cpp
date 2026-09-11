@@ -1,6 +1,7 @@
 #include "app/GradientTool.hpp"
 
 #include <type_traits>
+#include <utility>
 
 namespace np {
 
@@ -68,12 +69,32 @@ const char* gradientSpreadLabel(GradientSpread spread) {
   return "Clamp";
 }
 
-GradientStops gradientToolStops(const std::array<float, 4>& foregroundLinear) {
+GradientStops resolveGradientPresetStops(const GradientPresetStops& spec,
+                                         const std::array<float, 3>& foregroundLinear) {
+  GradientStops stops;
+  stops.colorStops.reserve(spec.colorStops.size());
+  for (const GradientColorStopSpec& s : spec.colorStops) {
+    const std::array<float, 3>& c = s.foreground ? foregroundLinear : s.color;
+    stops.colorStops.push_back(ColorStop{s.position, c, s.midpoint});
+  }
+  stops.opacityStops.reserve(spec.opacityStops.size());
+  for (const GradientOpacityStopSpec& s : spec.opacityStops)
+    stops.opacityStops.push_back(OpacityStop{s.position, s.opacity, s.midpoint});
+  return stops;
+}
+
+GradientStops gradientToolStops(const std::array<float, 4>& foregroundLinear,
+                                const GradientPresetStops* custom) {
+  if (custom != nullptr) {
+    return resolveGradientPresetStops(
+        *custom, {foregroundLinear[0], foregroundLinear[1], foregroundLinear[2]});
+  }
   GradientStops stops;
   // The midpoint on every stop is 0.5 -- the linear interpolation
   // `gradientParameterAt()` degenerates to when the control is centred. This
-  // build surfaces no midpoint control, so writing anything else here would
-  // be a bias nothing in the UI could explain or undo.
+  // build surfaces no midpoint control on the built-in default, so writing
+  // anything else here would be a bias nothing in the UI could explain or
+  // undo.
   const float r = foregroundLinear[0];
   const float g = foregroundLinear[1];
   const float b = foregroundLinear[2];
@@ -82,6 +103,38 @@ GradientStops gradientToolStops(const std::array<float, 4>& foregroundLinear) {
   stops.opacityStops.push_back(OpacityStop{0.0f, 1.0f, 0.5f});
   stops.opacityStops.push_back(OpacityStop{1.0f, 0.0f, 0.5f});
   return stops;
+}
+
+namespace {
+constexpr const char* kDefaultGradientPresetNameLiteral = "Foreground to Transparent";
+}  // namespace
+
+const char* defaultGradientPresetName() { return kDefaultGradientPresetNameLiteral; }
+
+std::vector<GradientBuiltInPreset> builtInGradientPresets() {
+  std::vector<GradientBuiltInPreset> presets;
+
+  // Index 0, matching § 5's hard-coded default exactly (same positions, same
+  // 0.5 midpoints) -- `--selftest` checks the two agree.
+  GradientPresetStops fgToTransparent;
+  fgToTransparent.colorStops.push_back(GradientColorStopSpec{0.0f, true, {0, 0, 0}, 0.5f});
+  fgToTransparent.colorStops.push_back(GradientColorStopSpec{1.0f, true, {0, 0, 0}, 0.5f});
+  fgToTransparent.opacityStops.push_back(GradientOpacityStopSpec{0.0f, 1.0f, 0.5f});
+  fgToTransparent.opacityStops.push_back(GradientOpacityStopSpec{1.0f, 0.0f, 0.5f});
+  presets.push_back({kDefaultGradientPresetNameLiteral, std::move(fgToTransparent)});
+
+  // A second, fixed-colour built-in: proof that the picker's "not written to
+  // disk" list is not just a re-statement of the one default, and a ramp a
+  // user reaches for often enough that shipping it beats making everyone
+  // author it themselves.
+  GradientPresetStops blackToWhite;
+  blackToWhite.colorStops.push_back(GradientColorStopSpec{0.0f, false, {0.0f, 0.0f, 0.0f}, 0.5f});
+  blackToWhite.colorStops.push_back(GradientColorStopSpec{1.0f, false, {1.0f, 1.0f, 1.0f}, 0.5f});
+  blackToWhite.opacityStops.push_back(GradientOpacityStopSpec{0.0f, 1.0f, 0.5f});
+  blackToWhite.opacityStops.push_back(GradientOpacityStopSpec{1.0f, 1.0f, 0.5f});
+  presets.push_back({"Black to White", std::move(blackToWhite)});
+
+  return presets;
 }
 
 GradientGeometry gradientToolGeometry(const GradientToolState& tool, float x0, float y0,
