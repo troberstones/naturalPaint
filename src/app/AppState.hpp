@@ -1620,6 +1620,11 @@ struct AppState {
   // which is itself a state worth photographing -- so this is optional and
   // both states are golden views. `exportStatesFolder`'s pattern.
   std::string exportAsPath;
+  // Frame/Slice export (PLAN.md gap-closing wave, track `region`) has no
+  // dedicated `--open-export-*` flag of its own: `--open-modal ExportRegions`
+  // (below) already reaches it through the generic door "every dialog a menu
+  // item opens" was built for, and a bespoke bool here would be a second way
+  // to say the same thing.
   // --open-layer-properties: holds the LAYERS panel's own gear-button modal
   // open, so a `--screenshot` can photograph it -- `openExportStatesDialog`'s
   // justification exactly, one dialog over: it too is opened by a click and

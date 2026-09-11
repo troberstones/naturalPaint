@@ -754,6 +754,9 @@ struct MenuContext {
   bool showNavigator = false;
   bool showGuides = false;
   bool showGrid = false;
+  // View > Show Frames and Slices (PLAN.md gap-closing wave, track `region`):
+  // `AppState::showRegions`'s own checkmark, `showGrid`'s own shape.
+  bool showRegions = false;
   bool snappingEnabled = false;
   bool hasGuides = false;           // Clear Guides is dead with none placed
 

@@ -7469,6 +7469,7 @@ bool g_exportAsRequested = false;
 // reports here rather than into a line the popup had already closed over.
 std::string g_docStatus;
 bool g_exportStatesRequested = false;
+bool g_exportRegionsRequested = false;
 bool g_batchRequested = false;
 
 namespace {
@@ -8142,6 +8143,220 @@ void drawExportStatesDialog(AppState& st) {
       break;
     case DialogAction::Cancel:
       st.openExportStatesDialog = false;
+      ImGui::CloseCurrentPopup();
+      break;
+    default:
+      break;
+  }
+  endDialog();
+}
+
+// ---------------------------------------------- Export Frames and Slices
+//
+// `drawExportStatesDialog()`'s own shape, one region-shaped step over:
+// `io/ExportRegions` is the loop (this header's own "reuse, and where it
+// stops" argues why it is not a third `ExportStateSource`), and
+// `ExportStatesReport`/`ExportStateItem` are literally the same types, so
+// `exportStatesBlockedReason()` and `exportStatesSummary()` -- both already
+// pure functions of an `ExportStatesReport` -- are reused verbatim rather
+// than forked for a cosmetic rename.
+//
+// No `AppState::openExportRegionsDialog` flag: `--open-modal ExportRegions`
+// (main.cpp's generic "every dialog a menu item opens" door) already reaches
+// this one, and a bespoke bool here would be a second way to say the same
+// thing -- see AppState.hpp's own note by the export dialogs' flags.
+void drawExportRegionsDialog(AppState& st) {
+  static ExportRegionsRequest request;
+  static char dirBuf[512] = "";
+  static char templateBuf[256] = "{name}";
+  static std::vector<bool> picked;
+  static std::string status;
+  static ExportStatesReport lastRun;
+  static bool hasRun = false;
+  static bool justOpened = false;
+  static bool regionsOpenLatched = false;
+
+  const bool wantOpen = g_exportRegionsRequested;
+  if (wantOpen && !regionsOpenLatched) {
+    regionsOpenLatched = true;
+    justOpened = true;
+    ImGui::OpenPopup("Export Frames and Slices");
+  }
+  if (!wantOpen) regionsOpenLatched = false;
+  g_exportRegionsRequested = false;
+  static bool statusIsError = false;
+  if (!beginDialog("Export Frames and Slices", DialogWidth::Wide)) return;
+
+  const OpenDocument* activeDoc = st.documents.active();
+  if (activeDoc == nullptr) {
+    dialogStatusLine(DialogStatus::Warning, exportStatesBlockedReason(false, 0, ExportStatesReport{}));
+    dialogHint("The painting canvas is a solver texture, not a document: it has no regions.");
+    DialogFooter footer;
+    footer.commit = "OK";
+    footer.cancel = nullptr;
+    if (dialogFooter(footer) != DialogAction::None) ImGui::CloseCurrentPopup();
+    endDialog();
+    return;
+  }
+  const Document& doc = activeDoc->document;
+  request.documentName = documentDisplayName(*activeDoc);
+  const size_t dot = request.documentName.rfind('.');
+  if (dot != std::string::npos && dot > 0) request.documentName.resize(dot);
+
+  if (justOpened) {
+    justOpened = false;
+    picked.clear();
+    hasRun = false;
+    status.clear();
+  }
+
+  size_t frameCount = 0, sliceCount = 0;
+  for (const Region& r : doc.regions) (r.kind == RegionKind::Frame ? frameCount : sliceCount)++;
+
+  dialogHint("One image file per region from \xe2\x80\x9c%s\xe2\x80\x9d (%zu frame%s, %zu "
+             "slice%s), each the visible composite cropped to that region's rectangle.",
+             request.documentName.c_str(), frameCount, frameCount == 1 ? "" : "s", sliceCount,
+             sliceCount == 1 ? "" : "s");
+
+  // --- Which kinds (the export dialog's own two checkboxes -- io/ExportRegions
+  // §"RegionExportScope") ---------------------------------------------------
+  int scopeIdx = request.scope == RegionExportScope::FramesOnly
+                     ? 1
+                     : (request.scope == RegionExportScope::SlicesOnly ? 2 : 0);
+  static const char* kScopes[] = {"All", "Frames only", "Slices only"};
+  if (dialogRadioRow("Export", &scopeIdx, kScopes, 3)) picked.clear();
+  request.scope = scopeIdx == 1 ? RegionExportScope::FramesOnly
+                                 : (scopeIdx == 2 ? RegionExportScope::SlicesOnly
+                                                  : RegionExportScope::All);
+
+  // --- The four settings, shared with every other export path -------------
+  dialogSection("Format");
+  drawExportSettingsControls(request.format);
+  const ExportValidation validation =
+      validateExportRequest(request.format, static_cast<uint32_t>(doc.width),
+                            static_cast<uint32_t>(doc.height), &doc.workingSpace, nullptr);
+  drawExportValidation(validation);
+
+  // --- Where, and under what names -----------------------------------------
+  dialogSection("Output");
+  dialogInputText("Folder", dirBuf, sizeof(dirBuf));
+  dialogInputText("Name template", templateBuf, sizeof(templateBuf));
+  {
+    std::string tokenLine = "Tokens:";
+    for (const std::string& t : exportNameTemplateTokens()) tokenLine += " " + t;
+    tokenLine += ". Hover for what each does.";
+    dialogHint("%s", tokenLine.c_str());
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::BeginTooltip();
+      ImGui::PushTextWrapPos(420.0f);
+      ImGui::TextUnformatted(exportNameTemplateHelp().c_str());
+      ImGui::PopTextWrapPos();
+      ImGui::EndTooltip();
+    }
+  }
+  dialogCheckbox("Overwrite files that already exist", &request.overwriteExisting);
+  if (!request.overwriteExisting)
+    dialogHint("Off: a file that already exists refuses the whole batch.");
+  request.outputDirectory = dirBuf;
+  request.nameTemplate = templateBuf;
+
+  // --- Which regions -- filtered by scope, `drawExportStatesDialog()`'s own
+  // pick-list shape --------------------------------------------------------
+  std::vector<size_t> candidates;
+  for (size_t i = 0; i < doc.regions.size(); ++i) {
+    const RegionKind k = doc.regions[i].kind;
+    const bool inScope = request.scope == RegionExportScope::All ||
+                         (request.scope == RegionExportScope::FramesOnly && k == RegionKind::Frame) ||
+                         (request.scope == RegionExportScope::SlicesOnly && k == RegionKind::Slice);
+    if (inScope) candidates.push_back(i);
+  }
+  if (picked.size() != candidates.size()) picked.assign(candidates.size(), true);
+  dialogSection(request.scope == RegionExportScope::FramesOnly
+                    ? "Frames"
+                    : (request.scope == RegionExportScope::SlicesOnly ? "Slices" : "Regions"));
+  float listW = 0.0f;
+  dialogLabelRow(nullptr, &listW);
+  if (ImGui::SmallButton("All")) picked.assign(candidates.size(), true);
+  ImGui::SameLine();
+  if (ImGui::SmallButton("None")) picked.assign(candidates.size(), false);
+  dialogLabelRow(nullptr, &listW);
+  if (ImGui::BeginChild("##regionpick", ImVec2(listW, exportListHeight(candidates.size(), 6, true)),
+                        true)) {
+    for (size_t n = 0; n < candidates.size(); ++n) {
+      const Region& r = doc.regions[candidates[n]];
+      const std::string label =
+          std::string(regionKindName(r.kind)) + " \"" + r.name + "\"##" + std::to_string(n);
+      bool on = picked[n];
+      if (ImGui::Checkbox(label.c_str(), &on)) picked[n] = on;
+    }
+  }
+  ImGui::EndChild();
+  request.selection.clear();
+  for (size_t n = 0; n < candidates.size(); ++n)
+    if (picked[n]) request.selection.push_back(candidates[n]);
+  const bool noneChosen = request.selection.empty();
+
+  // --- The plan -------------------------------------------------------------
+  ExportStatesReport plan;
+  if (!noneChosen) plan = planRegionExport(doc, request);
+  const std::string blocked = exportStatesBlockedReason(true, request.selection.size(), plan);
+  dialogSection("Plan");
+  if (!blocked.empty()) {
+    if (noneChosen) dialogHint("%s", blocked.c_str());
+    else dialogStatusLine(DialogStatus::Error, blocked);
+  } else {
+    dialogText("Will write %zu file%s (%zu skipped):", plan.items.size() - plan.skipped(),
+               plan.items.size() - plan.skipped() == 1 ? "" : "s", plan.skipped());
+    if (ImGui::BeginChild("##regionplan",
+                          ImVec2(0.0f, exportListHeight(plan.items.size(), 6, false)), true)) {
+      for (const ExportStateItem& item : plan.items) {
+        if (item.filename.empty()) {
+          dialogStatusLine(DialogStatus::Warning, "skipped: " + item.reason);
+        } else {
+          ImGui::TextUnformatted(item.filename.c_str());
+        }
+      }
+    }
+    ImGui::EndChild();
+  }
+
+  if (hasRun) {
+    dialogSection("Result");
+    dialogStatusLine(statusIsError ? DialogStatus::Error : DialogStatus::Info, status);
+    if (!lastRun.items.empty()) {
+      if (ImGui::BeginChild("##regionreport",
+                            ImVec2(0.0f, exportListHeight(lastRun.items.size(), 6, false)),
+                            true)) {
+        for (const ExportStateItem& item : lastRun.items) {
+          const bool bad = item.outcome == ExportItemOutcome::Failed ||
+                           item.outcome == ExportItemOutcome::NotAttempted;
+          if (bad) ImGui::PushStyleColor(ImGuiCol_Text, dialogStatusColor(DialogStatus::Error));
+          ImGui::TextWrapped("%-13s %s%s%s", exportItemOutcomeName(item.outcome),
+                             item.filename.empty() ? item.stateName.c_str() : item.filename.c_str(),
+                             item.reason.empty() ? "" : " -- ", item.reason.c_str());
+          if (bad) ImGui::PopStyleColor();
+          for (const std::string& w : item.warnings)
+            dialogStatusLine(DialogStatus::Warning, "    ! " + w);
+        }
+      }
+      ImGui::EndChild();
+    }
+  } else {
+    dialogStatusLine(statusIsError ? DialogStatus::Error : DialogStatus::Info, status);
+  }
+
+  DialogFooter footer;
+  footer.commit = "Export";
+  footer.commitEnabled = blocked.empty();
+  footer.cancel = hasRun ? "Close" : "Cancel";
+  switch (dialogFooter(footer)) {
+    case DialogAction::Commit:
+      lastRun = exportDocumentRegions(doc, request);
+      hasRun = true;
+      status = exportStatesSummary(lastRun);
+      statusIsError = !lastRun.ok;
+      break;
+    case DialogAction::Cancel:
       ImGui::CloseCurrentPopup();
       break;
     default:
@@ -11766,6 +11981,7 @@ MenuContext menuContextFromState(AppState& st) {
   ctx.showPigmentPanel = st.panels.placementOf(ControlsSection::Pigment) != PanelPlacement::Hidden;
   ctx.showGuides = st.showGuides;
   ctx.showGrid = st.showGrid;
+  ctx.showRegions = st.showRegions;
   ctx.snappingEnabled = st.snappingEnabled;
   ctx.hasGuides = !st.guides.empty();
 
@@ -12130,6 +12346,10 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
       g_exportStatesRequested = true;
       break;
 
+    case MenuAction::ExportRegions:
+      g_exportRegionsRequested = true;
+      break;
+
     case MenuAction::Batch:
       g_batchRequested = true;
       break;
@@ -12339,6 +12559,7 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     }
     case MenuAction::Guides:           st.showGuides = !st.showGuides;           break;
     case MenuAction::Grid:             st.showGrid = !st.showGrid;               break;
+    case MenuAction::ShowRegions:      st.showRegions = !st.showRegions;         break;
     case MenuAction::Snap:             st.snappingEnabled = !st.snappingEnabled; break;
 
     case MenuAction::AddGuide:
@@ -15380,6 +15601,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // PLAN.md Phase 5 step 13 ("Export comps to files, and layers to files"),
   // out here for the same ID-stack reason.
   drawExportStatesDialog(st);
+  drawExportRegionsDialog(st);
   drawBatchDialog(st);
 
   // PLAN.md Phase 4 step 8 ("Document lifecycle"), out here for the same

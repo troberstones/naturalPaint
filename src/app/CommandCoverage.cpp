@@ -59,6 +59,9 @@ CommandCoverage coverageFor(MenuAction action) {
     case MenuAction::ExportStates:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "as ExportAs; io/ExportStates is the loop the batch runner reuses"};
+    case MenuAction::ExportRegions:
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "as ExportAs; io/ExportRegions is the loop the batch runner would reuse"};
     case MenuAction::Batch:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "opens a dialog. The batch itself is not a step -- it RUNS actions, and an "
@@ -206,6 +209,9 @@ CommandCoverage coverageFor(MenuAction action) {
     case MenuAction::Grid:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "view furniture"};
+    case MenuAction::ShowRegions:
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "view furniture -- the regions it shows are recorded, it is not"};
     case MenuAction::Snap:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "a tool behaviour"};

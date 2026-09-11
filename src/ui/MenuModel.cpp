@@ -429,6 +429,7 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::CloseDocument: return "CloseDocument";
     case MenuAction::ExportAs: return "ExportAs";
     case MenuAction::ExportStates: return "ExportStates";
+    case MenuAction::ExportRegions: return "ExportRegions";
     case MenuAction::Batch: return "Batch";
     case MenuAction::Quit: return "Quit";
     case MenuAction::Undo: return "Undo";
@@ -475,6 +476,7 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::AddGuide: return "AddGuide";
     case MenuAction::ClearGuides: return "ClearGuides";
     case MenuAction::Grid: return "Grid";
+    case MenuAction::ShowRegions: return "ShowRegions";
     case MenuAction::Snap: return "Snap";
     case MenuAction::ImGuiDemo: return "ImGuiDemo";
     case MenuAction::ActivateDocument: return "ActivateDocument";
@@ -546,6 +548,7 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::AddGuide:
     case MenuAction::ClearGuides:
     case MenuAction::Grid:
+    case MenuAction::ShowRegions:
     case MenuAction::Snap:
     // Merged in from main 2026-09-10 and classified here because `-Wswitch`
     // would not let it be inherited: `setTilePreview()` writes
@@ -571,6 +574,7 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::SaveIncremental:
     case MenuAction::ExportAs:
     case MenuAction::ExportStates:
+    case MenuAction::ExportRegions:
       return false;
 
     // A session outlives a document switch on purpose; the quit is a sequence
@@ -853,6 +857,7 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     f.push_back(separator());
     f.push_back(item(MenuAction::ExportAs));
     f.push_back(item(MenuAction::ExportStates));
+    f.push_back(item(MenuAction::ExportRegions));
     // **No `ctx.hasDocument` guard, unlike every other item in this group.**
     // A batch reads its inputs off disk and never touches the open document --
     // it is the one File item that means exactly as much with nothing open,
@@ -1201,6 +1206,7 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     v.push_back(item(MenuAction::AddGuide));
     v.push_back(item(MenuAction::ClearGuides, ctx.hasGuides));
     v.push_back(check(MenuAction::Grid, ctx.showGrid));
+    v.push_back(check(MenuAction::ShowRegions, ctx.showRegions));
     v.push_back(check(MenuAction::Snap, ctx.snappingEnabled));
     bar.push_back(std::move(view));
   }
