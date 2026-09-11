@@ -17,6 +17,7 @@
 #include "app/BatchDialog.hpp"
 #include "app/PanelLayout.hpp"
 #include "app/PenTool.hpp"
+#include "app/ShapeTool.hpp"
 #include "app/TextTool.hpp"
 #include "app/TilePreview.hpp"
 #include "app/DocumentLifecycle.hpp"
@@ -1161,6 +1162,18 @@ struct AppState {
   // colour store beside the foreground and the shape would be a colour the
   // user set that nothing painted with.
   VectorStyle vectorStyle;
+
+  // `Tool::Shape`'s own settings -- which primitive, and its one parameter
+  // (`app/ShapeTool.hpp`). The options bar's KIND segment and the RADIUS/
+  // SIDES control beside it are the only writers.
+  ShapeToolState shapeTool;
+
+  // `Tool::Shape`'s live two-point drag -- `GradientDrag`'s exact shape and
+  // for the identical reason (`app/ShapeTool.hpp`'s own comment):
+  // `ui/MacPaintUI.cpp`'s canvas block is its only writer, so nothing else in
+  // the build can clear it out from under an in-progress drag the way
+  // `marqueeDragging`'s shared flag once did to the gradient tool.
+  ShapeDrag shapeDrag;
 
   // `--text-demo frame`'s pin, `pathEditDemo` above's exact twin and for the
   // identical reason: the paragraph-frame rubber band exists ONLY while the

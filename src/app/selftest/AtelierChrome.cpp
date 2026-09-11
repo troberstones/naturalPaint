@@ -461,7 +461,15 @@ bool runAtelierChromeTest() {
                                       Tool::Zoom,        Tool::Move,
                                       Tool::Crop,        Tool::Pen,
                                       Tool::Curve,       Tool::Text,
-                                      Tool::PathSelect};
+                                      Tool::PathSelect,  Tool::Shape};
+    // **Twenty-eight, as of this row.** `Tool::Shape` (app/ShapeTool) is the
+    // gap this row's own comment named -- docs/ui.md §4a's "the unbuilt
+    // three are Frame, Shape and Slice" -- and is now the twenty-eighth
+    // implemented tool. Two other tracks in this wave flip two more of the
+    // remaining not-built cells on in the same window; if this array or the
+    // count in the message below disagrees with the tree at gather time,
+    // that is the expected three-way collision the wave's own brief named,
+    // not a defect in this row.
     bool implementedOk = true;
     for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
       const Tool t = static_cast<Tool>(i);
@@ -471,7 +479,7 @@ bool runAtelierChromeTest() {
       if (toolImplemented(t) != shouldBe) implementedOk = false;
     }
     check(implementedOk,
-          "toolImplemented() is true for exactly the twenty-seven tools with real behaviour");
+          "toolImplemented() is true for exactly the twenty-eight tools with real behaviour");
 
     // Every tool has an icon, and toolIconCodepoints() is the deduplicated,
     // sorted union of all of them plus the "More" cell's own ellipsis --

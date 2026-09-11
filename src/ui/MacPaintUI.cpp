@@ -17914,6 +17914,103 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
 
+    // --- Tool::Shape: rectangle/ellipse/rounded-rect/polygon/line -----------
+    //
+    // Gated on `toolCreatesShapes()` -- app/ShapeTool's own predicate, and a
+    // NEW term in `toolHasCanvasHandler()` for that header's own reason:
+    // Shape's gesture (one closed primitive from exactly two points, built
+    // once at release) is not the Pen's (one anchor per press, built up over
+    // many frames), so widening `toolEditsPath()` to cover it would hand
+    // Shape's clicks to a handler written for anchor placement.
+    //
+    // **This block writes `st.shapeDrag` directly** (`GradientDrag`'s own
+    // arrangement, `app/ShapeTool.hpp`'s comment on it) and writes
+    // `st.pathEdit` only THROUGH `commitShapeTool()`'s call into
+    // `pathEditSelectShapes()` -- so the single-writer rule
+    // `app/PenTool.hpp` states for that struct still holds across every tool
+    // that touches it.
+    if (toolCreatesShapes(st.brush.tool) && !panning && !rotating && !sizingHeld &&
+        !st.pendingGuide.has_value()) {
+      OpenDocument* shapeDoc = st.documents.active();
+      const DocumentId shapeDocId = shapeDoc != nullptr ? shapeDoc->id : 0u;
+
+      // A drag begun on another tab means nothing here -- `CropSession`'s
+      // rule, and the Pen's own block above reuses it the identical way.
+      if (st.shapeDrag.active && st.shapeDrag.documentId != shapeDocId) st.shapeDrag.active = false;
+
+      Layer* shapeLayer = shapeDoc != nullptr ? activeLayerOf(*shapeDoc) : nullptr;
+      bool shapeTargetOk = shapeLayer != nullptr && shapeLayer->kind == LayerKind::Vector;
+
+      if (!shapeTargetOk && shapeDoc == nullptr) {
+        // No document at all: refused exactly as the Pen refuses the
+        // identical case, out loud rather than silently dropped.
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+          g_strokeRefusal =
+              std::string("Shape needs a layer to draw into: this document has none selected.");
+        }
+      } else if (!shapeTargetOk && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        // **Auto-create a Vector layer, the Pen's own rule, reused rather
+        // than re-derived** (this track's own instruction): the identical
+        // `LayerCommand::NewVectorLayer` insertion `pathEditBeginPen()`'s
+        // caller uses above, so this gets the identical undo entry, default
+        // name and selection move that gesture already has, and the press
+        // that triggered it is not lost -- `pathTargetOk` (there, the
+        // identical local here) drops straight into the block below on the
+        // SAME frame.
+        runLayerCommand(st, LayerCommand::NewVectorLayer);
+        shapeLayer = activeLayerOf(*shapeDoc);
+        shapeTargetOk = shapeLayer != nullptr && shapeLayer->kind == LayerKind::Vector;
+      }
+
+      if (shapeTargetOk) {
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+          st.shapeDrag.active = true;
+          st.shapeDrag.documentId = shapeDocId;
+          st.shapeDrag.x0 = tx;
+          st.shapeDrag.y0 = ty;
+          // The far corner starts ON the near one -- `GradientDrag`'s own
+          // convention -- so the first frame of the drag is a plain click
+          // for `shapeToolGeometry()`'s purposes until the pointer actually
+          // moves.
+          st.shapeDrag.x1 = tx;
+          st.shapeDrag.y1 = ty;
+        }
+
+        if (st.shapeDrag.active) {
+          st.shapeDrag.x1 = tx;
+          st.shapeDrag.y1 = ty;
+
+          // Shift squares/circles the box (or snaps Line to 45 degrees);
+          // Option draws from the centre. Read live, every frame, so
+          // pressing or releasing either mid-drag updates the preview the
+          // same frame it updates the cursor -- the same live-modifier
+          // convention the gnomon's `gnomonSuppressed` above already uses.
+          const bool shiftConstrain = ImGui::GetIO().KeyShift;
+          const bool fromCenter = ImGui::GetIO().KeyAlt;
+
+          // **Ended when the button is NOT DOWN, not only on a release
+          // event** -- the Pen's own block states the reason two arms up:
+          // a release ImGui never saw (outside the window) must not leave a
+          // document-writing drag live forever.
+          if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            const ShapeCommitResult committed = commitShapeTool(
+                st.shapeTool, PathPoint{st.shapeDrag.x0, st.shapeDrag.y0},
+                PathPoint{st.shapeDrag.x1, st.shapeDrag.y1}, shiftConstrain, fromCenter,
+                penVectorStyle(st), &shapeLayer->shapes, &shapeLayer->nextShapeId, &st.pathEdit);
+            // ONE history entry per drag, exactly the Pen's own rule for a
+            // gesture that is itself the whole edit: `Empty` (a plain click,
+            // or a drag that collapsed to nothing) records nothing, because
+            // an undo entry for an edit that changed nothing is the empty
+            // entry `app/PenTool.hpp` refuses to open anywhere in this
+            // family.
+            if (committed == ShapeCommitResult::Committed) {
+              shapeDoc->recordEdit("draw shape", EditKind::Content);
+            }
+            st.shapeDrag.active = false;
+          }
+        }
+      }
+    }
 
     // --- Tool::Text: setting type --------------------------------------------
     //
@@ -20369,6 +20466,51 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
     // === END Tool::Pen / Tool::Curve overlay ================================
+
+    // === BEGIN Tool::Shape preview (app/ShapeTool) ===========================
+    //
+    // Drawn only while a drag is live: unlike the Pen's own outline above,
+    // there is no PLACED geometry to keep showing between drags, because
+    // Shape has no open-placement session -- one drag is the whole gesture.
+    //
+    // Built through `shapeToolGeometry()`, the SAME function the commit
+    // calls at release (`app/GradientTool.hpp` section 1's rule, restated in
+    // `app/ShapeTool.hpp`: the preview and the commit are one computation
+    // run twice, never two that merely happen to agree) -- so what is drawn
+    // here is exactly the shape pen-up will create, not an approximation of
+    // it.
+    if (st.brush.tool == Tool::Shape && st.shapeDrag.active) {
+      const VectorShape shapePreview = shapeToolGeometry(
+          st.shapeTool, PathPoint{st.shapeDrag.x0, st.shapeDrag.y0},
+          PathPoint{st.shapeDrag.x1, st.shapeDrag.y1}, ImGui::GetIO().KeyShift,
+          ImGui::GetIO().KeyAlt);
+      if (!pathIsEmpty(shapePreview.path)) {
+        // Flattening tolerance in DEVICE pixels, the Pen overlay's own rule
+        // two arms up, so the preview stays smooth rather than visibly
+        // faceted when zoomed in.
+        const float overlayZoom = std::max(0.05f, st.view.zoom);
+        const float overlayTol = 0.3f / overlayZoom;
+        const ImU32 kShapeCasing = IM_COL32(0, 0, 0, 150);
+        const ImU32 kShapeCore = atelierToken(kAccent);
+        const std::vector<FlatContour> contours = flattenPath(shapePreview.path, overlayTol);
+        for (const FlatContour& c : contours) {
+          if (c.points.size() < 2) continue;
+          const size_t segs = c.closed ? c.points.size() : c.points.size() - 1;
+          for (size_t i = 0; i < segs; ++i) {
+            const PathPoint& p0 = c.points[i];
+            const PathPoint& p1 = c.points[(i + 1) % c.points.size()];
+            const Vec2 a = xform.toScreen(Vec2{p0.x, p0.y});
+            const Vec2 b = xform.toScreen(Vec2{p1.x, p1.y});
+            // A dark casing under a light core -- the Pen overlay's own
+            // reason: this is drawn over the user's picture at whatever
+            // colour that happens to be.
+            dl->AddLine(ImVec2(a.x, a.y), ImVec2(b.x, b.y), kShapeCasing, 2.0f);
+            dl->AddLine(ImVec2(a.x, a.y), ImVec2(b.x, b.y), kShapeCore, 1.0f);
+          }
+        }
+      }
+    }
+    // === END Tool::Shape preview =============================================
 
     // === BEGIN Tool::Text overlay (app/TextTool, core/TextContent) ==========
     //

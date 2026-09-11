@@ -4051,6 +4051,10 @@ int main(int argc, char** argv) {
     // PLAN.md phase 16 (ADR-0009): the flatting library absorbed from
     // autoFlats, bit-exact against its reference on the shared fixtures.
     const bool flatsOk = np::runFlatsTest();
+    // docs/ui.md §4a: Tool::Shape's headless geometry and commit --
+    // app/ShapeTool. Appended at the end of the chain per this wave's own
+    // convention for a new section.
+    const bool shapeToolOk = np::runShapeToolTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4118,7 +4122,7 @@ int main(int argc, char** argv) {
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk && dialogModuleOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
                     penToolOk && pathOpsOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
-                    textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk;
+                    textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
