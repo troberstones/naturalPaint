@@ -1630,6 +1630,11 @@ struct AppState {
   // justification exactly, one dialog over: it too is opened by a click and
   // the screenshot path has no input.
   bool openLayerProperties = false;
+  // --open-gradient-editor: holds the gradient tool's stop editor open
+  // (PRD D24), `openLayerProperties`'s justification exactly one tool over --
+  // it too is reached only by clicking the options bar's gradient swatch, and
+  // `--screenshot` has no click.
+  bool openGradientEditorDialog = false;
   // --controls-all-open <SECTION>: scrolls that header to the top of the
   // column, every frame, so a `--screenshot` can photograph a section that
   // sits below the fold once every section is open. Empty means "do not

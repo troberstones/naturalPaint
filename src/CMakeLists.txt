@@ -401,6 +401,7 @@ add_executable(naturalPaint
   io/SourceGamut.cpp
   io/ImageIO.cpp
   io/ActionFile.cpp
+  io/GradientPresetFile.cpp
   io/Json.cpp
   io/NpaintFile.cpp
   io/OpSerial.cpp

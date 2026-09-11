@@ -93,6 +93,7 @@
 #include "ops/FloodFill.hpp"
 #include "ops/Gradient.hpp"
 #include "io/ExportStates.hpp"
+#include "io/GradientPresetFile.hpp"
 #include "brush/BrushModelFields.hpp"
 #include "ui/BrushFieldPresentation.hpp"
 #include "ui/BrushSettingsWindow.hpp"
@@ -6572,8 +6573,25 @@ VectorStyle penVectorStyle(const AppState& st) {
   return style;
 }
 
-GradientStops currentGradientStops(const BrushState& brush) {
-  return gradientToolStops(foregroundLinearRgba(brush));
+GradientStops currentGradientStops(const BrushState& brush, const GradientToolState& gradient) {
+  return gradientToolStops(foregroundLinearRgba(brush),
+                           gradient.hasCustomStops ? &gradient.customStops : nullptr);
+}
+
+// The gradient preset library cache -- `g_actionsLibrary`'s own shape, one
+// library over, exposed cross-TU (see this pair's declaration in
+// ui/MacPaintUI.hpp for why).
+std::vector<GradientPresetLibraryRow> g_gradientPresetLibrary;
+bool g_gradientPresetLibraryLoaded = false;
+
+const std::vector<GradientPresetLibraryRow>& gradientPresetLibraryRows() {
+  if (!g_gradientPresetLibraryLoaded) refreshGradientPresetLibrary();
+  return g_gradientPresetLibrary;
+}
+
+void refreshGradientPresetLibrary() {
+  g_gradientPresetLibrary = gradientPresetLibrary(gradientPresetsDirectoryPath());
+  g_gradientPresetLibraryLoaded = true;
 }
 
 EyedropperPick applyEyedropperPick(AppState& st, PixelCoord at) {
@@ -10866,6 +10884,451 @@ void drawGradientMapDialog(AppState& st) {
                         previewGradientMapAdjustment, params);
   wasOpen = true;
   pixelOpFooter(od, status, gradientMapCommand(params), kAdjustmentUnchanged);
+  endDialog();
+}
+
+// ---------------------------------------------------------------------------
+// PRD D24's stop editor -- the gradient TOOL's own ramp, not Gradient Map's
+// ---------------------------------------------------------------------------
+//
+// **Not shared with `drawGradientMapDialog()` above, and here is why.** The
+// brief for this feature asks for one shared widget or an explanation in the
+// code; the honest explanation is that the two dialogs disagree at the DATA
+// level, not merely in layout. Gradient Map edits a plain
+// `ops/Gradient::GradientStops` -- one list, no opacity stops (a Gradient Map
+// has nothing to fade; `ops/MonoOps.hpp`'s op has no alpha channel), no
+// "Foreground" stop, no midpoint control in its UI though the type happens to
+// carry one unused. This editor's own type, `GradientPresetStops`
+// (`app/GradientTool.hpp` § 2a), is two independently-positioned lists, one
+// of which can name the swatch instead of a fixed colour. A widget general
+// enough to draw and drag BOTH shapes would need a callback for nearly
+// everything it draws -- which list, which marker glyph, whether "add" takes
+// a colour argument at all -- and at that point the callback plumbing costs
+// more than the dozen lines `drawGradientMapDialog()` already has. Worse,
+// that dialog's OWN appearance (sliders, no strip, no drag) is pinned by its
+// existing golden views and selftests -- the brief says so -- so building a
+// shared drag-strip widget and leaving that dialog on its sliders would give
+// the widget exactly one caller, and switching it over would change a dialog
+// the brief says must not change.
+//
+// What genuinely IS shared is everything that is not ImGui: every mutation
+// below reaches the ramp only through `app/GradientTool.hpp`'s headless
+// `addGradient*Stop()` / `moveGradient*Stop()` / `removeGradient*Stop()` /
+// `clampGradientStop*()` -- the same functions `--selftest` exercises with no
+// frame of ImGui at all, so this dialog and that suite can never disagree
+// about what "add a stop" or "delete refuses below two" means.
+//
+// `drawGradientStopStrip()` immediately below is the one widget this editor's
+// OWN two rows -- colour stops below the ramp, opacity stops above it, the
+// brief's own layout -- share with EACH OTHER: they differ only in which
+// typed list backs the three callbacks, never in the strip mechanics.
+
+// One interactive strip spanning `width` px, `margin` px inset on each side
+// so a marker centred at t=0 or t=1 draws whole rather than half-clipped by
+// the strip's own edge (a marker's radius is a few px; without the margin the
+// t=1 stop's right half sat outside the strip rect and the window clipped
+// it, leaving a marker that LOOKED like it had lost its far half). `margin`
+// only affects where t=0/t=1 map to on screen -- the strip's drawn rect and
+// hit area still span the full `width`. Clicking empty strip calls `onAdd(t)`
+// and selects whatever index it returns; dragging an existing marker calls
+// `onMove(index, t)` every frame of the drag and follows whatever index IT
+// returns -- both mirror `moveGradientColorStop()`'s own "the index can
+// change under a sort" contract, so a caller passing that function straight
+// through never needs a second search to find the stop it just moved.
+// `drawMarker(dl, x, y, index, selected)` draws one stop's own glyph; this
+// function owns only the strip's line, its hit test (`hitTestGradientStop()`,
+// `app/GradientTool.hpp`) and the drag, never how a stop looks. `*selected`,
+// when non-null, is read on entry and written on any add or move
+// (`drawCurveWidget()`'s own `ImGuiStorage`-backed drag-index idiom, one
+// dimension over). Returns true on any add or move.
+bool drawGradientStopStrip(const char* strId, float width, float height, float margin,
+                           size_t count, const std::function<float(size_t)>& positionAt,
+                           const std::function<size_t(size_t, float)>& onMove,
+                           const std::function<size_t(float)>& onAdd,
+                           const std::function<void(ImDrawList*, float, float, size_t, bool)>&
+                               drawMarker,
+                           size_t* selected) {
+  bool changed = false;
+  ImGui::PushID(strId);
+  const ImVec2 origin = ImGui::GetCursorScreenPos();
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImVec2 hiPt(origin.x + width, origin.y + height);
+  dl->AddRectFilled(origin, hiPt, IM_COL32(28, 28, 30, 255));
+
+  const float innerW = std::max(width - 2.0f * margin, 1.0f);
+  std::vector<float> positions(count);
+  for (size_t i = 0; i < count; ++i) positions[i] = positionAt(i);
+  for (size_t i = 0; i < count; ++i) {
+    const float x = origin.x + margin + positions[i] * innerW;
+    drawMarker(dl, x, origin.y + height * 0.5f, i, selected != nullptr && *selected == i);
+  }
+  dl->AddRect(origin, hiPt, ImGui::GetColorU32(ImGuiCol_Border));
+
+  ImGui::InvisibleButton("##strip", ImVec2(width, height));
+  const float mx = ImGui::GetIO().MousePos.x - origin.x - margin;
+  constexpr float kHitRadiusPx = 9.0f;
+
+  ImGuiStorage* storage = ImGui::GetStateStorage();
+  const ImGuiID dragKey = ImGui::GetID("dragIdx");
+  int dragIdx = storage->GetInt(dragKey, -1);
+
+  if (ImGui::IsItemActivated()) {
+    const float t = std::clamp(mx / innerW, 0.0f, 1.0f);
+    const std::optional<size_t> hit = hitTestGradientStop(positions, t, kHitRadiusPx / innerW);
+    if (hit) {
+      dragIdx = static_cast<int>(*hit);
+      if (selected) *selected = *hit;
+    } else {
+      const size_t newIdx = onAdd(t);
+      changed = true;
+      dragIdx = static_cast<int>(newIdx);
+      if (selected) *selected = newIdx;
+    }
+    storage->SetInt(dragKey, dragIdx);
+  }
+  if (dragIdx >= 0 && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    const float t = std::clamp(mx / innerW, 0.0f, 1.0f);
+    const size_t newIdx = onMove(static_cast<size_t>(dragIdx), t);
+    dragIdx = static_cast<int>(newIdx);
+    storage->SetInt(dragKey, dragIdx);
+    if (selected) *selected = newIdx;
+    changed = true;
+  } else if (dragIdx >= 0) {
+    storage->SetInt(dragKey, -1);
+  }
+
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+    ImGui::SetTooltip("Click empty strip: add a stop\nDrag a stop: move it");
+  ImGui::PopID();
+  return changed;
+}
+
+void drawGradientEditorDialog(AppState& st) {
+  enum class GradientEditorSel { Color, Opacity };
+  static GradientEditorSel selKind = GradientEditorSel::Color;
+  static size_t selIndex = 0;
+  static bool wasOpen = false;
+  static char nameBuf[128] = "";
+  static std::string status;
+
+  if (st.openGradientEditorDialog) {
+    st.openGradientEditorDialog = false;
+    ImGui::OpenPopup("Gradient Editor");
+  }
+  if (!beginDialog("Gradient Editor", DialogWidth::Wide)) {
+    wasOpen = false;
+    return;
+  }
+  if (!wasOpen) {
+    // Freshly opened. Seed the buffer from the built-in default WITHOUT
+    // flipping `hasCustomStops` yet: pressing Done without ever touching a
+    // stop must leave `gradientToolStops()`'s null-custom path exactly as
+    // untaken as before this dialog existed -- `app/GradientTool.hpp` § 5's
+    // bit-identical promise is about which CODE runs, not about equal
+    // values, and setting the flag here would take the custom path on a
+    // ramp that only happens to match it today.
+    if (!st.gradient.hasCustomStops) st.gradient.customStops = builtInGradientPresets()[0].stops;
+    selKind = GradientEditorSel::Color;
+    selIndex = 0;
+    std::snprintf(nameBuf, sizeof(nameBuf), "%s", st.gradient.presetName.c_str());
+    status.clear();
+    wasOpen = true;
+  }
+
+  GradientPresetStops& stops = st.gradient.customStops;
+  bool changed = false;
+  const std::array<float, 4> fg = foregroundLinearRgba(st.brush);
+
+  // --- opacity row, above the ramp (the brief's own layout) -----------------
+  {
+    float avail = 0.0f;
+    dialogLabelRow("Opacity", &avail);
+    const float w = std::max(80.0f, avail);
+    const float h = 22.0f;
+    auto positionAt = [&](size_t i) { return stops.opacityStops[i].position; };
+    auto onMove = [&](size_t i, float t) { return moveGradientOpacityStop(stops, i, t); };
+    auto onAdd = [&](float t) { return addGradientOpacityStop(stops, t, 1.0f); };
+    auto drawMarker = [&](ImDrawList* dl, float x, float y, size_t i, bool sel) {
+      // A downward-pointing diamond whose fill brightness IS the stop's own
+      // opacity -- 0 reads as a hollow outline, 1 as solid white -- so the
+      // row shows the fade shape at a glance.
+      const float op = stops.opacityStops[i].opacity;
+      const ImU32 fillCol = IM_COL32(255, 255, 255, static_cast<int>(op * 255.0f + 0.5f));
+      const ImU32 outline = sel ? IM_COL32(255, 200, 90, 255) : IM_COL32(200, 200, 200, 255);
+      const ImVec2 pts[4] = {ImVec2(x, y - 7.0f), ImVec2(x + 6.0f, y), ImVec2(x, y + 7.0f),
+                             ImVec2(x - 6.0f, y)};
+      dl->AddConvexPolyFilled(pts, 4, fillCol);
+      dl->AddPolyline(pts, 4, outline, ImDrawFlags_Closed, sel ? 2.5f : 1.5f);
+    };
+    size_t sel = selIndex;
+    const bool wasSel = selKind == GradientEditorSel::Opacity;
+    if (drawGradientStopStrip("opacityStrip", w, h, 8.0f, stops.opacityStops.size(), positionAt,
+                              onMove, onAdd, drawMarker, wasSel ? &sel : nullptr)) {
+      changed = true;
+      selKind = GradientEditorSel::Opacity;
+      selIndex = sel;
+    }
+  }
+
+  // --- the ramp preview, non-interactive ------------------------------------
+  //
+  // Sampled through the SAME `resolveGradientPresetStops()` +
+  // `gradientSampleStraight()` pair the options-bar swatch and the canvas
+  // read (`app/GradientTool.hpp` § 1), so this preview cannot show a ramp the
+  // canvas would refuse to draw. Foreground stops resolve against the LIVE
+  // foreground, exactly as that swatch does.
+  {
+    float avail = 0.0f;
+    dialogLabelRow("Ramp", &avail);
+    const float w = std::max(80.0f, avail);
+    const float h = 28.0f;
+    const ImVec2 o = ImGui::GetCursorScreenPos();
+    const ImVec2 hiPt(o.x + w, o.y + h);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    constexpr float kCell = 5.0f;
+    constexpr ImU32 kCheckA = IM_COL32(0x9a, 0x9a, 0x9a, 0xff);
+    constexpr ImU32 kCheckB = IM_COL32(0x6e, 0x6e, 0x6e, 0xff);
+    dl->PushClipRect(o, hiPt, true);
+    dl->AddRectFilled(o, hiPt, kCheckA);
+    for (int row = 0; static_cast<float>(row) * kCell < h; ++row)
+      for (int col = 0; static_cast<float>(col) * kCell < w; ++col) {
+        if (((row + col) & 1) == 0) continue;
+        const ImVec2 c0(o.x + static_cast<float>(col) * kCell, o.y + static_cast<float>(row) * kCell);
+        dl->AddRectFilled(c0, ImVec2(c0.x + kCell, c0.y + kCell), kCheckB);
+      }
+    const GradientStops resolved = resolveGradientPresetStops(stops, {fg[0], fg[1], fg[2]});
+    const int columns = static_cast<int>(w);
+    for (int i = 0; i < columns; ++i) {
+      const float t = (static_cast<float>(i) + 0.5f) / static_cast<float>(columns);
+      const std::array<float, 4> c = gradientSampleStraight(resolved, t);
+      const std::array<float, 3> enc =
+          clampToDisplayRange({srgbEncode(c[0]), srgbEncode(c[1]), srgbEncode(c[2])});
+      const ImU32 col = IM_COL32(static_cast<int>(enc[0] * 255.0f + 0.5f),
+                                 static_cast<int>(enc[1] * 255.0f + 0.5f),
+                                 static_cast<int>(enc[2] * 255.0f + 0.5f),
+                                 static_cast<int>(c[3] * 255.0f + 0.5f));
+      dl->AddRectFilled(ImVec2(o.x + static_cast<float>(i), o.y),
+                        ImVec2(o.x + static_cast<float>(i) + 1.0f, hiPt.y), col);
+    }
+    dl->PopClipRect();
+    dl->AddRect(o, hiPt, ImGui::GetColorU32(ImGuiCol_Border));
+    ImGui::Dummy(ImVec2(w, h));
+  }
+
+  // --- colour row, below the ramp --------------------------------------------
+  {
+    float avail = 0.0f;
+    dialogLabelRow("Colour", &avail);
+    const float w = std::max(80.0f, avail);
+    const float h = 22.0f;
+    auto positionAt = [&](size_t i) { return stops.colorStops[i].position; };
+    auto onMove = [&](size_t i, float t) { return moveGradientColorStop(stops, i, t); };
+    auto onAdd = [&](float t) {
+      // A new stop starts as a plain colour matching the CURRENT foreground,
+      // not marked "Foreground" -- so adding one never silently changes what
+      // an already-authored ramp resolves to the next time the swatch
+      // colour changes; only an explicit "Follow foreground" tick does that.
+      return addGradientColorStop(stops, t, false, {fg[0], fg[1], fg[2]});
+    };
+    auto drawMarker = [&](ImDrawList* dl, float x, float y, size_t i, bool sel) {
+      const GradientColorStopSpec& s = stops.colorStops[i];
+      std::array<float, 3> lin = s.color;
+      if (s.foreground) lin = {fg[0], fg[1], fg[2]};
+      const std::array<float, 3> enc =
+          clampToDisplayRange({srgbEncode(lin[0]), srgbEncode(lin[1]), srgbEncode(lin[2])});
+      const ImU32 fillCol = IM_COL32(static_cast<int>(enc[0] * 255.0f + 0.5f),
+                                     static_cast<int>(enc[1] * 255.0f + 0.5f),
+                                     static_cast<int>(enc[2] * 255.0f + 0.5f), 255);
+      const ImU32 outline = sel ? IM_COL32(255, 200, 90, 255) : IM_COL32(20, 20, 20, 255);
+      dl->AddCircleFilled(ImVec2(x, y), 7.0f, fillCol);
+      dl->AddCircle(ImVec2(x, y), 7.0f, outline, 0, sel ? 2.5f : 1.5f);
+      // A "Foreground" stop has no fixed colour of its own to show -- the
+      // inner ring is what distinguishes it from a fixed colour that merely
+      // happens to match the swatch right now.
+      if (s.foreground) dl->AddCircle(ImVec2(x, y), 3.0f, IM_COL32(255, 255, 255, 220), 0, 1.0f);
+    };
+    size_t sel = selIndex;
+    const bool wasSel = selKind == GradientEditorSel::Color;
+    if (drawGradientStopStrip("colorStrip", w, h, 8.0f, stops.colorStops.size(), positionAt,
+                              onMove, onAdd, drawMarker, wasSel ? &sel : nullptr)) {
+      changed = true;
+      selKind = GradientEditorSel::Color;
+      selIndex = sel;
+    }
+  }
+  dialogHint("Click a strip to add a stop; drag a stop to move it. Opacity stops fade the ramp "
+             "independently of colour (app/GradientTool.hpp).");
+
+  // --- the selected stop's own controls -------------------------------------
+  dialogSection("Selected Stop");
+  if (selKind == GradientEditorSel::Color && !stops.colorStops.empty()) {
+    if (selIndex >= stops.colorStops.size()) selIndex = stops.colorStops.size() - 1;
+    float pos = stops.colorStops[selIndex].position;
+    if (dialogSlider("Position", &pos, 0.0f, 1.0f, "%.3f").changed) {
+      selIndex = moveGradientColorStop(stops, selIndex, pos);
+      changed = true;
+    }
+    bool followsFg = stops.colorStops[selIndex].foreground;
+    if (dialogCheckbox("Follow foreground", &followsFg)) {
+      stops.colorStops[selIndex].foreground = followsFg;
+      changed = true;
+    }
+    ImGui::SetItemTooltip("A \"Foreground\" stop has no fixed colour of its own: it takes "
+                          "whatever the swatch holds at the moment the gradient is drawn, "
+                          "which is how today's default ramp stays expressible once other "
+                          "gradients exist to choose instead of it.");
+    if (!stops.colorStops[selIndex].foreground) {
+      if (dialogColor("Colour", stops.colorStops[selIndex].color.data(), ImGuiColorEditFlags_Float)
+              .changed)
+        changed = true;
+    }
+    const bool hasNext = selIndex + 1 < stops.colorStops.size();
+    float mid = stops.colorStops[selIndex].midpoint;
+    ImGui::BeginDisabled(!hasNext);
+    if (dialogSlider("Midpoint", &mid, 0.001f, 0.999f, "%.3f").changed) {
+      stops.colorStops[selIndex].midpoint = clampGradientStopMidpoint(mid);
+      changed = true;
+    }
+    ImGui::EndDisabled();
+    if (!hasNext) ImGui::SetItemTooltip("The last stop has no neighbour to skew a blend toward.");
+    dialogLabelRow(nullptr);
+    ImGui::BeginDisabled(stops.colorStops.size() <= 2);
+    if (ImGui::SmallButton("Delete Stop")) {
+      if (removeGradientColorStop(stops, selIndex)) {
+        changed = true;
+        if (selIndex >= stops.colorStops.size()) selIndex = stops.colorStops.size() - 1;
+      }
+    }
+    ImGui::EndDisabled();
+    if (stops.colorStops.size() <= 2)
+      ImGui::SetItemTooltip(
+          "Two is the floor: a one-stop ramp has no span to interpolate across "
+          "(app/GradientTool.hpp).");
+  } else if (selKind == GradientEditorSel::Opacity && !stops.opacityStops.empty()) {
+    if (selIndex >= stops.opacityStops.size()) selIndex = stops.opacityStops.size() - 1;
+    float pos = stops.opacityStops[selIndex].position;
+    if (dialogSlider("Position", &pos, 0.0f, 1.0f, "%.3f").changed) {
+      selIndex = moveGradientOpacityStop(stops, selIndex, pos);
+      changed = true;
+    }
+    float op = stops.opacityStops[selIndex].opacity;
+    if (dialogSlider("Opacity", &op, 0.0f, 1.0f, "%.3f").changed) {
+      stops.opacityStops[selIndex].opacity = std::clamp(op, 0.0f, 1.0f);
+      changed = true;
+    }
+    const bool hasNext = selIndex + 1 < stops.opacityStops.size();
+    float mid = stops.opacityStops[selIndex].midpoint;
+    ImGui::BeginDisabled(!hasNext);
+    if (dialogSlider("Midpoint", &mid, 0.001f, 0.999f, "%.3f").changed) {
+      stops.opacityStops[selIndex].midpoint = clampGradientStopMidpoint(mid);
+      changed = true;
+    }
+    ImGui::EndDisabled();
+    if (!hasNext) ImGui::SetItemTooltip("The last stop has no neighbour to skew a blend toward.");
+    dialogLabelRow(nullptr);
+    ImGui::BeginDisabled(stops.opacityStops.size() <= 2);
+    if (ImGui::SmallButton("Delete Stop")) {
+      if (removeGradientOpacityStop(stops, selIndex)) {
+        changed = true;
+        if (selIndex >= stops.opacityStops.size()) selIndex = stops.opacityStops.size() - 1;
+      }
+    }
+    ImGui::EndDisabled();
+    if (stops.opacityStops.size() <= 2)
+      ImGui::SetItemTooltip(
+          "Two is the floor: a one-stop ramp has no span to interpolate across "
+          "(app/GradientTool.hpp).");
+  }
+
+  if (changed) st.gradient.hasCustomStops = true;
+
+  // --- presets: save as / rename / delete -----------------------------------
+  //
+  // File-backed, beside the actions library (`io/GradientPresetFile.hpp`'s
+  // own header argues the parallel). SAVE and RENAME both write through
+  // `saveGradientPresetToFile()`, which is total -- a preset never fails to
+  // serialise -- so the only refusal either can report is the file-name
+  // sanitiser finding nothing usable in the typed name.
+  dialogSection("Preset");
+  // `IsItemActive()` checked before this frame's own `dialogInputText()`
+  // reads the STILL-STANDING result of last frame's call to it -- the ID is
+  // stable across frames, so this is "is the user still typing", not "was
+  // the item above this one active" -- `drawActionsSection()`'s own
+  // `nameBuf` idiom, copied rather than reinvented.
+  if (!ImGui::IsItemActive())
+    std::snprintf(nameBuf, sizeof(nameBuf), "%s", st.gradient.presetName.c_str());
+  dialogInputText("Name", nameBuf, sizeof(nameBuf));
+
+  const std::vector<GradientPresetLibraryRow>& library = gradientPresetLibraryRows();
+  std::string existingPath;
+  for (const GradientPresetLibraryRow& row : library)
+    if (row.name == nameBuf) existingPath = row.path;
+
+  dialogLabelRow(nullptr);
+  if (ImGui::SmallButton(existingPath.empty() ? "Save As" : "Save (Overwrite)")) {
+    const std::string fileName = gradientPresetFileNameFor(nameBuf);
+    if (fileName.empty()) {
+      status = "refused: that name has nothing usable in it for a file name.";
+    } else {
+      const std::string path = gradientPresetsDirectoryPath() + "/" + fileName;
+      std::string err;
+      if (saveGradientPresetToFile(path, nameBuf, stops, &err)) {
+        st.gradient.presetName = nameBuf;
+        refreshGradientPresetLibrary();
+        status = "Saved to " + path;
+      } else {
+        status = err;
+      }
+    }
+  }
+  ImGui::SameLine();
+  // RENAME: save under the new name, then delete whichever library file held
+  // the OLD name -- so a rename with the same stops as an existing OTHER
+  // preset does not silently merge the two, and a rename to a name with
+  // nothing usable in it refuses before either file is touched.
+  ImGui::BeginDisabled(st.gradient.presetName.empty() ||
+                      st.gradient.presetName == std::string(nameBuf));
+  if (ImGui::SmallButton("Rename")) {
+    const std::string fileName = gradientPresetFileNameFor(nameBuf);
+    if (fileName.empty()) {
+      status = "refused: that name has nothing usable in it for a file name.";
+    } else {
+      const std::string newPath = gradientPresetsDirectoryPath() + "/" + fileName;
+      std::string err;
+      if (saveGradientPresetToFile(newPath, nameBuf, stops, &err)) {
+        std::string oldPath;
+        for (const GradientPresetLibraryRow& row : library)
+          if (row.name == st.gradient.presetName) oldPath = row.path;
+        if (!oldPath.empty() && oldPath != newPath) deleteGradientPresetFile(oldPath);
+        st.gradient.presetName = nameBuf;
+        refreshGradientPresetLibrary();
+        status = "Renamed to " + newPath;
+      } else {
+        status = err;
+      }
+    }
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::BeginDisabled(existingPath.empty());
+  if (ImGui::SmallButton("Delete Preset")) {
+    std::string err;
+    if (deleteGradientPresetFile(existingPath, &err)) {
+      if (st.gradient.presetName == std::string(nameBuf)) st.gradient.presetName.clear();
+      refreshGradientPresetLibrary();
+      status = "Deleted " + existingPath;
+    } else {
+      status = err;
+    }
+  }
+  ImGui::EndDisabled();
+  if (!status.empty()) dialogHint("%s", status.c_str());
+
+  DialogFooter footer;
+  footer.commit = "Done";
+  footer.cancel = nullptr;
+  footer.note = "Changes apply as you make them.";
+  if (dialogFooter(footer) != DialogAction::None) ImGui::CloseCurrentPopup();
   endDialog();
 }
 
@@ -15458,6 +15921,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   drawRemoveLightingGradientDialog(st);
   drawOffsetDialog(st);
   drawAdjustmentDialogs(st);
+  // PRD D24: the gradient tool's own stop editor, opened from the options
+  // bar's swatch rather than a menu -- same placement rule again, so it
+  // draws (and can be photographed by --open-gradient-editor) whichever tool
+  // is actually selected this frame.
+  drawGradientEditorDialog(st);
   drawImageSizeDialog(st);
   drawCanvasSizeDialog(st);
   drawNumericTransformDialog(st, gpu);
@@ -19193,7 +19661,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                              gradientToolGeometry(st.gradient, st.gradientDrag.x0,
                                                   st.gradientDrag.y0, st.gradientDrag.x1,
                                                   st.gradientDrag.y1),
-                             currentGradientStops(st.brush),
+                             currentGradientStops(st.brush, st.gradient),
                              previewSel);
               setFilterPreview(FilterPreviewOwner::GradientTool, od->id, *previewLayer,
                                std::move(scratch));
@@ -19240,7 +19708,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                                  gradientToolGeometry(st.gradient, st.gradientDrag.x0,
                                                       st.gradientDrag.y0, st.gradientDrag.x1,
                                                       st.gradientDrag.y1),
-                                 currentGradientStops(st.brush), sel) > 0) {
+                                 currentGradientStops(st.brush, st.gradient), sel) > 0) {
                 od->recordEdit("gradient", EditKind::Content);
               }
             }

@@ -767,7 +767,7 @@ sliders be live controls over something this tool provably never reads**:
 | --- | --- | --- |
 | Eyedropper | SAMPLE (the `kProbeSampleSizes` ladder), SOURCE (Current Layer / Current & Below / All Layers), and a sentence saying what the last pick did | It samples; it has no tip. |
 | Measure | W, H, L, A — the ruler's readout in monospace | No tip at all, so SIZE would control nothing. |
-| Gradient | RAMP (the live ramp drawn over a transparency checkerboard), KIND (Linear / Radial / Angular) and SPREAD (Clamp / Repeat / Reflect) | It has no *stroke*, let alone a tip. |
+| Gradient | RAMP (the live ramp drawn over a transparency checkerboard — click it to open the stop editor, PRD D24), PRESET (the built-in and saved ramps), KIND (Linear / Radial / Angular) and SPREAD (Clamp / Repeat / Reflect) | It has no *stroke*, let alone a tip. |
 | Magic Wand | TOLERANCE (0..255), REACH (Contiguous / All Similar), ANTI-ALIAS | It selects; nothing it does deposits a texel. |
 | Paint Bucket | The same three, over its **own** parameter block | It fills a region found by a predicate, not a shape walked by a tip. |
 | Crop | MODE (Rectangle / Perspective), SIZE (the extent that will result), CROP and CANCEL, and the refusal sentence when there is one | It has no tip, no stroke and no deposit; nothing in `app/CropTool` or in the two engines behind it reads a `BrushTip`. |
@@ -842,12 +842,13 @@ here to there", which is true only of Linear, and one preview standing in for ge
 that differ is precisely the mistake that had a gradient drag drawing a stale lasso
 outline.
 
-Five golden views cover what `--selftest` cannot reach: `gradient` and
-`gradient_spread_off` for the options bar (the second showing the disabled SPREAD), and
+Six golden views cover what `--selftest` cannot reach: `gradient` and
+`gradient_spread_off` for the options bar (the second showing the disabled SPREAD),
 `gradient_drag` / `gradient_radial` / `gradient_angular` for the three geometries under one
-identical held drag. The canvas views exist because the defect that made this tool useless
-for its whole history (T3) was invisible to `--selftest` by construction: it lived in a
-canvas block, in a mutable flag two unrelated gestures shared.
+identical held drag, and `gradient_editor` for PRD D24's stop editor dialog. The canvas
+views exist because the defect that made this tool useless for its whole history (T3) was
+invisible to `--selftest` by construction: it lived in a canvas block, in a mutable flag two
+unrelated gestures shared.
 
 **The crop is the sixth, and §4b's test settles it without argument.** Unlike the smudge
 below — which was a genuinely marginal call, and stayed out of the table because
