@@ -6579,16 +6579,15 @@ bool runStrokeInputTest();
 // Headless, GPU-free, writes no files. See app/selftest/PointerQueue.cpp.
 bool runPointerQueueTest();
 
-// Wave 2: the stroke stabiliser (`brush/Stabiliser.hpp`) -- pulled string,
-// the weighted-average (1-euro) filter, the global/per-brush resolution
-// rule (`resolveStabiliser()`), catch up at stroke end and while paused,
-// sample-rate independence, and persistence for `stroke-preferences.txt`
-// (global) and the two new `user-presets.txt` keys (per brush), plus the
-// `.abr` smoothing mapping. Headless, GPU-free. See
-// app/selftest/Stabiliser.cpp.
+// The stroke stabiliser (`brush/Stabiliser.hpp`) -- pulled string, the
+// weighted-average (1-euro) filter, the global/per-brush resolution rule
+// (`resolveStabiliser()`), catch up at stroke end and while paused, sample-
+// rate independence, and persistence for `stroke-preferences.txt` (global)
+// and the two new `user-presets.txt` keys (per brush), plus the `.abr`
+// smoothing mapping. Headless, GPU-free. See app/selftest/Stabiliser.cpp.
 bool runStabiliserTest();
 
-// Wave 2: entry taper (`brush/EntryTaper.hpp`, `NativeBrush::taperInPx`/
+// Entry taper (`brush/EntryTaper.hpp`, `NativeBrush::taperInPx`/
 // `taperMinSize`/`taperFlow`) and the origin-dab fix it depends on -- a
 // moving stroke's first dab is its own (stabilised) origin rather than one
 // spacing along the curve, without double-stamping the stationary-click dab

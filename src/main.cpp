@@ -4174,8 +4174,8 @@ int main(int argc, char** argv) {
     // reading. Headless and GPU-free (app/SelfTest.hpp's own comment on it).
     const bool strokeInputOk = !wanted("runStrokeInputTest") || np::runStrokeInputTest();
     const bool pointerQueueOk = !wanted("runPointerQueueTest") || np::runPointerQueueTest();
-    // Wave 2: the stabiliser and entry taper/origin dab. Headless and
-    // GPU-free (app/SelfTest.hpp's own comment on each).
+    // The stabiliser and entry taper/origin dab. Headless and GPU-free
+    // (app/SelfTest.hpp's own comment on each).
     const bool stabiliserOk = !wanted("runStabiliserTest") || np::runStabiliserTest();
     const bool brushTaperOk = !wanted("runBrushTaperTest") || np::runBrushTaperTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
