@@ -889,12 +889,29 @@ bool runStabiliserTest() {
           "trajectory: the walk to the lift point emits more than one dab -- it does not jump "
           "in a single step across the corner");
 
+    // Deviation of the walk's OWN segments (step[i] -> step[i+1]) from the
+    // raw polyline -- NOT the leg from `nibBeforeCatchUp` to `steps[0]`,
+    // which is free to sit up to `stringPx` off the polyline by pulled
+    // string's own ordinary, documented geometry (it moves along the
+    // pointer-nib LINE, not the path) whether or not any catch-up ever
+    // runs; that leg is not the catch-up's doing and blaming it here would
+    // fail correct code. Each step is itself a raw sample or an exact
+    // interpolation between two (`pointAtArcLength()`), so a correct walk's
+    // deviation is ~0; a walk that skipped the corner (one giant step) has
+    // no "between steps" segment to measure at all -- `steps.size() >= 2`
+    // above is what catches that shape of bug.
     float maxDeviation = 0.0f;
-    for (const StrokeSample& step : steps) {
-      float best = std::numeric_limits<float>::max();
-      for (size_t i = 0; i + 1 < raw.size(); ++i)
-        best = std::min(best, distPointToSegment(step.pos, raw[i], raw[i + 1]));
-      maxDeviation = std::max(maxDeviation, best);
+    for (size_t k = 0; k + 1 < steps.size(); ++k) {
+      constexpr int kSamples = 20;
+      for (int s = 0; s <= kSamples; ++s) {
+        const float t = static_cast<float>(s) / kSamples;
+        const Vec2 q{steps[k].pos.x + (steps[k + 1].pos.x - steps[k].pos.x) * t,
+                    steps[k].pos.y + (steps[k + 1].pos.y - steps[k].pos.y) * t};
+        float best = std::numeric_limits<float>::max();
+        for (size_t i = 0; i + 1 < raw.size(); ++i)
+          best = std::min(best, distPointToSegment(q, raw[i], raw[i + 1]));
+        maxDeviation = std::max(maxDeviation, best);
+      }
     }
     const float endError = distance(steps.back().pos, liftPoint);
 
