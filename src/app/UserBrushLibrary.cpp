@@ -304,6 +304,25 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
       // visitor, which is the fork brush/BrushModelFields.hpp exists to
       // prevent. Here the parser knows only that `model` carries "a path and
       // a value" and hands both to the one walk that knows what paths exist.
+      //
+      // **Except the two paths an OLDER build walked and this one retired:**
+      // bare `load` and `wetness`, `BrushModel`'s own last two leaves until
+      // they left for `brush/NativeBrush.hpp` (151 -> 149). A pre-`native`
+      // build wrote `model load <v>`/`model wetness <v>` whenever the
+      // model's copies were non-default -- copies nothing outside a selftest
+      // ever read or wrote; the live values were always `scalars`' trailing
+      // two floats above, and still are. The "a NEWER build's field" argument
+      // below is the wrong one for these (they are an older build's, and
+      // their meaning is known: none), so they are accepted and dropped here
+      // rather than preserved verbatim and re-emitted on every save forever.
+      // Never applied to `pending.native` -- that would let a dead copy
+      // overwrite the live `scalars` value the older build actually painted
+      // with.
+      const std::string modelPath = rest.substr(0, rest.find(' '));
+      if (modelPath == "load" || modelPath == "wetness") {
+        pointMode = PointMode::None;
+        continue;
+      }
       if (!brushModelApplyLine(pending.model, rest)) {
         // **A path this build does not know is a NEWER build's field, and
         // correct data.** Same call the `floor` branch below makes for an
@@ -326,7 +345,7 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
 
     if (key == "grain") {
       // A SEPARATE keyword rather than an eighth `scalars` field --
-      // `BrushPreset::grain`'s own comment gives the reason: growing
+      // `BrushPreset::native.grain`'s own comment gives the reason: growing
       // `scalars`' required count would make a FILE WRITTEN BEFORE this field
       // existed (seven floats, no eighth) fail `takeFloats(rest, 7, ...)`'s
       // exact-count parse and drop the whole preset. A new keyword an older
@@ -336,7 +355,7 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
       // build's save against an older build's read.
       //
       // Malformed is treated like a malformed `link` line, not like a
-      // malformed `scalars` one: `pending.grain` simply keeps its
+      // malformed `scalars` one: `pending.native.grain` simply keeps its
       // default-constructed value (grain OFF), which is always a legal
       // brush, rather than the whole preset being dropped for one bad line.
       float n[5];

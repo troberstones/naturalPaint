@@ -120,13 +120,23 @@ bool runNativeBrushTest() {
     // Hand-written in the exact shape `f82626d`'s `UserBrushLibraryStore::
     // serialize()` wrote: header, one `preset`, a seven-float `scalars` line
     // (radius, hardness, spacing-in-radii, roundness, angle, load, wetness),
-    // and a `grain` line. No `opacity` line -- that key did not exist yet,
-    // `BrushPreset` had no field for it to come from. No `model`/`dab`/
-    // `link`/`floor` lines -- this fixture does not exercise them.
+    // the `model` lines `brushModelToLines()` emitted for every non-default
+    // leaf -- including the two retired ones, `load`/`wetness`, which that
+    // build's visitor still walked -- and a `grain` line. No `opacity` line
+    // -- that key did not exist yet, `BrushPreset` had no field for it to
+    // come from. No `dab`/`link`/`floor` lines -- this fixture does not
+    // exercise them.
+    //
+    // The two `model` values deliberately DIFFER from `scalars`' trailing
+    // pair: the old build painted with `scalars`' (its `BrushModel::load`/
+    // `wetness` were read by nothing), so a reader that let the dead copy
+    // overwrite the live one would move `native` and fail the check below.
     const std::string legacyFixture =
         "naturalPaint-user-presets 1\n"
         "preset Legacy Wash\n"
         "scalars 33.5 0.618034 0.366 0.729 47.25 1.14159265 0.874321\n"
+        "model load 0.5\n"
+        "model wetness 2\n"
         "grain 1 32 18 0.5 1.25\n";
 
     UserBrushLibraryStore store;
@@ -155,6 +165,18 @@ bool runNativeBrushTest() {
             "legacy fixture: with no `opacity` line (the key did not exist yet), "
             "`native.opacity` is NativeBrush's own default -- the value every preset's opacity "
             "always was before this key could say otherwise");
+      // Accepted AND dropped: not preserved as an unknown line (which would
+      // re-emit them on every save, forever), because their meaning is known
+      // -- they are an older build's dead copies, not a newer build's field.
+      const auto& unknown = store.presetUnknownLines();
+      BrushLibrary resaveLib;
+      resaveLib.presets.push_back(*back);
+      const std::string resaved = store.serialize(resaveLib);
+      check(unknown.find("Legacy Wash") == unknown.end() &&
+                resaved.find("model load") == std::string::npos &&
+                resaved.find("model wetness") == std::string::npos,
+            "legacy fixture: the retired `model load`/`model wetness` lines are accepted and "
+            "dropped -- not preserved as unknown, not written back on save");
     }
 
     // The inverse direction, briefly: a file THIS build writes reads back
