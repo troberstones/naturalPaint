@@ -1851,19 +1851,26 @@ class StrokeSession {
   // caller whose axes are whatever `begin()`/`setTip()` last latched, which
   // is EXACTLY what `depositPending()` read for every dab before Track A
   // existed. Seeding from the latch is therefore what makes this path
-  // bit-identical to the pre-Track-A one -- positions AND pixels, not just
-  // positions. Seeding it from `StrokeSample{}`'s neutral defaults instead
-  // would silently pin every such stroke to full pressure and neutral tilt,
-  // which is a behaviour change for exactly the callers this wrapper exists
-  // to leave alone (`app/selftest/ActiveLayer.cpp` drives a mid-stroke
+  // bit-identical to the pre-Track-A one -- positions AND pixels -- for any
+  // stroke whose latch is constant, which is every caller but one kind.
+  // Seeding it from `StrokeSample{}`'s neutral defaults instead would
+  // silently pin every such stroke to full pressure and neutral tilt, which
+  // is a behaviour change for exactly the callers this wrapper exists to
+  // leave alone (`app/selftest/ActiveLayer.cpp` drives a mid-stroke
   // `setTip()` pressure ramp through this method and is the guard that
-  // catches it).
+  // catches it: pinned, its ramp wrote 31108 texels, identical to its flat
+  // stroke, and went red).
   //
-  // A stroke that changes `hardwareInputs_` mid-stroke through `setTip()`
-  // therefore now sees its axes INTERPOLATED between consecutive samples'
-  // latched values rather than stepped at a frame boundary -- strictly
-  // smoother than before, over the identical dab positions, and the same
-  // per-dab resolution the axis-carrying form gets.
+  // **The one kind that is NOT bit-identical, deliberately**: a stroke that
+  // changes `hardwareInputs_` mid-stroke through `setTip()`. Each sample
+  // now carries the latch as of ITS OWN call, and a dab is interpolated
+  // between the two samples whose segment it lies on -- where before, every
+  // dab a call emitted read whatever the latch held at that call, i.e. the
+  // value of the sample one AHEAD of the segment being walked (`StrokePath`
+  // lags one sample, its own header). Same dab positions; pressures that
+  // now belong to the segment they are painted on, and step less.
+  // Measured on ActiveLayer's 0.2 -> 1.0 ramp: 15572 texels before, 13664
+  // after (its flat stroke: 1232 both, bit-identical).
   //
   // Deposits whatever dabs `brush/StrokePath` emits for it and returns
   // **this frame's** tile set -- what live feedback must recomposite, sorted

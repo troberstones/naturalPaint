@@ -1999,19 +1999,21 @@ void StrokeSession::depositPending() {
       // be the defect: a 40-dab frame stepped Size/Angle/Roundness in blocks
       // instead of smoothly. Seeded from `hardwareInputs_` FIRST and only
       // for its `has*` availability flags, which `depositPending()` has no
-      // per-dab equivalent of and does not need one for: a device either
-      // reports an axis for the whole stroke or it does not (SDL reports
-      // axis support at the pen, not per event), so `begin()`/`setTip()`'s
-      // once-per-stroke/frame latch of those three bools is still the right
-      // granularity even though the FLOATS they gate are now resolved fresh
-      // every dab. A caller with no per-sample axes of its own
-      // (`app/BrushSheet.cpp`, `app/StrokePreview.cpp`, every selftest that
-      // drives a stroke through the plain `addPoint(x, y)`) is unaffected by
-      // this, because that wrapper seeds its `StrokeSample` FROM
-      // `hardwareInputs_` -- so `p.pressure` et al. below are the latched
-      // reading those callers always got, and this is a no-op for them. See
-      // `addPoint()`'s own header comment, which is where that decision is
-      // argued; `app/selftest/ActiveLayer.cpp` is the guard on it.
+      // per-dab equivalent of and does not need one for: whether a device
+      // reports an axis is a property of the device painting the stroke,
+      // not of one event, so `begin()`/`setTip()`'s per-frame latch of those
+      // three bools (`strokeHardwareInputsFor()` on the interactive route)
+      // is still the right granularity even though the FLOATS they gate are
+      // now resolved fresh every dab. A caller with no per-sample axes of
+      // its own (`app/BrushSheet.cpp`, `app/StrokePreview.cpp`, every
+      // selftest that drives a stroke through the plain `addPoint(x, y)`)
+      // reads the latch here exactly as before, because that wrapper seeds
+      // its `StrokeSample` FROM `hardwareInputs_` -- bit-identical for a
+      // constant latch; for one that `setTip()` changes mid-stroke, the dab
+      // reads the latched values of the two samples bounding its segment,
+      // interpolated, rather than the newest one. `addPoint()`'s own header
+      // comment is where that is argued and measured;
+      // `app/selftest/ActiveLayer.cpp` is the guard on it.
       DynamicInputs local = hardwareInputs_;
       local.pressure = p.pressure;
       local.tilt = p.tilt;
