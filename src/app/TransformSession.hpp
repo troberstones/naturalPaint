@@ -353,18 +353,34 @@ namespace np {
 // one-layer selection can reach -- there is deliberately no second door into
 // it.
 //
-// **What this does NOT decide: the live preview for a non-contiguous set.**
-// This header and its `commit()` are agnostic to which indices are in the
-// set -- a `LayerSelection` of {0, 2, 4} unions and transforms exactly as
-// {0, 1, 2} does. The UI's live pixel preview is a different story:
-// `ui/TransformCompositeSplit`'s below/moving/above arrangement is a
-// PARTITION of the stack at one boundary, and a non-contiguous set has no
-// single boundary to partition at. See that file's own header for the
-// fallback this build takes (a contiguous set gets an exact preview; a
-// non-contiguous one refuses the gesture by name before the gizmo appears,
-// rather than beginning a session whose live preview would show something
-// `commit()` does not write) -- a decision made at the UI layer, which is
-// the one place that already knows what it can and cannot draw.
+// **What this does NOT decide: the live preview.** This header and its
+// `commit()` are agnostic to which indices are in the set -- a
+// `LayerSelection` of {0, 2, 4} unions and transforms exactly as {0, 1, 2}
+// does. The UI's live pixel preview is a different story, decided at the
+// UI layer (`ui/MacPaintUI.cpp`'s `requestFreeTransform` handler and
+// `beginTransformPreview()`), which is the one place that already knows
+// what it can and cannot draw:
+//
+//   * **Non-contiguous is refused by name before the gizmo appears.**
+//     `ui/TransformCompositeSplit`'s below/moving/above arrangement is a
+//     PARTITION of the stack at one boundary, and a non-contiguous set has
+//     no single boundary to partition at -- so this build never begins a
+//     session for one at all, rather than starting one whose live preview
+//     could not be trusted to show what `commit()` will actually write.
+//   * **A contiguous set gets the wireframe box, with no moving-pixels
+//     quad at all** -- not the exact split a single layer can get.
+//     `ui/TransformPreviewTexture` uploads one `Layer&`'s crop; showing a
+//     SET's moving pixels correctly would mean compositing every member
+//     together first, honouring their mutual blend modes, which is real
+//     work this step does not take on -- the identical scope reduction
+//     that file's header already accepts for one Pigment layer (no
+//     preview, box only), generalised here to a whole set of any kind.
+//     `ui/TransformCompositeSplit::documentWithLayerRangeHidden()` hides
+//     the whole contiguous block from the ordinary composite so the
+//     still-in-place original does not sit under a box that claims to be
+//     moving it; nothing stands in for the missing quad. The box's own
+//     geometry (a pure function of `sourceBounds()`/`pending()`) is exact
+//     either way -- what is missing is only the live paint inside it.
 // ==========================================================================
 enum class TransformTarget { Layer, SelectionPixels, LayerSet };
 
