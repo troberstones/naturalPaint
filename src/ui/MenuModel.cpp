@@ -52,6 +52,7 @@ const MenuItemSpec* specTable() {
     set(MenuAction::CloseDocument, "Close Document", "");
     set(MenuAction::ExportAs, "Export As...", "");
     set(MenuAction::ExportStates, "Export Comps / Layers To Files...", "");
+    set(MenuAction::ExportRegions, "Export Frames and Slices...", "");
     set(MenuAction::Batch, "Batch...", "");
 
     // **Quit.** No key equivalent and omitted from File on a platform whose
@@ -198,6 +199,9 @@ const MenuItemSpec* specTable() {
     set(MenuAction::ClearGuides, "Clear Guides", "");
     set(MenuAction::Grid, "Grid", "Cmd+'",
         MenuKeyEquivalent{'\'', kMenuModCmd, "toggle_grid"});
+    // No key equivalent -- docs/shortcuts.md assigns nothing here, `BrushSettings`'s
+    // own reason (PLAN.md gap-closing wave, track `region`).
+    set(MenuAction::ShowRegions, "Show Frames and Slices", "");
     set(MenuAction::Snap, "Snap", "Cmd+Shift+;",
         MenuKeyEquivalent{';', kMenuModCmd | kMenuModShift, "toggle_snapping"});
 

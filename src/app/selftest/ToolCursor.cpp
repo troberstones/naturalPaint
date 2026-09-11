@@ -474,12 +474,22 @@ bool runToolCursorTest() {
 
     // The rule is keyed on `toolImplemented()` and nothing else, so a tool
     // shipping flips its cursor with no edit in ui/ToolCursor -- the intent it
-    // will want is already written in `cursorForTool()`. Pinned on two of them
-    // so a future implementation that forgot the cursor cannot go unnoticed.
-    check(!toolImplemented(Tool::Frame) && cursorForTool(Tool::Frame) == ToolCursor::MoveObject &&
-              !toolImplemented(Tool::Shape) && cursorForTool(Tool::Shape) == ToolCursor::Select,
-          "unbuilt: an unbuilt tool still has its intent recorded -- the day it ships, "
-          "toolImplemented() flips and the right cursor appears with no edit here");
+    // will want is already written in `cursorForTool()`. Pinned on two of
+    // them, historically, so a future implementation that forgot the cursor
+    // could not go unnoticed by coincidence -- but `Tool::Frame` (this
+    // pinned example) shipped in the PLAN.md gap-closing wave's `region`
+    // track, and `Tool::Shape` is now the ONLY unbuilt cell left in
+    // `kToolMeta` (`ui/AtelierChrome.cpp`), so there is no second example
+    // left to name. Down to one rather than retired: the promise -- an
+    // unbuilt tool's cursor needs no edit in `ui/ToolCursor` when it ships --
+    // is still worth pinning on the one candidate that remains. When Shape
+    // ships too (another track was flipping it in this same wave), this
+    // assertion runs out of unbuilt tools to name entirely, and the
+    // `unbuilt > 0` check above starts failing first -- whoever hits that is
+    // the one who should rewrite this section, not silently delete it.
+    check(!toolImplemented(Tool::Shape) && cursorForTool(Tool::Shape) == ToolCursor::Select,
+          "unbuilt: the one remaining unbuilt tool still has its intent recorded -- the day "
+          "it ships, toolImplemented() flips and the right cursor appears with no edit here");
 
     // **And that claim has already been tested for real.** This assertion
     // originally named the Eraser as one of its two unbuilt examples. The
@@ -509,11 +519,21 @@ bool runToolCursorTest() {
     // whatsoever -- it has answered `ToolCursor::Text` since the day this file
     // was written. `Tool::Shape` took its place above. Three collections is
     // the point at which the promise stops being a hopeful comment.
+    //
+    // **And a FOURTH time, by Frame** (PLAN.md gap-closing wave, track
+    // `region`, app/RegionTool). `Tool::Frame` was the OTHER name on the
+    // "still unbuilt" line above until this commit; `cursorForTool(Tool::Frame)`
+    // needed no edit and has answered `ToolCursor::MoveObject` since the day
+    // this file was written -- a Frame drag repositions a rectangle exactly
+    // as a Move drag repositions a layer.
     check(toolImplemented(Tool::Eraser) && cursorForTool(Tool::Eraser) == ToolCursor::Paint &&
               toolImplemented(Tool::Pencil) && cursorForTool(Tool::Pencil) == ToolCursor::Paint &&
-              toolImplemented(Tool::Text) && cursorForTool(Tool::Text) == ToolCursor::Text,
-          "unbuilt: the Eraser, the Pencil and Text each shipped carrying the intent they "
-          "were written with while still unbuilt -- the promise above, collected three times");
+              toolImplemented(Tool::Text) && cursorForTool(Tool::Text) == ToolCursor::Text &&
+              toolImplemented(Tool::Frame) &&
+              cursorForTool(Tool::Frame) == ToolCursor::MoveObject,
+          "unbuilt: the Eraser, the Pencil, Text and Frame each shipped carrying the intent "
+          "they were written with while still unbuilt -- the promise above, collected four "
+          "times");
   }
 
   std::printf("  -- G. §7's bitmap cursors, and §8's hotspot: ink, layout, flag-off identity --\n");

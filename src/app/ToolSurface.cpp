@@ -3,6 +3,7 @@
 #include "app/CropTool.hpp"       // toolCropsCanvas()
 #include "app/MoveTool.hpp"       // toolMovesPixels()
 #include "app/PenTool.hpp"        // toolEditsPath()
+#include "app/RegionTool.hpp"     // toolCreatesRegions() -- Frame and Slice, PLAN.md gap-closing wave
 #include "app/StrokeSession.hpp"  // the route table and five of the gates
 #include "app/TextTool.hpp"       // toolEditsText()
 #include "app/ZoomAndSize.hpp"    // toolZoomsView()
@@ -87,11 +88,20 @@ const char* toolSurfaceRefusal(Tool tool, bool documentOpen) {
   // what a crop does to a document is change its extent, and "Nothing to move"
   // would name the wrong operation for a user reading it off a dimmed cell.
   // The ladder is over gates and this is the eighth gate (app/CropTool.hpp
-  // §6), so `Tool::Slice` -- which shares Crop's palette group -- correctly
-  // does NOT inherit this sentence: it has no gate, so it is a not-built cell
-  // and gets "Not built yet." instead, which is the one-reason rule holding.
+  // §6). `Tool::Slice` shares Crop's palette group but answers its OWN gate
+  // (`toolCreatesRegions()`, below) rather than this one -- sharing a palette
+  // slot never meant sharing a capability, and now that Slice is built
+  // (PLAN.md gap-closing wave) it earns its own row rather than silently
+  // falling through to "Not built yet."
   if (toolCropsCanvas(tool))
     return "Nothing to crop: no document is open. File > New Document makes one.";
+  // The ninth gate: `Tool::Frame` and `Tool::Slice` (app/RegionTool.hpp),
+  // built on top of `core::Document::regions` rather than on Crop's. Its own
+  // lead-in: a region is neither a selection, a move nor a crop, and
+  // "Nothing to crop" off a dimmed Frame cell would misname what the tool
+  // does.
+  if (toolCreatesRegions(tool))
+    return "Nothing to mark out: no document is open. File > New Document makes one.";
   // Its own lead-in rather than borrowing Move's or the stroke row's: the Pen
   // does not paint and does not move pixels, it edits geometry -- and a user
   // reading "Nothing to paint on" off a dimmed Pen cell would be told about

@@ -212,13 +212,19 @@ bool runMenuModelTest() {
   // This is the fourth consecutive edition of this comment to say the same
   // thing, which is itself the finding: **count the enumerators in the merged
   // header. Never add your delta to the number you found here.**
-  check(kMenuActionCount == 98,
-        "ids: exactly 98 actions -- the original 41-item extraction plus D1/D2's "
+  //
+  // 98 -> 100 in the PLAN.md gap-closing wave's `region` track: `ExportRegions`
+  // (File > Export Frames and Slices..., io/ExportRegions) and `ShowRegions`
+  // (View > Show Frames and Slices, `AppState::showRegions`) -- counted the
+  // same way, off `MenuAction`'s enumerators in the merged header (101
+  // including `Count`), never by adding 2 to 98.
+  check(kMenuActionCount == 100,
+        "ids: exactly 100 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
         "dialog, Brush Settings, the crop pair, Pigment, Batch, Inpaint, D8's "
-        "make-tileable pair and the 3x3 repeat preview, so an item lost in a "
-        "later edit fails here");
+        "make-tileable pair, the 3x3 repeat preview and the region export/show "
+        "pair, so an item lost in a later edit fails here");
 
   {
     std::set<MenuAction> seen;
