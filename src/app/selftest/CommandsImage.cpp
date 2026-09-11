@@ -112,6 +112,33 @@ bool sameRgbLayerPixels(const Document& a, const Document& b, size_t layerIndex)
   return true;
 }
 
+// `makeImageCommandDocument()`'s selection (4..52 of a 64x64 canvas) is
+// almost the whole document -- fine for the other thirty-two rows, which
+// need a marquee to be bounded BY, but wrong for Inpaint's own comparison
+// test: it leaves only a blank 4-texel border OUTSIDE the selection for
+// Telea's diffusion to read, and that border is untouched background (never
+// painted), so the whole hole converges to the same flat colour whatever the
+// radius is -- a fixture on which two different radii produce IDENTICAL
+// output, which is exactly the "two paths that both write nothing compare
+// bit-identical" trap `app/selftest/CommandCallsites.cpp`'s own fixture
+// comment warns about. This one paints the WHOLE canvas with real texture
+// first and then selects a small hole well inside it, so there is genuine
+// surrounding content for the radius to matter against.
+OpenDocument makeInpaintDocument() {
+  OpenDocument od = makeBlankOpenDocument(64, 64, WorkingSpace{}, "inpaint fixture");
+  od.document.layers[0].name = "Base";
+  Tile& t = od.document.layers[0].rgbTiles->getOrCreate(TileCoord{0, 0});
+  for (int32_t y = 0; y < kTileSize; ++y) {
+    for (int32_t x = 0; x < kTileSize; ++x) {
+      const float v = static_cast<float>((x * 11 + y * 5) % 23) / 22.0f;
+      t.writePixel(PixelCoord{x, y}, {v, 1.0f - v, 0.3f + 0.4f * v, 1.0f});
+    }
+  }
+  od.selection = selectRectangle(24.0f, 24.0f, 40.0f, 40.0f);  // a 16x16 hole, well inside
+  od.recordEdit("inpaint fixture", EditKind::Content);
+  return od;
+}
+
 JsonValue num(double v) { return JsonValue::number(v); }
 
 JsonValue arrayOf(std::initializer_list<double> values) {
@@ -1005,10 +1032,15 @@ bool runCommandsImageTest() {
     // path are the same picture" claim -- the fixture that loop shares has no
     // live selection, and Inpaint refuses outright without one, so it could
     // not be added to that loop without changing what every OTHER row in it
-    // measures. `makeImageCommandDocument()` already carries a selection.
+    // measures. `makeInpaintDocument()` above carries its own selection, a
+    // small hole inside a fully-textured canvas -- not
+    // `makeImageCommandDocument()`'s, whose selection is nearly the whole
+    // document and leaves nothing but blank background for Telea's diffusion
+    // to read (see that function's own comment for why that would silently
+    // measure nothing here).
     {
-      OpenDocument viaCommand = makeImageCommandDocument();
-      OpenDocument viaApplier = makeImageCommandDocument();
+      OpenDocument viaCommand = makeInpaintDocument();
+      OpenDocument viaApplier = makeInpaintDocument();
       JsonValue p = JsonValue::object();
       p.set("radius", num(4));
       const CommandResult r = applyCommand(viaCommand, Command{"filter_inpaint", p});
