@@ -249,6 +249,24 @@ bool runShapeToolTest() {
       check(false, "line + Shift: snapped to the nearest 45 degrees, length preserved");
     }
 
+    // A drag near 42 degrees is close to a true 45-degree multiple but
+    // nowhere near a 90-degree one -- the case above (5.7 degrees off
+    // horizontal) cannot tell "nearest 45" from "nearest 90" apart, since
+    // both round it to the same due-east answer. This one can: snapping to
+    // the nearest 90 would send it to due east (dy=0); snapping to the
+    // nearest 45, the actual rule, sends it to the diagonal (dx == dy).
+    const VectorShape diag = shapeToolGeometry(tool, PathPoint{0, 0}, PathPoint{10, 9}, true, false);
+    if (diag.path.subpaths.size() == 1 && diag.path.subpaths[0].anchors.size() == 2) {
+      const PathPoint end = diag.path.subpaths[0].anchors[1].pt;
+      check(end.x > 0.0f && near(end.x, end.y, 0.1f),
+            "line + Shift: a near-diagonal drag snaps to the DIAGONAL (45 degrees), not to "
+            "due east (a coarser 90-degree snap would also pass the near-horizontal case above)");
+    } else {
+      check(false,
+            "line + Shift: a near-diagonal drag snaps to the DIAGONAL (45 degrees), not to "
+            "due east (a coarser 90-degree snap would also pass the near-horizontal case above)");
+    }
+
     // Option: the press point is the MIDPOINT, so a (0,0)->(10,0) drag
     // becomes a line from (-10,0) to (10,0).
     const VectorShape centered = shapeToolGeometry(tool, PathPoint{0, 0}, PathPoint{10, 0}, false, true);
