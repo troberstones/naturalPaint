@@ -75,8 +75,19 @@ CommandCoverage coverageFor(MenuAction action) {
       return {CommandCoverageKind::NotRecordable, nullptr,
               "begins an interactive gesture with on-canvas handles; the session owns the live transform"};
     case MenuAction::NumericTransform:
-      return {CommandCoverageKind::NotYetRegistered, nullptr,
-              "a document edit and genuinely recordable. It needs a transform matrix as a parameter and a policy for what a recorded transform means at another resolution (docs/automation-plan.md §5's unit rule), which is step 5 work rather than a registration"};
+      // Registered as `numeric_transform`, scoped to the whole-active-layer
+      // case (`app/TransformSession`'s `TransformTarget::Layer`) only -- a
+      // live selection is refused by name rather than reaching for
+      // `TransformTarget::SelectionPixels`, because that path belongs to
+      // `app/TransformSession`, which this track was told not to touch (the
+      // xform track is making Free Transform work on a multi-layer selection
+      // through it). Rotate and the two scale percentages are
+      // resolution-independent numbers; `translate_x`/`translate_y` are texels
+      // and are in app/Batch.cpp's `kPixelUnitParams`; the pivot is not a
+      // parameter at all -- it is recomputed from the replaying document's own
+      // active-layer content bounds. See app/CommandsImage.cpp's
+      // `doNumericTransform()`.
+      return {CommandCoverageKind::Registered, "numeric_transform", nullptr};
     case MenuAction::Cut:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "the clipboard is process state shared with other applications"};
@@ -90,8 +101,17 @@ CommandCoverage coverageFor(MenuAction action) {
       return {CommandCoverageKind::NotRecordable, nullptr,
               "as Cut -- and what it pastes is whatever the clipboard holds at replay time, which is the definition of a step that is not reproducible"};
     case MenuAction::DeleteSelection:
-      return {CommandCoverageKind::NotYetRegistered, nullptr,
-              "a document edit and genuinely recordable. Left until the selection rows and the recorder agree on how a step names the selection it acted through -- registering it before that would put a step in a file whose meaning depends on state the file does not carry"};
+      // Registered as `delete_selection`. The blocker this row states was
+      // "how a step names the selection it acted through", and the answer is
+      // the mechanism `save_selection_as_channel`/`load_channel_as_selection`
+      // and `selectionBounded` already exist for -- app/Recorder.hpp §4's
+      // channel-match rule refuses recording this step under a live marquee no
+      // saved channel matches, naming the fix, exactly as it already does for
+      // `filter_gaussian_blur`. No second mechanism was needed: an absent
+      // selection silently clears the whole layer
+      // (`core::clearThroughSelection()`'s own documented default), which is
+      // the textbook case the flag was built for.
+      return {CommandCoverageKind::Registered, "delete_selection", nullptr};
     case MenuAction::SelectAll:
       return {CommandCoverageKind::Registered, "select_all", nullptr};
     case MenuAction::Deselect:
@@ -221,29 +241,35 @@ CommandCoverage coverageFor(MenuAction action) {
     case MenuAction::ActivateDocument:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "chooses which open document is frontmost -- the session"};
-    // --- PLAN.md phases 8 and 9, merged in after step 2's migration -------
+    // --- PLAN.md phases 8 and 9, all three now Registered -------------------
     //
     // All three are pixel ops on the active layer, of exactly the shape the
     // seven `Registered` filters below have, and all three are functions of an
-    // `OpenDocument` alone -- so app/Command.hpp §1's rule puts them IN, and
-    // the only thing between them and a row is the row.
-    //
-    // They are `NotYetRegistered` rather than registered here because
-    // registering one is not one line: it is a runner that reads and validates
-    // the params (app/CommandsImage.cpp), a builder, a row in the table, and
-    // for the two that take a length, an entry in app/Batch.cpp's pixel-unit
-    // list so a recorded radius means the same thing at another resolution.
-    // Doing that inside a merge, untested, is how a step lands in an action
-    // file with a meaning nobody checked.
+    // `OpenDocument` alone -- so app/Command.hpp §1's rule puts them IN.
+    // `filter_inpaint`, `filter_remove_lighting_gradient` and `filter_offset`
+    // are the rows; app/CommandsImage.cpp has the runners, app/CommandsImage.hpp
+    // has the encoders, and app/Batch.cpp's `kPixelUnitParams` carries `sigma`.
     case MenuAction::Inpaint:
-      return {CommandCoverageKind::NotYetRegistered, nullptr,
-              "a document edit and genuinely recordable: PRD D7's diffusion fill, ops/Inpaint through app/PixelOpBridge. It needs a runner for its `radius` and a pixel-unit entry in app/Batch, and one policy decision the other filters do not have -- its selection is the HOLE it fills rather than a bound on the result, so a recorded step must name the selection it acted through, which is the same blocker DeleteSelection is waiting on"};
+      // Its selection is the HOLE it fills rather than a bound, so an absent
+      // one is a hard refusal (`inpaintRefusal()`'s `NoSelection`) rather than
+      // "the whole canvas" -- `filter_inpaint` is `selectionBounded` anyway,
+      // because the recorder's channel-match rule (app/Recorder.hpp §4) is the
+      // exact protection this op needs against a live, unsaved marquee, even
+      // though the flag's usual reading does not literally describe it. Named
+      // as the second bounded exception (beside `crop_to_selection`) in
+      // app/selftest/Command.cpp section H.
+      return {CommandCoverageKind::Registered, "filter_inpaint", nullptr};
     case MenuAction::RemoveLightingGradient:
-      return {CommandCoverageKind::NotYetRegistered, nullptr,
-              "a document edit and genuinely recordable: PRD D8's divide-by-a-blurred-copy. It needs a runner for its `sigma` and a pixel-unit entry in app/Batch -- sigma is in document texels, so a recorded value replayed at another resolution blurs a different fraction of the picture, which is exactly what that list exists to correct"};
+      return {CommandCoverageKind::Registered, "filter_remove_lighting_gradient", nullptr};
     case MenuAction::Offset:
-      return {CommandCoverageKind::NotYetRegistered, nullptr,
-              "a document edit and genuinely recordable: PRD D8's offset with wrap. It needs a runner for `dx`/`dy`/`edge`, and its by-half default is a FRACTION of the canvas rather than a length -- so the recorded form has to choose between the fraction and the texels it resolved to, and only the fraction survives a change of resolution"};
+      // `dx`/`dy` are recorded as `dx_fraction`/`dy_fraction` -- a FRACTION of
+      // the canvas, not the texels `offsetByHalf()` resolves them to -- because
+      // the canonical use is exactly "by half of whatever canvas this document
+      // is", and only the fraction still means that after a resize. NOT
+      // `selectionBounded`: `offsetRefusalFor()` refuses outright under ANY
+      // live selection, so an absent one is never "the whole canvas" reading
+      // that needed protecting.
+      return {CommandCoverageKind::Registered, "filter_offset", nullptr};
     case MenuAction::TilePreview:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "shows the document tiled 3x3 and changes not one texel of it -- a view, like Toggle Grayscale Preview and Fit Window. The session owns it"};
