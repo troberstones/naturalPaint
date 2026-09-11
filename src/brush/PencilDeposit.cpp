@@ -43,6 +43,24 @@ DepositCount PencilStroke::drawDab(TileStore& store, const BrushTip& tip, Vec2 c
   // one must not silently switch the tool off.
   if (!(opacity_ > 0.0f)) return count;
 
+  // Track B / B1: a LOCAL copy with `edgePx` zeroed, not `tip` itself.
+  // **Not because a pencil is aliased -- §1's threshold would re-alias an
+  // antialiased rim on its own -- but because of WHERE it would cut it.**
+  // `BrushTip::edgePx` lays a smoothstep skirt over the last `edgePx` of the
+  // radius (brush/Deposit.hpp §2), and §1 thresholds coverage at 0.5, which on
+  // that skirt falls at `radius - edgePx/2`. Left on, every hard-tip pencil
+  // mark would silently shrink by half a pixel in radius, still perfectly
+  // binary, so nothing would look wrong (header §0's edgePx paragraph).
+  // Zeroing it here, once, keeps every read of the tip below --
+  // `dabPixelBounds()`, `dabCoverage()`, `grain` -- seeing the identical
+  // footprint and coverage this route computed before `edgePx` existed, while
+  // every OTHER dab consumer (`brush/Deposit.cpp`, `brush/RgbDeposit`,
+  // `brush/CloneStamp`, ...) still gets the antialiased edge.
+  // `app/selftest/PencilDeposit.cpp`'s existing assertions pass unchanged,
+  // which is the property this copy exists to preserve.
+  BrushTip aliasedTip = tip;
+  aliasedTip.edgePx = 0.0f;
+
   // `dabPixelBounds()` and `dabCoverage()` unchanged from all three sibling
   // routes -- the shape of a dab is not a property of what the dab does with
   // it, and this module modifies the *result* of the falloff rather than
@@ -50,7 +68,7 @@ DepositCount PencilStroke::drawDab(TileStore& store, const BrushTip& tip, Vec2 c
   // painter alternates pencil and brush over one edge, and a pencil whose disc
   // was one texel wider than the brush's would show as a rim of the wrong
   // colour rather than as a hard edge.
-  const PixelBounds b = dabPixelBounds(tip, centre, canvasW, canvasH);
+  const PixelBounds b = dabPixelBounds(aliasedTip, centre, canvasW, canvasH);
   if (b.empty()) return count;
 
   const TileCoord first = tileCoordAt(PixelCoord{b.x0, b.y0});
@@ -112,14 +130,15 @@ DepositCount PencilStroke::drawDab(TileStore& store, const BrushTip& tip, Vec2 c
           const float dx = (static_cast<float>(x) + 0.5f) - centre.x;
           const PixelCoord local = tileLocalOffset(PixelCoord{x, y});
 
-          const float rawCov = dabCoverage(tip, dx, dy);
+          const float rawCov = dabCoverage(aliasedTip, dx, dy);
           if (!(rawCov > 0.0f)) continue;
 
           // Paper tooth, at this texel's ABSOLUTE canvas position -- `x`/`y`,
           // not `dx`/`dy`, which is why it cannot live inside `dabCoverage()`.
           // Identical line and identical reasoning to the three sibling
-          // routes' (brush/Deposit.cpp §2e).
-          const float grained = grainCoverageAt(tip.grain, rawCov, x, y);
+          // routes' (brush/Deposit.cpp §2e). `aliasedTip.grain` is bit-
+          // identical to `tip.grain` -- the copy above changes only `edgePx`.
+          const float grained = grainCoverageAt(aliasedTip.grain, rawCov, x, y);
 
           // §1. The threshold is the LAST thing that happens to a coverage,
           // after the tip's own profile and after the paper -- which is what

@@ -9,6 +9,7 @@
 
 #include "io/Descriptor.hpp"
 #include "brush/BrushModel.hpp"
+#include "brush/TipMips.hpp"
 #include "io/PackBits.hpp"
 #include "io/PsPatterns.hpp"
 
@@ -1113,6 +1114,11 @@ std::vector<AbrSampledTip> parseAbrSampledTips(std::span<const uint8_t> samp, ui
           bmp->width = static_cast<int32_t>(w);
           bmp->height = static_cast<int32_t>(h);
           bmp->alpha = std::move(alpha);
+          // Track B / B2: built here, before `bmp` is handed off as
+          // `shared_ptr<const BrushTipBitmap>` below -- the one moment this
+          // tip's pixels are mutable at all (brush/Deposit.hpp's own
+          // "immutable once built" comment on the struct).
+          buildTipMips(*bmp);
           tip.bitmap = std::move(bmp);
         }
       }

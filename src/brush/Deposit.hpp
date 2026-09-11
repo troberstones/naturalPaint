@@ -175,8 +175,75 @@
 // Smoothstep rather than a linear ramp because a linear ramp is C0: its
 // derivative jumps at the core edge and at the rim, and overlapping dabs at
 // 0.25-radius spacing turn those two circles of curvature discontinuity into
-// visible banding along a stroke. `hardness == 1` degenerates to a hard disc
-// with no division at all, which is the `DryBrush` end of the range.
+// visible banding along a stroke.
+//
+// **`hardness == 1` used to degenerate to a hard disc with no division at
+// all -- it no longer does, and this is the correction, not a silent edit.**
+// `hardness` measures the skirt in *radius* units: `(1 - hardness) * radius`
+// pixels wide. That is fine at the sizes this build's presets actually paint
+// at (`Round Bristle 03`, r = 24, h = 0.35, has a 15.6 px skirt) and it is
+// exactly the defect at the sizes a user also reaches for -- `Detail Liner`
+// (r = 5, h = 0.95) has a 0.25 px skirt and stair-steps, and `hardness == 1`
+// at ANY radius has none at all, so a texel is decided by which side of the
+// rim its centre falls on with no antialiasing whatsoever. Neither is a bug
+// in the smoothstep; both are a skirt this function was free to make
+// arbitrarily thin, or nonexistent, because nothing bounded it in *pixels*.
+//
+// **`BrushTip::edgePx` is that bound.** `singleTipCoverage()` computes
+//
+//     hEff = clamp(min(hardness, 1 - edgePx / radius), 0, 1)
+//
+// and uses `hEff` in place of `hardness` for the profile above -- so the
+// skirt is `max((1 - hardness) * radius, edgePx)` pixels wide, never
+// narrower than `edgePx` regardless of how hard or small the tip is.
+// `radius <= edgePx` sends `hEff` to its floor of 0, which is not a special
+// case in the code: it is a pure smoothstep from the tip's own centre, the
+// `hardness == 0` profile, because there is no longer room inside `radius`
+// for a flat core `edgePx` pixels narrower than the rim.
+//
+// **Two identity conditions, both load-bearing and both asserted by
+// `app/selftest/TipEdge.cpp`, not merely argued for here:**
+//
+//   * **`edgePx == 0` is bit-identical to the pre-`edgePx` formula for every
+//     tip.** `hEff = min(hardness, 1 - 0/radius) = min(hardness, 1) =
+//     hardness` (already clamped to [0,1]), so this is not a separate code
+//     path collapsing to the old one -- it IS the old one, reached through
+//     the general formula with nothing to add.
+//   * **`(1 - hardness) * radius >= edgePx` is bit-identical to `hardness`
+//     without the floor, for every tip already that wide.** The algebra:
+//     `radius - hardness*radius >= edgePx` rearranges to
+//     `hardness <= 1 - edgePx/radius`, which is exactly the condition under
+//     which `min()` picks `hardness`, so `hEff == hardness` bit for bit. At
+//     the shipped default `edgePx == 1.0f` this is **every built-in brush at
+//     its default size** (`Round Bristle 03`'s 15.6 px skirt is nowhere near
+//     the 1 px floor) and therefore `--pigment-stroke-demo` and the `canvas`
+//     golden view: unchanged, not merely close.
+//
+// The ellipse (§2b) measures `d` in an ISOTROPIC frame where one scalar `hEff`
+// governs both axes, so it cannot floor the major and minor axes to the same
+// PHYSICAL pixel width at once: along the major axis the skirt is
+// `(1 - hEff) * radius` pixels as derived above, but along the minor axis
+// (where a unit of isotropic `d` is `roundness * radius` physical pixels, not
+// `radius`) it is `(1 - hEff) * radius * roundness` -- narrower by exactly
+// `roundness`. **This is left uncorrected, and the ellipse reads the same
+// `edgePx` and the same `hEff` the round branch does.** Dividing `edgePx` by
+// `roundness` before computing `hEff` would fatten the MAJOR axis's skirt to
+// `edgePx / roundness` as the price of widening the minor axis's -- there is
+// one shared scalar, so correcting one axis perturbs the other -- and it
+// would change the bit-identity condition above to
+// `(1 - hardness) * radius >= edgePx / roundness`, which a narrow ellipse
+// (`Flat Wash`, roundness 0.28) fails well inside the region the plain
+// condition already passes. A one-`roundness`-narrower floor on the minor
+// axis of an ellipse is a smaller defect than the one this field exists to
+// fix; widening every elliptical brush's identity hole to fix it is not a
+// trade this wave makes.
+//
+// `hardness == 1` (a hard disc) still degenerates to a division-free `hEff`
+// evaluation when `edgePx == 0`, and even at `edgePx > 0` the function still
+// takes no division for a `d` that lands in the flat core (`d <= hEff`) --
+// the division exists only in the skirt, `hEff < d < 1`, which is now never
+// empty when `edgePx > 0`, and that is the whole point: the `DryBrush` end of
+// the range no longer has a truly hard edge, on purpose.
 //
 // ==========================================================================
 // 2b. The tip is an ellipse, and why that arrived this late
@@ -313,6 +380,27 @@
 // the bitmap's own edge rather than treated as transparent outside it, which
 // is what keeps the mapped rectangle's own border crisp instead of feathering
 // it by half a texel for free.
+//
+// **Bilinear alone is only correct for magnification.** A tip drawn far
+// smaller than its native pixels -- a 900 px scanned tip at `radius == 8` is
+// minified about 56x -- has a query point whose four bilinear neighbours are
+// four texels out of the thousands the output texel actually spans, so the
+// sampled value is noise rather than an average, and a stroke of such dabs
+// sparkles. Track B / B2 (`brush/TipMips.hpp`) is the fix: `BrushTipBitmap`
+// carries a box-filtered mip chain, built once alongside `alpha`, and
+// `bitmapDabCoverage()` (brush/Deposit.cpp) picks the coarsest level whose own
+// texel still maps to no more than about 2 document pixels -- `scale =
+// bitmapTipScale(bmp, tip.radius)` document pixels per NATIVE texel, `level =
+// clamp(floor(log2(1/scale)), 0, mips.size())` -- and samples THAT level
+// bilinearly instead of level 0. At `scale >= 1` (drawn at native size or
+// magnified) `level` is always 0 and the arithmetic is the bilinear sample
+// above, bit-identical to before this section existed; minification is the
+// only case that ever reaches a coarser level. No trilinear blend between two
+// levels -- a second sample per texel would double this function's cost for
+// every bitmap-tipped dab in the build, to fix an artefact (sparkle) that one
+// correctly-chosen level already removes; the residual banding between two
+// adjacent mip levels, where it is visible at all, is a softer defect than
+// the sparkle it replaces.
 //
 // ==========================================================================
 // 2d. Dual Brush: a second tip, composited into the same one number
@@ -624,6 +712,23 @@ struct BrushTipBitmap {
   // own return value, and §2c records the ASCII-art check against a real
   // sample that pinned this polarity down rather than assumed it.
   std::vector<uint8_t> alpha;
+
+  // §2c's mip chain (Track B / B2, `brush/TipMips.hpp`), built ONCE by
+  // `buildTipMips()` at the same three sites that decode `alpha` above --
+  // never mutated afterwards, so it is exactly as safe to share lock-free as
+  // `alpha` itself. `mips[0]` is a 2x2 box downsample of THIS struct (level 0,
+  // implicit -- `mips` does not duplicate it), `mips[1]` a downsample of
+  // `mips[0]`, and so on, each dimension rounded UP, down to a `1x1` level;
+  // `mips.size()` is therefore `ceil(log2(max(width,height)))`, not a fixed
+  // count. Every `mips[k]` shares this struct's own layout (row-major, one
+  // byte per texel, 255 = full coverage) so `sampleBitmapCoverage()`
+  // (brush/Deposit.cpp) samples any level with no second code path. Empty for
+  // a tip nobody has called `buildTipMips()` on (every pre-existing selftest
+  // fixture that builds a `BrushTipBitmap` by hand and skips it), which is
+  // also the degenerate `width <= 0 || height <= 0` case -- `bitmapDabCoverage()`
+  // treats an empty chain as "level 0 only", so an un-mipped tip paints exactly
+  // as it did before this field existed rather than indexing past the end.
+  std::vector<BrushTipBitmap> mips;
 };
 
 // How a Dual Brush's second tip combines with the first (§2d), Photoshop's
@@ -659,8 +764,26 @@ struct BrushTip {
   float radius = 24.0f;
 
   // The fraction of the radius that is the flat, fully-covered core, in
-  // [0,1]. 0 is a pure smoothstep from the centre; 1 is a hard disc.
+  // [0,1]. 0 is a pure smoothstep from the centre; 1 is a hard disc only at
+  // `edgePx == 0` -- at the default `edgePx` below it is a flat core out to
+  // `radius - edgePx` with an antialiased last pixel (§2; this line used to
+  // say "1 is a hard disc" unqualified, which `edgePx` made false).
   float hardness = 0.35f;
+
+  // **The minimum width, in DOCUMENT PIXELS, of the smoothstep skirt** --
+  // Track B / B1, §2's rewritten argument. `hardness` alone measures the
+  // skirt in *radius* units, so a small or a hard tip can specify a skirt
+  // under a pixel wide and stair-step; this is the floor that keeps every
+  // procedural tip's rim antialiased by at least this many pixels regardless
+  // of `radius`/`hardness`. Ignored for a bitmap tip (§2c) -- `hardness` has
+  // no meaning there either, for the identical reason. 1.0f is the fixed
+  // value every `BrushTip` in this build carries this wave; there is no UI
+  // control for it yet (a later wave's native-brush section may add one).
+  //
+  // `brush/PencilDeposit.cpp` zeroes this on its own LOCAL copy of the tip
+  // before calling `dabCoverage()` -- a pencil is aliased on purpose (its own
+  // header §0), and this field's whole job is to un-alias a hard edge.
+  float edgePx = 1.0f;
 
   // Minor/major axis ratio of an elliptical tip, in (0,1]; 1 is round. See
   // §2b. `radius` above is the semi-MAJOR axis whatever this holds, so
@@ -946,6 +1069,17 @@ PigmentTexel depositTexel(const PigmentTexel& dst, const Latent& pigment, float 
 // so a dual tip strictly larger than the primary still cannot make a dab
 // paint outside the box computed here. Widening this function for a second
 // tip would be defending against a case that cannot occur.
+//
+// **Needs no case for `tip.edgePx` (§2, Track B / B1) or a bitmap's mip
+// chain (§2c, Track B / B2), for the same shape of reason both times: neither
+// changes WHERE coverage can be nonzero, only what it computes there.**
+// `edgePx` can only widen the flat-core-to-1.0 interval; it cannot move the
+// rim (`d < 1` from `singleTipCoverage()`'s squared comparison, unchanged) or
+// make a covered texel appear beyond it. A mip level is a different SAMPLE of
+// a bitmap tip's already-bounded rectangle, not a different rectangle -- level
+// and level 0 answer `bitmapTipScale()`/the `[0,width] x [0,height]` gate
+// identically, so the footprint this function reports is exactly as tight
+// with mips as without them.
 struct PixelBounds {
   int32_t x0 = 0, y0 = 0, x1 = -1, y1 = -1;
   bool empty() const noexcept { return x1 < x0 || y1 < y0; }
