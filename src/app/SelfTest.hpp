@@ -6439,4 +6439,11 @@ bool runTextKeyCaptureTest();
 // Headless, GPU-free, writes no files. See app/selftest/CommandCallsites.cpp.
 bool runCommandCallsitesTest();
 
+// Track `xform` (PRD C12): `app::TransformSession`'s `TransformTarget::
+// LayerSet` -- a multi-layer selection transformed together as one set. One
+// gizmo around the union of every admitted member's content bounds, one
+// shared matrix, one atomic multi-layer commit, ONE `recordEdit()`. Headless,
+// GPU-free. See app/selftest/TransformLayerSet.cpp.
+bool runTransformLayerSetTest();
+
 }  // namespace np

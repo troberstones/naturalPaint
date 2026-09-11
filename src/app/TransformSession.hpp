@@ -4,10 +4,13 @@
 #include <cstdint>
 #include <string>
 
+#include <vector>
+
 #include "app/DocumentLifecycle.hpp"
 #include "core/Clipboard.hpp"
 #include "core/Document.hpp"
 #include "core/Layer.hpp"
+#include "core/LayerSetOps.hpp"
 #include "core/SelectionMask.hpp"
 #include "ops/DocumentTransform.hpp"
 #include "ops/Transform.hpp"
@@ -270,7 +273,100 @@
 // resample at the end" design: there is no partial state to unwind.
 namespace np {
 
-enum class TransformTarget { Layer, SelectionPixels };
+// ==========================================================================
+// (8) THE THIRD TARGET: A SET OF LAYERS, ONE MATRIX, ONE COMMIT (PRD C12)
+// ==========================================================================
+//
+// `TransformTarget::LayerSet` is `TransformTarget::Layer` widened from one
+// index to `core::LayerSelection`'s sorted, duplicate-free set -- the
+// multi-selection the LAYERS panel already keeps (`core/LayerSetOps.hpp`
+// section 2's own argument for indices over ids applies unchanged here: the
+// set is consumed within one gesture, never stored past it). Everything
+// section 1's "one matrix, one resample at commit" argument says about a
+// single layer is unchanged for a set; what is new is that `commit()` now
+// walks N layers instead of one before it writes anything.
+//
+// **Admission is per-member, and it is `beginLayer()`'s OWN predicate,
+// applied to every member rather than re-decided for the set.** A member is
+// admitted exactly when a lone `beginLayer()` on it would have succeeded:
+// not locked, and either `LayerKind::Text` (geometry-only, moved by
+// `transformTextLayer()`) or holding RGB or Pigment tiles with non-empty
+// content. Two kinds fall out of that rule with no special case at all, and
+// this is this step's answer to the brief's own question:
+//
+//   **Group** -- holds no pixels of any kind (`core/Layer.hpp`: "exactly
+//   Adjustment's contract"), so it is refused by the identical "holds no
+//   pixels to transform" sentence Adjustment gets. That refusal is a
+//   decision, not a gap left by the generic rule: transforming a Group AS A
+//   BLOCK would mean expanding the selection to its contiguous member span
+//   (`core/LayerSetOps.hpp` section 5) and recursing into any group nested
+//   inside it, which is real machinery with its own ordering and z-order
+//   questions -- out of this step's scope, and refused by name rather than
+//   silently transforming nothing or silently expanding a selection the user
+//   did not make. Select a group's members directly instead.
+//
+//   **Adjustment** -- holds no pixels either, same sentence, same reason
+//   `beginLayer()` already refuses it alone: there is nothing for a matrix to
+//   resample.
+//
+// Refusing an admission failure names the FIRST offending member, ascending
+// by index, and refuses the WHOLE set -- `core/LayerSetOps.hpp` section 3's
+// rule ("a set operation either applies to every member or to none") applies
+// here for the identical reason: a Free Transform that silently dropped the
+// one locked layer from a five-layer drag would move four layers under a
+// gizmo drawn as if it owned five, which is worse than refusing before the
+// gizmo ever appears.
+//
+// **The box is the union of every admitted member's own content bounds**
+// (`core::unionLayerBounds()`), in the SAME `LayerBounds`-to-`DocumentRegion`
+// conversion `beginLayer()` uses. One gizmo, sized to cover every layer that
+// will move -- not one box per layer, which would need N sets of handles
+// answering to one drag.
+//
+// **Every member is stamped with `layerId()`'s own defect-closing mechanism,
+// not just one.** `beginLayer()`'s comment measured what happens when a
+// single stale index is trusted; a set has N chances for the same hazard
+// (`Layer > Delete Layer` reachable while a gizmo is up, `docs/testing-
+// issues.md` T29), so `commit()` re-checks every member's id before writing
+// a single pixel, and refuses the whole set, by name, if even one has moved.
+//
+// **Commit is `core/LayerSetOps.hpp`'s own atomicity discipline, one level
+// up.** It runs `transformLayer()` (or `transformTextLayer()` for a Text
+// member) against a COPY of `od.document`, one member at a time; the first
+// refusal discards the copy and returns that member's own sentence, `od`
+// untouched. All-or-nothing is not merely consistent with that file's rule,
+// it is required by section 1's own promise here: two members committed and
+// a third refused would leave the set half-transformed under a gizmo that
+// still claims to own all of them. A successful commit is ONE
+// `recordEdit()`, hence one history entry and one undo restoring every
+// member together -- the identical reason `core/LayerSetOps.hpp` gives for
+// N-entries-for-one-gesture being a data-loss bug wearing an undo stack's
+// clothes.
+//
+// **The single-layer path is untouched by any of this.** `beginLayer()` and
+// its branch of `commit()` are not modified, reused, or routed through this
+// target's code in any way -- `TransformTarget::Layer` and
+// `TransformTarget::LayerSet` are separate branches on `target_`, so a
+// one-layer selection committing through `beginLayer()` is bit-identical to
+// before this target existed. `beginLayerSet()` itself refuses a selection
+// smaller than two, by name, so the single-layer path stays the ONLY path a
+// one-layer selection can reach -- there is deliberately no second door into
+// it.
+//
+// **What this does NOT decide: the live preview for a non-contiguous set.**
+// This header and its `commit()` are agnostic to which indices are in the
+// set -- a `LayerSelection` of {0, 2, 4} unions and transforms exactly as
+// {0, 1, 2} does. The UI's live pixel preview is a different story:
+// `ui/TransformCompositeSplit`'s below/moving/above arrangement is a
+// PARTITION of the stack at one boundary, and a non-contiguous set has no
+// single boundary to partition at. See that file's own header for the
+// fallback this build takes (a contiguous set gets an exact preview; a
+// non-contiguous one refuses the gesture by name before the gizmo appears,
+// rather than beginning a session whose live preview would show something
+// `commit()` does not write) -- a decision made at the UI layer, which is
+// the one place that already knows what it can and cannot draw.
+// ==========================================================================
+enum class TransformTarget { Layer, SelectionPixels, LayerSet };
 
 // One of the eight box handles, the rotation affordance, or a drag on the
 // box's own body (Move). `None` is "not over anything".
@@ -396,7 +492,14 @@ class TransformSession {
  public:
   bool active() const noexcept { return active_; }
   TransformTarget target() const noexcept { return target_; }
+  // Meaningless for `TransformTarget::LayerSet` -- 0, always, for that
+  // target. Use `layerIndices()` instead; this is unchanged for the other
+  // two targets, which is what keeps every existing call site correct
+  // without having to know a third target exists.
   size_t layerIndex() const noexcept { return layerIndex_; }
+  // The set `beginLayerSet()` began on, sorted ascending -- empty for the
+  // other two targets. Section 8 above.
+  const std::vector<size_t>& layerIndices() const noexcept { return layerIndices_; }
   const DocumentRegion& sourceBounds() const noexcept { return sourceBounds_; }
   const Mat3& pending() const noexcept { return pending_; }
 
@@ -483,6 +586,27 @@ class TransformSession {
   TransformBeginResult beginSelectionPixels(OpenDocument& od, const Selection& selection,
                                             size_t layerIndex);
 
+  // Begins a transform of every member of `sel` together, as one set (PRD
+  // C12; this header's section 8). Refuses, by name, before touching `od`:
+  //
+  //   * `sel.size() < 2` -- a one-layer selection is `beginLayer()`'s own
+  //     path, and this function does not become a second door into it.
+  //   * any out-of-range index;
+  //   * any LOCKED member;
+  //   * any member whose kind holds no pixels to transform and is not
+  //     `LayerKind::Text` -- which is how `Group` and `Adjustment` are
+  //     refused, with no special case for either (section 8);
+  //   * any member with engaged-but-empty storage ("no content -- nothing to
+  //     transform"), `beginLayer()`'s own phrase.
+  //
+  // The first offending member, ascending by index, names the refusal.
+  // `sourceBounds()` becomes the union of every admitted member's own
+  // content bounds. `sel`'s indices need not be contiguous -- this function
+  // does not care, and neither does `commit()`; contiguity is a live-preview
+  // concern the UI decides (section 8's closing paragraph).
+  TransformBeginResult beginLayerSet(OpenDocument& od, const LayerSelection& sel,
+                                     const Mat3& initialPending = mat3Identity());
+
   // Which document this session belongs to, or 0 when no session is active.
   // A caller drawing the gizmo, claiming the mouse for it, or committing it
   // must compare this against the document it is about to act on -- see
@@ -561,6 +685,15 @@ class TransformSession {
   // are what name the pixels this session owns, and a pair kept in two places
   // is a pair that can disagree.
   uint64_t layerId_ = 0;
+  // `TransformTarget::LayerSet` only (section 8) -- `layerIndex_`/`layerId_`
+  // above stay at their defaults for this target rather than being pressed
+  // into holding, say, the lowest member: a reader who sees `layerIndex_`
+  // used for a set would reasonably assume it means what it means for the
+  // other two targets. Parallel and same length; `layerIndices_[i]` is
+  // stamped with `layerIds_[i]`, the identical per-member defect `layerId()`
+  // closes for the single-layer case, closed here once per member.
+  std::vector<size_t> layerIndices_;
+  std::vector<uint64_t> layerIds_;
   DocumentRegion sourceBounds_;
   Mat3 pending_ = mat3Identity();
   Selection selectionSnapshot_;  // only meaningful for SelectionPixels

@@ -4051,6 +4051,10 @@ int main(int argc, char** argv) {
     // PLAN.md phase 16 (ADR-0009): the flatting library absorbed from
     // autoFlats, bit-exact against its reference on the shared fixtures.
     const bool flatsOk = np::runFlatsTest();
+    // Track `xform` (PRD C12): a multi-layer selection transformed together
+    // as one set, through app/TransformSession's `TransformTarget::LayerSet`.
+    // Appended at the end of the chain, per this wave's own convention.
+    const bool transformLayerSetOk = np::runTransformLayerSetTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4118,7 +4122,7 @@ int main(int argc, char** argv) {
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk && dialogModuleOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
                     penToolOk && pathOpsOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
-                    textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk;
+                    textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && transformLayerSetOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
