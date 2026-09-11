@@ -443,6 +443,16 @@ bool runPointerQueueTest() {
     check(q.size() == 0, "6. pen-synthesised mouse motion and button-down queue nothing");
     q.push(mouseEv(K::MouseButtonUp, 2.0f, 4, true, true));
     check(q.size() == 0, "6. pen-synthesised button-up queues nothing");
+    // The same duplicates while a REAL mouse gesture is open. Without this the
+    // motion filter is untestable: the check above passes on the open-gesture
+    // gate alone (a pen's synthesised press opens no mouse gesture), which is
+    // how a sabotage deleting the filter first stayed green.
+    PointerQueue m;
+    m.push(mouseEv(K::MouseButtonDown, 1.0f, 1));
+    m.push(mouseEv(K::MouseMotion, 2.0f, 2, true, /*penSynth=*/true));
+    m.push(mouseEv(K::MouseButtonDown, 3.0f, 3, true, true));
+    m.push(mouseEv(K::MouseMotion, 4.0f, 4, true, true));
+    check(m.size() == 1, "6. pen-synthesised motion/press never join an open mouse gesture");
 
     PointerQueue t;  // touch-generated mouse: which == SDL_TOUCH_MOUSEID, not the pen's
     t.push(mouseEv(K::MouseButtonDown, 5.0f, 1));
