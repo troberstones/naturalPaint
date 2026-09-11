@@ -133,10 +133,24 @@ this kind of build; copying it to a different directory on the *same* machine
 is enough to break it. `tools/package-linux/package.sh` fixes this: it
 bundles the non-system shared libraries `ldd` actually finds (found by
 inspecting the loader's output, not by hardcoding OpenImageIO's name -- so a
-version bump doesn't require editing the script), strips debug info (234 MB
--> 21 MB, measured on this build), and repoints the binary at its own bundled
-copy with an old-style `DT_RPATH` rather than `patchelf`'s default
-`DT_RUNPATH`. That distinction is load-bearing, not cosmetic: `DT_RUNPATH`
+version bump doesn't require editing the script), strips debug info from
+*both* the executable and the bundled libraries, and repoints the binary at
+its own bundled copy with an old-style `DT_RPATH` rather than `patchelf`'s
+default. Stripping the libraries matters as much as stripping the executable:
+a from-source OIIO build with `EMBEDPLUGINS=ON` statically absorbs OpenEXR,
+Imath, OpenColorIO, libjpeg-turbo, WebP and others into `libOpenImageIO.so`
+itself, each carrying its own unstripped debug info, so on this build
+`libOpenImageIO.so.3.0.18` alone measured 167 MB -> 14 MB stripped and
+`libOpenImageIO_Util.so` 18 MB -> 1 MB -- dwarfing the executable's own
+234 MB -> 21 MB. A version of this script that only stripped the executable
+would have shipped a ~230 MB package; stripping both brings it to ~39 MB, with
+`--selftest`'s known-failure set unchanged before and after. `USE_QT=ON` in
+the OIIO build does not contribute to this: it only builds OIIO's own `iv`
+viewer tool (not something naturalPaint links against), confirmed by zero Qt
+symbols in `libOpenImageIO.so` itself.
+
+That distinction (`DT_RPATH` over `patchelf`'s default `DT_RUNPATH`) is
+load-bearing, not cosmetic: `DT_RUNPATH`
 loses to `LD_LIBRARY_PATH`, and `LD_LIBRARY_PATH` is exactly what gets
 exported by a sourced Houdini/Nuke/RV environment on a box that also has DCC
 tools installed -- several of which bundle their own OpenImageIO. Verified by

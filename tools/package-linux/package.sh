@@ -126,11 +126,26 @@ done < <(ldd "$BIN")
 say "bundled: ${bundled[*]:-<none>}"
 
 # --- Strip and repoint --------------------------------------------------------
+# The bundled libs, not just the executable: a from-source OIIO build statically
+# absorbs OpenEXR/Imath/OpenColorIO/libjpeg-turbo/WebP/etc into libOpenImageIO.so
+# itself, each carrying its own debug_info, none of it stripped by OIIO's own
+# build. Measured on this build: libOpenImageIO.so.3.0.18 alone is 167 MB ->
+# 15 MB stripped -- skipping this step ships ~150 MB of symbol tables nobody
+# asked for, dwarfing what stripping the 21 MB executable saves.
 if [ "$do_strip" -eq 1 ]; then
   before=$(stat -c%s "$out/naturalPaint")
   strip "$out/naturalPaint"
   after=$(stat -c%s "$out/naturalPaint")
-  say "stripped: $((before / 1024 / 1024)) MB -> $((after / 1024 / 1024)) MB"
+  say "stripped naturalPaint: $((before / 1024 / 1024)) MB -> $((after / 1024 / 1024)) MB"
+
+  for f in "$out"/lib/*; do
+    [ -L "$f" ] && continue   # symlinks (the unversioned SONAME names) -- nothing to strip
+    [ -f "$f" ] || continue
+    before=$(stat -c%s "$f")
+    strip "$f" 2>/dev/null || { warn "strip failed on $(basename "$f"), leaving as-is"; continue; }
+    after=$(stat -c%s "$f")
+    say "stripped $(basename "$f"): $((before / 1024 / 1024)) MB -> $((after / 1024 / 1024)) MB"
+  done
 fi
 
 # --force-rpath is the whole point -- see the header comment. Plain --set-rpath
