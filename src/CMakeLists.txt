@@ -29,6 +29,7 @@ add_executable(naturalPaint
   app/PathOps.cpp
   app/PathsPanel.cpp
   app/PenTool.cpp
+  app/ShapeTool.cpp
   app/VectorStyle.cpp
   app/TextTool.cpp
   app/PsdExportCli.cpp
@@ -287,6 +288,7 @@ add_executable(naturalPaint
   app/selftest/PathsPanel.cpp
   app/selftest/PenTool.cpp
   app/selftest/PenDraw.cpp
+  app/selftest/ShapeTool.cpp
   app/selftest/VectorStyle.cpp
   app/selftest/TextTool.cpp
   app/selftest/TextShaper.cpp

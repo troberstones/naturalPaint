@@ -6220,6 +6220,19 @@ bool runPenToolTest();
 // app/selftest/PenDraw.cpp.
 bool runPenDrawTest();
 
+// app/ShapeTool -- Tool::Shape's headless geometry and commit (docs/ui.md
+// §4a: "a Shape tool is a gesture that emits a `VectorShape` into the layer
+// the Pen already edits"). `shapeToolGeometry()` for all five kinds
+// (rectangle, ellipse, rounded rectangle, polygon, line) crossed with each of
+// Shift (square/circle/regular-polygon/45-degree-line) and Option
+// (draw-from-centre), a rasterised-coverage check against the analytic area
+// of a drawn rectangle, and `commitShapeTool()`'s one-shape-one-id-one-
+// selection contract, including that a plain click commits nothing and a
+// second draw replaces rather than extends the selection. Headless and
+// GPU-free; writes no files; touches no ui/ file. See
+// app/selftest/ShapeTool.cpp.
+bool runShapeToolTest();
+
 // app/VectorStyle -- the Pen's PAINT (docs/path-editing-plan.md section 2).
 //
 // The section exists because a pen-drawn path was invisible: the shape was

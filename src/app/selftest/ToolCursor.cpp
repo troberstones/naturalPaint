@@ -477,7 +477,7 @@ bool runToolCursorTest() {
     // will want is already written in `cursorForTool()`. Pinned on two of them
     // so a future implementation that forgot the cursor cannot go unnoticed.
     check(!toolImplemented(Tool::Frame) && cursorForTool(Tool::Frame) == ToolCursor::MoveObject &&
-              !toolImplemented(Tool::Shape) && cursorForTool(Tool::Shape) == ToolCursor::Select,
+              !toolImplemented(Tool::Slice) && cursorForTool(Tool::Slice) == ToolCursor::Select,
           "unbuilt: an unbuilt tool still has its intent recorded -- the day it ships, "
           "toolImplemented() flips and the right cursor appears with no edit here");
 
@@ -509,11 +509,20 @@ bool runToolCursorTest() {
     // whatsoever -- it has answered `ToolCursor::Text` since the day this file
     // was written. `Tool::Shape` took its place above. Three collections is
     // the point at which the promise stops being a hopeful comment.
+    //
+    // **And a FOURTH time, by Shape**, docs/ui.md §4a. `Tool::Shape` was the
+    // pinned example above until app/ShapeTool plus the canvas block flipped
+    // `toolImplemented()`, and `cursorForTool(Tool::Shape)` needed no edit --
+    // it has answered `ToolCursor::Select` since the "defines a region or a
+    // path" grouping was written, alongside Crop, Slice, Pen and Curve.
+    // `Tool::Slice` took its place above.
     check(toolImplemented(Tool::Eraser) && cursorForTool(Tool::Eraser) == ToolCursor::Paint &&
               toolImplemented(Tool::Pencil) && cursorForTool(Tool::Pencil) == ToolCursor::Paint &&
-              toolImplemented(Tool::Text) && cursorForTool(Tool::Text) == ToolCursor::Text,
-          "unbuilt: the Eraser, the Pencil and Text each shipped carrying the intent they "
-          "were written with while still unbuilt -- the promise above, collected three times");
+              toolImplemented(Tool::Text) && cursorForTool(Tool::Text) == ToolCursor::Text &&
+              toolImplemented(Tool::Shape) && cursorForTool(Tool::Shape) == ToolCursor::Select,
+          "unbuilt: the Eraser, the Pencil, Text and Shape each shipped carrying the intent "
+          "they were written with while still unbuilt -- the promise above, collected four "
+          "times");
   }
 
   std::printf("  -- G. §7's bitmap cursors, and §8's hotspot: ink, layout, flag-off identity --\n");

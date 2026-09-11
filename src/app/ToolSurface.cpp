@@ -3,6 +3,7 @@
 #include "app/CropTool.hpp"       // toolCropsCanvas()
 #include "app/MoveTool.hpp"       // toolMovesPixels()
 #include "app/PenTool.hpp"        // toolEditsPath()
+#include "app/ShapeTool.hpp"      // toolCreatesShapes()
 #include "app/StrokeSession.hpp"  // the route table and five of the gates
 #include "app/TextTool.hpp"       // toolEditsText()
 #include "app/ZoomAndSize.hpp"    // toolZoomsView()
@@ -104,6 +105,12 @@ const char* toolSurfaceRefusal(Tool tool, bool documentOpen) {
   // and the Text tool neither paints nor edits anchors -- it sets type.
   if (toolEditsText(tool))
     return "Nothing to set type in: no document is open. File > New Document makes one.";
+  // Its own lead-in for the identical reason: Shape neither paints, moves
+  // pixels, nor edits an existing anchor model -- it drags out a new
+  // primitive -- so "Nothing to draw paths in" (the Pen's own row) would
+  // name a tool this cell is not.
+  if (toolCreatesShapes(tool))
+    return "Nothing to draw shapes in: no document is open. File > New Document makes one.";
   if (toolBeginsStroke(tool))
     return "Nothing to paint on: no document is open. File > New Document makes one.";
 
