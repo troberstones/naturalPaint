@@ -2383,7 +2383,13 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     popAtelierMono();
 
     bandSeparator();
-    drawStabiliserPopover(st);
+    // Wave 2 brief item 4: a `capsLabel` + field, matching every other
+    // control in this band (WET/TIP above), not a bare grey `ImGui::Button`
+    // -- `drawStabiliserOptionsBarField()`'s own comment on why it needs the
+    // label drawn here rather than inside itself.
+    capsLabel("STABILISER");
+    ImGui::SameLine();
+    drawStabiliserOptionsBarField(st);
   }
 
   // --- the smudge's own controls -------------------------------------------

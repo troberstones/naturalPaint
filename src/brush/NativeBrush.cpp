@@ -10,8 +10,8 @@ bool stabiliserSettingEqual(const BrushStabiliserSetting& a,
   const StabiliserParams& x = a.own;
   const StabiliserParams& y = b.own;
   return x.mode == y.mode && x.stringPx == y.stringPx && x.strength == y.strength &&
-         x.responsiveness == y.responsiveness && x.catchUpAtEnd == y.catchUpAtEnd &&
-         x.catchUpWhilePaused == y.catchUpWhilePaused &&
+         x.responsiveness == y.responsiveness && x.catchUpMs == y.catchUpMs &&
+         x.catchUpAtEnd == y.catchUpAtEnd && x.catchUpWhilePaused == y.catchUpWhilePaused &&
          x.stabilisePressure == y.stabilisePressure && x.scaleWithZoom == y.scaleWithZoom &&
          x.showString == y.showString;
 }

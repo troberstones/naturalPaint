@@ -20517,15 +20517,35 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 
         // "Show string": the nib-to-pointer line, and the pulled-string
         // circle, drawn while painting only.
+        //
+        // **Root cause of "draw the string didn't work" (Wave 2 brief item
+        // 1): the previous version drew both in plain white at partial alpha
+        // (160/110), no outline.** Draw order was never the problem -- this
+        // is the `##canvas` window's own `dl`, and the navigator (drawn far
+        // later, ~line 22323, `31dd9f3`'s "after every overlay") and the
+        // brush cursor ring (later still, ~line 22384, an UNFILLED
+        // `AddCircle`) only ever cover a thin ring at their own radius, never
+        // the interior where this line/circle sit -- verified by reading the
+        // source order of every `dl->Add*` call between this block and the
+        // end of `##canvas`'s drawing, not by running the app (a UI draw call
+        // has no selftest). The white line/circle was invisible for the
+        // overwhelmingly common case this app starts every document in: a
+        // white/light canvas, where a low-alpha white line reads as nothing.
+        // A dark-then-light double stroke -- the same halo pattern the
+        // vector anchor markers use a few hundred lines below (search
+        // `rimSegs, 3.0f`) -- reads over both a light canvas and a dark one.
         const Stabiliser& sb = g_stroke.stabiliser();
         if (sb.params().showString && sb.params().mode != StabiliserMode::Off && sb.active()) {
           const Vec2 nibScreen = xform.toScreen(sb.nibPos());
           const Vec2 rawScreen = xform.toScreen(sb.rawPos());
-          dl->AddLine(ImVec2(nibScreen.x, nibScreen.y), ImVec2(rawScreen.x, rawScreen.y),
-                      IM_COL32(255, 255, 255, 160), 1.0f);
+          const ImVec2 nibPt(nibScreen.x, nibScreen.y);
+          const ImVec2 rawPt(rawScreen.x, rawScreen.y);
+          dl->AddLine(nibPt, rawPt, IM_COL32(0, 0, 0, 170), 3.0f);
+          dl->AddLine(nibPt, rawPt, IM_COL32(255, 255, 255, 230), 1.0f);
           if (sb.params().mode == StabiliserMode::PulledString) {
-            dl->AddCircle(ImVec2(rawScreen.x, rawScreen.y), sb.effectiveStringPx() * st.view.zoom,
-                          IM_COL32(255, 255, 255, 110), 32, 1.0f);
+            const float r = sb.effectiveStringPx() * st.view.zoom;
+            dl->AddCircle(rawPt, r, IM_COL32(0, 0, 0, 170), 32, 3.0f);
+            dl->AddCircle(rawPt, r, IM_COL32(255, 255, 255, 230), 32, 1.0f);
           }
         }
       }

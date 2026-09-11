@@ -400,6 +400,25 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
       continue;
     }
 
+    if (key == "stabiliserCatchUpMs") {
+      // `own.catchUpMs` (brush/Stabiliser.hpp), a separate key rather than a
+      // 7th field on `stabiliser` below -- `taper`'s own comment on why:
+      // growing that line's required count would fail `takeFloats(rest, 6,
+      // ...)` for every `stabiliser` line a file already has, silently
+      // losing the brush's mode/amount/own on the very next save. An older
+      // build that does not know this key falls through to the generic
+      // "unrecognised key, preserve the line verbatim" case at the end of
+      // this loop, same as any other key it predates.
+      float n;
+      if (takeFloats(rest, 1, &n) && std::isfinite(n)) {
+        pending.native.stabiliser.own.catchUpMs = std::clamp(n, 0.0f, 2000.0f);
+      } else {
+        pendingUnknown.push_back(line);
+      }
+      pointMode = PointMode::None;
+      continue;
+    }
+
     if (key == "stabiliser") {
       // This brush's own stabiliser choice (brush/Stabiliser.hpp).
       // `<brushMode> <amountPct> <ownMode> <ownStringPx> <ownStrength>
@@ -657,6 +676,11 @@ std::string UserBrushLibraryStore::serialize(const BrushLibrary& lib) const {
              " " + std::to_string(static_cast<int>(s.own.mode)) + " " + f9(s.own.stringPx) +
              " " + f9(s.own.strength) + " " + f9(s.own.responsiveness) + "\n";
     }
+    // Own key, own default check (same "own is checked regardless of mode"
+    // reasoning as `ownDiffers` just above): a value tuned under `Own` must
+    // survive switching back to `Follow global` without being touched again.
+    if (s.own.catchUpMs != ownDefault.catchUpMs)
+      out += "stabiliserCatchUpMs " + f9(s.own.catchUpMs) + "\n";
     const auto it = presetUnknownLines_.find(p.name);
     if (it != presetUnknownLines_.end())
       for (const std::string& line : it->second) out += sanitizeOneLine(line) + "\n";

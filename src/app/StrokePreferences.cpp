@@ -161,6 +161,9 @@ void StrokePreferencesStore::parse(const std::string& text, StabiliserParams& gl
     } else if (key == "responsiveness" && takeFloat(rest, f) && std::isfinite(f)) {
       global.responsiveness = std::clamp(f, 0.0f, 100.0f);
       continue;
+    } else if (key == "catchUpMs" && takeFloat(rest, f) && std::isfinite(f)) {
+      global.catchUpMs = std::clamp(f, 0.0f, 2000.0f);
+      continue;
     } else if (key == "catchUpAtEnd" && takeFloat(rest, f)) {
       global.catchUpAtEnd = f != 0.0f;
       continue;
@@ -209,6 +212,7 @@ std::string StrokePreferencesStore::serialize(const StabiliserParams& global) co
   out += "stringPx " + f9(global.stringPx) + "\n";
   out += "strength " + f9(global.strength) + "\n";
   out += "responsiveness " + f9(global.responsiveness) + "\n";
+  out += "catchUpMs " + f9(global.catchUpMs) + "\n";
   out += std::string("catchUpAtEnd ") + (global.catchUpAtEnd ? "1" : "0") + "\n";
   out += std::string("catchUpWhilePaused ") + (global.catchUpWhilePaused ? "1" : "0") + "\n";
   out += std::string("stabilisePressure ") + (global.stabilisePressure ? "1" : "0") + "\n";

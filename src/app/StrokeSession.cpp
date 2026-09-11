@@ -2303,14 +2303,18 @@ const std::vector<TileCoord>& StrokeSession::tick(uint64_t nowNs) {
 const std::vector<TileCoord>& StrokeSession::end() {
   if (doc_ == nullptr) return strokeTiles_;
 
-  // "Catch up at end": one last sample, snapped straight to the last raw
-  // position, so the final dab lands within one spacing of the lift point
-  // even though the nib itself may still be lagging behind it. Off mode
-  // never lags in the first place (`stabiliser_.forceCatchUp()` would just
-  // repeat the last sample, and this call is skipped for it).
+  // "Catch up at end": walks the nib to the last raw position along the raw
+  // path it actually took (Wave 2 brief item 3 -- `Stabiliser::forceCatchUp`'s
+  // own comment), so the final dab lands within one spacing of the lift
+  // point without cutting across a bend the pen made while the nib was
+  // lagging. Off mode never lags in the first place (`forceCatchUp()` would
+  // just repeat the last sample, and this call is skipped for it).
   if (stabiliserParams_.mode != StabiliserMode::Off && stabiliserParams_.catchUpAtEnd) {
-    StrokeSample snapped;
-    if (stabiliser_.forceCatchUp(snapped)) path_.addPoint(snapped, taperedSpacingPx(), pending_);
+    std::vector<StrokeSample> catchUpSteps;
+    if (stabiliser_.forceCatchUp(catchUpSteps)) {
+      for (const StrokeSample& step : catchUpSteps)
+        path_.addPoint(step, taperedSpacingPx(), pending_);
+    }
   }
 
   path_.flush(tip_.spacingPx(), pending_);

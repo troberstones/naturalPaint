@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace np {
 namespace {
@@ -42,6 +43,9 @@ StabiliserParams resolveStabiliser(const StabiliserParams& global,
       // `responsiveness` is deliberately NOT scaled by `amt` -- it is a
       // cutoff-curve shape control, not a magnitude the "amount" slider's
       // 0-300% is meant to stretch (see StabiliserParams::responsiveness).
+      // `catchUpMs` is untouched too (stays at `eff`'s copy of `global`'s):
+      // it is a duration, not a "string length / strength" magnitude, so it
+      // is one of the options that always follows the global setting.
       break;
     }
     case StabiliserBrushMode::Own:
@@ -49,6 +53,7 @@ StabiliserParams resolveStabiliser(const StabiliserParams& global,
       eff.stringPx = brush.own.stringPx;
       eff.strength = brush.own.strength;
       eff.responsiveness = brush.own.responsiveness;
+      eff.catchUpMs = brush.own.catchUpMs;
       break;
   }
   return eff;
@@ -66,6 +71,7 @@ void Stabiliser::begin(const StabiliserParams& params, float viewZoom) noexcept 
   nib_ = Vec2{};
   haveNib_ = false;
   snappedPressure_ = 1.0f;
+  pulledStringPauseGap0_ = 0.0f;
   haveFilter_ = false;
   filtPos_ = Vec2{};
   prevRawPos_ = Vec2{};
@@ -73,11 +79,67 @@ void Stabiliser::begin(const StabiliserParams& params, float viewZoom) noexcept 
   filtPressure_ = 1.0f;
   prevTsNs_ = 0;
   prevRealTsNs_ = 0;
+  pathHistory_.clear();
 }
 
 float Stabiliser::effectiveStringPx() const noexcept {
   const float z = (params_.scaleWithZoom && zoom_ > 1e-6f) ? zoom_ : 1.0f;
   return std::max(params_.stringPx / z, 0.0f);
+}
+
+void Stabiliser::appendPathHistory(const StrokeSample& raw) noexcept {
+  pathHistory_.push_back(raw);
+  if (pathHistory_.size() > kMaxPathHistory) pathHistory_.erase(pathHistory_.begin());
+}
+
+float Stabiliser::totalArcLength() const noexcept {
+  float acc = 0.0f;
+  for (size_t i = 0; i + 1 < pathHistory_.size(); ++i) {
+    const Vec2 p0 = pathHistory_[i].pos, p1 = pathHistory_[i + 1].pos;
+    acc += std::hypot(p1.x - p0.x, p1.y - p0.y);
+  }
+  return acc;
+}
+
+float Stabiliser::projectArcLength(Vec2 from) const noexcept {
+  if (pathHistory_.size() < 2) return 0.0f;
+  float acc = 0.0f;
+  float bestD2 = std::numeric_limits<float>::max();
+  float bestS = 0.0f;
+  for (size_t i = 0; i + 1 < pathHistory_.size(); ++i) {
+    const Vec2 p0 = pathHistory_[i].pos, p1 = pathHistory_[i + 1].pos;
+    const float ux = p1.x - p0.x, uy = p1.y - p0.y;
+    const float len2 = ux * ux + uy * uy;
+    float t = 0.0f;
+    if (len2 > 1e-9f)
+      t = std::clamp(((from.x - p0.x) * ux + (from.y - p0.y) * uy) / len2, 0.0f, 1.0f);
+    const float px = p0.x + ux * t, py = p0.y + uy * t;
+    const float dx = px - from.x, dy = py - from.y;
+    const float d2 = dx * dx + dy * dy;
+    const float segLen = std::sqrt(len2);
+    if (d2 < bestD2) {
+      bestD2 = d2;
+      bestS = acc + segLen * t;
+    }
+    acc += segLen;
+  }
+  return bestS;
+}
+
+Vec2 Stabiliser::pointAtArcLength(float s) const noexcept {
+  if (pathHistory_.empty()) return nib_;
+  if (pathHistory_.size() == 1) return pathHistory_.front().pos;
+  float acc = 0.0f;
+  for (size_t i = 0; i + 1 < pathHistory_.size(); ++i) {
+    const Vec2 p0 = pathHistory_[i].pos, p1 = pathHistory_[i + 1].pos;
+    const float segLen = std::hypot(p1.x - p0.x, p1.y - p0.y);
+    if (s <= acc + segLen || i + 2 == pathHistory_.size()) {
+      const float t = segLen > 1e-6f ? std::clamp((s - acc) / segLen, 0.0f, 1.0f) : 0.0f;
+      return Vec2{p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * t};
+    }
+    acc += segLen;
+  }
+  return pathHistory_.back().pos;
 }
 
 bool Stabiliser::addSamplePulledString(const StrokeSample& raw, StrokeSample& out) noexcept {
@@ -90,6 +152,7 @@ bool Stabiliser::addSamplePulledString(const StrokeSample& raw, StrokeSample& ou
     nib_ = raw.pos;
     haveNib_ = true;
     snappedPressure_ = raw.pressure;
+    pulledStringPauseGap0_ = 0.0f;
     out.pos = nib_;
     out.pressure = raw.pressure;
     return true;
@@ -116,6 +179,13 @@ bool Stabiliser::addSamplePulledString(const StrokeSample& raw, StrokeSample& ou
   } else {
     out.pressure = raw.pressure;
   }
+  // `catchUpMs`'s decay starts fresh from THIS gap every real sample -- "when
+  // the pen moves again the full string length returns" (Wave 2 brief item
+  // 2) needs no separate reset flag, because a real sample always rewrites
+  // this before `tickPulledString()` can read it. Arc length, not straight-
+  // line distance, so the decay's own walk (`pointAtArcLength()`) starts
+  // from the same measure it ends at.
+  pulledStringPauseGap0_ = std::max(0.0f, totalArcLength() - projectArcLength(nib_));
   return true;
 }
 
@@ -205,6 +275,10 @@ bool Stabiliser::addSampleWeightedAverage(const StrokeSample& raw, StrokeSample&
 bool Stabiliser::addSample(const StrokeSample& raw, StrokeSample& out) noexcept {
   lastRaw_ = raw;
   haveRaw_ = true;
+  // Off's stroke is bit-identical to raw input and never catches up, so it
+  // never pays to keep the history the other two modes' catch-ups walk
+  // (`pathHistory_`'s own comment, `Stabiliser.hpp`).
+  if (params_.mode != StabiliserMode::Off) appendPathHistory(raw);
   switch (params_.mode) {
     case StabiliserMode::Off:
       out = raw;
@@ -220,23 +294,82 @@ bool Stabiliser::addSample(const StrokeSample& raw, StrokeSample& out) noexcept 
 }
 
 bool Stabiliser::tick(uint64_t nowNs, StrokeSample& out) noexcept {
-  if (params_.mode != StabiliserMode::WeightedAverage) return false;
-  if (!params_.catchUpWhilePaused) return false;
-  if (!haveFilter_) return false;
-  if (nowNs <= prevTsNs_) return false;
-  StrokeSample synthetic = lastRaw_;
-  synthetic.timestamp = nowNs;
-  return addSampleWeightedAverage(synthetic, out, /*isTick=*/true);
+  switch (params_.mode) {
+    case StabiliserMode::WeightedAverage: {
+      if (!params_.catchUpWhilePaused) return false;
+      if (!haveFilter_) return false;
+      if (nowNs <= prevTsNs_) return false;
+      StrokeSample synthetic = lastRaw_;
+      synthetic.timestamp = nowNs;
+      return addSampleWeightedAverage(synthetic, out, /*isTick=*/true);
+    }
+    case StabiliserMode::PulledString:
+      return tickPulledString(nowNs, out);
+    case StabiliserMode::Off:
+      return false;
+  }
+  return false;
 }
 
-bool Stabiliser::forceCatchUp(StrokeSample& out) noexcept {
-  if (!haveRaw_) return false;
+bool Stabiliser::tickPulledString(uint64_t nowNs, StrokeSample& out) noexcept {
+  if (params_.catchUpMs <= 0.0f) return false;  // 0 = off
+  if (!haveNib_) return false;
+  if (nowNs <= lastRaw_.timestamp) return false;
+
+  // "95% of the gap closed by catchUpMs": gap(t) = gap0 * exp(-t/tau), so
+  // gap(catchUpMs)/gap0 = 0.05 requires tau = catchUpMs / ln(20).
+  const float elapsedMs = static_cast<float>(nowNs - lastRaw_.timestamp) / 1e6f;
+  const float tau = params_.catchUpMs / std::log(20.0f);
+  const float targetGap = pulledStringPauseGap0_ * std::exp(-elapsedMs / tau);
+
+  // Walk the ACTUAL raw path, not a straight line to `lastRaw_.pos`: find
+  // where the nib currently sits on that path (`projectArcLength`), then move
+  // forward (never back -- `std::clamp`'s lower bound) to the arc length that
+  // leaves exactly `targetGap` before the end. `pathHistory_` is a stroke's
+  // worth of history (`kMaxPathHistory`), so this still finds the pause's own
+  // recent bend even if it happened many samples before this tick.
+  const float total = totalArcLength();
+  const float s0 = projectArcLength(nib_);
+  const float targetS = std::clamp(total - std::max(targetGap, 0.0f), s0, total);
+  nib_ = pointAtArcLength(targetS);
+
   out = lastRaw_;
+  out.pos = nib_;
+  out.timestamp = nowNs;
+  out.pressure = params_.stabilisePressure ? snappedPressure_ : lastRaw_.pressure;
+  return true;
+}
+
+bool Stabiliser::forceCatchUp(std::vector<StrokeSample>& steps) noexcept {
+  steps.clear();
+  if (!haveRaw_) return false;
+
+  // Walk the raw path from wherever the nib currently sits to the lift
+  // point, one step per raw sample the walk passes -- an L-shaped path whose
+  // corner falls inside that span is walked AROUND the corner, not cut
+  // straight across it (Wave 2 brief item 3). `pathHistory_` empty (Off mode
+  // never appends to it, or a caller fed no samples through `addSample()` at
+  // all -- selftest fixtures that call `forceCatchUp()` directly) falls back
+  // to the one exact point this always had.
+  if (pathHistory_.size() < 2) {
+    steps.push_back(lastRaw_);
+  } else {
+    const float s0 = projectArcLength(nib_);
+    float acc = 0.0f;
+    for (size_t i = 0; i + 1 < pathHistory_.size(); ++i) {
+      const Vec2 p0 = pathHistory_[i].pos, p1 = pathHistory_[i + 1].pos;
+      acc += std::hypot(p1.x - p0.x, p1.y - p0.y);
+      if (acc > s0) steps.push_back(pathHistory_[i + 1]);
+    }
+    if (steps.empty()) steps.push_back(lastRaw_);  // nib already at/past the lift point
+  }
+
   nib_ = lastRaw_.pos;
   filtPos_ = lastRaw_.pos;
   prevRawPos_ = lastRaw_.pos;
   filtPressure_ = lastRaw_.pressure;
   snappedPressure_ = lastRaw_.pressure;
+  pulledStringPauseGap0_ = 0.0f;
   return true;
 }
 

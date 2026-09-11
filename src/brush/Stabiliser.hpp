@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 #include "brush/StrokePath.hpp"
 
@@ -36,9 +37,23 @@ struct StabiliserParams {
   float strength = 40.0f;
   float responsiveness = 50.0f;
 
+  // Pulled string only. While the pen is down and not moving (tick()s with
+  // no new sample), the gap between the nib and the pointer decays
+  // exponentially toward zero so the nib reaches the pen after about this
+  // many milliseconds -- precisely, 95% of the gap present when the pause
+  // began is closed by `catchUpMs` (tau = catchUpMs / ln(20), gap(t) =
+  // gap0 * exp(-t/tau)). 0 disables it (the string just sits at its full
+  // window forever, wave 1's behaviour). Moving the pen again restores the
+  // full window immediately, measured from wherever the nib now is -- the
+  // ordinary pulled-string dead zone, untouched by this.
+  float catchUpMs = 400.0f;
+
   bool catchUpAtEnd = true;
-  // Weighted average only -- pulled string has nothing to converge while the
-  // pointer itself is still.
+  // Weighted average only. Pulled string has its own pause catch-up now
+  // (`catchUpMs` above, Wave 2 brief item 2) rather than sharing this flag --
+  // a duration a painter tunes per string length reads more honestly as its
+  // own field than as a shared on/off shared with a filter mode's own
+  // "resting" cutoff, which is a different kind of convergence.
   bool catchUpWhilePaused = true;
   bool stabilisePressure = false;
   // Lengths are screen px rather than canvas px: `effectiveStringPx()` for
@@ -84,16 +99,22 @@ class Stabiliser {
   bool addSample(const StrokeSample& raw, StrokeSample& out) noexcept;
 
   // No new sample this frame: let the nib keep converging toward the last
-  // raw position (weighted average + `catchUpWhilePaused` only; false and
-  // `out` untouched otherwise, including Off/PulledString).
+  // raw position -- weighted average with `catchUpWhilePaused`, or pulled
+  // string with `catchUpMs > 0` (both walk `pathHistory_`, not a straight
+  // line, `tickPulledString()`'s own comment); false and `out` untouched
+  // otherwise, including Off always.
   bool tick(uint64_t nowNs, StrokeSample& out) noexcept;
 
-  // Stroke end, `catchUpAtEnd`: snaps straight to the last raw sample so the
-  // final dab lands within one spacing of the lift point (the sample this
-  // returns is exact; the dab `StrokePath` emits from it is still spacing-
-  // quantised like any other). False (nothing written) if no sample has ever
-  // been fed.
-  bool forceCatchUp(StrokeSample& out) noexcept;
+  // Stroke end, `catchUpAtEnd`: walks the nib to the last raw sample ALONG
+  // THE RAW PATH the pointer actually took (not a straight line from
+  // wherever the nib was lagging) -- one step per raw sample the walk
+  // passes, ending exactly at the lift point (the last step's position is
+  // exact; the dab `StrokePath` emits from each step is still spacing-
+  // quantised like any other). `steps` is cleared and filled in walk order;
+  // the caller feeds each one to `StrokePath::addPoint()` in turn, same as
+  // any other sample. False (nothing written) if no sample has ever been
+  // fed.
+  bool forceCatchUp(std::vector<StrokeSample>& steps) noexcept;
 
   bool active() const noexcept { return haveRaw_; }
   Vec2 nibPos() const noexcept { return nib_; }
@@ -113,6 +134,34 @@ class Stabiliser {
   // a tick's timestamp is a different clock (frame time, not the pen's own)
   // and must never leak into a real sample's dt.
   bool addSampleWeightedAverage(const StrokeSample& raw, StrokeSample& out, bool isTick) noexcept;
+  // Pulled string's own `tick()` handler -- `catchUpMs`'s exponential decay,
+  // walked along `pathHistory_` (`pointAtArcLength()`) rather than straight
+  // toward `lastRaw_.pos`, so a paused catch-up that spans a bend in the
+  // recent path still follows it.
+  bool tickPulledString(uint64_t nowNs, StrokeSample& out) noexcept;
+
+  // The raw samples (this stroke, since `begin()`) the nib has not
+  // necessarily caught up to yet -- "the path the pen actually took" that
+  // both catch-ups (release and paused) walk instead of cutting a straight
+  // line across it. Bounded at `kMaxPathHistory`: a hard cap, not an
+  // arc-length one, because it costs one `erase(begin())` per sample past
+  // the cap rather than a second length-tracking pass, and at typical
+  // report rates (60-240 Hz) it comfortably outlasts any lag this build's
+  // sliders (stringPx <= 200, strength/responsiveness's own bounded lag)
+  // can build up. Only appended when `params_.mode != Off` -- Off's stroke
+  // is bit-identical to raw input and has no catch-up to walk, so the
+  // common case (Off is the compiled-in default) pays nothing for this.
+  static constexpr size_t kMaxPathHistory = 512;
+  std::vector<StrokeSample> pathHistory_;
+  void appendPathHistory(const StrokeSample& raw) noexcept;
+  // Total arc length of `pathHistory_`, and the arc length of the point on
+  // it nearest `from` (nib's current position, which for weighted average is
+  // a filtered point near but not exactly on the polyline -- this is its
+  // projection) / at a given arc length from the start. The three primitives
+  // both catch-ups are built from.
+  float totalArcLength() const noexcept;
+  float projectArcLength(Vec2 from) const noexcept;
+  Vec2 pointAtArcLength(float s) const noexcept;
 
   StabiliserParams params_;
   float zoom_ = 1.0f;
@@ -123,6 +172,12 @@ class Stabiliser {
 
   bool haveNib_ = false;  // pulled string's own bootstrap latch
   float snappedPressure_ = 1.0f;  // pulled string's `stabilisePressure` state
+  // The nib-to-pointer gap (arc length along `pathHistory_`), captured fresh
+  // after every REAL pulled-string sample -- `catchUpMs`'s decay starts from
+  // whatever this was, so "when the pen moves again the full string length
+  // returns" (Wave 2 brief item 2) falls out for free: a real sample always
+  // rewrites it before any tick reads it.
+  float pulledStringPauseGap0_ = 0.0f;
 
   bool haveFilter_ = false;  // weighted average's own bootstrap latch
   Vec2 filtPos_{};

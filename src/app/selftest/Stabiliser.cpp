@@ -1,9 +1,12 @@
 #include "app/selftest/Support.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "app/AppState.hpp"
@@ -226,8 +229,9 @@ bool runStabiliserTest() {
         path.addPoint(out, spacingPx, dabs);
       }
       if (p.mode != StabiliserMode::Off && p.catchUpAtEnd) {
-        StrokeSample snapped;
-        if (stab.forceCatchUp(snapped)) path.addPoint(snapped, spacingPx, dabs);
+        std::vector<StrokeSample> steps;
+        if (stab.forceCatchUp(steps))
+          for (const StrokeSample& s : steps) path.addPoint(s, spacingPx, dabs);
       }
       path.flush(spacingPx, dabs);
       return dabs.empty() ? -1.0f : distance(dabs.back().pos, lift);
@@ -719,6 +723,289 @@ bool runStabiliserTest() {
     check(stabiliserBrushModeFromAbrSmoothing(true) == StabiliserBrushMode::FollowGlobal &&
               stabiliserBrushModeFromAbrSmoothing(false) == StabiliserBrushMode::Off,
           "ABR import: toolOptions/smoothing true -> Follow global, false -> Off");
+  }
+
+  // ==========================================================================
+  // Wave 2 (tablet feedback) item 2: pulled string's `catchUpMs`. While the
+  // pen is down and not moving, `tick()` closes the nib-to-pointer gap
+  // exponentially -- 95% closed by `catchUpMs`, reaches the pen well beyond
+  // it, 0 = off (the string just sits at its full window, wave 1's
+  // behaviour -- the RED case below).
+  // ==========================================================================
+  {
+    const auto runUpThenPause = [&](float catchUpMs, int ticks) {
+      StabiliserParams p;
+      p.mode = StabiliserMode::PulledString;
+      p.stringPx = 20.0f;
+      p.catchUpMs = catchUpMs;
+      Stabiliser stab;
+      stab.begin(p, 1.0f);
+      uint64_t t = 0;
+      StrokeSample out;
+      // A straight run-up long enough that the string is fully taut (dist ==
+      // stringPx behind) well before the pen stops -- assertion 1's own
+      // property, reused here as the setup.
+      for (int i = 0; i < 40; ++i) {
+        StrokeSample raw;
+        raw.pos = Vec2{static_cast<float>(i) * 5.0f, 0.0f};
+        raw.timestamp = t;
+        t += 8'000'000ull;  // 8 ms cadence
+        stab.addSample(raw, out);
+      }
+      const float gapAtPause = distance(stab.nibPos(), stab.rawPos());
+      for (int i = 0; i < ticks; ++i) {
+        t += 16'000'000ull;  // ~60 Hz frame cadence
+        StrokeSample tickOut;
+        stab.tick(t, tickOut);
+      }
+      const float gapAfter = distance(stab.nibPos(), stab.rawPos());
+      return std::pair<float, float>(gapAtPause, gapAfter);
+    };
+
+    // 400 ms default, ticked exactly to 400 ms (25 ticks * 16 ms): the gap
+    // should be ~5% of what it was at pause (the formula's own definition).
+    const auto [gap0, gapAt400] = runUpThenPause(400.0f, 25);
+    std::printf("  [measured] catchUpMs=400: gap at pause %.2f px, after 400ms %.3f px (%.1f%% "
+               "of gap0)\n",
+               gap0, gapAt400, 100.0f * gapAt400 / gap0);
+    check(gap0 > 15.0f, "setup: the run-up leaves the string fully taut (~stringPx) to converge "
+                        "from");
+    check(gapAt400 < gap0 * 0.10f,
+          "catchUpMs: ~95% of the gap is closed by catchUpMs (measured within 10% of gap0, "
+          "vs. gap0 itself the whole time)");
+
+    // Reaches the pen well beyond catchUpMs.
+    const auto [gap0b, gapFar] = runUpThenPause(400.0f, 200);  // 3.2 s of ticks
+    std::printf("  [measured] catchUpMs=400: gap after 3.2s of ticks %.4f px\n", gapFar);
+    check(gapFar < 0.05f, "catchUpMs: the nib reaches the pen (gap -> ~0) well beyond catchUpMs");
+
+    // RED: 0 = off. Without this feature (wave 1), the string just sits at
+    // its full window forever -- exactly this.
+    const auto [gap0c, gapOff] = runUpThenPause(0.0f, 200);
+    std::printf("  [measured] catchUpMs=0 (off): gap at pause %.2f px, after 3.2s of ticks %.2f "
+               "px\n",
+               gap0c, gapOff);
+    check(std::abs(gapOff - gap0c) < 1e-3f,
+          "catchUpMs=0: RED case -- the string never shortens while paused");
+
+    // "When the pen moves again the full string length returns, measured
+    // from where the brush point now is": partial decay, then a real sample
+    // far away must leave the nib exactly `stringPx` behind IT, not still
+    // catching up toward the old pause point.
+    {
+      StabiliserParams p;
+      p.mode = StabiliserMode::PulledString;
+      p.stringPx = 20.0f;
+      p.catchUpMs = 400.0f;
+      Stabiliser stab;
+      stab.begin(p, 1.0f);
+      uint64_t t = 0;
+      StrokeSample out;
+      for (int i = 0; i < 40; ++i) {
+        StrokeSample raw;
+        raw.pos = Vec2{static_cast<float>(i) * 5.0f, 0.0f};
+        raw.timestamp = t;
+        t += 8'000'000ull;
+        stab.addSample(raw, out);
+      }
+      for (int i = 0; i < 12; ++i) {  // ~190 ms of partial catch-up, not yet done
+        t += 16'000'000ull;
+        StrokeSample tickOut;
+        stab.tick(t, tickOut);
+      }
+      StrokeSample resume;
+      resume.pos = Vec2{stab.rawPos().x + 200.0f, 0.0f};  // a big move, straight line
+      resume.timestamp = t + 8'000'000ull;
+      stab.addSample(resume, out);
+      const float freshGap = distance(out.pos, resume.pos);
+      std::printf("  [measured] gap right after the resuming sample: %.3f px (stringPx 20)\n",
+                 freshGap);
+      check(std::abs(freshGap - 20.0f) < 0.01f,
+            "catchUpMs: moving the pen again restores the full string window immediately, "
+            "measured from the pointer's new position");
+    }
+  }
+
+  // ==========================================================================
+  // Wave 2 (tablet feedback) item 3: both catch-ups follow the raw path the
+  // pointer actually took, not a straight line. An L-shaped path -- a long
+  // horizontal run, then a short vertical run (shorter than stringPx, so the
+  // corner lies INSIDE the string when the pen lifts) -- is the shape the
+  // brief's own assertion names. `forceCatchUp()`'s steps must hug the
+  // polyline within 0.5 px; the straight line the OLD forceCatchUp (wave 1)
+  // would have drawn -- from wherever the nib was lagging straight to the
+  // lift point -- is shown for contrast (it cuts the corner by roughly
+  // stringPx/sqrt(2), the brief's own estimate).
+  // ==========================================================================
+  {
+    const auto distPointToSegment = [](Vec2 p, Vec2 a, Vec2 b) {
+      const float ux = b.x - a.x, uy = b.y - a.y;
+      const float len2 = ux * ux + uy * uy;
+      float t = 0.0f;
+      if (len2 > 1e-9f) t = std::clamp(((p.x - a.x) * ux + (p.y - a.y) * uy) / len2, 0.0f, 1.0f);
+      const float qx = a.x + ux * t, qy = a.y + uy * t;
+      return distance(p, Vec2{qx, qy});
+    };
+
+    StabiliserParams p;
+    p.mode = StabiliserMode::PulledString;
+    p.stringPx = 30.0f;
+    Stabiliser stab;
+    stab.begin(p, 1.0f);
+
+    uint64_t t = 0;
+    StrokeSample out;
+    std::vector<Vec2> raw;  // the ground-truth polyline, recorded independently
+    for (int i = 0; i <= 100; ++i) {  // horizontal leg: (0,0) -> (100,0)
+      StrokeSample s;
+      s.pos = Vec2{static_cast<float>(i), 0.0f};
+      s.timestamp = t;
+      t += 4'000'000ull;
+      stab.addSample(s, out);
+      raw.push_back(s.pos);
+    }
+    const Vec2 corner{100.0f, 0.0f};
+    for (int i = 1; i <= 20; ++i) {  // vertical leg: (100,0) -> (100,20) -- 20 < stringPx (30)
+      StrokeSample s;
+      s.pos = Vec2{100.0f, static_cast<float>(i)};
+      s.timestamp = t;
+      t += 4'000'000ull;
+      stab.addSample(s, out);
+      raw.push_back(s.pos);
+    }
+    const Vec2 liftPoint = raw.back();
+    const Vec2 nibBeforeCatchUp = stab.nibPos();
+
+    // The RED line: what a straight-line catch-up (wave 1's forceCatchUp)
+    // would have drawn -- the single segment from the lagging nib straight
+    // to the lift point. Its worst deviation from the true polyline is at
+    // the corner vertex itself (the segment cuts inside the L, the corner
+    // sticks out of it).
+    const float naiveCornerCut = distPointToSegment(corner, nibBeforeCatchUp, liftPoint);
+
+    std::vector<StrokeSample> steps;
+    check(stab.forceCatchUp(steps), "trajectory: forceCatchUp() reports a walk");
+    check(steps.size() >= 2,
+          "trajectory: the walk to the lift point emits more than one dab -- it does not jump "
+          "in a single step across the corner");
+
+    float maxDeviation = 0.0f;
+    for (const StrokeSample& step : steps) {
+      float best = std::numeric_limits<float>::max();
+      for (size_t i = 0; i + 1 < raw.size(); ++i)
+        best = std::min(best, distPointToSegment(step.pos, raw[i], raw[i + 1]));
+      maxDeviation = std::max(maxDeviation, best);
+    }
+    const float endError = distance(steps.back().pos, liftPoint);
+
+    std::printf("  [measured] nib before catch-up (%.2f, %.2f); straight-line RED deviation at "
+               "the corner %.2f px (~stringPx/sqrt(2) = %.2f); trajectory walk max deviation "
+               "from the raw polyline %.4f px over %zu step(s); end error %.4f px\n",
+               nibBeforeCatchUp.x, nibBeforeCatchUp.y, naiveCornerCut, 30.0f / std::sqrt(2.0f),
+               maxDeviation, steps.size(), endError);
+
+    check(naiveCornerCut > 10.0f,
+          "trajectory: RED -- a straight-line catch-up cuts well past 0.5px across this L's "
+          "corner");
+    check(maxDeviation < 0.5f,
+          "trajectory: the walked catch-up dabs stay within 0.5px of the raw polyline");
+    check(endError < 0.01f, "trajectory: the walk ends exactly at the lift point");
+  }
+
+  // ==========================================================================
+  // Wave 2 item 2, persistence: `catchUpMs` round-trips through both files,
+  // clamps like its neighbours, and `resolveStabiliser()` treats it as an
+  // option (FollowGlobal passes it through unscaled) except under `Own`
+  // (takes the brush's own value) -- `resolveStabiliser()`'s own comment on
+  // why.
+  // ==========================================================================
+  {
+    const std::string path = "/private/tmp/np-scatter/wave2/fix-catchupms-stroke-prefs.txt";
+    StrokePreferencesStore writer;
+    StabiliserParams toWrite;
+    toWrite.mode = StabiliserMode::PulledString;
+    toWrite.catchUpMs = 777.0f;
+    std::string writeErr;
+    check(writer.saveToFile(path, toWrite, &writeErr),
+          "setup: catchUpMs stroke-preferences.txt fixture writes");
+    StrokePreferencesStore reader;
+    StabiliserParams reread;
+    std::string readErr;
+    check(reader.loadFromFile(path, reread, &readErr),
+          "setup: catchUpMs stroke-preferences.txt fixture reads back");
+    check(reread.catchUpMs == 777.0f,
+          "persistence: catchUpMs round-trips through stroke-preferences.txt");
+
+    StrokePreferencesStore clampReader;
+    StabiliserParams clamped;
+    clampReader.parse("naturalPaint-stroke-preferences 1\ncatchUpMs 9999\n", clamped);
+    check(clamped.catchUpMs == 2000.0f, "persistence: catchUpMs above 2000 clamps to 2000");
+    StrokePreferencesStore clampReader2;
+    StabiliserParams clamped2;
+    clampReader2.parse("naturalPaint-stroke-preferences 1\ncatchUpMs -5\n", clamped2);
+    check(clamped2.catchUpMs == 0.0f, "persistence: catchUpMs below 0 clamps to 0");
+
+    // user-presets.txt: the brush's own `catchUpMs`, a SEPARATE key
+    // (`stabiliserCatchUpMs`) from the 6-field `stabiliser` line -- growing
+    // that line's field count would break every file already on disk with
+    // it (`taper`'s own precedent, `UserBrushLibrary.cpp`'s comment at the
+    // read side). An OLD-format `stabiliser` line with no
+    // `stabiliserCatchUpMs` beside it must still parse cleanly, at the
+    // compiled-in own-default (400).
+    const std::string oldFormatFixture =
+        "naturalPaint-user-presets 1\n"
+        "preset Old Format\n"
+        "scalars 20 0.5 0.5 1 0 0.9 1.3\n"
+        "stabiliser 2 100 1 16 40 50\n";  // mode=Own, own.mode=PulledString, no catchUpMs key
+    UserBrushLibraryStore oldReader;
+    BrushLibrary oldLib;
+    oldReader.parse(oldFormatFixture, oldLib);
+    const BrushPreset* oldPreset = nullptr;
+    for (const BrushPreset& q : oldLib.presets)
+      if (q.name == "Old Format") oldPreset = &q;
+    check(oldPreset != nullptr &&
+              oldPreset->native.stabiliser.mode == StabiliserBrushMode::Own &&
+              oldPreset->native.stabiliser.own.stringPx == 16.0f &&
+              oldPreset->native.stabiliser.own.catchUpMs == 400.0f,
+          "persistence: an old-format `stabiliser` line (no stabiliserCatchUpMs) still parses, "
+          "own.catchUpMs at its default");
+
+    const std::string newFixture =
+        "naturalPaint-user-presets 1\n"
+        "preset New Format\n"
+        "scalars 20 0.5 0.5 1 0 0.9 1.3\n"
+        "stabiliser 2 100 1 16 40 50\n"
+        "stabiliserCatchUpMs 888\n";
+    UserBrushLibraryStore newReader;
+    BrushLibrary newLib;
+    newReader.parse(newFixture, newLib);
+    const BrushPreset* newPreset = nullptr;
+    for (const BrushPreset& q : newLib.presets)
+      if (q.name == "New Format") newPreset = &q;
+    check(newPreset != nullptr && newPreset->native.stabiliser.own.catchUpMs == 888.0f,
+          "persistence: stabiliserCatchUpMs round-trips for a brush's Own setting");
+    const std::string newResaved = newReader.serialize(newLib);
+    check(newResaved.find("stabiliserCatchUpMs 888") != std::string::npos,
+          "persistence: stabiliserCatchUpMs is written back out on save");
+
+    // resolveStabiliser: FollowGlobal passes catchUpMs through UNSCALED (it
+    // is a duration, not a "string length / strength" magnitude); Own takes
+    // the brush's own.
+    StabiliserParams global;
+    global.catchUpMs = 500.0f;
+    BrushStabiliserSetting followHalf;
+    followHalf.mode = StabiliserBrushMode::FollowGlobal;
+    followHalf.amountPct = 50.0f;
+    const StabiliserParams effFollow = resolveStabiliser(global, followHalf);
+    check(effFollow.catchUpMs == 500.0f,
+          "resolveStabiliser: Follow global at 50% still carries the global's catchUpMs "
+          "unscaled");
+    BrushStabiliserSetting ownSetting;
+    ownSetting.mode = StabiliserBrushMode::Own;
+    ownSetting.own.catchUpMs = 250.0f;
+    const StabiliserParams effOwn = resolveStabiliser(global, ownSetting);
+    check(effOwn.catchUpMs == 250.0f,
+          "resolveStabiliser: Own takes the brush's own catchUpMs, not the global's");
   }
 
   std::printf("[selftest] stabiliser %s\n", ok ? "PASS" : "FAIL");
