@@ -11,7 +11,7 @@ MoveTarget moveTargetFor(const OpenDocument& od) noexcept {
   return od.selection.has_value() ? MoveTarget::SelectionPixels : MoveTarget::WholeLayer;
 }
 
-TransformBeginResult beginMove(TransformSession& session, const OpenDocument& od) {
+TransformBeginResult beginMove(TransformSession& session, OpenDocument& od) {
   TransformBeginResult r;
   const std::optional<size_t> li = activeLayerIndex(od);
   if (!li) {

@@ -84,6 +84,7 @@
 #include "core/LayerOps.hpp"
 #include "core/SelectionRefine.hpp"
 #include "imgui.h"
+#include "io/ClipboardText.hpp"
 #include "io/ExportAs.hpp"
 #include "color/Space.hpp"
 #include "app/MunsellSelection.hpp"
@@ -252,6 +253,16 @@ std::string g_strokeRefusal;
 // cursor that suppressing the ImGui backend was meant to make impossible, so
 // the reset is unconditional and lives where nothing can skip it.
 std::optional<SDL_SystemCursor> g_canvasCursor;
+
+// Which text-frame handle the pointer is over THIS FRAME, or `None`.
+//
+// File-scope for `g_canvasCursor`'s own reason: the gesture that computes it
+// and the overlay that highlights it run in different places, and passing it
+// between them would mean threading a parameter through everything in
+// between. Written once per frame by the Text tool's canvas block and read by
+// the overlay; stale by construction if that block does not run, which is why
+// it is cleared at the top of the frame rather than left from last time.
+TextFrameHandle g_textHoveredHandle = TextFrameHandle::None;
 
 // Which TOOL's bitmap cursor this frame wants -- ui/ToolCursor.hpp §7, whose
 // bitmaps are keyed by `Tool` rather than by intent so that all twenty-eight
@@ -629,8 +640,14 @@ bool toolButton(AppState& st, Tool t, float cellSize) {
   // do rather than a neighbouring one that could differ.
   const bool documentOpen = st.documents.active() != nullptr;
   const bool onSurface = toolActsWithoutDocument(t) || documentOpen;
-  // Both axes, and a cell is live only if it clears both.
-  const bool live = implemented && onSurface;
+  // The THIRD axis (app/ToolSwitch.hpp section 5): a live transform gizmo is
+  // modal, and while one is up every cell in the palette is refused -- not
+  // just the content-making ones. Asked here as well as inside
+  // `setActiveTool()` because these are two different jobs: the setter makes
+  // the refusal true, and this makes it visible before the user aims at it.
+  const char* modalWhy = transformModalRefusal(st);
+  // All three axes, and a cell is live only if it clears every one.
+  const bool live = implemented && onSurface && modalWhy == nullptr;
   const bool clickedRaw = ImGui::InvisibleButton("##tool", size);
   const bool clicked = clickedRaw && live;
   // **`!flatsToolIsActive()`: the tool state is exclusive.** While a flatting
@@ -676,8 +693,20 @@ bool toolButton(AppState& st, Tool t, float cellSize) {
       tip += "\n";
       tip += why;
     }
+    // Never stacked on the surface sentence above, and it cannot be: a
+    // transform session belongs to a document, `transformModalRefusal()` only
+    // answers for the ACTIVE one, so `documentOpen` is true whenever this is
+    // non-null and `toolSurfaceRefusal()` has already answered nullptr. Two
+    // axes, two sentences, never both at once -- app/ToolSurface.hpp's own
+    // rule, still true with a third axis in the room.
+    if (modalWhy != nullptr) {
+      tip += "\n";
+      tip += modalWhy;
+    }
     ImGui::SetTooltip("%s", tip.c_str());
   }
+  // The setter refuses this on its own while the gizmo is up; `live` above has
+  // already made `clicked` false, so this never even asks.
   if (clicked) setActiveTool(st, t);
   ImGui::PopID();
   return clicked;
@@ -751,9 +780,15 @@ constexpr float kFlyoutPadX = 10.0f;
 // place a document-scoped tool can be SEEN while the palette cell above it
 // shows a different member of the group, so leaving the axis out here would
 // have left one live-looking route to every tool it disables.
-bool toolFlyoutRow(Tool member, bool isCurrent, bool documentOpen, float rowW) {
+bool toolFlyoutRow(Tool member, bool isCurrent, bool documentOpen, const char* modalWhy,
+                   float rowW) {
   const bool implemented = toolImplemented(member);
-  const bool live = implemented && (toolActsWithoutDocument(member) || documentOpen);
+  // `modalWhy` is the third axis toolButton() takes above -- a live transform
+  // gizmo (app/ToolSwitch.hpp section 5). Passed in rather than read off an
+  // `AppState` this function deliberately does not take: it is handed the two
+  // facts it needs about the session, exactly as `documentOpen` already is.
+  const bool live =
+      implemented && (toolActsWithoutDocument(member) || documentOpen) && modalWhy == nullptr;
   ImGui::PushID(static_cast<int>(member));
   const ImVec2 p = ImGui::GetCursorScreenPos();
   const ImVec2 size(rowW, kFlyoutRowH);
@@ -809,6 +844,12 @@ bool toolFlyoutRow(Tool member, bool isCurrent, bool documentOpen, float rowW) {
     if (const char* why = toolSurfaceRefusal(member, documentOpen)) {
       tip += "\n";
       tip += why;
+    }
+    // Disjoint from the sentence above by construction -- toolButton()'s own
+    // comment on this same append carries the argument.
+    if (modalWhy != nullptr) {
+      tip += "\n";
+      tip += modalWhy;
     }
     ImGui::SetTooltip("%s", tip.c_str());
   }
@@ -898,19 +939,31 @@ void toolGroupButton(AppState& st, int groupIndex, float cellSize, bool forceOpe
       rowW += kFlyoutIconGutter + kFlyoutPadX;
 
       const bool documentOpen = st.documents.active() != nullptr;
+      const char* modalWhy = transformModalRefusal(st);
       for (int m = 0; m < group.memberCount; ++m) {
         const Tool member = group.members[m];
-        if (toolFlyoutRow(member, member == current, documentOpen, rowW)) {
-          current = member;  // display state always updates
-          // Selection only if the member clears BOTH axes -- built, and able
-          // to act on the surface that is actually in front of the user
-          // (app/ToolSurface, T5). `current` above is deliberately outside the
-          // gate: which member a group is showing is display state, and a user
-          // who picks the Marquee with no document open should still find the
-          // group on the Marquee once they open one.
-          if (toolImplemented(member) &&
-              (toolActsWithoutDocument(member) || documentOpen))
-            setActiveTool(st, member);
+        if (toolFlyoutRow(member, member == current, documentOpen, modalWhy, rowW)) {
+          // **A dead row is still a CLICKABLE row.** `toolFlyoutRow()`
+          // returns its `InvisibleButton`'s raw result -- dimming a row
+          // changes how it draws, not whether ImGui reports the press -- so
+          // this whole body has to be gated, not just the setter inside it.
+          // Under a live gizmo (app/ToolSwitch.hpp section 5) that matters
+          // for `current` in particular: the setter refuses on its own, but
+          // `current` is written right here, and a modal state in which the
+          // palette cell silently changed which glyph it shows would be the
+          // gizmo failing at the one thing modality promises.
+          if (modalWhy == nullptr) {
+            current = member;  // display state always updates
+            // Selection only if the member clears BOTH axes -- built, and able
+            // to act on the surface that is actually in front of the user
+            // (app/ToolSurface, T5). `current` above is deliberately outside the
+            // gate: which member a group is showing is display state, and a user
+            // who picks the Marquee with no document open should still find the
+            // group on the Marquee once they open one.
+            if (toolImplemented(member) &&
+                (toolActsWithoutDocument(member) || documentOpen))
+              setActiveTool(st, member);
+          }
           ImGui::CloseCurrentPopup();
         }
       }
@@ -2663,6 +2716,44 @@ void drawThumbCheckerboard(ImDrawList* dl, const ImVec2& lo, const ImVec2& hi) {
 }
 
 void drawLayersSection(AppState& st, GpuContext& gpu) {
+  // **The whole panel is inert while a transform gizmo is up.**
+  //
+  // Every control in here edits the thing the live session is holding an index
+  // into: selecting a row moves what the gizmo is NOT aimed at (the session
+  // keeps the layer it began on, so the highlight and the box would disagree
+  // with nothing on screen saying so), and the delete, reorder, merge and
+  // group buttons move the stack itself -- which is
+  // `docs/testing-issues.md` T29's own measured corruption.
+  // `TransformSession::commit()` now refuses a stack that moved, so the
+  // consequence is already contained; this is what stops the user reaching the
+  // refusal at all.
+  //
+  // **One `BeginDisabled()` around the whole body rather than a term on each
+  // control**, deliberately: this panel has row clicks, eye and lock chips, a
+  // blend combo, an opacity field, a filter box, a rename popup, a drag
+  // reorder and eleven buttons, and a rule spread over that many controls is a
+  // rule the twelfth will not have. It is `app/ToolSwitch.hpp` section 5's own
+  // argument, applied to a panel instead of a setter -- and the same
+  // `transformModalRefusal()` predicate the palette, the flyout, the Goodies tool
+  // family and the flats panel are all already greyed from, so what these five
+  // surfaces do while a gizmo is up cannot drift apart.
+  //
+  // Not the menu's rule. `Layer > Delete Layer` CANCELS the transform and then
+  // deletes (`menuActionEndsTransform()`); this panel refuses instead. The
+  // difference is that the menu bar carries the escape hatches -- Undo, Save,
+  // Quit -- and a panel of layer buttons carries none.
+  const char* transformWhy = transformModalRefusal(st);
+  ImGui::BeginDisabled(transformWhy != nullptr);
+  struct LayersDisabledScope {
+    ~LayersDisabledScope() { ImGui::EndDisabled(); }
+  } layersDisabledScope;
+  if (transformWhy != nullptr) {
+    // Above the list, not below it: the panel is grey from its first pixel and
+    // the reason has to be the first thing read, or it looks broken.
+    textDisabledWrapped("%s", transformWhy);
+    ImGui::Separator();
+  }
+
   OpenDocument* od = st.documents.active();
   if (od == nullptr) {
     ImGui::TextDisabled("No document open.");
@@ -11081,6 +11172,12 @@ void drawNumericTransformDialog(AppState& st, GpuContext& gpu) {
         if (!began.ok) {
           status = began.error;
         } else {
+          // The same tool change Cmd+T's begin makes, for the same reason and
+          // on the same condition -- this dialog leaves a live gizmo on the
+          // canvas behind it, so the tool underneath it matters just as much.
+          // After `transformSeedAngleDeg()` below, never before: that seed
+          // asks which tool is active, and Measure is the answer it is
+          // looking for.
           // T24: "when the transform panel is open, and the measure was the
           // last tool, the angle from the measure is put into the transform
           // angle field; if it wasn't the last tool the angle should be
@@ -11090,6 +11187,8 @@ void drawNumericTransformDialog(AppState& st, GpuContext& gpu) {
           // carries why the predicate is the tool the user is IN rather than
           // the previous one.
           rotateDeg = transformSeedAngleDeg(st, od->id);
+          // AFTER the seed above has read the tool, never before.
+          enterTransformTool(st);
           scaleXPercent = 100.0f;
           scaleYPercent = 100.0f;
           translateX = 0.0f;
@@ -11429,6 +11528,93 @@ MenuFamilyEntry familyEntry(std::string label, bool enabled, bool checked,
   return e;
 }
 
+
+// Draw one level of the tree. Recursive, because the tree is.
+void drawMenuNodes(AppState& st, const std::vector<MenuNode>& nodes, uint32_t canvasW,
+                   uint32_t canvasH) {
+  for (const MenuNode& n : nodes) {
+    switch (n.kind) {
+      case MenuNodeKind::Separator:
+        ImGui::Separator();
+        break;
+      case MenuNodeKind::Note:
+        ImGui::TextDisabled("%s", n.label.c_str());
+        break;
+      case MenuNodeKind::Submenu:
+        if (ImGui::BeginMenu(n.label.c_str(), n.enabled)) {
+          drawMenuNodes(st, n.children, canvasW, canvasH);
+          ImGui::EndMenu();
+        }
+        break;
+      case MenuNodeKind::Command:
+      case MenuNodeKind::Check: {
+        // `PushID(param)` rather than the `"##doc0"` suffix the Window menu
+        // used to bake into its labels. Two open documents with the same
+        // display name would otherwise share an ImGui ID and the second would
+        // be unclickable -- and a label carrying an ImGui ID hack inside it is
+        // a label the native backend would have to know to strip.
+        ImGui::PushID(n.param);
+        const char* shortcut = n.shortcutText.empty() ? nullptr : n.shortcutText.c_str();
+        if (ImGui::MenuItem(n.label.c_str(), shortcut, n.checked, n.enabled))
+          performMenuAction(st, n.action, n.param, canvasW, canvasH);
+        // Hover text is carried on the node rather than written at the call
+        // site, so the explanation a greyed item owes the user survives into
+        // whichever backend is drawing. `AllowWhenDisabled` for the disabled
+        // ones is the whole point: "Import Image..." is greyed precisely when
+        // it has something to explain.
+        // `n.enabled` used to pick between `ImGuiHoveredFlags_None` and
+        // `_AllowWhenDisabled` here; SetItemTooltip()'s own default flags
+        // already carry `AllowWhenDisabled`, and that flag is a no-op on an
+        // item that is not disabled, so the ternary added nothing this
+        // could not get from the default.
+        if (!n.tooltip.empty()) ImGui::SetItemTooltip("%s", n.tooltip.c_str());
+        ImGui::PopID();
+        break;
+      }
+    }
+  }
+}
+
+// "Somebody is typing, so an unmodified key is a CHARACTER" -- the question
+// every bare-key canvas gesture below has to ask before claiming a key.
+//
+// Two owners, and the second is why this function exists rather than a
+// third repetition of `io.WantTextInput`:
+//
+//   * an ImGui text widget (`io.WantTextInput`) -- the layer-rename box one
+//     panel over, which is the owner those gestures were already written
+//     against;
+//   * the **Text tool's own caret session**, which is not an ImGui widget and
+//     therefore never raises that flag. Before this, typing a space into a
+//     Text layer sprang the Hand tool -- which took `toolEditsText()` false,
+//     which made the canvas block's own accept-on-tool-change arm cancel the
+//     session outright. One space and the caret was gone for good; the tool
+//     sprang back on key-up and the session did not. Measured, not deduced:
+//     an injected bare Space moved `st.brush.tool` from Text to Hand and
+//     `textSessionActive()` from 1 to 0 in the same frame.
+//
+// main.cpp's `keyChordReachesKeymap()` gate is the same rule applied to the
+// OTHER dispatcher -- it stops the keymap's `toggle_pause`/`mirror_x`, which
+// it did correctly all along. These three gestures never went through the
+// keymap (they need a key's HELD state, which `Keymap::resolve()` cannot
+// express) and so were never covered by it.
+bool keyboardBelongsToTyping(const AppState& st) {
+  return ImGui::GetIO().WantTextInput || textSessionActive(st.textEdit);
+}
+
+}  // namespace
+
+// Declared in ui/MacPaintUI.hpp. **Moved out of the anonymous namespace**
+// 2026-09-10 for the reason `toolMenuFamily()` just below was put here:
+// `--selftest` has to be able to call it. It builds the tool and layer
+// families from `transformModalRefusal(st)`, and that fetch was the one line
+// in the modal-transform work that no assertion reached -- a sabotage of it
+// reddened nothing. It still calls this file's own `familyEntry()` and
+// `layerRowTitle()`, which is why it sits here rather than earlier.
+//
+// The header states the precondition a headless caller owes it: set
+// `st.recentDocumentsLoaded` first, or the first call reads the user's real
+// preferences file.
 // The live application, as the pure snapshot `buildMenuModel()` consumes.
 //
 // **The six families are resolved here, not there.** ui/MenuModel.hpp explains
@@ -11499,6 +11685,23 @@ MenuContext menuContextFromState(AppState& st) {
   }
 
   // --- Layer --------------------------------------------------------------
+  //
+  // **The Layer menu is GREYED under a live gizmo, not cancelled by it** --
+  // the one exception to `menuActionEndsTransform()`'s rule, and it is the
+  // exception because of what these commands ARE. Every other menu the gizmo
+  // gets out of the way for either leaves the document alone (View, Save) or
+  // is the user deliberately moving on (Undo, a filter). This one is the
+  // delete/reorder/merge/group family: `docs/testing-issues.md` T29's own
+  // measured corruption, and the LAYERS panel's buttons wearing a different
+  // hat. That panel is refused outright, so offering the same acts one menu
+  // over -- at the price of the transform -- would be two surfaces disagreeing
+  // about a single thing.
+  //
+  // The two families are built by `layerMenuFamily()` / `layerSetMenuFamily()`
+  // rather than inline, for `toolMenuFamily()`'s reason: this function cannot
+  // be reached from `--selftest` (its first call loads the user's real
+  // recent-documents file) and those two can.
+  const char* layerModalWhy = transformModalRefusal(st);
   if (doc != nullptr) {
     const Document& d = doc->document;
     const size_t selected = doc->activeLayer;
@@ -11506,28 +11709,7 @@ MenuContext menuContextFromState(AppState& st) {
                                ? layerRowTitle(d.layers[selected], selected)
                                : std::string("(no layer selected)");
 
-    for (const LayerCommand command : allLayerCommands()) {
-      // The four toggles show the selected layer's current state as a check
-      // mark, which is what makes "Toggle Visibility" honest about which way
-      // it is about to go.
-      bool checked = false;
-      if (selected < d.layers.size()) {
-        if (command == LayerCommand::ToggleVisible) checked = d.layers[selected].visible;
-        if (command == LayerCommand::ToggleLocked) checked = d.layers[selected].locked;
-        if (command == LayerCommand::ToggleClipped) checked = d.layers[selected].clipped;
-        if (command == LayerCommand::ToggleAlphaLock) checked = d.layers[selected].alphaLocked;
-        if (command == LayerCommand::ToggleFlatsReference) checked = d.layers[selected].flatsReference;
-      }
-      // Grouped as the panel groups them: creation, then the whole-layer
-      // operations, then the mask, then the flags.
-      const bool rule = command == LayerCommand::NewAdjustmentLayer ||
-                        command == LayerCommand::MoveLayerDown ||
-                        command == LayerCommand::RemoveMask ||
-                        command == LayerCommand::ToggleFlatsReference;
-      ctx.layerCommands.push_back(familyEntry(layerCommandLabel(command),
-                                              layerCommandAvailable(d, command, selected),
-                                              checked, rule));
-    }
+    ctx.layerCommands = layerMenuFamily(d, selected, layerModalWhy);
 
     // The LAYERS panel's "Multi-selection" section walks the identical list,
     // so the two views cannot come to offer different sets.
@@ -11536,17 +11718,7 @@ MenuContext menuContextFromState(AppState& st) {
                              (visible.size() != g_layers.selection.size()
                                   ? ", some hidden by the filter"
                                   : "");
-    for (const LayerSetCommand command : allLayerSetCommands()) {
-      const bool rule = command == LayerSetCommand::MoveLayersDown ||
-                        command == LayerSetCommand::UnclipLayers ||
-                        command == LayerSetCommand::UnlinkLayers ||
-                        command == LayerSetCommand::LabelGrey ||
-                        command == LayerSetCommand::AlignSelectionBottom ||
-                        command == LayerSetCommand::AlignCanvasBottom;
-      ctx.layerSetCommands.push_back(familyEntry(
-          layerSetCommandLabel(command), layerSetCommandAvailable(d, command, visible), false,
-          rule));
-    }
+    ctx.layerSetCommands = layerSetMenuFamily(d, visible, layerModalWhy);
   }
 
   // --- Select ---------------------------------------------------------------
@@ -11575,7 +11747,8 @@ MenuContext menuContextFromState(AppState& st) {
   // so `--selftest` can call the exact predicate the menu uses without
   // needing an `AppState` or touching the recent-documents file this
   // function's own first line reads.
-  ctx.tools = toolMenuFamily(st.brush.tool, st.documents.active() != nullptr);
+  ctx.tools = toolMenuFamily(st.brush.tool, st.documents.active() != nullptr,
+                             transformModalRefusal(st));
   ctx.paused = st.paused;
 
   // --- View ---------------------------------------------------------------
@@ -11621,54 +11794,6 @@ MenuContext menuContextFromState(AppState& st) {
   return ctx;
 }
 
-// Draw one level of the tree. Recursive, because the tree is.
-void drawMenuNodes(AppState& st, const std::vector<MenuNode>& nodes, uint32_t canvasW,
-                   uint32_t canvasH) {
-  for (const MenuNode& n : nodes) {
-    switch (n.kind) {
-      case MenuNodeKind::Separator:
-        ImGui::Separator();
-        break;
-      case MenuNodeKind::Note:
-        ImGui::TextDisabled("%s", n.label.c_str());
-        break;
-      case MenuNodeKind::Submenu:
-        if (ImGui::BeginMenu(n.label.c_str(), n.enabled)) {
-          drawMenuNodes(st, n.children, canvasW, canvasH);
-          ImGui::EndMenu();
-        }
-        break;
-      case MenuNodeKind::Command:
-      case MenuNodeKind::Check: {
-        // `PushID(param)` rather than the `"##doc0"` suffix the Window menu
-        // used to bake into its labels. Two open documents with the same
-        // display name would otherwise share an ImGui ID and the second would
-        // be unclickable -- and a label carrying an ImGui ID hack inside it is
-        // a label the native backend would have to know to strip.
-        ImGui::PushID(n.param);
-        const char* shortcut = n.shortcutText.empty() ? nullptr : n.shortcutText.c_str();
-        if (ImGui::MenuItem(n.label.c_str(), shortcut, n.checked, n.enabled))
-          performMenuAction(st, n.action, n.param, canvasW, canvasH);
-        // Hover text is carried on the node rather than written at the call
-        // site, so the explanation a greyed item owes the user survives into
-        // whichever backend is drawing. `AllowWhenDisabled` for the disabled
-        // ones is the whole point: "Import Image..." is greyed precisely when
-        // it has something to explain.
-        // `n.enabled` used to pick between `ImGuiHoveredFlags_None` and
-        // `_AllowWhenDisabled` here; SetItemTooltip()'s own default flags
-        // already carry `AllowWhenDisabled`, and that flag is a no-op on an
-        // item that is not disabled, so the ternary added nothing this
-        // could not get from the default.
-        if (!n.tooltip.empty()) ImGui::SetItemTooltip("%s", n.tooltip.c_str());
-        ImGui::PopID();
-        break;
-      }
-    }
-  }
-}
-
-}  // namespace
-
 // Declared in ui/MacPaintUI.hpp, which carries the full argument for why this
 // exists and why it is public. Defined here, after the anonymous namespace
 // closes, for the same reason `performMenuAction()` just below is: it calls
@@ -11680,6 +11805,30 @@ void moveHistoryCursor(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext&
   settleWetPaintBeforeHistoryMove(st, sim, gpu, od);
   History& h = od.history;
   installHistoryCursor(od, historyPanelClick(h, historySerialForRow(h, h.cursor() + direction)));
+
+  // A live Text session survives undo/redo on purpose -- a typing burst IS a
+  // history entry, so Cmd+Z during a session is the user undoing their own
+  // typing (app/TextTool.hpp section 8). What it cannot survive unchanged is
+  // the document underneath it being REPLACED: `installHistoryCursor()` above
+  // assigns a whole `Document`, so the block is a different `TextContent`
+  // now, with a different length, while `st.textEdit` still holds the caret
+  // and the amend-the-open-entry flag from before the move. Section 9.
+  //
+  // Here rather than in main.cpp's Cmd+Z arm because this function is the
+  // single place the cursor moves: the Edit menu, the History panel and the
+  // title bar's buttons all arrive here too, and resyncing at the keymap
+  // would fix one route out of four.
+  //
+  // Guarded on the layer still being a Text layer at all: undoing past the
+  // block's own creation leaves `layerIndex` naming something else (or
+  // nothing), which is the canvas block's existing cancel-on-layer-gone case
+  // and not this call's to answer.
+  if (textSessionActive(st.textEdit) && st.textEdit.documentId == od.id &&
+      st.textEdit.layerIndex < od.document.layers.size()) {
+    const Layer& restored = od.document.layers[st.textEdit.layerIndex];
+    if (restored.kind == LayerKind::Text)
+      textEditResyncAfterHistoryMove(&st.textEdit, restored.text);
+  }
 }
 
 // Declared in ui/MacPaintUI.hpp, which carries the full argument. Defined
@@ -11688,7 +11837,62 @@ void moveHistoryCursor(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext&
 // external linkage `menuContextFromState()` and `app/selftest/MenuBasics.cpp`
 // both need -- the former to assign `ctx.tools`, the latter to assert the
 // A4 fix directly.
-std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen) {
+std::vector<MenuFamilyEntry> layerMenuFamily(const Document& doc, size_t selected,
+                                            const char* modalWhy) {
+  std::vector<MenuFamilyEntry> out;
+  for (const LayerCommand command : allLayerCommands()) {
+    // The five toggles show the selected layer's current state as a check
+    // mark, which is what makes "Toggle Visibility" honest about which way it
+    // is about to go.
+    bool checked = false;
+    if (selected < doc.layers.size()) {
+      if (command == LayerCommand::ToggleVisible) checked = doc.layers[selected].visible;
+      if (command == LayerCommand::ToggleLocked) checked = doc.layers[selected].locked;
+      if (command == LayerCommand::ToggleClipped) checked = doc.layers[selected].clipped;
+      if (command == LayerCommand::ToggleAlphaLock) checked = doc.layers[selected].alphaLocked;
+      if (command == LayerCommand::ToggleFlatsReference)
+        checked = doc.layers[selected].flatsReference;
+    }
+    // Grouped as the panel groups them: creation, then the whole-layer
+    // operations, then the mask, then the flags.
+    const bool rule = command == LayerCommand::NewAdjustmentLayer ||
+                      command == LayerCommand::MoveLayerDown ||
+                      command == LayerCommand::RemoveMask ||
+                      command == LayerCommand::ToggleFlatsReference;
+    // Two axes, and still never two sentences -- the header says why only a
+    // command the gizmo is the SOLE reason for carries its wording.
+    const bool ownAvailable = layerCommandAvailable(doc, command, selected);
+    out.push_back(familyEntry(layerCommandLabel(command),
+                              ownAvailable && modalWhy == nullptr, checked, rule,
+                              ownAvailable && modalWhy != nullptr ? modalWhy : ""));
+  }
+  return out;
+}
+
+std::vector<MenuFamilyEntry> layerSetMenuFamily(const Document& doc,
+                                                const LayerSelection& visible,
+                                                const char* modalWhy) {
+  std::vector<MenuFamilyEntry> out;
+  for (const LayerSetCommand command : allLayerSetCommands()) {
+    const bool rule = command == LayerSetCommand::MoveLayersDown ||
+                      command == LayerSetCommand::UnclipLayers ||
+                      command == LayerSetCommand::UnlinkLayers ||
+                      command == LayerSetCommand::LabelGrey ||
+                      command == LayerSetCommand::AlignSelectionBottom ||
+                      command == LayerSetCommand::AlignCanvasBottom;
+    // The multi-layer form of the identical commands, on the identical two
+    // axes -- a gizmo that stopped one list and not the other would only have
+    // moved the hole one submenu over.
+    const bool ownAvailable = layerSetCommandAvailable(doc, command, visible);
+    out.push_back(familyEntry(layerSetCommandLabel(command),
+                              ownAvailable && modalWhy == nullptr, false, rule,
+                              ownAvailable && modalWhy != nullptr ? modalWhy : ""));
+  }
+  return out;
+}
+
+std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen,
+                                            const char* modalWhy) {
   std::vector<MenuFamilyEntry> tools;
   for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
     const Tool t = static_cast<Tool>(i);
@@ -11703,7 +11907,8 @@ std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen) {
     // list one panel over") arriving through the second axis instead of the
     // first.
     const char* surfaceWhy = toolSurfaceRefusal(t, documentOpen);
-    const bool live = implemented && (toolActsWithoutDocument(t) || documentOpen);
+    const bool live =
+        implemented && (toolActsWithoutDocument(t) || documentOpen) && modalWhy == nullptr;
     // A disabled entry always carries its reason, and never two: the two
     // predicates are disjoint by construction -- `toolSurfaceRefusal()`
     // answers nullptr for every not-built cell -- so this is a choice between
@@ -11711,6 +11916,13 @@ std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen) {
     std::string why;
     if (!implemented) why = toolTooltip(t);          // "... Not built yet."
     else if (surfaceWhy != nullptr) why = surfaceWhy;  // "... no document is open."
+    // Last, and still never a concatenation: a session belongs to a document,
+    // so `modalWhy` and `surfaceWhy` cannot both be non-null (toolButton()'s
+    // own comment on the same pairing carries the argument). It is tested
+    // last only because the two above are properties of the tool and this one
+    // is a property of the moment -- "Not built yet." is the more useful
+    // sentence about a cell that will still be dead when the gizmo is gone.
+    else if (modalWhy != nullptr) why = modalWhy;
     tools.push_back(familyEntry(toolName(t), live, current == t, false, std::move(why)));
   }
   return tools;
@@ -11752,6 +11964,38 @@ std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen) {
 void savePanelLayout(const AppState& st);
 void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canvasW,
                        uint32_t canvasH) {
+  // **A menu action that could touch this document ends the transform first**
+  // (ui/MenuModel.hpp's `menuActionEndsTransform()` carries the classification
+  // and the argument for every exemption). The menu is deliberately NOT
+  // greyed the way the tool palette is: a user who cannot reach Undo or Save
+  // because a box is on screen has been trapped, not protected. So the gizmo
+  // gets out of the way instead.
+  //
+  // Cancel, not commit: baking a resample the user was still adjusting, on the
+  // strength of a click aimed at a menu, is the unrecoverable direction -- the
+  // gizmo's own "a click on nothing is NOT a commit" comment makes the same
+  // argument about a click that is much closer to it than this one.
+  //
+  // Ahead of the switch, so it is one statement rather than a line the next
+  // `case` added will be missing. Scoped to a session on the document this
+  // action is about to act on, the same scoping `transformModalRefusal()` uses --
+  // a gizmo parked on a document the user has tabbed away from is not in this
+  // command's way.
+  if (st.transform.active() && menuActionEndsTransform(action)) {
+    const OpenDocument* on = st.documents.active();
+    if (on != nullptr && st.transform.documentId() == on->id) {
+      st.transform.cancel();
+      g_transformPreview.reset();
+      // Said out loud in the band that has been carrying "Return applies it,
+      // Escape cancels it" for as long as the gizmo was up -- with the session
+      // gone, `transformModalRefusal()` stops answering and this is what the band
+      // falls back to, so the sentence lands in the same place the one it
+      // replaces was.
+      g_strokeRefusal = "the transform was cancelled: a menu command needs the layer stack to "
+                        "hold still.";
+    }
+  }
+
   OpenDocument* doc = st.documents.active();
 
   switch (action) {
@@ -12896,7 +13140,13 @@ bool flatsToolButton(AppState& st, const FlatsToolRow& row, float cellSize, bool
 
 void drawFlatsToolsSection(AppState& st) {
   const FlatsPanelSubject sub = flatsPanelSubject(st);
-  const bool live = sub.layer != nullptr && !sub.locked;
+  // A live transform gizmo locks these for the reason it locks the tool
+  // palette (app/ToolSwitch.hpp section 5): a flatting tool is a second answer
+  // to "what does a click mean", and one armed under a gizmo is the same hole
+  // the Text tool put a stray layer through. `setFlatsTool()` refuses it
+  // anyway -- this is what makes the refusal visible before the click.
+  const char* modalWhy = transformModalRefusal(st);
+  const bool live = sub.layer != nullptr && !sub.locked && modalWhy == nullptr;
 
   std::shared_ptr<const FlatEvaluation> eval;
   if (sub.layer != nullptr) eval = flatsPeekEvaluation(sub.od->document, sub.index);
@@ -12990,7 +13240,13 @@ void drawFlatsToolsSection(AppState& st) {
     ImGui::PopStyleColor();
     textDisabledWrapped("Click the fill it should merge into. Escape cancels.");
   }
-  if (sub.layer == nullptr) {
+  if (modalWhy != nullptr) {
+    // Ahead of the three below: while the gizmo is up this is the reason the
+    // panel is grey, and naming a layer problem instead would send the user
+    // to LAYERS to fix something that is not what stopped them.
+    ImGui::Separator();
+    textDisabledWrapped("%s", modalWhy);
+  } else if (sub.layer == nullptr) {
     ImGui::Separator();
     flatsPanelIdleNote(st);
   } else if (sub.locked) {
@@ -13593,7 +13849,19 @@ void drawPanelBody(AppState& st, ControlsSection section, std::unique_ptr<PaintS
       // wrong one for vertical centring, which has to be measured against the
       // panel's full height or the content lands half the padding too high.
       // That is a 6 px lift, and the golden `toolbar` view is what named it.
-      drawAtelierOptionsBarContent(st, ImGui::GetWindowHeight(), g_strokeRefusal);
+      // **A live gizmo's sentence displaces the stroke refusal.** The band
+      // draws exactly one of these (ui/AtelierChrome.cpp), and under a
+      // transform the stroke refusal is necessarily stale -- no stroke can be
+      // made while the tool is pinned to Move -- whereas the two keys that end
+      // the session are the only thing the user needs from this band. This is
+      // also what makes the canvas block's Return/Escape comment true: it has
+      // claimed "both are stated in the status line for as long as the session
+      // is live" since that gizmo was written, and until now nothing stated
+      // them anywhere.
+      if (const char* modalWhy = transformModalRefusal(st))
+        drawAtelierOptionsBarContent(st, ImGui::GetWindowHeight(), modalWhy);
+      else
+        drawAtelierOptionsBarContent(st, ImGui::GetWindowHeight(), g_strokeRefusal);
       break;
     // PLAN.md Phase 5 step 1 ("Multiple layers in `Document`, with reorder,
     // visibility, lock, opacity"; PRD C4).
@@ -14698,6 +14966,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // it would let a crosshair outlive the pointer being over the canvas.
   g_canvasCursor.reset();
   g_canvasBitmapTool.reset();  // same reasoning, ui/ToolCursor.hpp §7
+  // And the same again for the text-frame handle: the block that computes it
+  // runs only while the Text tool is active over a Text layer, so a stale one
+  // would leave a handle drawn lit after the pointer had gone.
+  g_textHoveredHandle = TextFrameHandle::None;
   // Constant for the life of the process, but read here rather than wired
   // from main.cpp so the flag and the function that obeys it stay in one file.
   g_antPhaseFrozen = st.screenshotCliActive;
@@ -15763,6 +16035,20 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // a menu item that appeared enabled and then did nothing at all is
         // the defect docs/reachability-audit.md is named after.
         if (!began.ok) g_docStatus = began.error;
+        // The gizmo is up, so the pointer stops being whatever tool was
+        // making content and becomes the Move tool -- app/ToolSwitch.hpp's
+        // `enterTransformTool()` carries the argument. Only on success: a
+        // refused begin (a locked layer, an empty one) leaves no session, and
+        // changing the tool for a command that did nothing would be a second
+        // surprise on top of the refusal.
+        //
+        // This is also what puts a live Text caret away, on the paths that
+        // have not already: the Text block accepts its session the moment
+        // `toolEditsText()` stops being true, so Edit > Free Transform from
+        // the menu bar -- which raises this same flag without going through
+        // the keymap's own session-ending step -- ends up in the same state
+        // as the Cmd+T chord.
+        if (began.ok) enterTransformTool(st);
         // T14: the live pixel preview's ONE upload for this whole session --
         // never from the drag loop below, which only ever moves WHERE this
         // already-uploaded texture is drawn (`pending()` changing the quad's
@@ -16106,6 +16392,23 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // drawn twice.
     const bool transformActive = transformOnThisDoc;
     if (transformActive) {
+      // **While the gizmo is up, the tool is Move** -- re-asserted here, every
+      // frame, not just at the begin that first installed it.
+      //
+      // app/ToolSwitch.hpp section 5 locks the palette while a session is live
+      // ON THE ACTIVE DOCUMENT, and it is scoped that way because a lock over
+      // a document showing no gizmo would have no Escape key to lift it. The
+      // cost of that scoping is this gap: transform document A, tab to B, pick
+      // the Text tool there (correctly allowed -- B has no gizmo), tab back to
+      // A. The gizmo is up again and the tool is Text, which is the exact
+      // stray-layer hole `enterTransformTool()` was written to close, reached
+      // by the long way round.
+      //
+      // Idempotent by construction: `enterTransformTool()` reports no change
+      // and touches no ledger when Move is already installed, which is every
+      // frame but the one the user comes back on. It cannot fight a deliberate
+      // pick either -- there is no way to make one while this is true.
+      if (effectiveTool(st) != Tool::Move) enterTransformTool(st);
       // Handle sizes are fixed on SCREEN and converted to document space by
       // the view's own zoom, so a handle stays the same size under the finger
       // at 12% and at 1600%. `st.view.zoom` is the transform's uniform length
@@ -16125,7 +16428,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // deliberately: a mis-aimed click that bakes a resample the user was
         // still adjusting is unrecoverable in the way an extra keystroke
         // never is. Return commits, Escape cancels, and both are stated in
-        // the status line for as long as the session is live.
+        // the options band for as long as the session is live -- see the
+        // `transformModalRefusal()` branch at this file's `ControlsSection::Options`
+        // arm, which is what finally made that sentence true.
         if (grabbed != TransformHandle::None) st.transform.beginDrag(grabbed, Point2{tx, ty});
       }
       if (st.transform.dragging()) {
@@ -16274,7 +16579,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                                 ImGui::IsMouseDown(ImGuiMouseButton_Middle) ||
                                 ImGui::IsMouseDown(ImGuiMouseButton_Right);
       if (ImGui::IsKeyPressed(ImGuiKey_Space, /*repeat=*/false) &&
-          !ImGui::GetIO().WantTextInput && !anyMouseDown && !st.polygonLassoActive) {
+          !keyboardBelongsToTyping(st) && !anyMouseDown && !st.polygonLassoActive) {
         beginSpringHand(st);
       } else if (springHandHeld(st) && !ImGui::IsKeyDown(ImGuiKey_Space)) {
         endSpringHand(st);
@@ -16322,7 +16627,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                                        ImGui::IsMouseDown(ImGuiMouseButton_Right);
       const bool altPressed = ImGui::IsKeyPressed(ImGuiKey_LeftAlt, /*repeat=*/false) ||
                               ImGui::IsKeyPressed(ImGuiKey_RightAlt, /*repeat=*/false);
-      if (altPressed && !ImGui::GetIO().WantTextInput && !eyedropAnyMouseDown &&
+      if (altPressed && !keyboardBelongsToTyping(st) && !eyedropAnyMouseDown &&
           !st.polygonLassoActive && !ImGui::GetIO().KeyCtrl) {
         beginSpringEyedropper(st);
       } else if (springEyedropperHeld(st) &&
@@ -16342,7 +16647,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // through a discrete action. `⇧R` (reset) *is* a discrete action --
     // see main.cpp's "reset_rotation" dispatch arm -- because resetting is
     // a one-shot command, not a hold.
-    const bool rotateHeld = ImGui::IsKeyDown(ImGuiKey_R);
+    // `!keyboardBelongsToTyping()` for the reason the Hand's own block above
+    // states, and for one this key has that Space does not: `R` was never
+    // guarded on `io.WantTextInput` either, so typing an "r" into the
+    // layer-rename box and then dragging on canvas has always spun the view.
+    // Both owners, one predicate.
+    const bool rotateHeld = ImGui::IsKeyDown(ImGuiKey_R) && !keyboardBelongsToTyping(st);
     // !st.pendingGuide: a guide drag-to-create claims the left-mouse-drag
     // gesture too (PRD Q5), the same way Hand-tool panning already does
     // below -- these must not fire simultaneously with dragging a new guide
@@ -16619,6 +16929,24 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       st.requestUndo = false;
       st.requestRedo = false;
 
+      // Cmd+A with a caret up means SELECT ALL THE TEXT, not select the whole
+      // canvas. Intercepted here rather than in main.cpp's keymap dispatch
+      // because this is where the layer the session names is already
+      // resolved, and because the Select menu's own "All" item sets the same
+      // flag -- both routes should mean the same thing while typing.
+      //
+      // `select_all` is on `keymapActionEndsTextSession()`'s KEEP list
+      // (app/TextTool.hpp section 8) precisely so this can run: main.cpp ends
+      // a session BEFORE setting the request flag, so anything on the ending
+      // side would leave no session here to intercept for, and this block
+      // would be dead code.
+      if (st.requestSelectAll && textSessionActive(st.textEdit) && od != nullptr &&
+          st.textEdit.documentId == od->id &&
+          st.textEdit.layerIndex < od->document.layers.size() &&
+          od->document.layers[st.textEdit.layerIndex].kind == LayerKind::Text) {
+        textSelectAll(&st.textEdit, od->document.layers[st.textEdit.layerIndex].text);
+        st.requestSelectAll = false;
+      }
       if (st.requestSelectAll && od != nullptr)
         installSelection(*od, selectAll(od->document.width, od->document.height));
       if (st.requestDeselect && od != nullptr) installSelection(*od, std::nullopt);
@@ -16644,6 +16972,97 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 
       const Selection* sel =
           (od != nullptr && od->selection.has_value()) ? &*od->selection : nullptr;
+
+      // --- the clipboard, while a caret is up, means the TEXT --------------
+      //
+      // Cmd+C/X/V (and the Edit menu's own items, which set the same flags)
+      // act on the text selection rather than on canvas pixels for as long as
+      // a Text session is live. The three are on
+      // `keymapActionEndsTextSession()`'s KEEP list so the session survives
+      // long enough for this to run -- main.cpp ends a session BEFORE setting
+      // the request flag, so on the ending side this block would be dead
+      // code.
+      //
+      // **Each of them CONSUMES its flag, including when it does nothing.**
+      // A Cmd+C with no text selected must not fall through and copy the
+      // canvas instead: the caret is up, the user meant the text, and
+      // quietly copying a rectangle of pixels they would then paste as a new
+      // layer is a worse answer than saying "nothing is selected". Every
+      // refusal goes to `g_docStatus`, which is where this file's other
+      // refusals are already read from.
+      //
+      // The system pasteboard, not a private buffer -- so text copied here
+      // pastes into any other application and vice versa. `st.clipboard`
+      // (pixels) is left completely alone by all three, so a copied image
+      // survives a caption being edited.
+      if (textSessionActive(st.textEdit) && od != nullptr &&
+          st.textEdit.documentId == od->id &&
+          st.textEdit.layerIndex < od->document.layers.size() &&
+          od->document.layers[st.textEdit.layerIndex].kind == LayerKind::Text &&
+          (st.requestCopy || st.requestCut || st.requestPaste)) {
+        Layer& block = od->document.layers[st.textEdit.layerIndex];
+        const bool wantCopy = st.requestCopy;
+        const bool wantCut = st.requestCut;
+        const bool wantPaste = st.requestPaste;
+        st.requestCopy = false;
+        st.requestCut = false;
+        st.requestPaste = false;
+
+        if (wantCopy || wantCut) {
+          const std::string picked = textSelectedUtf8(block.text, st.textEdit);
+          if (picked.empty()) {
+            g_docStatus = "Nothing is selected. Drag across the text, or Shift+arrow, first.";
+          } else if (!clipboardSetText(picked)) {
+            // Reported rather than swallowed: a copy that silently failed
+            // leaves the next paste delivering the PREVIOUS clipboard
+            // contents, which looks like paste is broken rather than copy.
+            g_docStatus = "The system clipboard refused the copy.";
+          } else if (wantCut) {
+            if (block.locked) {
+              g_docStatus = "Copied. The layer is locked, so nothing was cut.";
+            } else {
+              textDeleteSelection(&block.text, &st.textEdit);
+              od->recordEdit("cut text", EditKind::Content);
+              // A cut is not typing, and it just recorded its own entry. If
+              // the burst's flag were left set the next character typed would
+              // amend straight over it -- app/TextTool.hpp section 3c.
+              textEditClearUndoOpened(&st.textEdit);
+              g_docStatus = "Cut.";
+            }
+          } else {
+            g_docStatus = "Copied.";
+          }
+        }
+
+        if (wantPaste) {
+          if (block.locked) {
+            g_docStatus = "This layer is locked. Unlock it to paste into the text.";
+          } else if (!clipboardHasText()) {
+            // Deliberately not falling through to the canvas paste, which
+            // would add an image as a NEW LAYER over the block being typed
+            // into -- see the block comment above.
+            g_docStatus = "The clipboard holds no text to paste into this block.";
+          } else {
+            std::string cleaned;
+            if (!textSanitizePasted(clipboardGetText(), &cleaned)) {
+              // The refusal app/TextTool.hpp section 3c exists for: one bad
+              // byte reaching `shapeText()` blanks the WHOLE block, so a
+              // paste that cannot be validated must change nothing at all.
+              g_docStatus = "That clipboard text is not valid UTF-8; nothing was pasted.";
+            } else if (cleaned.empty()) {
+              g_docStatus = "The clipboard's text is empty; nothing was pasted.";
+            } else {
+              // `textInsertUtf8()` replaces the selection itself, so a paste
+              // over selected text does what every editor does without this
+              // call site having to remember.
+              textInsertUtf8(&block.text, &st.textEdit, cleaned);
+              od->recordEdit("paste text", EditKind::Content);
+              textEditClearUndoOpened(&st.textEdit);
+              g_docStatus = "Pasted.";
+            }
+          }
+        }
+      }
 
       if (st.requestCopy && target != nullptr)
         st.clipboard = copyThroughSelection(*target, sel);
@@ -17530,7 +17949,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // its own session is still marked active, and `textSessionActive()`
     // (app/TextTool.hpp; main.cpp's key-down handler) would keep routing
     // every bare hotkey to the Text session forever. Plain `textEditCancel()`
-    // is right here, not `textEditRevert()`: switching tools is one of this
+    // is right here: switching tools is one of this
     // step's three "accept" gestures (the others are clicking away, already
     // handled below by `textEditFrameDragBegin()`/`textEditBegin()`
     // discarding the old session, and Cmd+Return) -- it keeps whatever was
@@ -17558,32 +17977,95 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
       if (editing == nullptr && !st.textEdit.frameDragActive) textEditCancel(&st.textEdit);
 
-      // Escape CANCELS, not just closes: an existing layer's session reverts
-      // its text to what it was when `textEditBegin()` opened it (Cmd+Return
-      // and every other way out of a session KEEP the typed text -- this is
-      // the one exception). `editing != nullptr` is exactly "there is a real
-      // layer with a live caret session" -- the other case Escape reaches,
-      // a bare frame drag with no layer yet, has no `TextContent` to revert
-      // and takes the plain-cancel path below unchanged, same as document
-      // switch and layer-gone above.
-      if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-        if (editing != nullptr) {
-          textEditRevert(&editing->text, &st.textEdit);
-          // The session's open undo entry (if any) now names a document
-          // state nothing points at any more -- the live document was just
-          // reverted out from under it. Folding it to a no-op with the same
-          // `amendEdit()` call the typing loop below already uses (it keeps
-          // the entry's serial and simply overwrites its stored snapshot,
-          // app/DocumentLifecycle.hpp's own comment on `amendEdit()`) makes
-          // that entry equal its predecessor again -- consistent with the
-          // live document, and with nothing dangling for `core/History` to
-          // undo TO that was never really a state the user asked for.
-          if (st.textEdit.undoOpened) textDoc->amendEdit("type", EditKind::Content);
-        }
-        textEditCancel(&st.textEdit);
+      // Escape CLOSES the session and KEEPS what was typed -- the same
+      // accept every other way out already meant (switching tools, clicking
+      // away, Cmd+Return, a document hotkey).
+      //
+      // It used to be the one exception: it called `textEditRevert()` and
+      // restored the block to what `textEditBegin()` opened it with. That is
+      // Photoshop's behaviour and it was a deliberate choice, but it is a bad
+      // one HERE, because of how a block gets made in this build. A click on
+      // empty canvas creates the layer and opens a session on it in the same
+      // gesture, so the snapshot Escape reverts to is the EMPTY string --
+      // press Escape after typing a caption and the caption is simply gone.
+      // The most reflexive key on the keyboard silently destroying a
+      // paragraph is not a defensible default whatever Photoshop does.
+      //
+      // Discarding is not lost, it moved somewhere better: a typing burst is
+      // one history entry, and Cmd+Z now works with the session still live
+      // (app/TextTool.hpp section 8), so undo throws the typing away and can
+      // itself be redone. `textEditRevert()` had no other caller and is gone.
+      if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) textEditCancel(&st.textEdit);
+
+      // --- the frame's resize handles --------------------------------------
+      //
+      // A paragraph frame is dragged out before a word of it is typed, so its
+      // size is a guess; these let that guess be corrected afterwards, with
+      // the text reflowing to the new width. Handled BEFORE the click-to-edit
+      // block below, because a pen-down on a handle must not also place a
+      // caret -- the handle sits on the frame's edge, which is exactly where
+      // `textBlockHit()`'s padding reaches.
+      //
+      // Only for the ACTIVE layer's own block, matching the click-to-edit
+      // rule immediately below: the LAYERS panel is where a layer is chosen,
+      // and a handle that acted on a layer the panel did not name would be
+      // the same lie in a different place.
+      Layer* frameLayer = textDoc != nullptr ? activeLayerOf(*textDoc) : nullptr;
+      if (frameLayer != nullptr && frameLayer->kind != LayerKind::Text) frameLayer = nullptr;
+      const float handleRadiusDoc =
+          kTransformHandleHitPx / std::max(0.05f, st.view.zoom);
+      TextFrameHandle hoveredHandle = TextFrameHandle::None;
+      if (frameLayer != nullptr && hovered && !st.textEdit.selectDragActive &&
+          !st.textEdit.frameDragActive)
+        hoveredHandle = textFrameHandleAt(frameLayer->text, PathPoint{tx, ty}, handleRadiusDoc);
+      g_textHoveredHandle = hoveredHandle;
+
+      // The affordance the request asked for: over a handle, the pointer says
+      // "this drags". `MoveObject` is this file's existing name for the move
+      // cursor (ui/ToolCursor.hpp), so the Text tool does not introduce a
+      // second spelling of it.
+      if (hoveredHandle != TextFrameHandle::None || textEditResizeActive(st.textEdit))
+        g_canvasCursor = sdlCursorFor(ToolCursor::MoveObject);
+
+      if (textDoc != nullptr && hovered && frameLayer != nullptr &&
+          hoveredHandle != TextFrameHandle::None &&
+          ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        textEditResizeBegin(&st.textEdit, hoveredHandle);
       }
 
-      if (textDoc != nullptr && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+      if (textEditResizeActive(st.textEdit)) {
+        // `!IsMouseDown` rather than `IsMouseReleased`, the frame drag's own
+        // reason: a release ImGui never saw (the pointer left the window)
+        // would otherwise leave the drag live and every later mouse move
+        // would keep resizing.
+        if (frameLayer != nullptr && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+          // A floor in DOCUMENT units, from the same screen-pixel constant
+          // the handles are hit-tested with, so a frame cannot be dragged
+          // smaller than its own handles are apart.
+          const float minSizeDoc = std::max(4.0f, 16.0f / std::max(0.05f, st.view.zoom));
+          if (textFrameResize(&frameLayer->text, st.textEdit.resizeHandle, PathPoint{tx, ty},
+                              minSizeDoc)) {
+            // Amended rather than recorded per frame: a drag is ONE edit, and
+            // an entry per mouse-move would make Cmd+Z walk back through the
+            // drag a pixel at a time -- app/DocumentLifecycle's own rule, the
+            // same one a typing burst follows.
+            if (st.textEdit.undoOpened) {
+              textDoc->amendEdit("resize text frame");
+            } else {
+              textDoc->recordEdit("resize text frame", EditKind::Content);
+              textEditMarkUndoOpened(&st.textEdit);
+            }
+          }
+        } else {
+          textEditResizeEnd(&st.textEdit);
+          // The next thing typed opens its own entry rather than amending
+          // over the resize -- app/TextTool.hpp section 3c.
+          textEditClearUndoOpened(&st.textEdit);
+        }
+      }
+
+      if (textDoc != nullptr && hovered && !textEditResizeActive(st.textEdit) &&
+          hoveredHandle == TextFrameHandle::None && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         // A click on the ACTIVE layer's own text block edits it. Only the
         // active layer, and deliberately not a search down the stack: the
         // LAYERS panel is where a layer is chosen in this application, and a
@@ -17601,15 +18083,35 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             // header is explicit that the member can be stale past a layer
             // delete or an undo, and every reader clamps.
             const size_t activeIndex = activeLayerIndex(*textDoc).value_or(0);
-            textEditBegin(&st.textEdit, textDocId, activeIndex, active->text);
-            // `textEditBegin()` puts the caret at the END, which is right for
-            // "clicked to start editing" and wrong for "clicked at a
-            // character". Both gestures are one click here, so the caret is
-            // then moved to the click -- `core/TextContent`'s
-            // `textOffsetAtPoint()`, which returns a real UTF-8 boundary so
-            // no clamp is needed on the way in.
-            textCaretSetOffset(&st.textEdit, active->text,
-                               textOffsetAtPoint(active->text, PathPoint{tx, ty}));
+            const bool alreadyHere = textSessionActive(st.textEdit) &&
+                                     st.textEdit.documentId == textDocId &&
+                                     st.textEdit.layerIndex == activeIndex;
+            // Shift+click EXTENDS the range from wherever the caret already
+            // is, so it must not restart the session -- `textEditBegin()`
+            // resets both ends. Only meaningful when a session is already
+            // live on this very block; a Shift+click into a block nobody was
+            // editing is just a click.
+            if (ImGui::GetIO().KeyShift && alreadyHere) {
+              textSelectionSetCaret(&st.textEdit, active->text,
+                                    textOffsetAtPoint(active->text, PathPoint{tx, ty}),
+                                    /*extend=*/true);
+            } else {
+              textEditBegin(&st.textEdit, textDocId, activeIndex, active->text);
+              // `textEditBegin()` puts the caret at the END, which is right
+              // for "clicked to start editing" and wrong for "clicked at a
+              // character". Both gestures are one click here, so the caret is
+              // then moved to the click -- `core/TextContent`'s
+              // `textOffsetAtPoint()`, which returns a real UTF-8 boundary so
+              // no clamp is needed on the way in.
+              //
+              // Through `textSelectDragBegin()` rather than
+              // `textCaretSetOffset()`: pen-down on the glyphs is the START
+              // of a possible drag-selection, and the two are the same
+              // gesture until the pointer moves. It puts both ends at the
+              // click, so a click that never drags is exactly a caret.
+              textSelectDragBegin(&st.textEdit, active->text,
+                                  textOffsetAtPoint(active->text, PathPoint{tx, ty}));
+            }
             // The row must show the block the user just clicked into, not the
             // last one they typed in -- app/AppState.hpp's stated rule that
             // selecting a Text layer loads its content back into the tool.
@@ -17622,6 +18124,27 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // Which of the two things it becomes is decided on pen-UP, because
         // until the button lifts there is no way to know.
         if (!startedOnExisting) textEditFrameDragBegin(&st.textEdit, PathPoint{tx, ty}, textDocId);
+      }
+
+      // --- dragging out a selection over the glyphs ----------------------
+      //
+      // The pointer half of "I can't select text". Begun by the pen-down
+      // above, dragged here, ended on the button lifting -- and ended with
+      // `!IsMouseDown` rather than `IsMouseReleased` for the reason the frame
+      // drag below states: a release ImGui never saw (the pointer left the
+      // window) would otherwise leave the drag live forever, so every
+      // subsequent mouse move would keep re-selecting.
+      //
+      // `editing` rather than the active layer again: the drag belongs to the
+      // block the session is on, and re-resolving it here keeps a stack
+      // reorder mid-drag from selecting inside whatever moved into the slot.
+      if (st.textEdit.selectDragActive) {
+        if (editing != nullptr && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+          textSelectDragUpdate(&st.textEdit, editing->text,
+                               textOffsetAtPoint(editing->text, PathPoint{tx, ty}));
+        } else {
+          textSelectDragEnd(&st.textEdit);
+        }
       }
 
       if (st.textEdit.frameDragActive && textDoc != nullptr && !st.textEditDemo) {
@@ -17742,13 +18265,21 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           edited = textDeleteForward(&editing->text, &st.textEdit) || edited;
         // Caret moves change no document content, so they record no edit --
         // app/DocumentLifecycle.hpp's rule that a selection change is not an
-        // edit, applied to a caret.
+        // edit, applied to a caret. That rule covers the TEXT selection here
+        // too: extending one with Shift is not an edit either.
+        //
+        // `io.KeyShift` is the `extend` flag app/TextTool's movers take. With
+        // it held the caret end of the range moves and the anchor stays;
+        // without it the range collapses (to its near edge, if there was
+        // one). The whole of Shift+arrow selection is this one bool.
+        const bool extendSel = io.KeyShift;
         if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))
-          textCaretLeft(editing->text, &st.textEdit);
+          textCaretLeft(editing->text, &st.textEdit, extendSel);
         if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
-          textCaretRight(editing->text, &st.textEdit);
-        if (ImGui::IsKeyPressed(ImGuiKey_Home, false)) textCaretHome(&st.textEdit);
-        if (ImGui::IsKeyPressed(ImGuiKey_End, false)) textCaretEnd(editing->text, &st.textEdit);
+          textCaretRight(editing->text, &st.textEdit, extendSel);
+        if (ImGui::IsKeyPressed(ImGuiKey_Home, false)) textCaretHome(&st.textEdit, extendSel);
+        if (ImGui::IsKeyPressed(ImGuiKey_End, false))
+          textCaretEnd(editing->text, &st.textEdit, extendSel);
 
         // **One undo entry per BURST of typing, not per keystroke.** A
         // `recordEdit()` per character would fill PRD A9's byte budget with
@@ -19869,34 +20400,70 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // every time a line wrapped, which reads as the frame moving when it
         // did not.
         const bool paragraph = tl->text.frame.width > 0.0f;
-        PathBounds box;
-        if (paragraph) {
-          box.valid = true;
-          box.minX = tl->text.origin.x;
-          box.minY = tl->text.origin.y;
-          box.maxX = tl->text.origin.x + tl->text.frame.width;
-          // `frame.height == 0` means "as tall as the lines need"
-          // (core/TextContent.hpp), so the box has to ASK how tall that came
-          // out rather than drawing a zero-height line.
-          const PathBounds ink = textContentBounds(tl->text);
-          box.maxY = tl->text.frame.height > 0.0f
-                         ? tl->text.origin.y + tl->text.frame.height
-                         : (ink.valid ? ink.maxY : tl->text.origin.y);
-        } else {
-          box = textContentBounds(tl->text);
-        }
-
-        if (box.valid) {
-          const Vec2 a = xform.toScreen(Vec2{box.minX, box.minY});
-          const Vec2 b = xform.toScreen(Vec2{box.maxX, box.maxY});
-          const ImVec2 tlp(std::min(a.x, b.x), std::min(a.y, b.y));
-          const ImVec2 brp(std::max(a.x, b.x), std::max(a.y, b.y));
+        // `textFrameQuad()` decides paragraph-frame vs point-ink and maps the
+        // corners through the block's transform, so a rotated block gets a
+        // rotated box. It is a QUAD rather than a rect for that reason: the
+        // axis-aligned box of turned text is visibly not the text's own
+        // frame.
+        TextQuad box;
+        if (textFrameQuad(tl->text, &box)) {
+          ImVec2 pt[4];
+          for (int i = 0; i < 4; ++i) {
+            const Vec2 v = xform.toScreen(Vec2{box.corner[i].x, box.corner[i].y});
+            pt[i] = ImVec2(v.x, v.y);
+          }
+          const ImU32 core = paragraph ? kTextCore : IM_COL32(255, 255, 255, 200);
           // A dark casing under a light core, the gradient band's own reason:
           // this is drawn over the user's picture at whatever colour that
           // happens to be.
-          dl->AddRect(tlp, brp, kTextCasing, 0.0f, 0, 3.0f);
-          dl->AddRect(tlp, brp, paragraph ? kTextCore : IM_COL32(255, 255, 255, 200), 0.0f, 0,
-                      1.5f);
+          //
+          // **An axis-aligned quad still goes through `AddRect`.** Not for
+          // the golden's sake: ImGui's rectangle path has its own
+          // anti-aliasing, and routing an unrotated box through the general
+          // polyline instead visibly changes the border of every text block
+          // in the application to buy nothing. The quad path is for the case
+          // that could not be drawn before at all.
+          const bool axisAligned = std::fabs(pt[0].y - pt[1].y) < 0.01f &&
+                                   std::fabs(pt[1].x - pt[2].x) < 0.01f &&
+                                   std::fabs(pt[2].y - pt[3].y) < 0.01f &&
+                                   std::fabs(pt[3].x - pt[0].x) < 0.01f;
+          if (axisAligned) {
+            const ImVec2 tlp(std::min(pt[0].x, pt[2].x), std::min(pt[0].y, pt[2].y));
+            const ImVec2 brp(std::max(pt[0].x, pt[2].x), std::max(pt[0].y, pt[2].y));
+            dl->AddRect(tlp, brp, kTextCasing, 0.0f, 0, 3.0f);
+            dl->AddRect(tlp, brp, core, 0.0f, 0, 1.5f);
+          } else {
+            dl->AddPolyline(pt, 4, kTextCasing, ImDrawFlags_Closed, 3.0f);
+            dl->AddPolyline(pt, 4, core, ImDrawFlags_Closed, 1.5f);
+          }
+        }
+
+        // --- the eight resize handles ------------------------------------
+        //
+        // Only for a paragraph frame -- `textFrameHandles()` reports none for
+        // point text, which has no box (core/TextContent.hpp section 4b), so
+        // the `if` is the whole of that rule and this file does not restate
+        // it as a second condition that could drift from the first.
+        //
+        // Drawn at a fixed SCREEN size, like the Free Transform gizmo's, so a
+        // handle is the same target at every zoom -- and hit-tested at the
+        // same constant, converted to document units where the gesture is.
+        TextFrameHandles handles;
+        if (textFrameHandles(tl->text, &handles)) {
+          const float r = kTransformHandleDrawPx * 0.5f;
+          for (int i = 0; i < 8; ++i) {
+            const Vec2 v = xform.toScreen(Vec2{handles.at[i].x, handles.at[i].y});
+            const ImVec2 a(v.x - r, v.y - r), b(v.x + r, v.y + r);
+            // The one under the pointer is filled with the accent so the
+            // affordance is visible before the button goes down -- the same
+            // "you can grab this" the cursor change says, for a user whose
+            // eyes are on the canvas rather than on the pointer.
+            const bool live = static_cast<TextFrameHandle>(i + 1) == g_textHoveredHandle ||
+                              static_cast<TextFrameHandle>(i + 1) == st.textEdit.resizeHandle;
+            dl->AddRectFilled(ImVec2(a.x - 1.0f, a.y - 1.0f), ImVec2(b.x + 1.0f, b.y + 1.0f),
+                              kTextCasing);
+            dl->AddRectFilled(a, b, live ? kTextCore : IM_COL32(255, 255, 255, 235));
+          }
         }
 
         // --- the caret ---
@@ -19908,16 +20475,41 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             textOd != nullptr && st.textEdit.documentId == textOd->id &&
             st.textEdit.layerIndex == activeLayerIndex(*textOd).value_or(SIZE_MAX);
         if (editingThis) {
-          float caretH = 0.0f;
-          const PathPoint cp = textCaretPosition(tl->text, st.textEdit.caret, &caretH);
-          // The caret hangs from the pen position UP by the ascent and DOWN by
-          // the descent, because the pen position is on the BASELINE and a bar
-          // drawn downward from it would sit entirely under the text. 0.8/0.2
-          // is the conventional ascent/descent split of a line box, and it is
-          // an approximation for the reason `caretHeightFor()` states: the
-          // font's real metrics would need a second platform call.
-          const Vec2 top = xform.toScreen(Vec2{cp.x, cp.y - caretH * 0.8f});
-          const Vec2 bot = xform.toScreen(Vec2{cp.x, cp.y + caretH * 0.2f});
+          // --- the selection highlight ---
+          //
+          // Painted BEFORE the caret so the caret sits on top of it, and
+          // before nothing else -- the glyphs themselves are composited into
+          // the document texture underneath this whole overlay, so this is a
+          // translucent wash OVER the type rather than a block behind it.
+          // That is why the alpha is low: at anything heavier the letters
+          // under it stop being readable, and a selection whose text you
+          // cannot read is worse than no highlight.
+          //
+          // One QUAD per line, from `core/TextContent`'s
+          // `textSelectionQuads()` -- which needs `ShapedGlyph::advance` to
+          // know where a line's last selected character ENDS, the same field
+          // the caret needed, and which maps the corners through the block's
+          // transform so the highlight turns with the type.
+          const TextSelection sel = textSelection(st.textEdit);
+          if (!sel.empty()) {
+            for (const TextQuad& q : textSelectionQuads(tl->text, sel.lo, sel.hi)) {
+              const Vec2 a = xform.toScreen(Vec2{q.corner[0].x, q.corner[0].y});
+              const Vec2 b = xform.toScreen(Vec2{q.corner[1].x, q.corner[1].y});
+              const Vec2 c = xform.toScreen(Vec2{q.corner[2].x, q.corner[2].y});
+              const Vec2 d = xform.toScreen(Vec2{q.corner[3].x, q.corner[3].y});
+              dl->AddQuadFilled(ImVec2(a.x, a.y), ImVec2(b.x, b.y), ImVec2(c.x, c.y),
+                                ImVec2(d.x, d.y), IM_COL32(90, 150, 255, 90));
+            }
+          }
+
+          // Both endpoints come from `core/TextContent` already mapped through
+          // the block's transform, so the bar leans with rotated type instead
+          // of standing vertical in it. The 0.8/0.2 ascent/descent split that
+          // used to be reconstructed here now lives beside the one the
+          // selection highlight uses, so the two cannot drift apart.
+          const TextCaretSegment caret = textCaretSegment(tl->text, st.textEdit.caret);
+          const Vec2 top = xform.toScreen(Vec2{caret.top.x, caret.top.y});
+          const Vec2 bot = xform.toScreen(Vec2{caret.bottom.x, caret.bottom.y});
           // **Blinking, and NOT on a `static` clock.** `ImGui::GetTime()` is
           // the frame clock this whole UI already runs on, so the caret blinks
           // at the same rate on every document and stops nothing when the

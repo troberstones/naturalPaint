@@ -295,12 +295,18 @@ bool runTextSerialTest() {
     // A future tag on a payload that is otherwise PERFECTLY VALID -- swapping
     // only the prefix, per io/PathSerial's own precedent for why this is the
     // one test that can only be refused BY the version gate.
+    //
+    // **nptext3, not nptext2.** This said "nptext2:" until that became a
+    // version this build actually reads, at which point it was testing that a
+    // KNOWN version with a short payload is refused -- true, but not the
+    // version gate, and it would have stayed green with the gate deleted.
+    // The future tag has to stay ahead of the versions that exist.
     const std::string futureTagged =
-        "nptext2:" + encoded.substr(std::strlen(kTextContentSerialPrefix));
+        "nptext3:" + encoded.substr(std::strlen(kTextContentSerialPrefix));
     check(!deserializeTextContent(futureTagged, &dummy, &why),
           "serial: a FUTURE version is refused even when its payload is otherwise valid");
-    check(why.find("nptext1:") != std::string::npos,
-          "serial: and the refusal names the version this build speaks");
+    check(why.find("nptext1:") != std::string::npos && why.find("nptext2:") != std::string::npos,
+          "serial: and the refusal names BOTH versions this build speaks");
 
     check(!deserializeTextContent("0011223344", &dummy, &why),
           "serial: a value with no recognisable prefix at all is refused");
@@ -308,6 +314,53 @@ bool runTextSerialTest() {
     check(!deserializeTextContent(kTextContentSerialPrefix, &dummy, &why),
           "serial: the right prefix with NO payload after it is refused as truncated, not "
           "read as an empty TextContent");
+  }
+
+  // --- 3b. The transform matrix, and the version it selects -----------------
+  {
+    std::string why;
+
+    // An untransformed block still writes v1, which is what keeps documents
+    // with no rotated text in them readable by older builds
+    // (io/TextSerial.hpp). This is the assertion that fails if the version is
+    // ever chosen by the build rather than by the content.
+    TextContent plain = fullTextContent();
+    plain.transform = mat3Identity();
+    const std::string plainWire = serializeTextContent(plain);
+    check(plainWire.rfind(kTextContentSerialPrefix, 0) == 0,
+          "serial: REQUIRED -- a block with an IDENTITY transform still serialises as v1, so a "
+          "document that never used the feature does not stop opening in an older build");
+
+    // And a transformed one writes v2 and round-trips all nine entries.
+    TextContent turned = fullTextContent();
+    turned.transform = mat3Multiply(transformRotateDegrees(30.0f), transformScale(2.0f, 3.0f));
+    const std::string turnedWire = serializeTextContent(turned);
+    check(turnedWire.rfind(kTextContentSerialPrefixV2, 0) == 0,
+          "serial: REQUIRED -- a block that carries a matrix serialises as v2");
+
+    TextContent back;
+    check(deserializeTextContent(turnedWire, &back, &why),
+          std::string("serial: and v2 reads back: ") + why);
+    check(back.transform.m == turned.transform.m,
+          "serial: REQUIRED -- all NINE matrix entries survive the round trip exactly. A partial "
+          "write (six, say) would put a block back at the wrong angle with no error");
+
+    // v1 on the wire means a block that has never been transformed -- not an
+    // undefined matrix. This is what every existing document on disk is.
+    TextContent fromV1;
+    check(deserializeTextContent(plainWire, &fromV1, &why),
+          std::string("serial: a v1 payload still reads: ") + why);
+    check(fromV1.transform.m == mat3Identity().m,
+          "serial: REQUIRED -- and it loads with an IDENTITY transform, so an existing document "
+          "opens with its captions square rather than at whatever was in uninitialised memory");
+
+    // A v2 tag whose payload stops before the matrix is truncated, not
+    // silently read as identity.
+    const std::string shortV2 =
+        std::string(kTextContentSerialPrefixV2) + plainWire.substr(std::strlen(kTextContentSerialPrefix));
+    TextContent dummy2;
+    check(!deserializeTextContent(shortV2, &dummy2, &why),
+          "serial: a v2 payload that stops before its matrix is refused as truncated");
   }
 
   // --- 4. Malformed payloads are refused, not crashed -----------------------

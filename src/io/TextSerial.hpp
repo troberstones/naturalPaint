@@ -102,6 +102,7 @@
 //     u16  dashCount
 //     dashCount x f32                       strokeStyle.dashes
 //     f32  strokeStyle.dashOffset
+//     9 x f32  transform.m               V2 ONLY -- row-major, see above
 //
 // `utf8Length` is a `u32`, unlike `fontFamilyLength`'s `u16`: a font family
 // name is realistically a handful of words, but a text block's own content is
@@ -124,6 +125,25 @@ namespace np {
 // spelling the literal a second time -- io/PathSerial's `kVectorShapeSerialPrefix`
 // precedent.
 inline constexpr const char* kTextContentSerialPrefix = "nptext1:";
+
+// Version 2 adds the block's `Mat3 transform` (core/TextContent.hpp section
+// 4) as nine trailing f32s, and is written **only when that matrix is not the
+// identity**.
+//
+// The conditional is the point. An exact-length payload cannot simply grow --
+// this file's own reader refuses trailing bytes -- so a new field means a new
+// version, and a new version written unconditionally would make every
+// document this build touches unreadable by an older one, including the
+// overwhelming majority that have no rotated text in them. Writing v1 for an
+// untransformed block keeps those files exactly as interchangeable as they
+// were, and a user only pays the compatibility cost on the blocks where they
+// actually used the feature.
+//
+// Nine floats, not the six an affine needs: `Mat3` is a full homogeneous
+// matrix, and storing only the top two rows would silently discard a
+// projective one rather than round-tripping whatever the application put
+// there. Twelve bytes against a correctness cliff is not a trade worth making.
+inline constexpr const char* kTextContentSerialPrefixV2 = "nptext2:";
 
 // `text` as an `np:text` attribute value. Never fails and never returns an
 // empty string -- an empty `TextContent` (the state a freshly-created, not

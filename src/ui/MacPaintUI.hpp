@@ -251,7 +251,74 @@ void moveHistoryCursor(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext&
 // counted against `toolImplemented()`, never a literal number, so the
 // assertion stays true as tools ship -- and `app/selftest/ToolSurface.cpp` can
 // call it with `documentOpen = false` to prove the same of the second axis.
-std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen);
+//
+// **`modalWhy` is the THIRD axis (app/ToolSwitch.hpp section 5): a live
+// transform gizmo**, and it is here for the identical A4 reason the second
+// one is. The palette and the flyout both refuse every cell while a gizmo is
+// up; a Goodies menu that did not would be the third live route to the tool
+// change the other two correctly disable, and the report that started this
+// ("I can select a tool while transforming") named the palette only because
+// that is the one the user reached for first. `nullptr` when nothing is
+// refusing -- the sentence itself, not a bool, so the greyed entry can say
+// why, which is `transformModalRefusal()`'s own argument.
+std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen,
+                                            const char* modalWhy);
+
+// **The Layer menu's two families**, exposed here for the reason
+// `toolMenuFamily()` above is: `menuContextFromState()` itself cannot be
+// called from `--selftest` (its first call loads the user's real
+// recent-documents file), and these two functions read nothing and touch no
+// disk, so the assertions can drive them directly.
+//
+// `modalWhy` is `app/ToolSwitch.hpp`'s `transformModalRefusal()` -- non-null
+// while a transform gizmo is live on the document in front of the user, and
+// **the Layer menu is the one menu that is GREYED by a gizmo rather than
+// cancelling it** (`ui/MenuModel.hpp`'s `menuActionEndsTransform()` states the
+// general rule and this is its exception). These commands are the
+// delete/reorder/merge/group family -- `docs/testing-issues.md` T29's own
+// measured corruption, and the LAYERS panel's buttons wearing a different hat.
+// That panel is refused outright, so offering the same acts one menu over, at
+// the price of the transform, would be two surfaces disagreeing about one
+// thing.
+//
+// Neither family carries a key equivalent, and both `ImGui::MenuItem(...,
+// enabled)` and `ui/MacNativeMenu.mm`'s `setEnabled:NO` honour the flag, so
+// greying really does close both routes.
+//
+// **Two axes, never two sentences.** `layerCommandAvailable()` /
+// `layerSetCommandAvailable()` answer a bare bool with no reason of their own,
+// so a command already unavailable on its own terms keeps the empty tooltip it
+// has always had; only one the gizmo is the SOLE reason for carries `modalWhy`.
+std::vector<MenuFamilyEntry> layerMenuFamily(const Document& doc, size_t selected,
+                                             const char* modalWhy);
+std::vector<MenuFamilyEntry> layerSetMenuFamily(const Document& doc,
+                                                const LayerSelection& visible,
+                                                const char* modalWhy);
+
+// **The whole menu context, assembled from the live application.**
+//
+// Exposed 2026-09-10, and only because the pure families above could not
+// close the last hole on their own. Each of them takes a `modalWhy` and each
+// is asserted with one -- but the LINE that fetches it
+// (`transformModalRefusal(st)`) and hands it over lives in
+// `menuContextFromState()`, and a sabotage that replaced that line with
+// `nullptr` produced **zero failures**: the classification was perfect and the
+// wiring was gone, which is the exact "green assertion, dead probe" shape this
+// codebase keeps paying for. Something has to drive the assembly itself.
+//
+// **PRECONDITION for `--selftest`: set `st.recentDocumentsLoaded = true`
+// first.** The first call otherwise loads `st.recentDocuments` from the user's
+// real preferences file (`app/DocumentLifecycle.hpp`) -- the one file the test
+// suite must never touch -- and that eager load is deliberate (a native menu
+// bar is on screen from launch and has to know whether `Open Recent` has
+// entries before anyone opens the File menu). The flag is the load's own
+// guard, so setting it skips the read entirely; the assertions check
+// `recentDocuments.entries().empty()` afterwards so the precondition proves
+// itself rather than being remembered.
+//
+// Touches no ImGui and opens no window: it reads `AppState`, the layer
+// panel's own file-local selection, and nothing else.
+MenuContext menuContextFromState(AppState& st);
 
 // The foreground colour as STRAIGHT LINEAR RGBA -- what the paint bucket (PRD
 // D25/D26) and the gradient (D24) both need, and what neither can be handed

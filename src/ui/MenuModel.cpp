@@ -519,6 +519,174 @@ const char* menuActionName(MenuAction action) noexcept {
   return "<UNNAMED MenuAction -- add it to menuActionName()>";
 }
 
+bool menuActionEndsTransform(MenuAction action) noexcept {
+  switch (action) {
+    // --- The exemptions, and only these -----------------------------------
+    //
+    // The header carries the argument for each group. Everything below this
+    // block returns true.
+    case MenuAction::None:
+      return false;
+
+    // View: `AppState::view`, the chrome flags, and `st.guides` -- not one of
+    // them is inside `OpenDocument::document`. Zooming to place something
+    // precisely is a mid-transform gesture, not an interruption of one.
+    case MenuAction::FitToWindow:
+    case MenuAction::Zoom100:
+    case MenuAction::ZoomIn:
+    case MenuAction::ZoomOut:
+    case MenuAction::MirrorX:
+    case MenuAction::MirrorY:
+    case MenuAction::ResetRotation:
+    case MenuAction::ResetView:
+    case MenuAction::GrayscalePreview:
+    case MenuAction::Rulers:
+    case MenuAction::Navigator:
+    case MenuAction::Guides:
+    case MenuAction::AddGuide:
+    case MenuAction::ClearGuides:
+    case MenuAction::Grid:
+    case MenuAction::Snap:
+    // Merged in from main 2026-09-10 and classified here because `-Wswitch`
+    // would not let it be inherited: `setTilePreview()` writes
+    // `st.tilePreview` and `st.view`, so a tiled preview is a way of LOOKING
+    // at the document, not a way of changing it -- the same seat as Zoom.
+    case MenuAction::TilePreview:
+      return false;
+
+    // Window, plus the two developer toggles that live beside them: window
+    // and process state, no document in the expression.
+    case MenuAction::BrushSettings:
+    case MenuAction::Pigment:
+    case MenuAction::ImGuiDemo:
+    case MenuAction::PauseSolver:
+    case MenuAction::ReloadShaders:
+      return false;
+
+    // Writing a file changes no pixel and moves no layer. Cmd+S is muscle
+    // memory and must not cost a transform.
+    case MenuAction::Save:
+    case MenuAction::SaveAs:
+    case MenuAction::SaveCopy:
+    case MenuAction::SaveIncremental:
+    case MenuAction::ExportAs:
+    case MenuAction::ExportStates:
+      return false;
+
+    // A session outlives a document switch on purpose; the quit is a sequence
+    // the user can still cancel; the tool item is the tool rule's business.
+    case MenuAction::ActivateDocument:
+    case MenuAction::Quit:
+    case MenuAction::ToolItem:
+      return false;
+
+    // The recent-documents list itself is a preferences file.
+    case MenuAction::ClearRecentMenu:
+      return false;
+
+    // --- Everything else ends it ------------------------------------------
+    //
+    // Listed rather than caught by a `default:`, so that adding a
+    // `MenuAction` is a decision this function is forced to make. A new item
+    // that silently inherited "does not end the transform" would be T29
+    // arriving again through a door nobody remembered was there.
+    //
+    // The four that make the case on their own: `Undo`/`Redo` replace the
+    // whole `Document` from a snapshot; `Paste` inserts a layer;
+    // `PaintModeItem` and the two canvas items clear it.
+    //
+    // **`LayerCommandItem` and `LayerSetCommandItem` are here as a SAFETY NET,
+    // not as the rule that governs them.** The Layer menu is the one menu
+    // GREYED by a live gizmo rather than cancelling it -- see
+    // `ui/MacPaintUI.hpp`'s `layerMenuFamily()` for why that family is the
+    // exception -- so neither of these can arrive while a session is up:
+    // `ImGui::MenuItem(..., enabled)` and `MacNativeMenu.mm`'s
+    // `setEnabled:NO` both honour the flag, and neither family carries a key
+    // equivalent. Classified `true` anyway because if one ever did arrive,
+    // cancelling first is the safe direction and there is no writer-level
+    // refusal underneath to catch it -- unlike `ToolItem` above, which
+    // `setActiveTool()` refuses on its own and is therefore classified false.
+    // The asymmetry between those two is deliberate and is that difference.
+    case MenuAction::NewCanvas:
+    case MenuAction::NewDocument:
+    case MenuAction::Open:
+    case MenuAction::OpenRecentEntry:
+    case MenuAction::ImportImage:
+    case MenuAction::RecoverDocuments:
+    case MenuAction::Revert:
+    case MenuAction::DuplicateDocument:
+    case MenuAction::CloseDocument:
+    case MenuAction::Undo:
+    case MenuAction::Redo:
+    case MenuAction::FreeTransform:
+    case MenuAction::NumericTransform:
+    case MenuAction::Cut:
+    case MenuAction::Copy:
+    case MenuAction::CopyMerged:
+    case MenuAction::Paste:
+    case MenuAction::DeleteSelection:
+    case MenuAction::SelectAll:
+    case MenuAction::Deselect:
+    case MenuAction::Reselect:
+    case MenuAction::InvertSelection:
+    case MenuAction::ClearCanvas:
+    case MenuAction::LayerCommandItem:
+    case MenuAction::LayerSetCommandItem:
+    case MenuAction::SelectGrow:
+    case MenuAction::SelectShrink:
+    case MenuAction::SelectFeather:
+    case MenuAction::SelectColourRange:
+    case MenuAction::SelectLuminanceRange:
+    case MenuAction::SelectUndoRefine:
+    case MenuAction::PaintModeItem:
+    case MenuAction::GaussianBlur:
+    case MenuAction::Sharpen:
+    case MenuAction::UnsharpMask:
+    case MenuAction::AddNoise:
+    case MenuAction::Emboss:
+    case MenuAction::Median:
+    case MenuAction::MotionBlur:
+    case MenuAction::ImageSize:
+    case MenuAction::CanvasSize:
+    case MenuAction::CropToSelection:
+    case MenuAction::TrimToContent:
+    case MenuAction::AdjustLevels:
+    case MenuAction::AdjustCurves:
+    case MenuAction::AdjustExposure:
+    case MenuAction::AdjustChannelMixer:
+    case MenuAction::AdjustDesaturate:
+    case MenuAction::AdjustBrightnessContrast:
+    case MenuAction::AdjustHueSaturation:
+    case MenuAction::AdjustVibrance:
+    case MenuAction::AdjustColorBalance:
+    case MenuAction::AdjustBlackAndWhite:
+    case MenuAction::AdjustPhotoFilter:
+    case MenuAction::AdjustInvert:
+    case MenuAction::AdjustPosterize:
+    case MenuAction::AdjustThreshold:
+    case MenuAction::AdjustGradientMap:
+    case MenuAction::AdjustAutoTone:
+    case MenuAction::AdjustAutoContrast:
+    case MenuAction::AdjustAutoColor:
+    case MenuAction::AdjustEqualize:
+    // Merged in from main 2026-09-10. Each rewrites the pixels the pending
+    // matrix is aimed at (`Inpaint` diffuses into the selection,
+    // `RemoveLightingGradient` divides the light out, `Offset` slides the
+    // layer's own texels) or, for `Batch`, opens a modal that runs operations
+    // over documents. All four are the default answer, and the default is what
+    // `-Wswitch` made someone look at rather than inherit.
+    case MenuAction::Inpaint:
+    case MenuAction::RemoveLightingGradient:
+    case MenuAction::Offset:
+    case MenuAction::Batch:
+    case MenuAction::Count:
+      return true;
+  }
+  // Unreachable for any real `MenuAction` -- `menuActionEffect()` below ends
+  // the same way, and for the same reason.
+  return true;
+}
+
 MenuEffect menuActionEffect(MenuAction action) noexcept {
   switch (action) {
     // **The one that matters.** See MenuEffect::QuitRequest's comment: this

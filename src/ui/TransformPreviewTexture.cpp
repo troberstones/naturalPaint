@@ -6,6 +6,8 @@
 #include "core/Clipboard.hpp"
 #include "core/Half.hpp"
 #include "core/Premultiply.hpp"
+#include "core/TextContent.hpp"
+#include "core/VectorRaster.hpp"
 #include "gfx/Context.hpp"
 #include "ops/Transform.hpp"
 
@@ -22,6 +24,46 @@ std::vector<uint16_t> transformPreviewStraightHalf(const Layer& layer, const Sel
   // `SelectionPixels` path is about to perform destructively via
   // `cutThroughSelection()` -- same coverage weighting, same "null selection
   // is the whole layer" rule -- minus the erase half.
+  // --- a Text layer has no tiles to copy, so it is rasterised here ---------
+  //
+  // A `LayerKind::Text` layer is parametric: it holds a string and a matrix,
+  // and its pixels only exist where core/VectorRaster materialises them for
+  // the composite (core/TextContent.hpp section 1). `copyThroughSelection()`
+  // reads `layer.rgbTiles`, finds none, and hands back an empty `Clipboard`
+  // -- so before this branch existed `upload()` returned false for every Text
+  // layer and the drag showed an empty box with the caption nowhere on
+  // screen. That is not a preview being approximate; it is the thing being
+  // dragged being invisible while you drag it.
+  //
+  // Rasterised at the DOCUMENT's full size and then cropped by
+  // `imageFromTileStore()`, exactly as the tile path is: `rasterizeVectorLayer()`
+  // clips to the width/height it is given, so passing the crop's own size
+  // would clip the glyphs to the crop's ORIGIN rather than to its rectangle.
+  //
+  // **Text only, deliberately, though `layerRastersToTiles()` also names
+  // Vector and Flats.** A preview is a promise about what the commit will do,
+  // and `transformLayer()` still moves nothing for a Vector layer
+  // (ops/DocumentTransform.hpp says so by name). Previewing those would show
+  // the shapes sliding under the cursor and then snapping back on mouse-up,
+  // which is a worse lie than the empty box they show today. When Vector
+  // gains its own `transformVectorLayer()`, this predicate is where it joins.
+  if (layer.kind == LayerKind::Text) {
+    const int32_t docW = sourceBounds.x + static_cast<int32_t>(sourceBounds.width);
+    const int32_t docH = sourceBounds.y + static_cast<int32_t>(sourceBounds.height);
+    const TileStore tiles = rasterizeVectorLayer(textContentToShapes(layer.text, nullptr),
+                                                 docW < 0 ? 0 : docW, docH < 0 ? 0 : docH);
+    const TransformImage timg = imageFromTileStore(tiles, sourceBounds.x, sourceBounds.y,
+                                                   sourceBounds.width, sourceBounds.height);
+    if (!timg.valid()) return {};
+    std::vector<uint16_t> tout(timg.px.size());
+    for (size_t i = 0; i + 3 < timg.px.size(); i += 4) {
+      const std::array<float, 4> straight = unpremultiply(
+          std::array<float, 4>{timg.px[i + 0], timg.px[i + 1], timg.px[i + 2], timg.px[i + 3]});
+      for (size_t c = 0; c < 4; ++c) tout[i + c] = floatToHalf(straight[c]);
+    }
+    return tout;
+  }
+
   const Clipboard clip = copyThroughSelection(layer, selection);
 
   // Pigment: named scope reduction, this header's own section on it. A

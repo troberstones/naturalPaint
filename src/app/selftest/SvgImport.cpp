@@ -593,15 +593,25 @@ bool runSvgImportTest() {
         std::printf("    [measured] svg y=60, origin.y=%.4f, shaper ascent=%.4f\n",
                     static_cast<double>(t.origin.y), static_cast<double>(truth.baselineOffset));
         check(nearf(t.origin.x, 20.0f, 1e-3f), "text: x is the origin's x under text-anchor:start");
-        // THE trap-1 assertion. `origin` is the block's TOP-LEFT and SVG's
-        // `y` is the BASELINE; the distance between them is the font's own
-        // ascent at this size, which this test asks CoreText for separately.
-        check(nearf(t.origin.y, 60.0f - truth.baselineOffset, 1e-3f),
-              "text: origin.y is the SVG baseline MINUS the shaper's own ascent");
+        // SVG's `y` is the BASELINE, and a point-text `origin` is now the
+        // baseline too (core/TextContent.hpp section 2b), so the two agree
+        // and the number is carried across unchanged.
+        //
+        // The negative half matters as much: this used to subtract the
+        // shaper's ascent, so asserting equality here is exactly what catches
+        // that subtraction being left in after the model changed -- which
+        // would raise every imported label by an ascent.
+        check(nearf(t.origin.y, 60.0f, 1e-3f),
+              "text: origin.y IS the SVG baseline, carried across unchanged");
         check(truth.baselineOffset > 0.5f * 30.0f,
               "text: and that ascent is a real font metric, not zero or a token offset");
-        check(t.origin.y < 60.0f - 10.0f,
-              "text: so origin.y sits WELL above the baseline (a no-op conversion fails here)");
+        // The ascent measured just above is large -- more than 10px at this
+        // size -- so an importer that still subtracted it would land more
+        // than 10px away from 60 and the equality above could not pass by
+        // accident.
+        check(truth.baselineOffset > 10.0f,
+              "text: and the ascent it would WRONGLY have subtracted is big enough that the "
+              "equality above could not be passing by coincidence");
 
         // The same fact stated without the shaper: "Studio" has no
         // descender, so its painted bottom IS the baseline the file named.
@@ -717,8 +727,10 @@ bool runSvgImportTest() {
         check(nearf(t.origin.x, 10.0f + 2.0f * 5.0f, 1e-3f),
               "text transform: and the translate folds into the origin");
         const ShaperTruth truth = shaperTruthFor(t);
-        check(truth.ok && nearf(t.origin.y, 20.0f + 2.0f * 40.0f - truth.baselineOffset, 1e-2f),
-              "text transform: the baseline is converted AFTER the scale, at the scaled size");
+        (void)truth;
+        check(nearf(t.origin.y, 20.0f + 2.0f * 40.0f, 1e-2f),
+              "text transform: the baseline is placed at the SCALED y (20 + 2*40), so the "
+              "transform stack is applied to the position and not only to the type size");
       }
     }
     {
@@ -908,10 +920,9 @@ bool runSvgImportTest() {
               "illustrator caption: the .st3 class supplies the fill");
         // Illustrator writes the position as transform="matrix(1 0 0 1 80 58)"
         // with x/y left at zero, which is a pure translate.
-        const ShaperTruth truth = shaperTruthFor(t);
-        check(truth.ok && nearf(t.origin.x, 80.0f, 1e-2f) &&
-                  nearf(t.origin.y, 58.0f - truth.baselineOffset, 1e-2f),
-              "illustrator caption: the matrix() translate IS the baseline, converted to top-left");
+        check(nearf(t.origin.x, 80.0f, 1e-2f) && nearf(t.origin.y, 58.0f, 1e-2f),
+              "illustrator caption: the matrix() translate IS the baseline, and lands in `origin` "
+              "unchanged now that `origin` is the baseline too");
       }
     }
     {

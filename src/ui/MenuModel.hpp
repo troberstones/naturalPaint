@@ -446,6 +446,59 @@ enum class MenuEffect : uint8_t {
 // window, a GPU or an `NSApplication`.
 MenuEffect menuActionEffect(MenuAction action) noexcept;
 
+// **Whether performing `action` ENDS a live Free Transform session.**
+//
+// A transform gizmo is modal for the tools (app/ToolSwitch.hpp section 5):
+// the palette, the flyout, the Goodies tool family and the flats panel all
+// refuse while one is up, because a tool change under a gizmo is how a stray
+// click made a second text layer. **The menu bar is not modal in that sense
+// and must not be**, for a reason the tool palette does not have: greying it
+// would take `Edit > Undo`, `File > Save` and every other escape hatch with
+// it, and a user who cannot save because a box is on screen has been trapped,
+// not protected.
+//
+// So the menu resolves the transform instead of being blocked by it: a menu
+// action that could touch this document CANCELS the session, and then does
+// what it was asked. `docs/testing-issues.md` T29 is why this exists at all --
+// `Layer > Delete Layer` under a gizmo used to shift the stack under a stored
+// index, and `TransformSession::commit()` then resampled a layer the user had
+// never transformed.
+//
+// **Cancel, not commit.** Committing would bake a resample the user was still
+// adjusting, on the strength of a menu click aimed at something else --
+// `ui/MacPaintUI.cpp`'s gizmo makes the same argument for why a click on empty
+// canvas is not a commit ("a mis-aimed click that bakes a resample the user
+// was still adjusting is unrecoverable in the way an extra keystroke never
+// is"), and a menu item is a click on something even further away.
+//
+// **The default is `true`, and the exemptions are the argued list.** Every
+// enumerator is written out so `-Wswitch` makes a new `MenuAction` a
+// compile-time decision rather than a silent inheritance --
+// `app/ToolSwitch.cpp`'s `springEyedropperEligible()` is the house precedent
+// for that shape. False is only for actions that touch neither this document's
+// content, nor its layer stack, nor its extent, nor its selection:
+//
+//   * **View** -- every item there writes `AppState::view`, `st.showRulers`
+//     and friends, or `st.guides`. Zooming in to place something precisely is
+//     a normal thing to do MID-transform, and Cmd+= ending the gizmo would be
+//     the feature fighting the gesture it exists to support.
+//   * **Window** -- window and panel toggles.
+//   * **Save / Export** -- these write a FILE. The document is unchanged, and
+//     Cmd+S is muscle memory; losing a transform to it would be the worst
+//     surprise on this list.
+//   * **`ActivateDocument`** -- a session deliberately outlives a document
+//     switch (`app/TransformSession.hpp`: "switching back ought to find the
+//     gizmo where it was left"). Cancelling here would undo that decision
+//     through the back door.
+//   * **`Quit`** -- `MenuEffect::QuitRequest` raises a sequence the user can
+//     still back out of, once per dirty document. Discarding a transform for a
+//     quit they then cancel is a loss with nothing bought.
+//   * **`ToolItem`** -- governed by the OTHER rule. The tool family is drawn
+//     disabled while a gizmo is up and `setActiveTool()` refuses it anyway, so
+//     this never arrives; classified false rather than true so that the two
+//     rules do not contradict each other if it ever does.
+bool menuActionEndsTransform(MenuAction action) noexcept;
+
 // ------------------------------------------------------- key equivalents
 //
 // Modifier bits for `MenuKeyEquivalent`. Deliberately this file's own bits

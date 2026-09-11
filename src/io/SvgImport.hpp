@@ -275,15 +275,19 @@
 // 7b. Two conversions that are silent when they are wrong
 // --------------------------------------------------------------------------
 //
-// **`x`/`y` on `<text>` is the BASELINE; `TextContent::origin` is the block's
-// TOP-LEFT.** (SVG 1.1 10.4; core/TextContent.hpp section 2; text/Shaper.hpp
-// on its text-space origin.) The offset between them is the distance from the
-// shaped block's top down to its first baseline, which is a property of the
-// FONT at that size, not a fraction of `font-size` -- so it is read back off
-// the shaper: shape the run, take the smallest `ShapedGlyph::y`, which is that
-// first baseline in text-space. Guessing it as, say, `0.8 * sizePx` puts every
-// imported label off by a few pixels in a way that reads as a rendering bug
-// rather than an import bug.
+// **`x`/`y` on `<text>` is the BASELINE, and so is a point-text
+// `TextContent::origin`** (SVG 1.1 10.4; core/TextContent.hpp section 2b), so
+// the position is carried across unchanged.
+//
+// This was a real conversion until `origin` was changed to pin the baseline:
+// it shaped the run and subtracted the distance down to the first baseline,
+// because `origin` then meant the block's top-left. Both halves are worth
+// remembering. The conversion had to be measured off the SHAPER rather than
+// guessed as a fraction of `font-size`, since the ascent is a property of the
+// font; and when the model moved under it, the code that stayed correct was
+// the code that had said out loud which corner it was converting BETWEEN --
+// a silent `y - 0.8f * size` here would have survived the change and put
+// every imported label an ascent too high.
 //
 // **`text-anchor` is not `TextAlign`.** An SVG `<text>` is point text --
 // `frame.width == 0` -- and text/Shaper.hpp is explicit that alignment means

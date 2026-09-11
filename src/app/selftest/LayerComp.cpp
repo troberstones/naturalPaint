@@ -782,6 +782,68 @@ bool runLayerCompTest() {
           "cost: and the 100 comps really were captured, so the timing is of real work");
   }
 
+  // --- ensureLayerId(): one layer's identity, for a caller that is not a comp
+  //
+  // `app/TransformSession` needs to know at commit whether the layer it began
+  // on is still the layer at `layerIndex_`, and `Layer::id` is the identity
+  // this document already defines. It must not pay for that with
+  // `normalizeLayerIds()`, which would give every layer in the stack an id
+  // because one of them was transformed -- `Layer::groupTag`'s comment states
+  // that rule for grouping and it holds here unchanged.
+  {
+    std::printf("  -- ensureLayerId: a stable id for ONE layer --\n");
+
+    Document doc;
+    doc.width = 8;
+    doc.height = 8;
+    for (int k = 0; k < 3; ++k) {
+      Layer L;
+      L.kind = LayerKind::RGB;
+      L.name = "L" + std::to_string(k);
+      L.rgbTiles = TileStore{};
+      doc.layers.push_back(std::move(L));
+    }
+    check(doc.layers[0].id == 0 && doc.layers[1].id == 0 && doc.layers[2].id == 0,
+          "ensureLayerId: (setup) every layer starts unidentified -- ids are lazy");
+
+    const uint64_t got = ensureLayerId(doc, 1);
+    check(got != 0 && doc.layers[1].id == got,
+          "ensureLayerId: hands the layer a nonzero id and returns the same number");
+    check(doc.layers[0].id == 0 && doc.layers[2].id == 0,
+          "ensureLayerId: REQUIRED -- and touches NO other layer. Asking about one layer must "
+          "not renumber the stack around it");
+    check(ensureLayerId(doc, 1) == got,
+          "ensureLayerId: idempotent -- a layer that already holds an id keeps it, so a second "
+          "transform of the same layer compares against the same number");
+
+    // The counter-raise. A document loaded from a file another tool stripped
+    // `np:comps` out of comes back with live ids and a default counter, and
+    // handing out `nextLayerId` blind would re-issue an id a layer still
+    // holds -- two layers answering to one number, which is exactly the state
+    // `restoreLayerComp()` has to refuse.
+    Document stale;
+    stale.width = 8;
+    stale.height = 8;
+    for (int k = 0; k < 2; ++k) {
+      Layer L;
+      L.kind = LayerKind::RGB;
+      L.rgbTiles = TileStore{};
+      stale.layers.push_back(std::move(L));
+    }
+    stale.layers[0].id = 99;
+    stale.nextLayerId = 1;  // the counter the stripped file could not carry
+    const uint64_t fresh = ensureLayerId(stale, 1);
+    check(fresh != 0 && fresh != 99 && fresh > 99,
+          "ensureLayerId: REQUIRED -- raises the counter past every id already present before "
+          "handing one out. A file whose `np:comps` was stripped comes back with live ids and "
+          "a default counter, and issuing 99 twice is two layers with one identity");
+    check(stale.layers[0].id == 99,
+          "ensureLayerId: ...without taking the existing id away from the layer holding it");
+
+    check(ensureLayerId(doc, doc.layers.size()) == 0,
+          "ensureLayerId: an out-of-range index answers 0 rather than reaching past the end");
+  }
+
   std::printf("[selftest] layer comps %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

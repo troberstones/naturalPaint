@@ -1729,6 +1729,214 @@ the canvas only.
 
 ---
 
+## T29 — A live transform must be resolved before another action · CLOSED
+
+**Reported.** "I can select a tool while transforming, prevent this from
+happening, the transform needs to be committed before another action can be
+performed. it should behave kind of like a modal dialog, need to hit esc or
+enter to confirm." Closed for the tools by `1e8fca2`. Held open here, at the
+reporter's request, for the two routes that were named but not scoped into
+that change: **the menu bar and the LAYERS panel.**
+
+**Verified — no transform guard exists anywhere outside the canvas block.**
+Ten sites read `st.transform.active()` in the whole build
+(`grep -rn 'transform\.active()' src/ui/ src/main.cpp`); every one is in the
+canvas block, the numeric-Transform dialog, or the preview upload.
+`menuContextFromState()` has no transform term at all, and neither of the two
+`setActiveLayer()` calls behind a LAYERS row click
+(`ui/MacPaintUI.cpp:3335`, `:3349`) is gated.
+
+So both routes are open, and **they are not the same severity.**
+
+**The layer panel is confusing, not corrupting.** `TransformSession` stores
+`layerIndex_` at `begin*()` and nothing re-reads the document's active layer,
+so selecting a different row while the gizmo is up leaves the commit aimed
+where it was. The composite hides the *session's* layer either way
+(`transformOnThisDoc` reads `st.transform.layerIndex()`), so the picture stays
+right. What is wrong is only that the highlight and the box disagree about
+which layer is being worked on, with nothing on screen saying so.
+
+**The menu bar can silently transform the wrong layer, and this was measured,
+not reasoned.** `commit()` guards `od.id != documentId_` by name — that guard
+exists because beginning in document A and committing in B once resampled B's
+layer at A's index — but it does **not** guard the layer's identity. A plain
+index does not survive the list moving under it. Driven headlessly on a
+four-layer document, session begun on the layer named `L0` sitting at index 1:
+
+```
+PROBE: begin ok=1
+PROBE: after deleting layer 0, index 1 now names 'L1'
+PROBE: commit ok=1 err=''
+```
+
+The resample landed on `L1`, a layer the user was never transforming, and the
+commit reported success. (Closed — see **Work** below; the same probe is now a
+permanent assertion in `app/selftest/TransformSession.cpp` §17.) `Layer > Delete Layer` while a gizmo is up is the
+reachable gesture. Deleting *above* the transformed layer is harmless (indices
+below do not move) and deleting enough to put the index out of range is
+refused by name (`"index 3 is out of range; this document has 3 layer(s).
+Nothing was changed."`) — it is the middle case that is silent. Reorder,
+merge and group are the same shape (all index-based against the same stored
+`layerIndex_`) but were not driven; only the deletion was.
+
+**Work.** Two pieces, and the second is not just "more of the first":
+
+1. **Scope the menu.** — **done, and the answer turned out not to be
+   "scope" at all.** The open question was *which* menu actions
+   `transformModalRefusal()` should grey, and the right answer was none of
+   them: greying the menu bar takes `Edit > Undo`, `File > Save` and `Quit`
+   with it. The menu cancels the transform instead. See the closing note below
+   for the classification and its exemptions.
+2. **Make the session name the layer it owns, not merely its slot.** — **done,
+   and it is what makes the corruption unrepresentable rather than merely
+   unreachable through one route.** `TransformSession` now stamps the layer
+   with a `core::ensureLayerId()` at `beginLayer()`/`beginSelectionPixels()`
+   and compares it at `commit()`, exactly as `documentId_` does one level up.
+   The probe above now reads `commit ok=0` with *"the layer this transform
+   began on is no longer at that position in the stack — it was deleted,
+   reordered or merged, or the document was undone past it. Press Escape to
+   discard the transform."*
+
+   Four decisions inside that are worth not re-litigating:
+
+   * **The id is stamped on THAT LAYER ONLY**, not by calling
+     `normalizeLayerIds()`. `core/Layer.hpp`'s `groupTag` comment already
+     settled the general rule — adding a group "must not force every layer in
+     a grouped document to acquire a `Layer::id` merely because two of them
+     were grouped" — and beginning a transform has no better claim on the rest
+     of the stack. `core::ensureLayerId()` is the one-layer form, with
+     `normalizeLayerIds()`'s counter-raise (a file whose `np:comps` another
+     tool stripped comes back with live ids above a default counter) and
+     without its duplicate-id renumbering, which would move an id a comp may
+     already refer to.
+   * **`begin*()` therefore takes `OpenDocument&`, not `const&`.** The
+     mutation is one number, no edit is recorded, and it costs nothing on disk
+     — `Layer::id` is written only inside `np:comps`
+     (`io/NpaintFile.cpp:1913`, guarded on `!doc.comps.empty()`), so a
+     document with no comps still saves byte-identically.
+   * **Refused, not re-found.** The guard does not search the stack for the id
+     and commit there instead. The matrix was dragged against a layer at a
+     position that no longer holds it; applying it somewhere else is the
+     defect, not the fix. `active()` stays true, matching the document guard —
+     undo the reorder and Return does what the user meant.
+   * **Out-of-range is folded into the same test**, so "is the layer still
+     there" and "is it still the same layer" answer in one sentence instead of
+     two written in different files. It was already refused before this, by
+     `transformLayer()`'s bounds check; the assertion pins that it now comes
+     from here.
+
+   Sabotage-proven seven ways. **A duplicate-id file is the one case this does
+   not catch** — two layers answering to one number could be swapped past the
+   check. This build never writes one (`duplicateLayer()` resets the copy's id
+   to 0) and `restoreLayerComp()` refuses that state by name; named here rather
+   than claimed as covered.
+
+**What is still reachable, and what is not.** `Layer > Delete Layer` under a
+live gizmo still deletes the layer and still leaves the gizmo drawn over
+whatever now occupies that slot — the *canvas* has not been taught about this,
+only the commit. So the remaining symptom is a gizmo pointing at the wrong
+picture and a Return that refuses with a sentence, where it used to be a
+Return that silently resampled the wrong layer. Scoping the menu (piece 1)
+closes the display half too, which is the argument for doing it rather than
+leaving the guard to carry this alone.
+
+---
+
+**Closed 2026-09-10 by `1e8fca2` (tools), `30a10ea` (the commit guard) and this
+change (the panel and the menu).** What was decided, since the two routes ended
+up with *opposite* answers and that is the part worth not re-litigating:
+
+**The LAYERS panel is REFUSED.** One `ImGui::BeginDisabled()` around the whole
+of `drawLayersSection()`, from the same `transformModalRefusal()` the tool
+palette, the flyout, the Goodies tool family and the flats panel are already
+greyed by — five surfaces, one predicate, so what they do while a gizmo is up
+cannot drift apart. A term on each control was rejected: this panel has row
+clicks, eye and lock chips, a blend combo, an opacity field, a filter box, a
+rename popup, a drag reorder and eleven buttons, and a rule spread over that
+many controls is a rule the twelfth will not have.
+
+**The menu bar CANCELS instead — except the LAYER menu, which is greyed.**
+Greying the whole bar would take `Edit > Undo`, `File > Save` and `Quit` with
+it, and a user who cannot save because a box is on screen has been trapped, not
+protected. The menu carries the escape hatches; a palette of tools and a panel
+of layer buttons carry none. That asymmetry is the whole of the decision.
+
+The Layer menu is the exception, and the exception is about what those commands
+*are*: the delete/reorder/merge/group family is this entry's own measured
+corruption, and it is the LAYERS panel's buttons wearing a different hat. That
+panel is refused outright, so offering the same acts one menu over — at the
+price of the transform — would be two surfaces disagreeing about a single
+thing. `ui/MacPaintUI.hpp`'s `layerMenuFamily()` / `layerSetMenuFamily()` carry
+the greying, on the same two-axes-never-two-sentences rule the tool family uses:
+a command already unavailable on its own terms keeps its own empty tooltip,
+because naming the gizmo on "Remove Mask" over a layer with no mask names the
+wrong obstacle. Neither family has a key equivalent, and both
+`ImGui::MenuItem(..., enabled)` and `MacNativeMenu.mm`'s `setEnabled:NO` honour
+the flag, so greying closes both routes rather than only the visible one.
+
+`menuActionEndsTransform()` still classifies both layer families as ending a
+transform. That is now a **safety net under the greying**, not the rule that
+governs them: neither can arrive while a session is up, and if one ever did,
+cancelling first is the safe direction — there is no writer-level refusal
+underneath these the way `setActiveTool()` refuses a tool change.
+
+`ui/MenuModel.hpp`'s `menuActionEndsTransform()` holds the classification, as
+an exhaustive switch so a new `MenuAction` is a **compile-time** decision — the
+first attempt to sabotage it by deleting cases failed to build on
+`-Werror,-Wswitch`, which is the protection working. The default is "ends it";
+the exemptions are the argued minority:
+
+* **View** — every item writes `AppState::view`, a chrome flag or `st.guides`,
+  none of which is inside `OpenDocument::document`. Zooming in to place
+  something precisely is a *mid*-transform gesture, and Cmd+= ending the gizmo
+  would be the feature fighting the thing it exists to support.
+* **Window**, plus `PauseSolver` / `ReloadShaders` — window and process state.
+* **Save / Save As / Save a Copy / Save Incremental / Export** — these write a
+  FILE. The document is unchanged, and Cmd+S is muscle memory; losing a
+  transform to it is the worst surprise available here.
+* **`ActivateDocument`** — a session outlives a document switch on purpose
+  (`app/TransformSession.hpp`), and cancelling here would undo that decision
+  through the back door.
+* **`Quit`** — a sequence the user can still back out of, once per dirty
+  document.
+* **`ToolItem`** — the *other* rule owns it: the family is drawn disabled and
+  `setActiveTool()` refuses it, so the two rules must not contradict.
+
+**Cancel, not commit.** Committing would bake a resample the user was still
+adjusting on the strength of a click aimed at a menu — the gizmo already makes
+that argument about a click on empty canvas, which is far closer to it than a
+menu item is.
+
+**Scoped to the document the command is about to act on**, the same scoping
+`transformModalRefusal()` uses: a gizmo parked on a document the user has
+tabbed away from is not in this command's way, and A's work is not B's to
+discard.
+
+Seventeen sabotages across the three halves. The classifier, the hook that
+reads it, its document scoping, the save exemption, the panel's own lock and
+both layer families each redden their own assertion; `layers_transform` is the
+golden view for the panel. 8896 pass, golden 64/64.
+
+**One hole found by sabotage and worth recording, because it survived three
+green commits.** Every family function takes its `modalWhy` as a parameter and
+every one of them is asserted with one — but the LINE that fetches it and hands
+it over lives in `menuContextFromState()`, and replacing that line with
+`nullptr` reddened **nothing at all**. Perfect classifications, no wire. The
+fix was to move `menuContextFromState()` out of its anonymous namespace and
+assert the assembled context directly; the precondition a headless caller owes
+it (`st.recentDocumentsLoaded = true`, or the first call reads the user's real
+preferences file) is asserted alongside rather than merely written down. Both
+wiring lines — the tool family's and the layer families' — now redden.
+
+**One thing deliberately left as it is:** the gizmo still draws over whatever
+occupies the slot if a layer is deleted *from the menu* — the menu cancels the
+transform, so the case is now unreachable that way, but a session on a
+background document whose stack is edited still ends at
+`TransformSession::commit()`'s refusal rather than at the canvas. That refusal
+is `30a10ea` and it is the backstop, not the front door.
+
+---
+
 ## Re-reported 2026-09-02, against entries already open
 
 * **T3 (gradient)** — reported again as "the gradient tool does nothing."

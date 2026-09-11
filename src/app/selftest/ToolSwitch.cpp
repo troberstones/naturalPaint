@@ -4,6 +4,7 @@
 #include "app/DocumentLifecycle.hpp"
 #include "app/MeasureLine.hpp"
 #include "app/ToolSwitch.hpp"
+#include "app/TransformSession.hpp"
 #include "core/LayerOps.hpp"
 
 namespace np {
@@ -501,6 +502,225 @@ bool runToolSwitchTest() {
     check(!m.flatsMergeFirst.has_value(),
           "toolswitch: picking a flatting tool cancels a half-armed merge, rather than "
           "carrying its first point into the next gesture");
+  }
+
+  // ==========================================================================
+  // 7. The tool a live transform session installs.
+  // ==========================================================================
+  //
+  // A transform session puts a gizmo on the canvas and does NOT disable the
+  // active tool's own click handling, so whatever gesture the user was in the
+  // middle of is still armed underneath it. With the Text tool that gesture
+  // CREATES A LAYER: press Cmd+T while editing a caption, click anywhere off
+  // the block, and a second text layer appeared behind the gizmo. Measured in
+  // the running app before this existed -- four layers before the stray
+  // click, five after.
+  {
+    std::printf("  -- 7. the tool a transform session installs --\n");
+
+    AppState t;
+    setActiveTool(t, Tool::Text);
+    const bool changed = enterTransformTool(t);
+    check(t.brush.tool == Tool::Move && changed,
+          "toolswitch: REQUIRED -- beginning a transform leaves the pointer on the MOVE tool. "
+          "Whatever tool was active keeps its canvas gesture armed under the gizmo, and the "
+          "Text tool's gesture on empty canvas is 'make a new text layer'");
+    check(hasPreviousTool(t) && previousTool(t) == Tool::Text,
+          "toolswitch: and the tool it took over from is in the ledger like any deliberate "
+          "pick, so `previousTool()` still names what the user was actually using");
+
+    // Already on Move -- the Move tool's own drag begins a session this way,
+    // and re-picking the tool you already have must not overwrite the ledger
+    // with itself (the same rule `setActiveTool()` states for a palette
+    // click on the selected cell).
+    AppState m;
+    setActiveTool(m, Tool::Pen);
+    setActiveTool(m, Tool::Move);
+    const bool movedAgain = enterTransformTool(m);
+    check(!movedAgain && m.brush.tool == Tool::Move && previousTool(m) == Tool::Pen,
+          "toolswitch: beginning one while ALREADY on Move reports no change and leaves the "
+          "ledger alone -- it is not a switch");
+
+    // Space held: the installed tool is the borrowed Hand and the tool the
+    // user is in is `springReturn`. The borrow ends -- a gizmo is up and the
+    // pan is over -- and the ledger records the tool they were really in,
+    // never the Hand they never picked (header section 1).
+    AppState h;
+    setActiveTool(h, Tool::Text);
+    beginSpringHand(h);
+    check(h.brush.tool == Tool::Hand, "toolswitch: (setup) the Hand is borrowed");
+    enterTransformTool(h);
+    check(h.brush.tool == Tool::Move && !springHandHeld(h) && previousTool(h) == Tool::Text,
+          "toolswitch: REQUIRED -- with Space held it ends the borrow and records TEXT as the "
+          "previous tool. Recording the Hand would put a tool the user never chose into the "
+          "ledger, which is exactly what `effectiveTool()` exists to prevent");
+
+    // Flatting mode is a second answer to "what does a click mean", and it
+    // has to go for the same reason the tool does -- a bridge stroke under a
+    // live gizmo is the same defect wearing ADR-0009's hat. This comes free
+    // from routing through `setActiveTool()`, and is asserted so that it
+    // stays true if this ever stops doing so.
+    AppState f;
+    setFlatsTool(f, FlatsTool::BridgePen);
+    check(f.flatsTool == FlatsTool::BridgePen, "toolswitch: (setup) flatting mode is on");
+    enterTransformTool(f);
+    check(f.flatsTool == FlatsTool::None && f.brush.tool == Tool::Move,
+          "toolswitch: and it leaves flatting mode too -- a flatting gesture is a second "
+          "meaning for a click, and one armed under a gizmo is the same hole");
+  }
+
+  // ==========================================================================
+  // 8. A LIVE GIZMO IS MODAL: the tool cannot change until it is finished.
+  // ==========================================================================
+  //
+  // Section 7 put the pointer on Move when a session begins, which fixed the
+  // gesture the user was holding. It did not close the door: **the palette was
+  // still live**, so picking the Text tool out of it while the gizmo was up
+  // put the stray-layer hole straight back. Reported as "I can select a tool
+  // while transforming... the transform needs to be committed before another
+  // action can be performed."
+  //
+  // The refusal is asserted at `setActiveTool()` rather than at the palette
+  // because that is where it is enforced -- ToolSwitch.hpp section 0's "one
+  // writer" argument applies to the rules a writer keeps as much as to the
+  // field it writes. The palette, the flyout, the Goodies menu and the flats
+  // panel each draw themselves greyed from `transformModalRefusal()`, and
+  // `app/selftest/ToolSurface.cpp` pins the menu's half of that.
+  {
+    std::printf("  -- 8. a live gizmo is modal --\n");
+
+    // The fixture: one document, active, with a session live on its layer 0.
+    // Built through the real `beginLayer()` rather than by poking fields --
+    // there is no setter for `documentId_` and TransformSession.hpp says so
+    // deliberately, which is what makes this the state the app can reach.
+    // A blank document is not enough: `beginLayer()` measures
+    // `layerContentBounds()` and refuses a layer with nothing in it, so the
+    // fixture has to paint one texel before the session can exist at all.
+    auto addInkedDocument = [](AppState& st) -> OpenDocument* {
+      OpenDocument* od = st.documents.add(makeBlankOpenDocument(32, 24, WorkingSpace{}));
+      if (od == nullptr || od->document.layers.empty()) return nullptr;
+      TileStore& tiles = *od->document.layers[0].rgbTiles;
+      for (int32_t y = 4; y < 12; ++y)
+        for (int32_t x = 4; x < 12; ++x)
+          tiles.getOrCreate(tileCoordAt(PixelCoord{x, y}))
+              .writePixel(tileLocalOffset(PixelCoord{x, y}), {1.0f, 0.5f, 0.25f, 1.0f});
+      od->recordEdit("ink fixture", EditKind::Content);
+      return od;
+    };
+    auto withLiveSession = [&](AppState& st) -> bool {
+      OpenDocument* od = addInkedDocument(st);
+      if (od == nullptr) return false;
+      return st.transform.beginLayer(*od, 0).ok && st.transform.active();
+    };
+
+    AppState t;
+    setActiveTool(t, Tool::Brush);
+    check(withLiveSession(t), "toolswitch: (setup) a transform session is live on the "
+                              "active document");
+    check(transformModalRefusal(t) != nullptr,
+          "toolswitch: REQUIRED -- a live gizmo on the document in front of the user refuses "
+          "a tool change, and says so in a sentence a greyed cell can show");
+
+    const Tool before = t.brush.tool;
+    const bool accepted = setActiveTool(t, Tool::Text);
+    check(!accepted && t.brush.tool == before,
+          "toolswitch: REQUIRED -- picking the TEXT tool under a live gizmo is refused and "
+          "changes nothing. This is the reported defect: the Text tool's gesture on empty "
+          "canvas makes a layer, and the palette was handing it back while the box was up");
+    check(previousTool(t) == Tool::Brush || !hasPreviousTool(t),
+          "toolswitch: and a refused pick does not move the ledger -- `previousTool()` must "
+          "not learn about a switch that never happened");
+
+    // Every cell, not just the content-making ones. The reported symptom was
+    // the Text tool, but a modal state that leaks for the Hand is not modal.
+    check(!setActiveTool(t, Tool::Hand) && !setActiveTool(t, Tool::Move) &&
+              !setActiveTool(t, Tool::Zoom),
+          "toolswitch: REQUIRED -- and it refuses EVERY tool, including the Move cell that is "
+          "already lit and the two that need no document. This axis is a property of the "
+          "session, not of the tool");
+
+    // The one switch that is not the user changing their mind. Every begin
+    // calls it with the session ALREADY live, so a shared gate would refuse
+    // exactly the switch that makes the modality true in the first place.
+    AppState e;
+    setActiveTool(e, Tool::Text);
+    check(withLiveSession(e), "toolswitch: (setup) a second fixture with a live session");
+    check(enterTransformTool(e) && e.brush.tool == Tool::Move,
+          "toolswitch: REQUIRED -- `enterTransformTool()` is exempt. It is called AFTER the "
+          "begin succeeds, so a gate it shared with `setActiveTool()` would refuse the very "
+          "switch that installs the modal tool");
+
+    // The flatting palette is a second answer to "what does a click mean", and
+    // it writes `brush.tool` by its own route -- so it needs its own check,
+    // not an inherited one.
+    AppState f;
+    check(withLiveSession(f), "toolswitch: (setup) a third fixture with a live session");
+    check(!setFlatsTool(f, FlatsTool::BridgePen) && f.flatsTool == FlatsTool::None &&
+              f.brush.tool != Tool::Pencil,
+          "toolswitch: REQUIRED -- a FLATTING tool is refused too, and installs no host tool. "
+          "`setFlatsTool()` writes `brush.tool` directly rather than through "
+          "`setActiveTool()`, so it cannot inherit the check");
+
+    // **The dead end this scoping exists to avoid.** A session outlives a
+    // document switch, and the canvas block's Escape key is scoped to the
+    // active document -- so a lock keyed on `active()` alone would freeze the
+    // palette over a document that shows no gizmo and offers no key to lift
+    // it. Driven the way the app reaches it: two documents, session on the
+    // first, the second made active.
+    AppState away;
+    OpenDocument* a = addInkedDocument(away);
+    check(a != nullptr && away.transform.beginLayer(*a, 0).ok,
+          "toolswitch: (setup) a session on document A");
+    OpenDocument* b = addInkedDocument(away);
+    check(b != nullptr && away.documents.active() == b && away.transform.active(),
+          "toolswitch: (setup) document B is active and the session on A is still live");
+    check(transformModalRefusal(away) == nullptr && setActiveTool(away, Tool::Text) &&
+              away.brush.tool == Tool::Text,
+          "toolswitch: REQUIRED -- a session on a document the user has tabbed AWAY from does "
+          "not lock the palette. It draws no gizmo and its Escape key is scoped to the "
+          "document it is on, so locking from behind it would be a modal state with no "
+          "dialog on screen and no way out");
+
+    // The other half of that scoping lives in the canvas block, which
+    // re-installs Move whenever the gizmo is on screen -- so coming back to A
+    // with the Text tool in hand does not reopen the hole. That line reads the
+    // ImGui frame this suite has no way to run; what is assertable here is the
+    // call it makes, and that it is a no-op once Move is installed.
+    check(enterTransformTool(away) && away.brush.tool == Tool::Move &&
+              !enterTransformTool(away),
+          "toolswitch: and returning to A re-installs Move, reporting a change once and "
+          "nothing on every frame after -- the canvas block calls this every frame the gizmo "
+          "is up, and a call that moved the ledger each time would be a lie in the ledger");
+
+    // Nothing live, nothing refused -- the case that must not regress, since
+    // every tool change in the application goes through the same door.
+    AppState idle;
+    check(transformModalRefusal(idle) == nullptr && setActiveTool(idle, Tool::Lasso) &&
+              idle.brush.tool == Tool::Lasso,
+          "toolswitch: with no session at all the setter is exactly what it was");
+
+    // **Space still pans.** The borrow does not go through `setActiveTool()`
+    // (header section 1) and is deliberately left open: seeing the far end of
+    // what you are transforming is not choosing a tool, and letting go changes
+    // nothing about what a click means.
+    AppState pan;
+    check(withLiveSession(pan), "toolswitch: (setup) a fourth fixture with a live session");
+    enterTransformTool(pan);
+    check(beginSpringHand(pan) && pan.brush.tool == Tool::Hand,
+          "toolswitch: REQUIRED -- Space still borrows the Hand under a live gizmo. A modal "
+          "transform you cannot pan is one you cannot aim");
+    check(endSpringHand(pan) && pan.brush.tool == Tool::Move,
+          "toolswitch: and letting go hands the Move tool back, not whatever was underneath");
+
+    // The Eyedropper's borrow needs no gate: Move is the only tool a live
+    // session can be in, and Move is not eligible. Asserted rather than
+    // assumed, because it is a gate that exists by construction -- exactly
+    // the kind that stops existing when someone adds a row to a table.
+    check(!springEyedropperEligible(Tool::Move, BucketFill::Colour) &&
+              !springEyedropperEligible(Tool::Move, BucketFill::Flats),
+          "toolswitch: and Alt cannot borrow the Eyedropper under a gizmo without a line "
+          "being written -- Move is the only tool a session can be in, and Move is not "
+          "eligible for that borrow in either fill mode");
   }
 
   std::printf("[selftest] tool switch %s\n", ok ? "PASS" : "FAIL");

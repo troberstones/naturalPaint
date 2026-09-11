@@ -589,6 +589,40 @@ struct LayerTransformResult {
 // A layer whose storage is engaged but empty succeeds and moves nothing, and an
 // identity matrix succeeds and changes nothing -- a no-op the user asked for is
 // not an error.
+// Transform a Text layer, which stays live text afterwards.
+//
+// A `LayerKind::Text` layer holds no tiles, so `transformLayer()` below walks
+// it, finds nothing in any store, and returns `ok` having changed a thing --
+// which is deliberate and must stay that way: a whole-document crop or resize
+// walks every layer, and refusing one because the stack holds a Text layer
+// would be refusing on a technicality (app/selftest/DocumentTransform.cpp
+// section 10 pins exactly that). This function is the OTHER caller's answer:
+// a user who selected the Move tool and dragged a caption, where doing
+// nothing is the bug rather than the contract.
+//
+// Called only from `TransformSession::commit()`, for a `TransformTarget::
+// Layer` session on a Text layer -- deliberately not folded into
+// `transformLayer()`, because those two callers want opposite things from the
+// same matrix.
+//
+// **The matrix is composed onto the block, not applied to pixels.** A
+// `TextContent` carries its own `Mat3` (core/TextContent.hpp section 4) and
+// `textContentToShapes()` maps every glyph through it, so a rotate or a
+// non-uniform scale lands here as `dstFromSrc * existing` and the layer is
+// still a string, a font and a size when the drag ends. Rotating type does
+// not rasterise it; the user can double-click it and keep typing.
+//
+// **A degenerate matrix is refused by name**, leaving the block untouched: a
+// collapsed one has no inverse, and `textOffsetAtPoint()` inverts it to turn
+// a click back into a byte offset, so storing one would make the layer
+// permanently unclickable as well as invisible.
+//
+// Note what this does NOT reach: resizing the whole image still does not
+// rescale its captions. That is a gap in `transformDocument()`, which walks
+// layers through `transformLayer()` rather than through this function --
+// named here because this is where a reader will wonder about it.
+LayerTransformResult transformTextLayer(Document& doc, size_t index, const Mat3& dstFromSrc);
+
 LayerTransformResult transformLayer(Document& doc, size_t index, const Mat3& dstFromSrc,
                                     const DocumentTransformParams& params);
 
