@@ -11,7 +11,10 @@
 // output texel actually spans, which is noise rather than an average) and
 // the resolution (`BrushTipBitmap::mips`, sampled by `bitmapDabCoverage()`
 // at a level chosen so one output texel never spans much more than the ~2
-// source texels a bilinear sample can blend). This file is only the one
+// source texels a bilinear sample can blend -- along the tip's MAJOR axis;
+// along the minor axis of an elliptical tip it is up to `2 / roundness`, a
+// limit brush/Deposit.hpp §2c states and measures rather than removes).
+// This file is only the one
 // function that BUILDS the chain -- `buildTipMips()` is called once, at
 // every site that decodes a `BrushTipBitmap` for painting (`io/AbrBrushes.cpp`,
 // `app/DabLibrary.cpp`), the same moment `alpha` itself is decoded and before

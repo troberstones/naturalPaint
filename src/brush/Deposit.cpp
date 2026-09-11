@@ -59,12 +59,17 @@ float sampleBitmapCoverage(const BrushTipBitmap& bmp, float bx, float by) noexce
 // pixels per NATIVE texel, `bitmapTipScale()`'s own units) -- Track B / B2.
 // `0` is the original `bmp` itself (not stored in `bmp.mips`), `k > 0` is
 // `bmp.mips[k - 1]`, whose own texel spans `2^k` native texels. Chosen so
-// level `k`'s texel maps to no more than ~2 document pixels: at `scale >= 1`
-// (native size or magnified) that is level 0 always, `floor(log2(1/scale))`
-// being `<= 0`; minification is the only case that climbs higher, and never
-// past `bmp.mips.size()` -- an empty chain (a `BrushTipBitmap` nobody has
-// called `buildTipMips()` on) therefore always resolves to level 0, so an
-// un-mipped tip is unaffected by this function existing.
+// level `k`'s texel maps to no more than one document pixel, i.e. one output
+// texel covers at most ~2 level texels -- **along the major axis only**: the
+// minor axis of an elliptical tip is squashed by `roundness` after this
+// choice, so there it is up to `2 / roundness` (header §2c says why the level
+// is not chosen from the minor axis instead, with the measurement). At
+// `scale >= 1` (native size or magnified) that is level 0 always,
+// `floor(log2(1/scale))` being `<= 0`; minification is the only case that
+// climbs higher, and never past `bmp.mips.size()` -- an empty chain (a
+// `BrushTipBitmap` nobody has called `buildTipMips()` on) therefore always
+// resolves to level 0, so an un-mipped tip is unaffected by this function
+// existing.
 int32_t bitmapMipLevel(const BrushTipBitmap& bmp, float scale) noexcept {
   const int32_t maxLevel = static_cast<int32_t>(bmp.mips.size());
   if (!(scale < 1.0f) || maxLevel <= 0) return 0;
@@ -191,8 +196,11 @@ float singleTipCoverage(const BrushTip& tip, float dx, float dy) noexcept {
   // `app/selftest/TipEdge.cpp` asserts: `tip.edgePx == 0` (the `min` picks
   // `h` because `1 - 0/r == 1 >= h` always) and `(1 - h) * r >= edgePx` (the
   // `min` picks `h` because that inequality rearranges to exactly
-  // `h <= 1 - edgePx/r`) -- every built-in brush at its default size, and
-  // therefore `--pigment-stroke-demo` and the `canvas` golden view.
+  // `h <= 1 - edgePx/r`) -- three of the four built-ins at their default
+  // size (`Round Bristle 03`, `Flat Wash`, `Dry Bristle`), and therefore
+  // `--pigment-stroke-demo` and the `canvas` golden view. NOT `Detail Liner`
+  // (r 5, h 0.95: `hEff` 0.8), which is the tip this floor exists to fix --
+  // header §2 names it as the intended change.
   //
   // Applied identically to the round and the elliptical branch above --
   // `d` is isotropic either way -- and header §2 is the one-line argument for
