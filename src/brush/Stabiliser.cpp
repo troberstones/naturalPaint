@@ -10,6 +10,18 @@ namespace {
 // One-euro filter primitives (Casiez, Godin, Pouderoux, CHI 2012).
 constexpr float kSpeedFilterHz = 1.0f;  // fixed dcutoff on the speed signal
 
+// Pulled string's paused catch-up (string-fix brief). A ball around a FIXED
+// anchor, not a per-sample delta -- `stationaryAnchor_`'s own comment in
+// Stabiliser.hpp says why.
+constexpr float kStationaryPx = 1.0f;
+// Longer than any plausible event-delivery hiccup (a slow pointer routinely
+// leaves a 60 fps frame with no new sample; that must never read as a
+// pause) AND longer than a few samples' worth of ordinary jitter briefly
+// holding a genuinely-still-moving pointer inside `kStationaryPx` (measured
+// against a slow, jittery arc -- `app/selftest/Stabiliser.cpp`'s own
+// string-fix section), while staying well short of a deliberate pause.
+constexpr float kCatchUpHoldOffMs = 80.0f;
+
 float alphaFor(float cutoffHz, float dtSec) noexcept {
   const float tau = 1.0f / (2.0f * 3.14159265358979323846f * std::max(cutoffHz, 1e-4f));
   return dtSec / (dtSec + tau);
@@ -71,7 +83,8 @@ void Stabiliser::begin(const StabiliserParams& params, float viewZoom) noexcept 
   nib_ = Vec2{};
   haveNib_ = false;
   snappedPressure_ = 1.0f;
-  pulledStringPauseGap0_ = 0.0f;
+  stationaryAnchor_ = Vec2{};
+  stationaryStartNs_ = 0;
   haveFilter_ = false;
   filtPos_ = Vec2{};
   prevRawPos_ = Vec2{};
@@ -90,15 +103,6 @@ float Stabiliser::effectiveStringPx() const noexcept {
 void Stabiliser::appendPathHistory(const StrokeSample& raw) noexcept {
   pathHistory_.push_back(raw);
   if (pathHistory_.size() > kMaxPathHistory) pathHistory_.erase(pathHistory_.begin());
-}
-
-float Stabiliser::totalArcLength() const noexcept {
-  float acc = 0.0f;
-  for (size_t i = 0; i + 1 < pathHistory_.size(); ++i) {
-    const Vec2 p0 = pathHistory_[i].pos, p1 = pathHistory_[i + 1].pos;
-    acc += std::hypot(p1.x - p0.x, p1.y - p0.y);
-  }
-  return acc;
 }
 
 float Stabiliser::projectArcLength(Vec2 from) const noexcept {
@@ -126,22 +130,6 @@ float Stabiliser::projectArcLength(Vec2 from) const noexcept {
   return bestS;
 }
 
-Vec2 Stabiliser::pointAtArcLength(float s) const noexcept {
-  if (pathHistory_.empty()) return nib_;
-  if (pathHistory_.size() == 1) return pathHistory_.front().pos;
-  float acc = 0.0f;
-  for (size_t i = 0; i + 1 < pathHistory_.size(); ++i) {
-    const Vec2 p0 = pathHistory_[i].pos, p1 = pathHistory_[i + 1].pos;
-    const float segLen = std::hypot(p1.x - p0.x, p1.y - p0.y);
-    if (s <= acc + segLen || i + 2 == pathHistory_.size()) {
-      const float t = segLen > 1e-6f ? std::clamp((s - acc) / segLen, 0.0f, 1.0f) : 0.0f;
-      return Vec2{p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * t};
-    }
-    acc += segLen;
-  }
-  return pathHistory_.back().pos;
-}
-
 bool Stabiliser::addSamplePulledString(const StrokeSample& raw, StrokeSample& out) noexcept {
   out.timestamp = raw.timestamp;
   out.tilt = raw.tilt;
@@ -152,7 +140,8 @@ bool Stabiliser::addSamplePulledString(const StrokeSample& raw, StrokeSample& ou
     nib_ = raw.pos;
     haveNib_ = true;
     snappedPressure_ = raw.pressure;
-    pulledStringPauseGap0_ = 0.0f;
+    stationaryAnchor_ = raw.pos;
+    stationaryStartNs_ = raw.timestamp;
     out.pos = nib_;
     out.pressure = raw.pressure;
     return true;
@@ -179,13 +168,17 @@ bool Stabiliser::addSamplePulledString(const StrokeSample& raw, StrokeSample& ou
   } else {
     out.pressure = raw.pressure;
   }
-  // `catchUpMs`'s decay starts fresh from THIS gap every real sample -- "when
-  // the pen moves again the full string length returns" (Wave 2 brief item
-  // 2) needs no separate reset flag, because a real sample always rewrites
-  // this before `tickPulledString()` can read it. Arc length, not straight-
-  // line distance, so the decay's own walk (`pointAtArcLength()`) starts
-  // from the same measure it ends at.
-  pulledStringPauseGap0_ = std::max(0.0f, totalArcLength() - projectArcLength(nib_));
+  // A FIXED anchor, not "moved since the previous sample" -- a pen held
+  // still still reports sub-pixel jitter forever (a per-sample test would
+  // never let catch-up's hold-off clock start), while genuinely slow motion
+  // leaves a fixed `kStationaryPx` ball behind after that much travel, so
+  // the clock correctly restarts once real motion resumes.
+  const float anchorDist =
+      std::hypot(raw.pos.x - stationaryAnchor_.x, raw.pos.y - stationaryAnchor_.y);
+  if (anchorDist > kStationaryPx) {
+    stationaryAnchor_ = raw.pos;
+    stationaryStartNs_ = raw.timestamp;
+  }
   return true;
 }
 
@@ -314,24 +307,40 @@ bool Stabiliser::tick(uint64_t nowNs, StrokeSample& out) noexcept {
 bool Stabiliser::tickPulledString(uint64_t nowNs, StrokeSample& out) noexcept {
   if (params_.catchUpMs <= 0.0f) return false;  // 0 = off
   if (!haveNib_) return false;
-  if (nowNs <= lastRaw_.timestamp) return false;
+  if (nowNs <= stationaryStartNs_) return false;
 
-  // "95% of the gap closed by catchUpMs": gap(t) = gap0 * exp(-t/tau), so
-  // gap(catchUpMs)/gap0 = 0.05 requires tau = catchUpMs / ln(20).
-  const float elapsedMs = static_cast<float>(nowNs - lastRaw_.timestamp) / 1e6f;
+  // Catch-up engages only once the pen has held still (a fixed anchor,
+  // `stationaryAnchor_`'s own comment) for longer than `kCatchUpHoldOffMs`
+  // -- string-fix brief defect B: without this hold-off, an ordinary frame
+  // that simply missed the next pointer event (routine at 60 fps for a slow
+  // pointer) looks identical to a genuine pause, and the string dissolves
+  // mid-stroke.
+  const float elapsedMs = static_cast<float>(nowNs - stationaryStartNs_) / 1e6f;
+  if (elapsedMs <= kCatchUpHoldOffMs) return false;
+
+  // "95% of the WINDOW closed by catchUpMs, measured from when catch-up
+  // engages": window(t) = stringPx * exp(-(t - holdOff)/tau), tau =
+  // catchUpMs / ln(20). Subtracting the hold-off keeps window(holdOff) ==
+  // stringPx exactly, i.e. continuous with the window right before catch-up
+  // engaged -- without it the window would jump from 1.0 to exp(-holdOff/tau)
+  // in a single frame and the nib would visibly pop.
   const float tau = params_.catchUpMs / std::log(20.0f);
-  const float targetGap = pulledStringPauseGap0_ * std::exp(-elapsedMs / tau);
+  const float scale = std::exp(-(elapsedMs - kCatchUpHoldOffMs) / tau);
+  const float window = effectiveStringPx() * scale;
 
-  // Walk the ACTUAL raw path, not a straight line to `lastRaw_.pos`: find
-  // where the nib currently sits on that path (`projectArcLength`), then move
-  // forward (never back -- `std::clamp`'s lower bound) to the arc length that
-  // leaves exactly `targetGap` before the end. `pathHistory_` is a stroke's
-  // worth of history (`kMaxPathHistory`), so this still finds the pause's own
-  // recent bend even if it happened many samples before this tick.
-  const float total = totalArcLength();
-  const float s0 = projectArcLength(nib_);
-  const float targetS = std::clamp(total - std::max(targetGap, 0.0f), s0, total);
-  nib_ = pointAtArcLength(targetS);
+  // The IDENTICAL chord step `addSamplePulledString()` uses, toward
+  // `lastRaw_.pos` -- never a snap onto the raw polyline. While the pen is
+  // down the nib now moves by this ONE rule regardless of who calls it, so a
+  // no-sample frame can no longer disagree with a real sample about where
+  // the nib belongs (string-fix brief defects A/C) -- the oscillation
+  // becomes unrepresentable rather than merely rare.
+  const float dx = lastRaw_.pos.x - nib_.x;
+  const float dy = lastRaw_.pos.y - nib_.y;
+  const float dist = std::hypot(dx, dy);
+  if (dist <= window) return false;  // no movement, no emitted sample, no work
+  const float t = (dist - window) / dist;
+  nib_.x += dx * t;
+  nib_.y += dy * t;
 
   out = lastRaw_;
   out.pos = nib_;
@@ -369,7 +378,11 @@ bool Stabiliser::forceCatchUp(std::vector<StrokeSample>& steps) noexcept {
   prevRawPos_ = lastRaw_.pos;
   filtPressure_ = lastRaw_.pressure;
   snappedPressure_ = lastRaw_.pressure;
-  pulledStringPauseGap0_ = 0.0f;
+  // A jump-to-the-lift-point catch-up also counts as the pen settling there
+  // -- the stationary clock restarts from this instant so a subsequent
+  // paused tick's hold-off is measured from here, not from stale state.
+  stationaryAnchor_ = lastRaw_.pos;
+  stationaryStartNs_ = lastRaw_.timestamp;
   return true;
 }
 

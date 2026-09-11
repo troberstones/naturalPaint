@@ -37,15 +37,17 @@ struct StabiliserParams {
   float strength = 40.0f;
   float responsiveness = 50.0f;
 
-  // Pulled string only. While the pen is down and not moving (tick()s with
-  // no new sample), the gap between the nib and the pointer decays
-  // exponentially toward zero so the nib reaches the pen after about this
-  // many milliseconds -- precisely, 95% of the gap present when the pause
-  // began is closed by `catchUpMs` (tau = catchUpMs / ln(20), gap(t) =
-  // gap0 * exp(-t/tau)). 0 disables it (the string just sits at its full
-  // window forever, wave 1's behaviour). Moving the pen again restores the
-  // full window immediately, measured from wherever the nib now is -- the
-  // ordinary pulled-string dead zone, untouched by this.
+  // Pulled string only. Once the pen has been stationary (held within a
+  // fixed ~1 px ball, `tickPulledString()`'s own comment) for the hold-off,
+  // the string WINDOW itself -- not "the gap" -- decays exponentially
+  // toward zero, closing after about this many milliseconds beyond the
+  // hold-off -- precisely, 95% of the window present when catch-up engaged
+  // is closed by hold-off + `catchUpMs` (tau = catchUpMs / ln(20),
+  // window(t) = stringPx * exp(-(t - holdOff)/tau)). 0 disables it (the
+  // string just sits at its full window forever, wave 1's behaviour).
+  // Moving the pen again restores the full window immediately, measured
+  // from wherever the nib now is -- the ordinary pulled-string dead zone,
+  // untouched by this.
   float catchUpMs = 400.0f;
 
   bool catchUpAtEnd = true;
@@ -99,10 +101,11 @@ class Stabiliser {
   bool addSample(const StrokeSample& raw, StrokeSample& out) noexcept;
 
   // No new sample this frame: let the nib keep converging toward the last
-  // raw position -- weighted average with `catchUpWhilePaused`, or pulled
-  // string with `catchUpMs > 0` (both walk `pathHistory_`, not a straight
-  // line, `tickPulledString()`'s own comment); false and `out` untouched
-  // otherwise, including Off always.
+  // raw position -- weighted average walks its own filtered position
+  // (`catchUpWhilePaused`); pulled string shrinks the chord window toward
+  // `lastRaw_.pos` once the pen has been stationary for a hold-off
+  // (`catchUpMs > 0`, `tickPulledString()`'s own comment); false and `out`
+  // untouched otherwise, including Off always.
   bool tick(uint64_t nowNs, StrokeSample& out) noexcept;
 
   // Stroke end, `catchUpAtEnd`: walks the nib to the last raw sample ALONG
@@ -134,16 +137,25 @@ class Stabiliser {
   // a tick's timestamp is a different clock (frame time, not the pen's own)
   // and must never leak into a real sample's dt.
   bool addSampleWeightedAverage(const StrokeSample& raw, StrokeSample& out, bool isTick) noexcept;
-  // Pulled string's own `tick()` handler -- `catchUpMs`'s exponential decay,
-  // walked along `pathHistory_` (`pointAtArcLength()`) rather than straight
-  // toward `lastRaw_.pos`, so a paused catch-up that spans a bend in the
-  // recent path still follows it.
+  // Pulled string's own `tick()` handler. While the pen is down, the nib
+  // moves by ONE rule only -- the same chord step `addSamplePulledString()`
+  // uses, toward `lastRaw_.pos`, never a snap onto the raw polyline -- so a
+  // no-sample frame can never disagree with a real sample about where the
+  // nib belongs (string-fix brief, defects A/C). The window that chord step
+  // targets is `effectiveStringPx()` until the pen has been stationary (a
+  // fixed anchor, `stationaryAnchor_`'s own comment) for `kCatchUpHoldOffMs`
+  // -- long enough that an ordinary missed-frame gap at 60 fps can never
+  // engage it, short enough for a deliberate pause (defect B) -- after which
+  // it shrinks exponentially per `catchUpMs`.
   bool tickPulledString(uint64_t nowNs, StrokeSample& out) noexcept;
 
   // The raw samples (this stroke, since `begin()`) the nib has not
-  // necessarily caught up to yet -- "the path the pen actually took" that
-  // both catch-ups (release and paused) walk instead of cutting a straight
-  // line across it. Bounded at `kMaxPathHistory`: a hard cap, not an
+  // necessarily caught up to yet -- "the path the pen actually took", now
+  // walked only by the RELEASE catch-up (`forceCatchUp()`, `catchUpAtEnd`);
+  // the paused catch-up no longer touches it (string-fix brief) -- it moves
+  // the nib by a straight chord step toward `lastRaw_.pos` instead, which is
+  // what stops a no-sample frame from ever placing the nib off the path the
+  // pen actually took. Bounded at `kMaxPathHistory`: a hard cap, not an
   // arc-length one, because it costs one `erase(begin())` per sample past
   // the cap rather than a second length-tracking pass, and at typical
   // report rates (60-240 Hz) it comfortably outlasts any lag this build's
@@ -154,14 +166,11 @@ class Stabiliser {
   static constexpr size_t kMaxPathHistory = 512;
   std::vector<StrokeSample> pathHistory_;
   void appendPathHistory(const StrokeSample& raw) noexcept;
-  // Total arc length of `pathHistory_`, and the arc length of the point on
-  // it nearest `from` (nib's current position, which for weighted average is
-  // a filtered point near but not exactly on the polyline -- this is its
-  // projection) / at a given arc length from the start. The three primitives
-  // both catch-ups are built from.
-  float totalArcLength() const noexcept;
+  // The arc length, along `pathHistory_`, of the point on it nearest `from`
+  // -- `forceCatchUp()`'s own primitive, to find where along the raw path
+  // the nib (a chord-stepped or filtered point near but not exactly on the
+  // polyline) currently sits before walking forward to the lift point.
   float projectArcLength(Vec2 from) const noexcept;
-  Vec2 pointAtArcLength(float s) const noexcept;
 
   StabiliserParams params_;
   float zoom_ = 1.0f;
@@ -172,12 +181,16 @@ class Stabiliser {
 
   bool haveNib_ = false;  // pulled string's own bootstrap latch
   float snappedPressure_ = 1.0f;  // pulled string's `stabilisePressure` state
-  // The nib-to-pointer gap (arc length along `pathHistory_`), captured fresh
-  // after every REAL pulled-string sample -- `catchUpMs`'s decay starts from
-  // whatever this was, so "when the pen moves again the full string length
-  // returns" (Wave 2 brief item 2) falls out for free: a real sample always
-  // rewrites it before any tick reads it.
-  float pulledStringPauseGap0_ = 0.0f;
+  // Where the pen has been sitting, and since when -- a FIXED anchor, not
+  // "moved since the previous sample": a pen held perfectly still still
+  // reports sub-pixel jitter forever, so a per-sample delta would never let
+  // catch-up's hold-off clock start, while genuine slow motion instead
+  // leaves a fixed `kStationaryPx` ball behind after that much travel, so
+  // the clock still (correctly) restarts once real motion resumes. Updated
+  // only by REAL pulled-string samples (`addSamplePulledString()`); a tick
+  // never moves the anchor, only reads how long it has held.
+  Vec2 stationaryAnchor_{};
+  uint64_t stationaryStartNs_ = 0;
 
   bool haveFilter_ = false;  // weighted average's own bootstrap latch
   Vec2 filtPos_{};

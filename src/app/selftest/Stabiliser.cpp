@@ -895,11 +895,10 @@ bool runStabiliserTest() {
     // string's own ordinary, documented geometry (it moves along the
     // pointer-nib LINE, not the path) whether or not any catch-up ever
     // runs; that leg is not the catch-up's doing and blaming it here would
-    // fail correct code. Each step is itself a raw sample or an exact
-    // interpolation between two (`pointAtArcLength()`), so a correct walk's
-    // deviation is ~0; a walk that skipped the corner (one giant step) has
-    // no "between steps" segment to measure at all -- `steps.size() >= 2`
-    // above is what catches that shape of bug.
+    // fail correct code. Each step is itself a raw sample the walk passed
+    // through, so a correct walk's deviation is ~0; a walk that skipped the
+    // corner (one giant step) has no "between steps" segment to measure at
+    // all -- `steps.size() >= 2` above is what catches that shape of bug.
     float maxDeviation = 0.0f;
     for (size_t k = 0; k + 1 < steps.size(); ++k) {
       constexpr int kSamples = 20;
@@ -1023,6 +1022,154 @@ bool runStabiliserTest() {
     const StabiliserParams effOwn = resolveStabiliser(global, ownSetting);
     check(effOwn.catchUpMs == 250.0f,
           "resolveStabiliser: Own takes the brush's own catchUpMs, not the global's");
+  }
+
+  // ==========================================================================
+  // String-fix brief (tablet feedback, second pulled-string session): "the
+  // catchup is also causing issues where the brush path jitters between the
+  // catchup position and the interpolated position ... oscillating around a
+  // curve with a slow mouse". Root cause was the paused catch-up (old
+  // `tickPulledString()`) snapping the nib onto the raw polyline via a
+  // GLOBAL nearest-point search -- ill-conditioned on a jittery, near-
+  // coincident path -- and engaging on ANY no-sample frame rather than a
+  // genuine pause, so an ordinary missed-frame tick at a slow report rate
+  // dissolved the string mid-stroke. The fix: one motion rule while the pen
+  // is down -- the nib moves only by the pulled-string chord constraint
+  // toward `lastRaw_.pos`, through a window that stays at the full string
+  // length until the pen has been stationary (a fixed anchor) for
+  // `kCatchUpHoldOffMs`, then shrinks exponentially -- so the two rules that
+  // used to fight can no longer disagree.
+  //
+  // Shared fixture, built once per run: a SLOW pointer tracing a quarter-
+  // circle arc (radius 120 px, ~0.6 px/sample, +-0.8 px deterministic
+  // jitter), stringPx 4.1 (the user's own saved setting), catchUpMs 400,
+  // ticked once between every pair of samples at a 16 ms frame cadence -- the
+  // user's exact situation: a real pointer event every frame, spatially slow
+  // enough that consecutive samples sit well under a pixel apart, plus one
+  // extra frame poll (the tick) squeezed in between that finds no new sample.
+  // ==========================================================================
+  {
+    constexpr float kHalfPi = 1.57079632679489661923f;
+    constexpr float kRadius = 120.0f;
+    constexpr float kArcStepPx = 0.6f;
+    constexpr float kJitterPx = 0.8f;
+    constexpr float kStringPxFixture = 4.1f;
+    constexpr float kCatchUpMsFixture = 400.0f;
+    const int numSteps = static_cast<int>(std::lround((kRadius * kHalfPi) / kArcStepPx));
+
+    struct FixtureResult {
+      // Assertion 1: worst (distAfter - distBefore) over any single tick --
+      // positive means the nib moved AWAY from the pen on that tick.
+      float worstAwayFromPen = 0.0f;
+      float nibPathLen = 0.0f;  // assertion 2
+      float rawPathLen = 0.0f;  // assertion 2
+      float minGap = std::numeric_limits<float>::max();  // assertion 3
+      bool everTaut = false;
+      // A tick "engages" when it actually moves the nib -- assertion 3's own
+      // direct signal. On a purely geometric pulled string, a raw sample can
+      // legitimately leave slack under `stringPx` (the pointer jittering
+      // sideways/backward relative to the nib is ordinary chord geometry,
+      // nothing to do with catch-up) -- an absolute nib-to-pen-distance floor
+      // can't tell that apart from real erosion, so this counts what the
+      // paused catch-up itself actually did instead.
+      int numEngagedTicks = 0;
+    };
+
+    // Runs the shared fixture once for a given `catchUpMs` so red (3d17b5f)
+    // and green (fixed) numbers -- and the `catchUpMs = 0` control below --
+    // come from the exact same raw path (same seed, same arc, same jitter).
+    const auto runFixture = [&](float catchUpMs) {
+      FixtureResult r;
+      StabiliserParams p;
+      p.mode = StabiliserMode::PulledString;
+      p.stringPx = kStringPxFixture;
+      p.catchUpMs = catchUpMs;
+      Stabiliser stab;
+      stab.begin(p, 1.0f);
+
+      uint64_t rng = 20260911ull;  // fixed seed -- deterministic, no platform RNG dependence
+      uint64_t t = 0;
+      StrokeSample out;
+      Vec2 prevRaw{};
+      Vec2 prevNib{};
+      bool haveRaw = false;
+      bool haveNib = false;
+
+      const auto noteGap = [&](float gap) {
+        if (gap >= 0.99f * kStringPxFixture) r.everTaut = true;
+        r.minGap = std::min(r.minGap, gap);
+      };
+      const auto noteNib = [&](Vec2 nibNow) {
+        if (haveNib) r.nibPathLen += distance(nibNow, prevNib);
+        prevNib = nibNow;
+        haveNib = true;
+      };
+
+      for (int i = 0; i <= numSteps; ++i) {
+        const float theta = (static_cast<float>(i) / static_cast<float>(numSteps)) * kHalfPi;
+        const Vec2 base{kRadius * std::cos(theta), kRadius * std::sin(theta)};
+        const Vec2 jitter{unitFloat(rng) * 2.0f * kJitterPx, unitFloat(rng) * 2.0f * kJitterPx};
+        StrokeSample s;
+        s.pos = Vec2{base.x + jitter.x, base.y + jitter.y};
+        s.timestamp = t;
+
+        stab.addSample(s, out);
+        if (haveRaw) r.rawPathLen += distance(s.pos, prevRaw);
+        prevRaw = s.pos;
+        haveRaw = true;
+        noteNib(stab.nibPos());
+        noteGap(distance(stab.nibPos(), stab.rawPos()));
+
+        if (i == numSteps) break;  // no tick follows the final sample
+
+        t += 8'000'000ull;  // the missed-frame tick, halfway to the next sample
+        const float distBefore = distance(stab.nibPos(), stab.rawPos());
+        StrokeSample tickOut;
+        if (stab.tick(t, tickOut)) ++r.numEngagedTicks;
+        const float distAfter = distance(stab.nibPos(), stab.rawPos());
+        r.worstAwayFromPen = std::max(r.worstAwayFromPen, distAfter - distBefore);
+        noteNib(stab.nibPos());
+        noteGap(distAfter);
+
+        t += 8'000'000ull;  // the next real sample, one 16 ms frame period after the last
+      }
+      return r;
+    };
+
+    const FixtureResult res = runFixture(kCatchUpMsFixture);
+    // Control: the identical raw path/jitter with catch-up fully disabled --
+    // any gap it still shows is pulled string's own ordinary geometry (a
+    // jittery raw sample landing closer to the nib than a straight pull
+    // would leave it), never a "pause". Assertion 3 needs this to separate
+    // that from what catch-up itself contributes.
+    const FixtureResult control = runFixture(0.0f);
+    std::printf("  [measured] string-fix: worst nib-away-from-pen step %.4f px; nib path %.2f px "
+               "vs raw path %.2f px (ratio %.4f); min nib-to-pen gap %.4f px (no-catch-up control "
+               "%.4f px); %d/%d ticks engaged (control %d)\n",
+               res.worstAwayFromPen, res.nibPathLen, res.rawPathLen,
+               res.nibPathLen / res.rawPathLen, res.minGap, control.minGap, res.numEngagedTicks,
+               numSteps, control.numEngagedTicks);
+
+    // 1. The nib never moves away from the pen across a tick.
+    check(res.worstAwayFromPen <= 1e-4f,
+          "string-fix 1: the nib never moves away from the pen across a tick");
+
+    // 2. Smoothing actually smooths -- the nib's own path is well under the
+    // raw (jittery) path's length.
+    check(res.nibPathLen < 0.6f * res.rawPathLen,
+          "string-fix 2: smoothing actually smooths (nib path length < 0.6x raw path length)");
+
+    // 3. Catch-up does not engage while the pen is moving: this fixture
+    // never truly pauses (the arc keeps advancing every sample), so the
+    // paused catch-up should never once fire, and should therefore leave the
+    // exact same minimum gap the no-catch-up control shows.
+    check(res.everTaut, "setup: the string does reach its full length on this fixture");
+    check(res.numEngagedTicks == 0,
+          "string-fix 3: catch-up never actually engages while the pen keeps moving (0 of the "
+          "ticks moved the nib)");
+    check(std::fabs(res.minGap - control.minGap) < 1e-3f,
+          "string-fix 3: with catch-up on, the minimum nib-to-pen gap matches the no-catch-up "
+          "control exactly -- no erosion beyond pulled string's own ordinary geometry");
   }
 
   std::printf("[selftest] stabiliser %s\n", ok ? "PASS" : "FAIL");
