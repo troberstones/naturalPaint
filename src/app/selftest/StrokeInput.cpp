@@ -270,8 +270,8 @@ bool runStrokeInputTest() {
     mouseSample.y = 456.0f;
     mouseSample.isPen = false;
     // Deliberately garbage in the axis fields a real mouse event would never
-    // populate (`queueMousePointerSample()` in main.cpp always leaves them
-    // at their PointerSample defaults) -- proving `isPen == false` alone,
+    // populate (`PointerQueue::enqueue()` in app/PointerQueue.cpp always
+    // leaves them at their PointerSample defaults) -- proving `isPen == false` alone,
     // not "happens to already be zero", is what makes this an early return.
     mouseSample.pressure = 0.2f;
     mouseSample.tiltXDeg = 30.0f;
