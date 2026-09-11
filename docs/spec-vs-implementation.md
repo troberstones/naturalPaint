@@ -26,6 +26,15 @@ pass found for Phase 8, repeated for nine more phases — and those phases hold
 the largest gap still open: no filter in this build is live (§3, Phase 6).
 §6 lists every correction.
 
+**Refreshed 2026-09-11 on `integrate/gap`**, after the gap-closing wave —
+six tracks off `ca35341`, each re-checked against the source before this
+edit rather than taken from its branch's report. **Six rows below closed**:
+the last three unbuilt palette tools (Shape, Frame, Slice — §2 now has none),
+the Gradient tool's stop editor and presets (PRD D24), the gnomon's scale and
+rotate, C12's multi-layer transform, and all five `NotYetRegistered` menu
+actions (Phase 19's tail, half 1). Slice was a PRD non-goal; the owner asked
+for it, and `PRD.md` now carries it as **I19**.
+
 ## Why this file exists, and what it is not
 
 This is a **dispatch inventory**, not a ledger of defects. `docs/testing-issues.md`
@@ -100,29 +109,24 @@ PLAN Phases 16 and 17 are built. What `docs/autoflats-migration.md` §0
 
 `enum class Tool` in `app/AppState.hpp` has **30** values (plus `Count`) since
 Path Select landed on 2026-09-09 (`711ddf5`, the manipulator split off the
-Pen). **27 carry real behaviour and 3 are name/icon/slot only** — Shape, Frame
-and Slice, honestly greyed
-out, and pinned there by the `--selftest` assertion in
-`app/selftest/AtelierChrome.cpp:451` (`kImplementedTools[]`, 27 entries) plus
-the stronger structural one, `toolImplemented(t) == toolHasCanvasHandler(t)`
-for every `Tool`. That pair is why this half of the palette cannot quietly
-claim to work: a tool cannot be marked built without a handler, and cannot
-acquire a handler while still marked unbuilt.
+Pen). **As of 2026-09-11 all 30 carry real behaviour** — pinned by
+`kImplementedTools[]` in `app/selftest/AtelierChrome.cpp` (30 entries) and by
+the structural `toolImplemented(t) == toolHasCanvasHandler(t)` for every
+`Tool`. With no unbuilt tool left, the ToolCursor and MenuBasics selftests
+that used to demand "at least one unbuilt tool" now pin "every tool is
+built" instead, so a gate predicate lost in a future merge fails by count
+rather than greying a cell.
 
 **Seven shipped on 2026-09-02** — Move, Measure, Pencil, Dodge, Burn, Clone
 Stamp and Smudge. **Crop shipped after them, Pen and Curve on 2026-09-03**
 with PLAN Phase 13's path model behind them (§3), and **Text on 2026-09-03**
-(`1d6db71`) with Phase 14 behind it. Pen and Curve could only select and drag
-geometry that already existed until placement landed (`pathEditBeginPen()`,
-`docs/vector-editing.md` §8) — an empty-canvas press now creates and extends
-a shape rather than starting a marquee.
+(`1d6db71`) with Phase 14 behind it. **The last three shipped in the
+gap-closing wave (2026-09-11)**, each on its own terms:
 
-The remaining three are not three instances of one gap:
-
-| Tool | Blocked on | Notes |
+| Tool | Was blocked on | Built as |
 |---|---|---|
-| Shape | nothing structural | `core/Path`, `core/PathRaster` and `core/VectorShape` are built, so this is a gesture that emits a `VectorShape` into the layer the Pen already edits. The cheapest tool left. |
-| Frame, Slice | **no receiving model** | both name a document-level *region* concept that does not exist; the gesture without it draws a rectangle and forgets it |
+| Shape | nothing structural | `app/ShapeTool` — a two-point gesture emitting a `VectorShape` (rect, ellipse, rounded, polygon, line) into a Vector layer, gated by its own `toolCreatesShapes()` |
+| Frame, Slice | **no receiving model** | the model first: `core/Region` in `Document::regions` (so Undo covers it), saved as `np:regions` (`io/RegionSerial`), kept correct by crop / canvas size / image size / rotate in `ops/DocumentTransform`. Both tools share `app/RegionTool`; every commit is a recordable command (`app/CommandsRegions`). File > Export Frames and Slices (`io/ExportRegions`, PRD I19) and View > Show Frames and Slices. **Not built:** typing a region's x/y/w/h (the options row shows them read-only), and a golden view of either palette cell — both live in flyouts no view opens |
 
 ### Built tools with specced halves still missing
 
@@ -134,8 +138,6 @@ this file's subject.
 
 | Tool | Missing | Blocked on | Evidence |
 |---|---|---|---|
-| Gradient | **A stop editor, and saveable presets** (PRD D24 asks for both). The ramp is foreground-to-transparent, built by `gradientToolStops()`. | **PRD D25/D26** — `docs/ui.md` deliberately has no background half to the swatch, so "foreground to background" would name a colour that does not exist | `app/GradientTool.cpp:71`; the options-bar tooltip at `ui/AtelierChrome.cpp:1071` says so to the user |
-| Pen / Curve | **Scale and rotate.** The gnomon's four scale corners and rotate ring are drawn and hit-tested, and a press on any of them starts a `Manipulator` drag. | nothing structural | `app/PenTool.cpp:864` — every `Manipulator` drag that is not a `TangentDrag` applies `transformTranslate(dx, dy)`. Nothing reads which handle was pressed once the drag kind is set. |
 | Dodge / Burn | **The non-destructive form.** PRD D13 (P1, `PRD.md:191`) says "a brush painting into an adjustment layer's mask, never as a destructive pixel op", and `PLAN.md`'s Phase 10 repeats it. What shipped is a brush that rewrites RGB texels. | **a decision, not code** — either build the mask form or amend D13; nothing records the choice either way | `brush/TonalBrush.hpp:459` — `toneDab(TileStore& store, …)` writes the layer's own tiles. Not in `PLAN.md`'s Deviations table, and `TonalBrush.hpp` does not cite D13. |
 
 **The Text row closed on 2026-09-09** (`9a6fff4`): `app/TextTool.hpp` §3b
@@ -248,20 +250,20 @@ in this file.
 | 2 — See a file (`PLAN.md:186`) | **built but for one P0 verb.** Tiles, colour policy, place-as-layer, mip pyramid, the probe and eyedropper with sample size and source (`ui/AtelierChrome.cpp:843`), mirror, grayscale preview, view rotation, rulers, guides, grid, snap, scrubby zoom and the data-driven keymap are all in. **Zoom to selection** (PRD Q1, P0) is not: no symbol and no `MenuAction` — the View menu's zoom rows are Fit to Window, 100%, Zoom In and Zoom Out (`ui/MenuModel.hpp:224–227`). |
 | 3 — Grade it (`PLAN.md:252`) | **built.** `color/Shaper`, `ops/PointOps`, `color/LutBake`, `core/OpStack`, `core/Histogram` and the op-stack UI. Nothing specified is outstanding; the live-*spatial*-op gap belongs to Phase 6. |
 | 4 — Write it out (`PLAN.md:277`) | **built, with three named residues.** Camera raw (PRD I2) is refused by the capability query because this project's OpenImageIO is built without LibRaw on purpose (`io/Capabilities.cpp:77`) — a build decision, not a gap. Step 6 ("lazy OIIO init") was re-scoped by its own measurement to "`dlopen` OIIO on first use" and never done: `grep -rlw dlopen src` finds only `app/Memory.cpp` and a selftest. **The journal recovers no document-level op stack** — `app/Journal.hpp:95` says PRD O5's verify line is "half met", unblocked by `np:docOps`, which `io/NpaintFile.hpp:197` still defers. The other half of that old entry, "the default build has no crash recovery", is gone: `NP_USE_OIIO=OFF` is now a configure-time `FATAL_ERROR`. |
-| 5 — Stack it (`PLAN.md:389`) | **built but for one verb.** PRD C12 (P0) — "move, transform, group, delete and set properties as a set" — still refuses **transform** (`core/LayerSetOps.hpp:35`), and **the refusal's stated reason was stale until this refresh** (§6): it said "there is no geometric transform of a layer anywhere in this codebase", and Phase 6 has since built one (`transformLayer()` in `ops/DocumentTransform`, driven by `app/TransformSession`). What is actually missing is a multi-layer session — `TransformSession` holds one `layerIndex_` (`app/TransformSession.hpp:399`). Group, once refused beside it, is built. |
+| 5 — Stack it (`PLAN.md:389`) | **built.** PRD C12's last verb, **transform as a set**, landed in the gap-closing wave: `TransformTarget::LayerSet` in `app/TransformSession` — one gizmo around the union of the members' bounds, one shared matrix, one atomic commit and one history entry. `core/LayerSetOps.hpp:34` records the refusal it replaced. |
 | 6 — Filter and transform it (`PLAN.md:448`) | **transform built; filters built destructively; the phase's own architecture absent.** Built: the resample kernels the phase names, exact flips and 90° paths, crop / canvas size / image size, free and numeric transform, **straighten** and **perspective correction** (both in `app/CropTool` — four free corners through `transformFromQuad()`, `:416`), the gradient tool, the paint bucket, and the ten entries of the Filter menu (`ui/MenuModel.cpp:1132`). **Not built, heaviest first:** (1) **No filter is live.** The phase opens with ROI propagation and a tile cache keyed on the ops below; neither exists. `core/OpStack.hpp:41` says only `OpClass::PointA` has real ops — `SpatialB` is a tag nothing constructs outside a fixture — so every spatial op writes texels through `app/PixelOpBridge` and cannot be re-edited. That fails PRD D4 (P1, "live and re-editable") and D12's "spatial, not point ops" framing. (2) **Lattice warp of a selection** (D23, P1): no symbol. (3) **Dust & scratches** (D11) and **shadows/highlights** (D12): no symbol. (4) **Highpass and local contrast** have engines (`ops/Filters.hpp:294`, `:726`) and no caller outside `ops/` and the selftest; `ui/MenuModel.hpp` has no entry for either. (5) **Fill and stroke a selection or layer with colour, pattern or gradient** (D26, P1): no symbol — `define_pattern` / `fill_with_pattern` exist, but only in the recorder (Phase 19 row). (6) Lens blur and radial / spin / zoom blur (P2): §4. Puppet warp is deferred by the phase itself. |
 | 7 — Select and paste (`PLAN.md:480`) | **selection and clipboard built; channels half-reachable; quick mask headless.** `core/Channels` implements all three of PRD E11–E13 in one file — named alpha channels persisted in `.npaint`, selection ↔ channel both ways, and quick mask. **Quick mask has no caller**: `paintQuickMask()` (`core/Channels.hpp:338`), `quickMaskFromSelection()` and `selectionFromQuickMask()` are referenced only from `core/Channels.cpp` and the selftest. **Save / load selection as channel run only from an action file**: they are registered as `save_selection_as_channel` and `load_channel_as_selection` (`app/CommandsOpStack.cpp:1011`, `:1013`), with no `MenuAction`, no builder in a header and no panel. There is no Channels panel (E13's single-channel view and edit). **PRD M9 (P1)**: paste into selection, paste as new document and ⌥-drag duplicate have no symbol; fill with colour is D26 in the Phase 6 row. |
 | 8 — Repair it (`PLAN.md:505`) | **mostly built as of 2026-09-09**, and this table omitted the phase entirely until that morning. `LayerKind::Strokes` now holds dab records with a spatial index over their bounds, checkpoint tiles and the samples-only-from-below rule (`core/StrokesContent`, `brush/StrokesLayer`, `io/StrokesSerial`); it rasterises per PRD C11, round-trips as `np:dabs`, and erases by deleting the records a stroke covers (PRD F11). **Heal** is `Tool::Heal` over a gradient-domain solve (`ops/Poisson`, `brush/Heal`); **diffusion inpaint** is `ops/Inpaint` (Telea) through `app/PixelOpBridge`. Clone remains *aligned only* — `brush/CloneStamp.hpp:218` records that toggle as a deliberate omission, so it is not an absence. The **class-C form of clone and heal** landed on 2026-09-10: `StrokeRoute::StrokesRecord` (one route for both tools, `app/StrokeSession` §1d argues the call) appends a `DabRecord` to a Strokes layer instead of writing texels, and `brush/StrokesLayer` re-evaluates it against the composite beneath — so a repair tracks a regrade under it, which is PRD D6 and `docs/operations.md:341`'s class C. A recorded heal is `DabColorSource::BelowHealed`, a solve whose source is the below-composite at the offset and whose Dirichlet rim is the below-composite straight down (`brush/StrokesLayer` §1b). That closed the reachability hole this row used to describe from the other end: `Layer > New Strokes Layer` made a real layer that nothing in the build could put a mark in, and PRD F11's erase worked correctly on records nothing could make. **Not built:** PatchMatch (D7's textured half — a cached class-D op with a Recompute button and a deterministic seed, shared with Phase 9), and a recorded PAINT stroke (`DabColorSource::Ink`), which is deferred by name — `app/StrokeSession` §1d states the three questions it is blocked on. |
-| 9 — Tile it (`PLAN.md:510`) | **partly built as of 2026-09-09.** PRD D8's first, second and fourth pieces are in: **lighting-gradient removal** (divide by a heavily blurred copy and re-centre the mean, `ops/Filters`), **offset with wrap** (an addressing change that does no filtering), and the **3×3 repeat preview** (`app/TilePreview`, a View-menu toggle drawing nine quads through `ui/CanvasQuad`, golden view `tile_preview`). **Not built:** **seam heal**, and **PatchMatch** as the cached class-D op with a Recompute button and a deterministic seed that both this phase and §3's Phase 8 row want. Lighting-gradient removal was the piece PRD.md:208 calls the precondition for the rest, so the workflow now has a front and a way to judge its result, and no repair for what it shows you. `app/FilterOps.hpp:334` names seam heal as absent rather than stubbed. **Two of the three built ops are not recordable yet**: Remove Lighting Gradient and Offset are `NotYetRegistered` (`app/CommandCoverage.cpp:242`, `:245`), so an action recorded over a make-tileable pass silently omits them (Phase 19 row). |
+| 9 — Tile it (`PLAN.md:510`) | **partly built as of 2026-09-09.** PRD D8's first, second and fourth pieces are in: **lighting-gradient removal** (divide by a heavily blurred copy and re-centre the mean, `ops/Filters`), **offset with wrap** (an addressing change that does no filtering), and the **3×3 repeat preview** (`app/TilePreview`, a View-menu toggle drawing nine quads through `ui/CanvasQuad`, golden view `tile_preview`). **Not built:** **seam heal**, and **PatchMatch** as the cached class-D op with a Recompute button and a deterministic seed that both this phase and §3's Phase 8 row want. Lighting-gradient removal was the piece PRD.md:208 calls the precondition for the rest, so the workflow now has a front and a way to judge its result, and no repair for what it shows you. `app/FilterOps.hpp:334` names seam heal as absent rather than stubbed. All three built ops are recordable since the gap-closing wave (Phase 19 row). |
 | 10 — Paint on it (`PLAN.md:517`) | **built, with one contradiction.** Brush and dynamics, deposit on RGB and Pigment, the eraser per layer kind (ADR-0007), pencil, dodge and burn, and smudge on RGB and — since `16ead20` — on Pigment (`brush/PigmentSmudge`, a mass-weighted mean of latents). **Dodge and burn contradict PRD D13**, which forbids a destructive pixel op; §2 has the row. The Media deposit waits on Phase 11. This pass checked the tools and routes only — not the latency path or the `⌃⌥`-drag size gesture. |
 | 11 — Media layers (`PLAN.md:545`) | `LayerKind::Media` enum value only — 7 non-selftest mentions, all display name / glyph / colour / font-set. `app/LayerPanel.cpp:139` tells the user "Not built yet." Blocks autoFlats Phase 18 (§1) and Phase 10's Media deposit. Unchanged since 2026-09-02, and now the only whole phase in `PLAN.md` with no code. |
 | 12 — Import brushes (`PLAN.md:552`) | **ABR half built; Procreate half not.** `io/Descriptor`, `io/AbrBrushes` (tips, dynamics, the `bVTy` mapping) and `--abr-report` cover PRD G7 and G9, and `io/GimpBrush` adds `.gbr`/`.gih`, which the plan never asked for. **Not built:** `.brush` / `.brushset` import (PRD G8, P2) — no `bplist00` reader, no NSKeyedArchiver resolution; `grep -rliE 'bplist|procreate' src` is empty. **Dual Brush** is read and counted (`io/AbrBrushes.cpp:835`) and never rendered, so 66 of 101 measured presets lose their second tip (§4). |
-| 13 — Paths (`PLAN.md:559`) | **built but for one gesture.** Everything the 2026-09-09 row listed as unbuilt has landed except the gnomon: the **PATHS dock tab** (`app/ControlsLayout.cpp:63`, `app/PathsPanel`, `b2c048c` — eleven verbs that grey themselves, planned in `docs/path-editing-plan.md`), and the three PRD J consumers now have UI callers — `pathToSelection()`, `fillPathIntoLayer()` and `strokePathWithBrush()` at `ui/MacPaintUI.cpp:13700`, `:13731` and `:13769`. Path Select split off the Pen as its own tool (`711ddf5`). Earlier landings still stand: the MODE segment, the drawn gnomon read from `gnomonHandlePositions()`, placement (`pathEditBeginPen()`), and vector thumbnails in LAYERS. **Not built:** the gnomon's scale and rotate (§2). `docs/vector-editing.md` §5 defers soft selection, symmetry, object-space gnomon and lasso component selection by design, and SVG gradients and patterns are still refused by name (`io/SvgImport.cpp:535`). |
+| 13 — Paths (`PLAN.md:559`) | **built.** Everything the 2026-09-09 row listed as unbuilt has landed: the **PATHS dock tab** (`app/ControlsLayout.cpp:63`, `app/PathsPanel`, `b2c048c` — eleven verbs that grey themselves, planned in `docs/path-editing-plan.md`), and the three PRD J consumers now have UI callers — `pathToSelection()`, `fillPathIntoLayer()` and `strokePathWithBrush()` at `ui/MacPaintUI.cpp:13700`, `:13731` and `:13769`. Path Select split off the Pen as its own tool (`711ddf5`). Earlier landings still stand: the MODE segment, the drawn gnomon read from `gnomonHandlePositions()`, placement (`pathEditBeginPen()`), and vector thumbnails in LAYERS. The gnomon's scale corners and rotate ring now scale and rotate (`pathEditUpdate()`'s `GnomonPart` switch in `app/PenTool.cpp`, gap-closing wave), so **nothing specified is outstanding** here. `docs/vector-editing.md` §5 defers soft selection, symmetry, object-space gnomon and lasso component selection by design, and SVG gradients and patterns are still refused by name (`io/SvgImport.cpp:535`). |
 | 14 — Text | **built** (`1d6db71`). `text/Shaper` + `text/CoreTextShaper.mm` (+ a stub for the Linux build), `core/TextContent`, a live `LayerKind::Text`, `np:text` in `io/NpaintFile`, `app/TextTool`, the canvas gesture and overlay, and an options row with FONT / SIZE / B / I / ALIGN / COLOR. SVG `<text>` imports as a Text layer when the element reduces to one styled run under a translate-plus-uniform-scale, and as glyph outlines otherwise, the fallback named per element in the report. Selection ranges landed on 2026-09-09 (`9a6fff4`), so **nothing specified is outstanding**. Text on a path, vertical text and rich-text runs are non-goals (PRD.md:102). |
 | 15 — PSD export (`PLAN.md:635`) | **built.** `io/PsdWrite` (byte primitives), `io/PsdExport` (`writeFlattenedPsd()` / `writeLayeredPsd()`), `io/PsdLayerSection` (records, channels, names), `io/PsdLayerExtras` (masks, `lsct` groups), `io/PsdBlendKeys` (one 26-row table read in both directions). PSD is writable and offerable from the export dialog at **8 bits only**, and now for one reason rather than two. The original blocker — a 16-bit layered PSD keeps its records in an `Lr16` block *the reader* had no case for — was closed on 2026-09-10 (`49d5328`, `findLayerInfoBlock16()` in `io/PsdImport.cpp`, checked against psd-tools on a hand-built file). **What still blocks 16-bit is the full-scale value**: `PLAN.md`'s 0–32768 is disputed by psd-tools, which divides by 65535, and no real 16-bit Photoshop file has been available to settle it (`io/PsdImport.hpp`, "Depth"). `io/Capabilities.cpp:111`'s refusal comment gave the old reason until this refresh (§6). Verified against psd-tools 1.19.0: stacking order, the inverted hidden flag, opacity, clipping, blend and both name forms all correct, and every observable pixel exact (the only differences are fully transparent texels, where the merged composite is deliberately matted on white). |
 | 16, 17 — Flat it, Fix it | **built** (§1). |
 | 18 — Sheet it, and wash it | sheet/gap/declutter controls are in the bucket's options row; the wash half is blocked on Phase 11. |
-| 19 — Automate it (`PLAN.md:719`) | **built** — the 2026-09-09 row said "no code", and its probe (`grep -rniE automat src`) was the wrong one: the phase's own vocabulary is *command*, *action* and *record*. `app/Command` is one `applyCommand()` funnel over a table of `CommandSpec`s split across `app/Commands{Image,Layers,OpStack,Patterns}.cpp`; `app/Recorder` writes steps; `io/ActionFile` is the file format; `app/Action` replays on a copy and commits one edit; `app/ActionsPanel`; `app/Batch`, `--batch` and `app/BatchDialog`, with PRD P4 asserted on bytes; and step 5's lens correction (`ops/Lens`) and pattern define/fill (`ops/Pattern`). `docs/automation.md` is the contract for features added after it. **The tail, and both halves fail silently:** (1) **Five menu actions are `NotYetRegistered`** — Numeric Transform, Delete Selection, Inpaint, Remove Lighting Gradient and Offset (`app/CommandCoverage.cpp:78`, `:93`, `:239`, `:242`, `:245`), each with its reason; recording one today leaves the step out of the file. (2) **Five commands run only from an action file** — the inverse gap: `lens_correct`, `define_pattern` and `fill_with_pattern` (`app/CommandsPatterns.cpp:172–190`), plus Phase 7's two channel commands, have no `MenuAction` and no builder, so no menu, panel or key reaches them. `app/CommandsPatterns` has no header at all. |
+| 19 — Automate it (`PLAN.md:719`) | **built** — the 2026-09-09 row said "no code", and its probe (`grep -rniE automat src`) was the wrong one: the phase's own vocabulary is *command*, *action* and *record*. `app/Command` is one `applyCommand()` funnel over a table of `CommandSpec`s split across `app/Commands{Image,Layers,OpStack,Patterns}.cpp`; `app/Recorder` writes steps; `io/ActionFile` is the file format; `app/Action` replays on a copy and commits one edit; `app/ActionsPanel`; `app/Batch`, `--batch` and `app/BatchDialog`, with PRD P4 asserted on bytes; and step 5's lens correction (`ops/Lens`) and pattern define/fill (`ops/Pattern`). `docs/automation.md` is the contract for features added after it. **The tail, which fails silently:** (1) ~~Five menu actions were `NotYetRegistered`~~ — Numeric Transform, Delete Selection, Inpaint, Remove Lighting Gradient and Offset are all registered since the gap-closing wave, and `app/CommandCoverage.cpp` has no `NotYetRegistered` row left. (2) **Five commands run only from an action file** — the inverse gap: `lens_correct`, `define_pattern` and `fill_with_pattern` (`app/CommandsPatterns.cpp:172–190`), plus Phase 7's two channel commands, have no `MenuAction` and no builder, so no menu, panel or key reaches them. `app/CommandsPatterns` has no header at all. |
 
 ## 4. Small and ready
 
@@ -285,7 +287,6 @@ in this file.
   **Dissolve**, which that document scopes out on purpose (§"Out of scope:
   Dissolve", and item 5 of its own list: "only if asked for specifically").
   Nothing there is ready-to-build; it is done.
-* **The Shape tool** (§2) — one gesture over a model that already exists.
 * **ABR brush-import "Phase D2, Phase E, Phase 8."** Carried over from the
   2026-09-02 edition. **The plan those names come from is not in this
   repository** — `grep -rnE 'Phase (D2|E)\b' docs PLAN.md PRD.md src` finds only
@@ -297,13 +298,6 @@ in this file.
   by `--abr-report` but not rendered (the engine has one tip per brush).
 * There is still no `--version` flag (`grep '"--version"' src/main.cpp` is
   empty).
-* **Register the five `NotYetRegistered` menu actions** (§3, Phase 19). Each
-  row in `app/CommandCoverage.cpp` already states what it needs; for Inpaint,
-  Remove Lighting Gradient and Offset that is a runner, a builder and a
-  pixel-unit entry in `app/Batch.cpp`, with the parameter shapes already in
-  `app/FilterOps.hpp`. Numeric Transform and Delete Selection each need a
-  decision first (resolution policy; how a step names its selection), so they
-  are not small.
 * **Menu entries for the headless engines**: Highpass and Local Contrast
   (`ops/Filters.hpp:294`, `:726`), and Lens Correction, Define Pattern and
   Fill With Pattern (`app/CommandsPatterns.cpp`). The first two need a
@@ -434,3 +428,26 @@ Recorded so the corrections do not have to be rediscovered:
   editions missed by searching `ops/Blur` alone; and the palette is 27 built
   of 30, not 26 of 29. **Two P0 gaps surfaced only because the new rows
   forced a look**: zoom to selection (Q1) and C12's multi-layer transform.
+
+**2026-09-11** (on `integrate/gap`, after the gap-closing wave):
+
+* **Six rows closed, each re-checked in the source rather than taken from a
+  branch report**: Shape, Frame and Slice (§2 has no unbuilt tool left);
+  the Gradient tool's stop editor and presets; the gnomon's scale and
+  rotate; C12's multi-layer transform; and the five `NotYetRegistered`
+  menu actions.
+* **Two assertions demanded the gap this wave closed.** ToolCursor's and
+  MenuBasics' guards required "at least one unbuilt tool" so that their
+  disabled-tool checks could not pass vacuously. Building the last three
+  made the guards fail for the best reason there is. Both now pin the
+  opposite — every tool built — and state that the disabled-tool checks are
+  vacuous until an enumerator is added ahead of its behaviour.
+* **The region branch as its agents left it recorded nothing from the
+  canvas.** It had registered five region commands, and then the drag, the
+  options row's rename and its Delete button all called `core::RegionOps`
+  directly — the failure `docs/automation.md` §7 says no assertion can see.
+  Every one now goes through `applyCommand()`, and a selftest arms the
+  recorder around the same functions the UI calls; a sabotage that bypassed
+  the command left every history-count assertion green and turned only
+  that one red. The first `--region-demo` capture also found the options
+  row printing its ImGui id as a label and hiding its own Delete button.
