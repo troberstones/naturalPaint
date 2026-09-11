@@ -128,7 +128,11 @@ bool refusalIsUsable(const std::string& msg, const char* mustName) {
 BrushTip testTip() {
   BrushTip t;
   t.radius = 6.0f;
-  t.hardness = 1.0f;  // a hard disc: section 7's off-line assertion needs a rim it can trust
+  // Hardness 1: section 7's off-line assertion needs a rim it can trust. Since
+  // BrushTip::edgePx the last pixel is antialiased rather than hard, but the
+  // footprint -- exactly 0 at and beyond the radius -- did not move, and that
+  // is the part of the rim section 7 trusts.
+  t.hardness = 1.0f;
   t.spacing = 0.25f;
   t.flow = 1.0f;
   t.opacity = 1.0f;
@@ -826,8 +830,24 @@ bool runPathConsumersTest() {
         strokePathWithBrush(openTarget, {filledShape(line, {1, 1, 1, 1})}, fine, nullptr, W, H);
     check(so.ok && pixelAt(*openTarget.rgbTiles, 120, 128)[3] > 0.5f,
           "premise: the fine tip paints the middle of an open subpath");
-    check(so.ok && pixelAt(*openTarget.rgbTiles, 201, 128)[3] > 0.5f,
-          "  and the LAST texel the tip can reach from the final anchor is painted");
+    // **Painted at all (> 0), where this used to demand > 0.5.** The probe
+    // has to be the LAST covered texel (above), and since BrushTip::edgePx the
+    // last covered texel of a hardness-1 tip lies in its antialiased last
+    // pixel: at r = 2 the flat core ends at d = 1, and x=201's centre is ~1.58
+    // px from the final anchor, where one dab's coverage is well under a half.
+    // Lowering the threshold keeps the probe on the edge texel rather than
+    // moving it inward -- which is what made an earlier version of this block
+    // blind to the sabotage -- and it still discriminates: without `flush()`
+    // the last dab lags behind 200, x=201's centre is then at or past the
+    // radius, and its coverage is exactly 0 (the squared comparison, unmoved
+    // by edgePx), not merely small.
+    const float lastAlpha = so.ok ? pixelAt(*openTarget.rgbTiles, 201, 128)[3] : 0.0f;
+    std::printf("  [measured] the last texel's alpha from the final anchor: %.6f\n",
+                static_cast<double>(lastAlpha));
+    check(so.ok && lastAlpha > 0.0f,
+          "  and the LAST texel the tip can reach from the final anchor is painted -- at the "
+          "antialiased rim's fractional alpha since edgePx, so 'painted' means nonzero now, "
+          "not over half");
     check(so.ok && pixelAt(*openTarget.rgbTiles, 202, 128)[3] == 0.0f,
           "  premise: one texel further is past the tip, so the probe above is the edge");
 
