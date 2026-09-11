@@ -93,6 +93,7 @@
 #include "ops/FloodFill.hpp"
 #include "ops/Gradient.hpp"
 #include "io/ExportStates.hpp"
+#include "io/GradientPresetFile.hpp"
 #include "brush/BrushModelFields.hpp"
 #include "ui/BrushFieldPresentation.hpp"
 #include "ui/BrushSettingsWindow.hpp"
@@ -6575,6 +6576,22 @@ VectorStyle penVectorStyle(const AppState& st) {
 GradientStops currentGradientStops(const BrushState& brush, const GradientToolState& gradient) {
   return gradientToolStops(foregroundLinearRgba(brush),
                            gradient.hasCustomStops ? &gradient.customStops : nullptr);
+}
+
+// The gradient preset library cache -- `g_actionsLibrary`'s own shape, one
+// library over, exposed cross-TU (see this pair's declaration in
+// ui/MacPaintUI.hpp for why).
+std::vector<GradientPresetLibraryRow> g_gradientPresetLibrary;
+bool g_gradientPresetLibraryLoaded = false;
+
+const std::vector<GradientPresetLibraryRow>& gradientPresetLibraryRows() {
+  if (!g_gradientPresetLibraryLoaded) refreshGradientPresetLibrary();
+  return g_gradientPresetLibrary;
+}
+
+void refreshGradientPresetLibrary() {
+  g_gradientPresetLibrary = gradientPresetLibrary(gradientPresetsDirectoryPath());
+  g_gradientPresetLibraryLoaded = true;
 }
 
 EyedropperPick applyEyedropperPick(AppState& st, PixelCoord at) {

@@ -338,4 +338,14 @@ std::vector<std::string> listGradientPresetFiles(const std::string& dir) {
   return found;
 }
 
+std::vector<GradientPresetLibraryRow> gradientPresetLibrary(const std::string& dir) {
+  std::vector<GradientPresetLibraryRow> rows;
+  for (const std::string& path : listGradientPresetFiles(dir)) {
+    std::string name;
+    GradientPresetStops stops;
+    if (loadGradientPresetFromFile(path, &name, &stops)) rows.push_back({path, name});
+  }
+  return rows;
+}
+
 }  // namespace np

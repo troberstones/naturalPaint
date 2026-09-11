@@ -130,25 +130,37 @@ void sortGradientPresetStops(GradientPresetStops& stops) {
                    });
 }
 
-void addGradientColorStop(GradientPresetStops& stops, float position, bool foreground,
-                          const std::array<float, 3>& color, float midpoint) {
+size_t addGradientColorStop(GradientPresetStops& stops, float position, bool foreground,
+                            const std::array<float, 3>& color, float midpoint) {
   GradientColorStopSpec s;
   s.position = clampGradientStopPosition(position);
   s.foreground = foreground;
   s.color = color;
   s.midpoint = clampGradientStopMidpoint(midpoint);
-  stops.colorStops.push_back(s);
-  sortGradientPresetStops(stops);
+  // Sorted insert via upper_bound rather than push_back-then-sort: the sort
+  // is a stable_sort, and finding which of possibly several equal-position
+  // stops is "the one just inserted" after it ran would need a second search
+  // this avoids entirely -- `insertPoint()`'s own shape (`app/CurveEdit.cpp`).
+  const auto it = std::upper_bound(
+      stops.colorStops.begin(), stops.colorStops.end(), s.position,
+      [](float t, const GradientColorStopSpec& c) { return t < c.position; });
+  const size_t idx = static_cast<size_t>(it - stops.colorStops.begin());
+  stops.colorStops.insert(it, s);
+  return idx;
 }
 
-void addGradientOpacityStop(GradientPresetStops& stops, float position, float opacity,
-                            float midpoint) {
+size_t addGradientOpacityStop(GradientPresetStops& stops, float position, float opacity,
+                              float midpoint) {
   GradientOpacityStopSpec s;
   s.position = clampGradientStopPosition(position);
   s.opacity = std::clamp(opacity, 0.0f, 1.0f);
   s.midpoint = clampGradientStopMidpoint(midpoint);
-  stops.opacityStops.push_back(s);
-  sortGradientPresetStops(stops);
+  const auto it = std::upper_bound(
+      stops.opacityStops.begin(), stops.opacityStops.end(), s.position,
+      [](float t, const GradientOpacityStopSpec& o) { return t < o.position; });
+  const size_t idx = static_cast<size_t>(it - stops.opacityStops.begin());
+  stops.opacityStops.insert(it, s);
+  return idx;
 }
 
 bool removeGradientColorStop(GradientPresetStops& stops, size_t index) {

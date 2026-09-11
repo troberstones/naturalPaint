@@ -22,6 +22,7 @@
 #include "app/ZoomAndSize.hpp"
 #include "color/Space.hpp"
 #include "core/TileStore.hpp"
+#include "io/GradientPresetFile.hpp"
 #include "ui/AtelierTheme.hpp"
 #include "ui/Fonts.hpp"
 #include "ui/MacPaintUI.hpp"
@@ -1066,11 +1067,80 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     // `Dummy` rather than nothing: the drawing above is on the draw list and
     // ImGui knows nothing about it, so without a laid-out item of the same
     // size the SPREAD combo would be positioned on top of the swatch.
+    //
+    // PRD D24's stop editor opens from a click on this swatch, exactly as the
+    // brief asks -- `IsItemClicked()` needs no `Button()` underneath it, only
+    // the item this `Dummy()` already laid out, so the swatch keeps drawing
+    // itself with the checkerboard-and-ramp code above rather than becoming a
+    // button with a picture drawn over it.
     ImGui::Dummy(ImVec2(rampW, ImGui::GetFrameHeight()));
+    if (ImGui::IsItemClicked()) st.openGradientEditorDialog = true;
+    if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     ImGui::SetItemTooltip(
-        "Foreground to transparent -- the one ramp this build offers, because there is no "
-        "background colour for a second one to end at. Drag on the canvas from the ramp's "
-        "start to its end.");
+        "Click to open the gradient editor: add, move or remove colour and opacity stops, mark "
+        "a stop \"Foreground\" so it tracks the swatch, or choose a saved preset below. Drag on "
+        "the canvas from the ramp's start to its end.");
+
+    bandSeparator();
+    capsLabel("PRESET");
+    ImGui::SameLine();
+    {
+      // The built-ins first (index 0 is always "Foreground to Transparent",
+      // `defaultGradientPresetName()`'s own promise), then the on-disk
+      // library, in the order `gradientPresetLibraryRows()` already sorted
+      // them. Selecting a row LOADS it -- copies its stops into
+      // `st.gradient.customStops` -- rather than merely naming it, so the
+      // ramp a save/rename/delete acts on afterwards is never a stale
+      // in-memory copy of a file the picker only pointed at.
+      const std::vector<GradientBuiltInPreset> builtIns = builtInGradientPresets();
+      const std::vector<GradientPresetLibraryRow>& library = gradientPresetLibraryRows();
+      // "(Custom, unsaved)" is the PREVIEW text for an edited-but-unsaved
+      // ramp (`presetName` empty is what flags that), not a row of its own in
+      // the list below -- there is nothing to select it INTO, since it names
+      // whatever is already live.
+      const std::string preview = !st.gradient.hasCustomStops   ? builtIns[0].name
+                                  : st.gradient.presetName.empty() ? "(Custom, unsaved)"
+                                                                    : st.gradient.presetName;
+      ImGui::SetNextItemWidth(140.0f);
+      pushAtelierMono();
+      if (ImGui::BeginCombo("##gradientPreset", preview.c_str())) {
+        for (const GradientBuiltInPreset& p : builtIns) {
+          if (ImGui::Selectable(p.name, !st.gradient.hasCustomStops && preview == p.name)) {
+            // Index 0's own name is `defaultGradientPresetName()` -- picking
+            // it returns to the NULL-custom path (`hasCustomStops = false`),
+            // never a custom copy that merely happens to hold equal values,
+            // so `gradientToolStops()`'s bit-identical guarantee
+            // (`app/GradientTool.hpp` § 5) stays a fact about which code ran.
+            if (std::strcmp(p.name, defaultGradientPresetName()) == 0) {
+              st.gradient.hasCustomStops = false;
+            } else {
+              st.gradient.customStops = p.stops;
+              st.gradient.hasCustomStops = true;
+            }
+            st.gradient.presetName = p.name;
+          }
+        }
+        if (!library.empty()) {
+          ImGui::Separator();
+          for (const GradientPresetLibraryRow& row : library) {
+            if (ImGui::Selectable(row.name.c_str(), st.gradient.presetName == row.name)) {
+              std::string loadedName, err;
+              GradientPresetStops loaded;
+              if (loadGradientPresetFromFile(row.path, &loadedName, &loaded, &err)) {
+                st.gradient.customStops = loaded;
+                st.gradient.hasCustomStops = true;
+                st.gradient.presetName = loadedName;
+              }
+            }
+            ImGui::SetItemTooltip("%s", row.path.c_str());
+          }
+        }
+        ImGui::EndCombo();
+      }
+      popAtelierMono();
+      ImGui::SetItemTooltip("Saved gradients (PRD D24). Save, rename or delete one from the "
+                            "gradient editor -- click the ramp above to open it.");
+    }
 
     bandSeparator();
     capsLabel("KIND");

@@ -1709,6 +1709,7 @@ int main(int argc, char** argv) {
   bool openExportAs = false;
   const char* exportAsPath = nullptr;
   bool openLayerProperties = false;
+  bool openGradientEditorDialog = false;
   // --open-modal <MenuActionName>: enqueue one menu action on the first frame
   // so `--screenshot` can photograph the modal it opens. `MenuAction::None`
   // means the flag was not given. See the flag's own comment in the parse
@@ -2472,6 +2473,12 @@ int main(int argc, char** argv) {
       // --open-export-states one dialog over: it too is opened by a click and
       // --screenshot has no input. See AppState::openLayerProperties.
       openLayerProperties = true;
+    } else if (a == "--open-gradient-editor") {
+      // The gradient tool's own options-bar swatch, same justification one
+      // dialog over again -- clicking it is the only way to open PRD D24's
+      // stop editor, and --screenshot has no click. See
+      // AppState::openGradientEditorDialog.
+      openGradientEditorDialog = true;
     } else if (a == "--patt-write") {
       if (i + 1 < argc) pattWritePath = argv[++i];
     } else if (a == "--batch") {
@@ -4451,6 +4458,7 @@ int main(int argc, char** argv) {
   }
   st.openExportAsDialog = openExportAs;
   st.openLayerProperties = openLayerProperties;
+  st.openGradientEditorDialog = openGradientEditorDialog;
   // Through the same queue a native menu click uses, drained at the top of the
   // first UI frame -- which is the only moment `performMenuAction()` has an
   // ImGui frame, an `AppState&` and a canvas size all at once. Everything the

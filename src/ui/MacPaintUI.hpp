@@ -12,6 +12,7 @@
 #include "app/LayerEditor.hpp"
 #include "core/LayerSetOps.hpp"
 #include "gfx/Context.hpp"
+#include "io/GradientPresetFile.hpp"
 #include "sim/PaintSim.hpp"
 #include "ui/AtelierLayout.hpp"
 #include "ui/DocumentTexture.hpp"
@@ -416,6 +417,18 @@ int rgbColorPickerFlags() noexcept;
 // guarantees the untouched-default case is bit-identical to before this
 // parameter existed.
 GradientStops currentGradientStops(const BrushState& brush, const GradientToolState& gradient);
+
+// PRD D24's preset library, read from `gradientPresetsDirectoryPath()`
+// (`io/GradientPresetFile.hpp`) once and cached -- a directory scan per frame
+// is the mistake `g_actionsLibrary` already exists to avoid, one library
+// over. Exposed here, rather than kept file-static the way that cache is,
+// because two different translation units need it: the options bar's PRESET
+// combo (`ui/AtelierChrome.cpp`) and the stop editor's Save/Rename/Delete
+// (`ui/MacPaintUI.cpp`, beside `drawGradientMapDialog()`). A save or delete
+// made through either must be visible to the other without a second,
+// independently-stale copy of the same directory listing.
+const std::vector<GradientPresetLibraryRow>& gradientPresetLibraryRows();
+void refreshGradientPresetLibrary();
 
 // ------------------------------------------------------- the eyedropper
 //

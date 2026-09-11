@@ -134,11 +134,14 @@ float clampGradientStopMidpoint(float m) noexcept;
 
 // Inserts a colour stop and re-sorts, so the caller's contract
 // (`ops/Gradient.hpp`: "both lists must be sorted ascending") holds
-// immediately rather than until the next edit.
-void addGradientColorStop(GradientPresetStops& stops, float position, bool foreground,
-                          const std::array<float, 3>& color, float midpoint = 0.5f);
-void addGradientOpacityStop(GradientPresetStops& stops, float position, float opacity,
-                            float midpoint = 0.5f);
+// immediately rather than until the next edit. Returns the new stop's index
+// AFTER the sort -- `insertPoint()`'s own contract (`app/CurveEdit.hpp`) --
+// so the editor's click-to-add gesture can select what it just planted
+// without a second search.
+size_t addGradientColorStop(GradientPresetStops& stops, float position, bool foreground,
+                            const std::array<float, 3>& color, float midpoint = 0.5f);
+size_t addGradientOpacityStop(GradientPresetStops& stops, float position, float opacity,
+                              float midpoint = 0.5f);
 
 // Removes the stop at `index`. Refuses -- leaving `stops` untouched and
 // returning false -- when that would drop the list below two: a one-stop

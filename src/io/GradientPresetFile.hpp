@@ -93,4 +93,24 @@ std::string gradientPresetFileNameFor(std::string_view name);
 // `listActionFiles()`'s rule, for the same reason.
 std::vector<std::string> listGradientPresetFiles(const std::string& dir);
 
+// --- the picker's library --------------------------------------------------
+
+// One row of the options-bar picker's library section.
+struct GradientPresetLibraryRow {
+  std::string path;
+  std::string name;
+};
+
+// Every `.npgradient` file in `dir`, sorted by file name, each with its own
+// saved NAME read out of it -- unlike `io/ActionFile`'s `ActionLibraryRow`,
+// which shows a file's STEM to avoid opening every file in what can be a
+// large action library, a gradient library is small in practice (a handful of
+// named ramps, not hundreds of recordings) and the picker's whole point is
+// showing the name a user actually gave it, which only the file's own
+// contents holds. A file that fails to parse (`readGradientPreset()`
+// refuses it) is skipped rather than shown with a blank or placeholder name;
+// its path is still on disk for `--selftest` or a human to find, just not in
+// this list.
+std::vector<GradientPresetLibraryRow> gradientPresetLibrary(const std::string& dir);
+
 }  // namespace np
