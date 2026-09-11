@@ -641,6 +641,428 @@ bool runPenToolTest() {
           "it every frame");
   }
 
+  // =======================================================================
+  // 9. gnomonHandleAffine() and the Manipulator dispatch -- REQUIRED: the
+  //    scale corners and the rotate ring actually scale and rotate, per
+  //    handle recorded at pathEditBegin() and read back by
+  //    pathEditUpdate()'s Manipulator arm. Before this track,
+  //    pathEditUpdate() applied `transformTranslate()` to EVERY Manipulator
+  //    drag because nothing recorded which handle was pressed once the drag
+  //    kind was set (`app/PenTool.cpp`, ca35341's line 864).
+  // =======================================================================
+  {
+    // A 100x100 square, pivot explicitly at its centre (50,50) so the
+    // expected geometry below is hand-computable independently of
+    // shapePivot()'s own centroid arithmetic (section 1 already covers
+    // that). Straight-edged (every handle coincides with its own anchor,
+    // core/Path.hpp section 1) so `pathTightBounds()` is exactly the anchor
+    // bounds -- 9h/9i/9j below read the gnomon's drawn corner and segment
+    // positions, which a curved edge would move off the hand-computed
+    // values. 9a2 below tests the tangent-follows-anchor property in
+    // isolation, on a shape built for exactly that and nothing else, so an
+    // intentionally skewed handle there cannot perturb these tests' bounds.
+    auto square = [&]() {
+      VectorShape s;
+      s.id = 101;
+      s.pivot = PathPoint{50, 50};
+      SubPath sub;
+      sub.closed = true;
+      sub.anchors = {anchor({0, 0}, {0, 0}, {0, 0}), anchor({100, 0}, {100, 0}, {100, 0}),
+                     anchor({100, 100}, {100, 100}, {100, 100}),
+                     anchor({0, 100}, {0, 100}, {0, 100})};
+      s.path.subpaths.push_back(sub);
+      return s;
+    };
+
+    PathSelection sel;
+    sel.mode = PathSelectMode::Shape;
+    sel.shapes = {101};
+    const PathPoint pivot{50, 50};
+
+    // Independent oracle for a scale: `pivot + factor * (p - pivot)`, plain
+    // arithmetic rather than `Mat3`/`transformScaleAbout()`'s matrix
+    // multiply -- an expectation built the same way the code under test
+    // builds its answer could share its bug.
+    auto scaledAbout = [](PathPoint p, PathPoint piv, float sx, float sy) {
+      return PathPoint{piv.x + sx * (p.x - piv.x), piv.y + sy * (p.y - piv.y)};
+    };
+
+    // ---- 9a. Corner, free (no Shift): independent per-axis ratio --------
+    {
+      std::vector<VectorShape> shapes{square()};
+      PathEditState st{};
+      st.selection = sel;
+      st.documentId = 1;
+      st.drag = PathDragKind::Manipulator;
+      st.gnomonHandle = GnomonPart::Corner;
+      st.dragStart = PathPoint{0, 0};  // corner 0; offset from pivot (-50,-50)
+      st.shapesAtDragStart = shapes;
+
+      // current = (-100,0): offset (-150,-50) -> sx = -150/-50 = 3, sy = -50/-50 = 1.
+      const PathEditChange change =
+          pathEditUpdate(&st, &shapes, PathPoint{-100, 0}, /*shiftHeld=*/false);
+      check(change == PathEditChange::EditBegan,
+            "Manipulator/Corner: the first frame that moves the pointer opens the edit");
+
+      const SubPath& sub = shapes[0].path.subpaths[0];
+      check(ptNear(sub.anchors[0].pt, scaledAbout({0, 0}, pivot, 3, 1)),
+            "Manipulator/Corner (free): REQUIRED -- the dragged corner lands exactly on the "
+            "pointer (sx=3, sy=1 from a (-100,0) drag)");
+      check(ptNear(sub.anchors[2].pt, scaledAbout({100, 100}, pivot, 3, 1)),
+            "Manipulator/Corner (free): the OPPOSITE corner scales by the same sx/sy about the "
+            "same pivot");
+      check(ptNear(sub.anchors[1].pt, scaledAbout({100, 0}, pivot, 3, 1)),
+            "Manipulator/Corner (free): the third corner (100,0) scales by the same sx/sy "
+            "about the same pivot");
+      check(shapes[0].pivot.has_value() && ptNear(*shapes[0].pivot, pivot),
+            "Manipulator/Corner (free): a Shape-mode scale about its OWN pivot leaves that "
+            "pivot exactly where it was -- it is the centre, not a point being scaled");
+    }
+
+    // ---- 9a2. Tangent handles transform WITH their anchor -- isolated on a
+    //          shape built for exactly this, since a skewed handle would
+    //          otherwise perturb pathTightBounds() and the gnomon geometry
+    //          9h/9i/9j below read.
+    {
+      std::vector<VectorShape> shapes(1);
+      shapes[0].id = 303;
+      shapes[0].pivot = PathPoint{0, 0};
+      SubPath sub;
+      // Point, in-handle and out-handle all distinct, so a scale that moved
+      // the point but not its handles -- or by the wrong ratio -- has
+      // something to betray it on (docs/vector-editing.md section 7: an
+      // affine applies to all three of an anchor's points together).
+      sub.anchors = {anchor(/*pt*/ {10, 10}, /*in*/ {8, 9}, /*out*/ {12, 11})};
+      shapes[0].path.subpaths.push_back(sub);
+
+      PathSelection sel303;
+      sel303.mode = PathSelectMode::Shape;
+      sel303.shapes = {303};
+      const PathPoint pivot303{0, 0};
+
+      PathEditState st{};
+      st.selection = sel303;
+      st.documentId = 1;
+      st.drag = PathDragKind::Manipulator;
+      st.gnomonHandle = GnomonPart::Corner;
+      st.dragStart = PathPoint{10, 10};  // offset from pivot (0,0): (10,10)
+      st.shapesAtDragStart = shapes;
+
+      // current = (30,20): offset (30,20) -> sx = 3, sy = 2.
+      pathEditUpdate(&st, &shapes, PathPoint{30, 20}, /*shiftHeld=*/false);
+      const Anchor& a = shapes[0].path.subpaths[0].anchors[0];
+      check(ptNear(a.pt, scaledAbout({10, 10}, pivot303, 3, 2)) &&
+                ptNear(a.in, scaledAbout({8, 9}, pivot303, 3, 2)) &&
+                ptNear(a.out, scaledAbout({12, 11}, pivot303, 3, 2)),
+            "Manipulator/Corner: REQUIRED -- an anchor's point AND both its tangent handles "
+            "move by the SAME affine (section 7: the affine applies to all three points "
+            "together), exercised through the real Manipulator dispatch rather than "
+            "applyAffineToSelection() directly");
+    }
+
+    // ---- 9b. Corner, Shift held: locked to the RADIAL distance ratio ----
+    {
+      std::vector<VectorShape> shapes{square()};
+      PathEditState st{};
+      st.selection = sel;
+      st.documentId = 1;
+      st.drag = PathDragKind::Manipulator;
+      st.gnomonHandle = GnomonPart::Corner;
+      st.dragStart = PathPoint{0, 0};
+      st.shapesAtDragStart = shapes;
+
+      // Same two points as 9a, Shift held this time: s = |current-pivot| /
+      // |dragStart-pivot| = sqrt(150^2+50^2) / sqrt(50^2+50^2) = sqrt(5).
+      const float s = std::sqrt(5.0f);
+      pathEditUpdate(&st, &shapes, PathPoint{-100, 0}, /*shiftHeld=*/true);
+      const SubPath& sub = shapes[0].path.subpaths[0];
+      check(ptNear(sub.anchors[0].pt, scaledAbout({0, 0}, pivot, s, s), 1e-3f),
+            "Manipulator/Corner (Shift=uniform): REQUIRED -- BOTH axes take the radial "
+            "distance ratio sqrt(5) rather than either axis' own free ratio (3 and 1) -- the "
+            "dragged corner does NOT land exactly on the pointer under Shift, which is the "
+            "tell that the lock is really engaged and not a no-op");
+      check(ptNear(sub.anchors[2].pt, scaledAbout({100, 100}, pivot, s, s), 1e-3f),
+            "Manipulator/Corner (Shift=uniform): the opposite corner scales by the same "
+            "locked factor");
+    }
+
+    // ---- 9c. AxisX / AxisY: single-axis scale, the other axis untouched,
+    //          and Shift changes nothing (there is only one axis to lock) --
+    {
+      std::vector<VectorShape> shapesX{square()};
+      PathEditState stX{};
+      stX.selection = sel;
+      stX.documentId = 1;
+      stX.drag = PathDragKind::Manipulator;
+      stX.gnomonHandle = GnomonPart::AxisX;
+      stX.dragStart = PathPoint{90, 50};  // +X axis tip at reach 40 from pivot
+      stX.shapesAtDragStart = shapesX;
+      // offset from pivot (40,0) -> current (130,50), offset (80,0) -> sx=2.
+      pathEditUpdate(&stX, &shapesX, PathPoint{130, 50}, /*shiftHeld=*/false);
+      const SubPath& subX = shapesX[0].path.subpaths[0];
+      check(ptNear(subX.anchors[0].pt, scaledAbout({0, 0}, pivot, 2, 1)) &&
+                ptNear(subX.anchors[2].pt, scaledAbout({100, 100}, pivot, 2, 1)),
+            "Manipulator/AxisX: REQUIRED -- scales X only (sx=2) and leaves Y untouched "
+            "(sy=1), about the pivot");
+
+      std::vector<VectorShape> shapesY{square()};
+      PathEditState stY{};
+      stY.selection = sel;
+      stY.documentId = 1;
+      stY.drag = PathDragKind::Manipulator;
+      stY.gnomonHandle = GnomonPart::AxisY;
+      stY.dragStart = PathPoint{50, 90};
+      stY.shapesAtDragStart = shapesY;
+      pathEditUpdate(&stY, &shapesY, PathPoint{50, 130}, /*shiftHeld=*/false);
+      const SubPath& subY = shapesY[0].path.subpaths[0];
+      check(ptNear(subY.anchors[0].pt, scaledAbout({0, 0}, pivot, 1, 2)) &&
+                ptNear(subY.anchors[2].pt, scaledAbout({100, 100}, pivot, 1, 2)),
+            "Manipulator/AxisY: symmetric case -- scales Y only (sy=2), X untouched");
+
+      std::vector<VectorShape> shapesShift{square()};
+      PathEditState stShift{};
+      stShift.selection = sel;
+      stShift.documentId = 1;
+      stShift.drag = PathDragKind::Manipulator;
+      stShift.gnomonHandle = GnomonPart::AxisX;
+      stShift.dragStart = PathPoint{90, 50};
+      stShift.shapesAtDragStart = shapesShift;
+      pathEditUpdate(&stShift, &shapesShift, PathPoint{130, 50}, /*shiftHeld=*/true);
+      check(ptNear(shapesShift[0].path.subpaths[0].anchors[0].pt, scaledAbout({0, 0}, pivot, 2, 1)),
+            "Manipulator/AxisX: Shift held changes nothing -- \"uniform\" names a relationship "
+            "between two axes, and an axis handle only ever reads one");
+    }
+
+    // ---- 9d. Rotate, exact 90 degrees: exact anchor AND tangent mapping --
+    {
+      std::vector<VectorShape> shapes{square()};
+      PathEditState st{};
+      st.selection = sel;
+      st.documentId = 1;
+      st.drag = PathDragKind::Manipulator;
+      st.gnomonHandle = GnomonPart::Rotate;
+      st.dragStart = PathPoint{150, 50};  // pivot + (100,0): bearing 0
+      st.shapesAtDragStart = shapes;
+      // current = pivot + (0,100): bearing 90 -> delta = +90 degrees.
+      pathEditUpdate(&st, &shapes, PathPoint{50, 150}, /*shiftHeld=*/false);
+      const SubPath& sub = shapes[0].path.subpaths[0];
+      check(ptNear(sub.anchors[0].pt, {100, 0}) && ptNear(sub.anchors[1].pt, {100, 100}) &&
+                ptNear(sub.anchors[2].pt, {0, 100}) && ptNear(sub.anchors[3].pt, {0, 0}),
+            "Manipulator/Rotate (90 deg, exact): REQUIRED -- the square's four corners map "
+            "(0,0)->(100,0)->(100,100)->(0,100)->(0,0), a cyclic quarter turn about the pivot");
+      // Tangent handles rotating WITH their anchor is 9a2's assertion, on a
+      // shape built for it; this one is kept straight-edged (section 7's
+      // free case, in == out == pt) so as not to also perturb the corner
+      // positions 9h/9i/9j read from `gnomonHandlePositions()`.
+    }
+
+    // ---- 9e. Rotate, Shift snap: 37 degrees snaps to the NEAREST 15-degree
+    //          step (30, not 45 -- |37-30|=7 < |37-45|=8). Tested directly
+    //          against gnomonHandleAffine(), the pure function, rather than
+    //          through pixel positions on a drawn ring.
+    {
+      constexpr float kPi = 3.14159265358979323846f;
+      const float rawDegrees = 37.0f;
+      const PathPoint dragStart{pivot.x + 100.0f, pivot.y};  // bearing 0, radius 100
+      const PathPoint current{pivot.x + 100.0f * std::cos(rawDegrees * kPi / 180.0f),
+                              pivot.y + 100.0f * std::sin(rawDegrees * kPi / 180.0f)};
+
+      const Mat3 free =
+          gnomonHandleAffine(GnomonPart::Rotate, pivot, dragStart, current, /*shiftHeld=*/false);
+      const Point2 freeMapped = mat3MapPoint(free, Point2{dragStart.x, dragStart.y});
+      check(near(freeMapped.x, current.x, 1e-2f) && near(freeMapped.y, current.y, 1e-2f),
+            "gnomonHandleAffine(Rotate, shiftHeld=false): the exact 37-degree bearing change "
+            "maps dragStart's own radius onto `current` exactly (both built at radius 100)");
+
+      const Mat3 snapped =
+          gnomonHandleAffine(GnomonPart::Rotate, pivot, dragStart, current, /*shiftHeld=*/true);
+      const Point2 snappedMapped = mat3MapPoint(snapped, Point2{dragStart.x, dragStart.y});
+      const PathPoint expected30{pivot.x + 100.0f * std::cos(30.0f * kPi / 180.0f),
+                                 pivot.y + 100.0f * std::sin(30.0f * kPi / 180.0f)};
+      check(near(snappedMapped.x, expected30.x, 1e-2f) &&
+                near(snappedMapped.y, expected30.y, 1e-2f),
+            "gnomonHandleAffine(Rotate, shiftHeld=true): REQUIRED -- 37 degrees snaps to 30, "
+            "the NEAREST 15-degree step (|37-30|=7 < |37-45|=8), not to 45");
+    }
+
+    // ---- 9f. Degenerate guards: pointer on the pivot must not produce NaN
+    //          or collapse the geometry -- refuse the axis/handle instead.
+    {
+      const PathPoint onPivot = pivot;
+      const PathPoint elsewhere{80, 65};
+      const Point2 probe{123.0f, 45.0f};
+
+      const Mat3 cornerDegenerate =
+          gnomonHandleAffine(GnomonPart::Corner, pivot, onPivot, elsewhere, false);
+      const Point2 mappedCorner = mat3MapPoint(cornerDegenerate, probe);
+      check(std::isfinite(mappedCorner.x) && std::isfinite(mappedCorner.y) &&
+                near(mappedCorner.x, probe.x) && near(mappedCorner.y, probe.y),
+            "gnomonHandleAffine(Corner): REQUIRED -- dragStart exactly on the pivot (a "
+            "zero-length reference vector) refuses BOTH axes rather than dividing by ~0 -- an "
+            "arbitrary probe point maps to itself (identity), finite, not NaN");
+
+      const Mat3 axisDegenerate =
+          gnomonHandleAffine(GnomonPart::AxisX, pivot, onPivot, elsewhere, false);
+      const Point2 mappedAxis = mat3MapPoint(axisDegenerate, probe);
+      check(std::isfinite(mappedAxis.x) && near(mappedAxis.x, probe.x) &&
+                near(mappedAxis.y, probe.y),
+            "gnomonHandleAffine(AxisX): the same degenerate dragStart refuses its one axis too");
+
+      const Mat3 rotateDegenerateStart =
+          gnomonHandleAffine(GnomonPart::Rotate, pivot, onPivot, elsewhere, false);
+      const Point2 mappedRotStart = mat3MapPoint(rotateDegenerateStart, probe);
+      check(std::isfinite(mappedRotStart.x) && near(mappedRotStart.x, probe.x) &&
+                near(mappedRotStart.y, probe.y),
+            "gnomonHandleAffine(Rotate): REQUIRED -- dragStart on the pivot has no bearing to "
+            "read off -- refuses the WHOLE handle (identity) rather than feed atan2(0,0) into "
+            "a spurious rotation");
+
+      const Mat3 rotateDegenerateCurrent =
+          gnomonHandleAffine(GnomonPart::Rotate, pivot, elsewhere, onPivot, false);
+      const Point2 mappedRotCur = mat3MapPoint(rotateDegenerateCurrent, probe);
+      check(std::isfinite(mappedRotCur.x) && near(mappedRotCur.x, probe.x) &&
+                near(mappedRotCur.y, probe.y),
+            "gnomonHandleAffine(Rotate): the same refusal when CURRENT, not dragStart, is the "
+            "one sitting on the pivot");
+    }
+
+    // ---- 9g. Component mode: the manipulator scales about the TRANSIENT
+    //          componentPivot, which may be user-placed -- NOT a fresh
+    //          recompute of the selected anchors' centroid (section 1).
+    {
+      std::vector<VectorShape> shapes(1);
+      shapes[0].id = 202;
+      SubPath sub;
+      sub.anchors = {anchor({0, 0}, {0, 0}, {0, 0}), anchor({20, 20}, {20, 20}, {20, 20})};
+      shapes[0].path.subpaths.push_back(sub);
+
+      PathSelection compSel;
+      compSel.mode = PathSelectMode::Component;
+      compSel.components = {ComponentRef{202, 0, 0, AnchorPart::Point},
+                            ComponentRef{202, 0, 1, AnchorPart::Point}};
+      // The selection's own centroid would be (10,10) -- componentPivot()'s
+      // ordinary answer, already covered by section 2's test. This simulates
+      // the user having placed the transient pivot somewhere else entirely:
+      // pathEditRefreshPivot() would never overwrite it, since that
+      // function's whole job is leaving a user-placed pivot alone.
+      PathEditState st{};
+      st.selection = compSel;
+      st.documentId = 1;
+      st.componentPivot = PathPoint{0, 0};
+      st.componentPivotIsUserPlaced = true;
+      st.drag = PathDragKind::Manipulator;
+      st.gnomonHandle = GnomonPart::Corner;
+      st.dragStart = PathPoint{20, 20};  // offset from the PLACED pivot (0,0): (20,20)
+      st.shapesAtDragStart = shapes;
+
+      // current = (40,40): offset (40,40) -> sx = sy = 2, about pivot (0,0).
+      pathEditUpdate(&st, &shapes, PathPoint{40, 40}, /*shiftHeld=*/false);
+      const SubPath& after = shapes[0].path.subpaths[0];
+      check(ptNear(after.anchors[1].pt, {40, 40}),
+            "Manipulator/Corner [component]: REQUIRED -- the dragged anchor lands where the "
+            "pointer is, scaled about the PLACED pivot (0,0)");
+      check(ptNear(after.anchors[0].pt, {0, 0}),
+            "Manipulator/Corner [component]: REQUIRED -- the pivot-side anchor (0,0) stays put "
+            "-- it sits AT the placed pivot, so scaling about it moves it nowhere. Scaling "
+            "about the selection's own centroid (10,10) instead would have moved this anchor "
+            "to (-10,-10), which is the sabotage this assertion is built to catch");
+    }
+
+    // ---- 9h. Translate (the free-move centre) is UNCHANGED, bit for bit --
+    //          reached both via a Segment click (never touches the gnomon)
+    //          and via a direct hit on the gnomon's own centre handle.
+    {
+      std::vector<VectorShape> shapes{square()};
+      PathEditState st{};  // nothing selected yet -- the segment click selects it
+
+      const bool began = pathEditBegin(&st, shapes, PathPoint{50, 0}, /*pickRadiusPx=*/2.0f,
+                                       /*gnomonSuppressed=*/true, SelectionCombine::Replace,
+                                       /*documentId=*/1);
+      check(began && st.drag == PathDragKind::Manipulator && st.gnomonHandle == GnomonPart::Center,
+            "pathEditBegin(): a Segment click starts a Manipulator drag with gnomonHandle == "
+            "Center -- the whole-shape translate, never touching the gnomon");
+
+      pathEditUpdate(&st, &shapes, PathPoint{53, 7});
+      check(ptNear(shapes[0].path.subpaths[0].anchors[0].pt, {3, 7}) &&
+                ptNear(shapes[0].path.subpaths[0].anchors[2].pt, {103, 107}),
+            "Manipulator/Center (via Segment): REQUIRED -- translate by (dx,dy)=(3,7), exactly "
+            "today's only behaviour, bit for bit");
+    }
+    {
+      std::vector<VectorShape> shapes{square()};
+      PathEditState st{};
+      st.selection = sel;
+      const GnomonHandlePositions g = gnomonHandlePositions(shapes, sel, 40.0f);
+      const bool began = pathEditBegin(&st, shapes, g.center, /*pickRadiusPx=*/0.5f,
+                                       /*gnomonSuppressed=*/false, SelectionCombine::Replace,
+                                       /*documentId=*/1, 40.0f);
+      check(began && st.drag == PathDragKind::Manipulator && st.gnomonHandle == GnomonPart::Center,
+            "pathEditBegin(): a press on the gnomon's own free-move handle also records "
+            "gnomonHandle == Center");
+      pathEditUpdate(&st, &shapes, PathPoint{g.center.x + 12.0f, g.center.y - 4.0f});
+      check(ptNear(shapes[0].path.subpaths[0].anchors[0].pt, {12, -4}),
+            "Manipulator/Center (via the gnomon handle): the same translate, reached through "
+            "the real hit test this time rather than a hand-set drag state");
+    }
+
+    // ---- 9i. hitTestPath() names the SPECIFIC gnomon sub-part it hit, not
+    //          merely "some gnomon handle" -- and the CLOSEST one wins.
+    // =======================================================================
+    {
+      std::vector<VectorShape> shapes{square()};
+      const GnomonHandlePositions g = gnomonHandlePositions(shapes, sel, 40.0f);
+
+      auto partAt = [&](PathPoint at, float pickRadiusPx = 0.5f) {
+        return hitTestPath(shapes, sel, at, pickRadiusPx, /*gnomonSuppressed=*/false,
+                           /*pivotMoveModeActive=*/false, 40.0f)
+            .gnomonPart;
+      };
+      check(partAt(g.center) == GnomonPart::Center, "hitTestPath(): names the centre Center");
+      check(partAt(g.axisXTip) == GnomonPart::AxisX, "hitTestPath(): names the +X tip AxisX");
+      check(partAt(g.axisYTip) == GnomonPart::AxisY, "hitTestPath(): names the +Y tip AxisY");
+      check(partAt(g.corners[0]) == GnomonPart::Corner &&
+                partAt(g.corners[1]) == GnomonPart::Corner &&
+                partAt(g.corners[2]) == GnomonPart::Corner &&
+                partAt(g.corners[3]) == GnomonPart::Corner,
+            "hitTestPath(): names every one of the four corners Corner -- they share one "
+            "value (GnomonPart's own comment: all four scale about the same pivot, so which "
+            "one was grabbed does not change the math)");
+      const PathPoint onRing{g.center.x + g.rotateRingRadius, g.center.y};
+      check(partAt(onRing) == GnomonPart::Rotate, "hitTestPath(): a point exactly on the ring "
+                                                  "names Rotate");
+      // A wide pick radius that also reaches the centre and a corner (both
+      // farther away): the CLOSEST candidate wins, not whichever `consider()`
+      // call happened to run first or last -- pinning that identity tracks
+      // distance rather than iteration order.
+      check(partAt(onRing, /*pickRadiusPx=*/3.0f) == GnomonPart::Rotate,
+            "hitTestPath(): REQUIRED -- with a pick radius wide enough to also reach farther "
+            "handles, the CLOSEST one (the ring, at distance 0) is still what is reported");
+    }
+
+    // ---- 9j. End to end: a real pen-down on a drawn corner, through the
+    //          real hit test, starts a REAL scale. (9a-9c above prove the
+    //          dispatch function in isolation; this proves the wiring FROM
+    //          an actual press, the same way section 5b's contract test
+    //          proves gnomonHandlePositions() and hitTestPath() agree.)
+    {
+      std::vector<VectorShape> shapes{square()};
+      PathEditState st{};
+      st.selection = sel;
+      const GnomonHandlePositions g = gnomonHandlePositions(shapes, sel, 40.0f);
+      const bool began = pathEditBegin(&st, shapes, g.corners[0], /*pickRadiusPx=*/0.5f,
+                                       /*gnomonSuppressed=*/false, SelectionCombine::Replace,
+                                       /*documentId=*/1, 40.0f);
+      check(began && st.drag == PathDragKind::Manipulator && st.gnomonHandle == GnomonPart::Corner,
+            "pathEditBegin(): a press on a drawn scale corner records gnomonHandle == Corner");
+      // corner[0] is (0,0) (bounds minX,minY); drag to (-100,0), as in 9a.
+      pathEditUpdate(&st, &shapes, PathPoint{-100, 0});
+      check(ptNear(shapes[0].path.subpaths[0].anchors[0].pt, scaledAbout({0, 0}, pivot, 3, 1)),
+            "REQUIRED -- end to end, from a real pen-down on the drawn corner through a real "
+            "drag: the corner lands exactly where the pointer is, scaled about the pivot -- "
+            "not translated");
+    }
+  }
+
   return ok;
 }
 
