@@ -338,7 +338,7 @@ and commit what it writes.
 |---|---|
 | all | At startup `ui/AppIcon` hands the 512 px PNG, compiled into the binary, to `SDL_SetWindowIcon`. That is the **Dock** icon on macOS, `_NET_WM_ICON` on X11, `xdg-toplevel-icon` on Wayland, and the title bar/taskbar on Windows. `--selftest` checks the embedded bytes match the committed PNG. |
 | macOS | The Finder icon needs a bundle: configure with `-DNP_MACOS_APP_BUNDLE=ON`. |
-| Linux | For the launcher and Wayland compositors without `xdg-toplevel-icon`, run `icons/linux/install-desktop-entry.sh` (per user; `--uninstall` to remove). |
+| Linux | For the launcher and Wayland compositors without `xdg-toplevel-icon`, run `icons/linux/install-desktop-entry.sh` (per user; `--uninstall` to remove). A `tools/package-linux/package.sh` package carries the same installer at its root, plus a `share/` tree with the entry and icons. |
 | Windows | `icons/windows/naturalPaint.rc.in` embeds the `.ico` as the `.exe`'s Explorer icon. **Untested:** this tree does not build on Windows. |
 | iOS | `icons/ios/AppIcon.appiconset` is generated but not wired to anything; there is no iOS target yet ([docs/ios-spike-plan.md](docs/ios-spike-plan.md)). |
 

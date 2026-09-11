@@ -166,3 +166,8 @@ before handing a binary to anyone, even for a same-machine test in a different
 directory** -- `build/src/naturalPaint` carries an absolute path to this
 machine's OIIO prefix and will not run once moved. `tools/package-linux/package.sh`
 is the only supported way to produce something relocatable.
+
+The package also carries the desktop integration: a freedesktop `share/` tree
+(`applications/naturalPaint.desktop`, `icons/hicolor/*/apps/naturalPaint.png`)
+and `install-desktop-entry.sh` at its root, which installs both per user with
+`Exec=` pointed at the package's own binary. Rerun it after moving the package.

@@ -5,6 +5,10 @@
 #   icons/linux/install-desktop-entry.sh [path/to/naturalPaint]   (default: build/src/naturalPaint)
 #   icons/linux/install-desktop-entry.sh --uninstall
 #
+# tools/package-linux/package.sh ships this at the package root, beside the
+# binary and a share/ tree; run from there it defaults to that binary. Exec= is
+# absolute, so rerun it after moving the package.
+#
 # Installs, under ${XDG_DATA_HOME:-~/.local/share}:
 #   icons/hicolor/<N>x<N>/apps/naturalPaint.png   (16..512, from icons/linux/hicolor)
 #   applications/naturalPaint.desktop             (Exec= rewritten to the binary's absolute path)
@@ -14,9 +18,18 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$HERE/../.." && pwd)"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
 NAME="naturalPaint"
+
+if [[ -d "$HERE/share/icons/hicolor" ]]; then  # a package from package.sh
+  ICONS="$HERE/share/icons/hicolor"
+  DESKTOP="$HERE/share/applications/$NAME.desktop"
+  DEFAULT_BIN="$HERE/$NAME"
+else                                            # the source tree's icons/linux
+  ICONS="$HERE/hicolor"
+  DESKTOP="$HERE/$NAME.desktop"
+  DEFAULT_BIN="$(cd "$HERE/../.." && pwd)/build/src/$NAME"
+fi
 
 if [[ "${1:-}" == "--uninstall" ]]; then
   rm -f "$DATA/applications/$NAME.desktop"
@@ -27,7 +40,7 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   exit 0
 fi
 
-BIN="${1:-$ROOT/build/src/naturalPaint}"
+BIN="${1:-$DEFAULT_BIN}"
 if [[ ! -x "$BIN" ]]; then
   echo "error: no executable at '$BIN' -- build first, or pass its path." >&2
   exit 1
@@ -36,7 +49,7 @@ BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
 
 for size in 16 24 32 48 64 128 256 512; do
   mkdir -p "$DATA/icons/hicolor/${size}x${size}/apps"
-  cp "$HERE/hicolor/${size}x${size}/apps/$NAME.png" "$DATA/icons/hicolor/${size}x${size}/apps/"
+  cp "$ICONS/${size}x${size}/apps/$NAME.png" "$DATA/icons/hicolor/${size}x${size}/apps/"
 done
 
 mkdir -p "$DATA/applications"
@@ -54,7 +67,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   else
     printf '%s\n' "$line"
   fi
-done < "$HERE/$NAME.desktop" > "$DATA/applications/$NAME.desktop"
+done < "$DESKTOP" > "$DATA/applications/$NAME.desktop"
 
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DATA/applications" || true
 command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t "$DATA/icons/hicolor" || true
