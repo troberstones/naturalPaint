@@ -6158,12 +6158,20 @@ void drawBrushToolOptionsGroup(AppState& st) {
   // stroke actually reads for the first two, and Smoothing has no engine
   // target at all. Said here, once, rather than leaving the reader to guess
   // which of four adjacent fields the RGB-blend work below changed.
+  //
+  // The first sentence is `BrushTip::blend`'s own contract, in the same words
+  // (brush/Deposit.hpp): applied on RGB layers and when stroking a path (Stroke
+  // Path with Brush onto an RGB layer, app/PathConsumers.cpp), not yet on
+  // Strokes layers -- a dab record has no blend field, so a recorded mark
+  // composites Normal -- or on Pigment layers, which have no RGBA to blend.
   textDisabledWrapped(
-      "Blend Mode IS applied to a stroke on an RGB layer (Normal, Multiply and Darken "
-      "-- Linear Burn and Dissolve are refused by name, brush/ToolOptionsBlend.hpp) and "
-      "does nothing on a Pigment layer, which has no RGBA to blend. Opacity, Flow and "
-      "Smoothing below are parsed and carried but not applied -- the brush's own "
-      "Opacity/Flow sliders are what a stroke actually reads.");
+      "Blend Mode is applied on RGB layers and when stroking a path; not yet on Strokes "
+      "layers or Pigment layers. Normal, Multiply and Darken are applied -- Linear Burn and "
+      "Dissolve are refused by name, brush/ToolOptionsBlend.hpp. A Strokes layer's dab "
+      "records carry no blend mode yet, so marks recorded there composite Normal; a Pigment "
+      "layer has no RGBA to blend. Opacity, Flow and Smoothing below are parsed and carried "
+      "but not applied -- the brush's own Opacity/Flow sliders are what a stroke actually "
+      "reads.");
   drawBrushModelFieldsForPrefix(st, "options.");
 
   // The bare top-level checkbox tail -- `noise`/`wetEdges`/`airbrush`/

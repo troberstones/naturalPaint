@@ -927,20 +927,38 @@ struct BrushTip {
   // (`blendModeFromPsToolOptions()`, brush/ToolOptionsBlend.hpp) onto this
   // project's layer-compositing vocabulary (`core::BlendMode`).
   //
-  // **Set by `brushTipFor()`. Read by exactly ONE downstream consumer:
-  // `brush/RgbDeposit`'s `RgbStroke`, on the RGB deposit route, and nowhere
-  // else.** `app/StrokeSession.cpp`'s `StrokeSession::begin()` passes it to
-  // `RgbStroke::begin()` only when `route_ == StrokeRoute::RgbDeposit`; every
-  // other route (`brush/RgbErase`, `brush/PigmentErase`, the free
-  // `depositDab()` for Pigment, and heal/clone/smudge/tonal/mask/pencil)
-  // still ignores it, for the two obstacles this comment used to name as
-  // having stopped ALL wiring: a Pigment texel has no premultiplied RGBA to
-  // blend, and Photoshop's own Eraser tool does not read a brush's blend
-  // mode at all. Neither obstacle applies to a plain RGB layer, which is why
-  // this is one reader and not zero -- see `brush/RgbDeposit.hpp` §2a for the
-  // stroke-level (never per-dab) composite that reads it, and
-  // `brush/ToolOptionsBlend.hpp` for which of the five Photoshop ids
-  // (`Nrml`/`Mltp`/`Drkn`/`linearBurn`/`Dslv`) ever reach here at all.
+  // **Applied on RGB layers and when stroking a path; not yet on Strokes
+  // layers or Pigment layers.** That sentence is the whole user-visible
+  // contract, and the Tool Options banner (`ui/MacPaintUI.cpp`'s
+  // `drawBrushToolOptionsGroup()`) says it in the same words.
+  //
+  // **Set by `brushTipFor()`. Read by exactly ONE downstream consumer,
+  // `brush/RgbDeposit`'s `RgbStroke`, reached from two places:**
+  //   * `app/StrokeSession.cpp`'s `StrokeSession::begin()`, which passes it
+  //     to `RgbStroke::begin()` only when `route_ == StrokeRoute::RgbDeposit`
+  //     -- a live brush stroke on an RGB layer;
+  //   * `app/PathConsumers.cpp`'s `strokePathWithBrush()`, Stroke Path with
+  //     Brush onto an RGB layer. (It once omitted the argument, so the
+  //     defaulted Normal painted every Multiply/Darken brush as Normal along
+  //     a path; `--selftest`'s path consumers section 10 pins the fix.)
+  // Every other route (`brush/RgbErase`, `brush/PigmentErase`, the free
+  // `depositDab()` for Pigment -- live or along a path -- and heal/clone/
+  // smudge/tonal/mask/pencil) still ignores it, for the two obstacles this
+  // comment used to name as having stopped ALL wiring: a Pigment texel has no
+  // premultiplied RGBA to blend, and Photoshop's own Eraser tool does not
+  // read a brush's blend mode at all. Neither obstacle applies to a plain RGB
+  // layer, which is why this is one reader and not zero -- see
+  // `brush/RgbDeposit.hpp` §2a for the stroke-level (never per-dab) composite
+  // that reads it, and `brush/ToolOptionsBlend.hpp` for which of the five
+  // Photoshop ids (`Nrml`/`Mltp`/`Drkn`/`linearBurn`/`Dslv`) ever reach here.
+  //
+  // **A Strokes layer is the third "not yet", and it is a file-format gap,
+  // not an obstacle.** `core/StrokesContent`'s `DabRecord` has no blend
+  // field, so nothing recorded onto a Strokes layer can carry one and its
+  // evaluation (`brush/StrokesLayer`) composites every record Normal.
+  // Adding it is a record-layout change (`io/StrokesSerial`'s version
+  // prefix), deliberately not bundled with the `npdabs2` bump that carried
+  // `edgePx` -- a separate decision with its own format version.
   BlendMode blend = BlendMode::Normal;
 
   // **`sizeFloorPx` is gone.** Through commit 8f6f960 this held the pixel

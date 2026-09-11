@@ -533,10 +533,10 @@ class RgbStroke {
   // stroke-level composite is only correct against the mode it started with,
   // and a mode that changed mid-drag has no well-defined `dst0`/`target`
   // pairing. Defaulted to `BlendMode::Normal` so every existing caller keeps
-  // compiling and keeps painting the unblended path; `app/StrokeSession.cpp`
-  // is the only caller that ever passes anything else, and only on the RGB
-  // deposit route (`BrushTip::blend`'s own comment names it as the one
-  // reader).
+  // compiling and keeps painting the unblended path. Two callers pass the
+  // brush's own mode: `app/StrokeSession.cpp`, on the RGB deposit route only,
+  // and `app/PathConsumers.cpp`'s Stroke Path with Brush on an RGB layer
+  // (`BrushTip::blend`'s own comment lists both, and the routes that do not).
   void begin(const std::array<float, 3>& straightLinearRgb, float opacity,
             bool alphaLocked = false, BlendMode blend = BlendMode::Normal) noexcept;
 
