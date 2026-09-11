@@ -325,6 +325,20 @@ at their own site, naming each other.
   > their records win -- this build cannot merge them into a payload it cannot read. The
   > content-decided version rule above is what limits the older-build exposure to
   > documents that actually carry a rim.
+  >
+  > **`np:text` and `np:flats` had the same defect and now follow the same rule**
+  > (`writesOwnText`, `writesOwnFlats`). Both used to be written unconditionally for their
+  > kind, so a Text layer holding an `nptext3:` payload, or a Flats layer holding an
+  > `npflats2:` one, was saved back as the default content it had opened with -- and
+  > that file then reopened without a warning, because the default payload is one the
+  > build reads. Now such a layer writes the carried attribute back verbatim for as long
+  > as its own content would serialise byte-identically to a default-constructed
+  > `TextContent` / `FlatsContent`, which is exactly what the loader leaves on a failed
+  > decode; the user's content wins from their first edit (`--selftest`,
+  > `src/app/selftest/VectorLayer.cpp` §§13 and 13b: a future-tagged payload through two
+  > saves, then an edit that must replace it). A build without this rule -- every build
+  > before it, including the ones that read only `nptext1:` -- still destroys such a
+  > payload on save.
 
 > ✅ **Implemented, 2026-08-19, at PLAN.md Phase 5 step 3: a Pigment layer's part is
 > written and read with all eleven channels above.** The seven stored ones (`pig.c0
