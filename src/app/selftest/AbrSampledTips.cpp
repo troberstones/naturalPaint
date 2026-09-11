@@ -117,7 +117,7 @@ std::vector<uint8_t> wrapAbrWithSamp(const std::vector<uint8_t>& sampBody,
 // separately, from this SAME `Txtr` block, by `grainFromTexture()`) stores
 // the pattern's pixel data, never its name -- so an assertion on
 // `model.texture.pattern.name` cannot be satisfied by accident through
-// `preset.grain` and proves the model itself, and nothing upstream of it,
+// `preset.native.grain` and proves the model itself, and nothing upstream of it,
 // made the trip.
 std::vector<uint8_t> oneTexturedBrushDesc(const char* name, const char* patternId,
                                           const char* patternName) {
@@ -739,7 +739,7 @@ bool runAbrSampledTipsTest() {
     // from (`preset.model`, io/AbrBrushes.cpp), not into a side vector --
     // and it is not left default-constructed for a preset whose Texture
     // panel is on. `model.texture.pattern.name` is the discriminating field:
-    // `preset.grain`, filled from this identical `Txtr` block by
+    // `preset.native.grain`, filled from this identical `Txtr` block by
     // `grainFromTexture()` a few lines below where `preset.model` is set,
     // carries the pattern's PIXELS but never its name -- so this assertion
     // cannot pass by accident through the grain path, only through the model

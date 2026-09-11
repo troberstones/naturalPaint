@@ -935,7 +935,7 @@ inline bool strokeRouteWritesLayer(StrokeRoute route) noexcept {
          route == StrokeRoute::StrokesErase || route == StrokeRoute::StrokesRecord;
 }
 
-// Reachability audit B2: `BrushState::wetness` (the WET slider, drawn in both
+// Reachability audit B2: `BrushState::native.wetness` (the WET slider, drawn in both
 // `ui/AtelierChrome.cpp`'s options bar and `ui/MacPaintUI.cpp`'s BRUSH panel)
 // reaches exactly one place -- `applyToolToBrush()`'s write to
 // `sim::PaintSim::brushWater`, called only on the route that paints the

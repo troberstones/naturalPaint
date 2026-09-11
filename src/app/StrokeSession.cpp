@@ -1660,7 +1660,7 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // This line used to read the same slider as the four `begin()`s above it, on
   // the argument that a strength and a stroke ceiling are one quantity; they
   // are not, and the price of pretending so was that the smudge inherited
-  // `BrushState::opacity`'s default of 1, which is the single value at which
+  // `BrushState::native.opacity`'s default of 1, which is the single value at which
   // the tool provably never fades. The field it reads now has its own default
   // (0.5) and its own control, and there is deliberately no Transfer variance
   // applied to it: `opVr` is an opacity dynamic and this is not an opacity.
