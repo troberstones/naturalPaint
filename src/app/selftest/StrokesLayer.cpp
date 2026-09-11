@@ -63,7 +63,9 @@ DabRecord inkDab(float x, float y, float r, std::array<float, 4> rgba) {
   d.x = x;
   d.y = y;
   d.radius = r;
-  // A hard disc, so the assertions below can talk about "the centre texel" and
+  // A hardness-1 disc -- exactly 1.0 over its flat core, the last `edgePx` of
+  // the rim antialiased (`tipOf()` leaves `BrushTip::edgePx` at its default) --
+  // so the assertions below can talk about "the centre texel" and
   // "a texel outside" without depending on the falloff's exact shape --
   // brush/Deposit §2 owns that shape and asserts it there.
   d.hardness = 1.0f;

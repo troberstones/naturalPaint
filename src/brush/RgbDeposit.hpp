@@ -80,7 +80,11 @@
 //
 //   **Flow** is how much a *single dab* lays down. `BrushTip::flow`, the same
 //   number the pigment route calls "mass laid down per dab where coverage is
-//   1", which is `BrushState::load` scaled by the DYNAMICS matrix.
+//   1", which is `BrushState::native.load` (brush/NativeBrush.hpp), scaled
+//   per stroke by the model's Transfer Flow Variance (`app/StrokeSession`'s
+//   `transferFlowMul_`). This used to read "`BrushState::load` scaled by the
+//   DYNAMICS matrix": the field moved into `NativeBrush`, and the matrix is
+//   shelved (`ui/DynamicsMatrixPanel.hpp`) -- nothing that paints reads it.
 //
 //   **Opacity** is the ceiling a *single stroke* can reach, no matter how many
 //   dabs it spends getting there. `BrushTip::opacity`, latched at pen-down.

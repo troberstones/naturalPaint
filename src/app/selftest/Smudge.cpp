@@ -91,7 +91,8 @@ bool runSmudgeTest() {
     }
   };
 
-  // A hard disc, so `dabCoverage()` is exactly 1.0f over the whole footprint and
+  // A hardness-1 disc, so `dabCoverage()` is exactly 1.0f over its flat core
+  // (the last `edgePx` of the rim is antialiased, brush/Deposit.hpp §2) and
   // every number below is about the smudge rather than about the falloff.
   auto discTip = [](float radius, float flow) {
     BrushTip t;

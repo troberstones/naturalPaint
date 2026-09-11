@@ -63,9 +63,10 @@ bool runHealTest() {
     store.getOrCreate(tileCoordAt(p)).writePixel(tileLocalOffset(p), t);
   };
 
-  // A hard disc, so `dabCoverage()` is exactly 1.0f across the whole disc and
-  // the keep factor in the composite is exactly 0 -- which is what lets the
-  // exactness claims below be about the SOLVE rather than about a falloff.
+  // A hardness-1 disc, so `dabCoverage()` is exactly 1.0f over its flat core
+  // (the last `edgePx` of the rim is antialiased, brush/Deposit.hpp §2) and
+  // the keep factor in the composite is exactly 0 there -- which is what lets
+  // the exactness claims below be about the SOLVE rather than about a falloff.
   auto discTip = [](float radius, float flow) {
     BrushTip t;
     t.radius = radius;

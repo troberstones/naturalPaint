@@ -6060,7 +6060,7 @@ void drawBrushToolOptionsGroup(AppState& st) {
   // **Blend Mode is now the one field below this line the engine actually
   // reads on a stroke** -- brush/RgbDeposit.hpp §2a, reached through
   // `brush/ToolOptionsBlend.hpp`'s mapping and `RgbStroke::begin()`. Opacity,
-  // Flow and Smoothing are not: `BrushState::opacity`/`load` (the brush's own
+  // Flow and Smoothing are not: `BrushState::opacity`/`native.load` (the brush's own
   // sliders, drawn on the Paint group, not this imported value) are what a
   // stroke actually reads for the first two, and Smoothing has no engine
   // target at all. Said here, once, rather than leaving the reader to guess
