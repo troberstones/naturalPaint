@@ -1056,10 +1056,20 @@ bool runPenToolTest() {
             "pathEditBegin(): a press on a drawn scale corner records gnomonHandle == Corner");
       // corner[0] is (0,0) (bounds minX,minY); drag to (-100,0), as in 9a.
       pathEditUpdate(&st, &shapes, PathPoint{-100, 0});
-      check(ptNear(shapes[0].path.subpaths[0].anchors[0].pt, scaledAbout({0, 0}, pivot, 3, 1)),
+      const SubPath& sub = shapes[0].path.subpaths[0];
+      check(ptNear(sub.anchors[0].pt, scaledAbout({0, 0}, pivot, 3, 1)),
+            "end to end: the dragged corner lands exactly where the pointer is");
+      // **The dragged corner alone cannot tell a scale from a translate**:
+      // by construction it lands on the pointer either way (translate:
+      // old + (current - dragStart); scale: the whole point of a corner
+      // handle). The OPPOSITE corner is what only a real scale moves
+      // correctly -- a translate would leave it at (100,100) untouched by
+      // the pivot, which is what makes this the assertion that actually
+      // distinguishes the two dispatches, not the one just above.
+      check(ptNear(sub.anchors[2].pt, scaledAbout({100, 100}, pivot, 3, 1)),
             "REQUIRED -- end to end, from a real pen-down on the drawn corner through a real "
-            "drag: the corner lands exactly where the pointer is, scaled about the pivot -- "
-            "not translated");
+            "drag: the OPPOSITE corner scales about the pivot -- proving this is a scale, not "
+            "a translate that happens to also pass the corner-lands-on-the-pointer check above");
     }
   }
 
