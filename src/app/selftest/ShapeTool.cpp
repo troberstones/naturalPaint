@@ -128,8 +128,18 @@ bool runShapeToolTest() {
       const float rx = std::fabs(sub.anchors[0].pt.x - sub.anchors[2].pt.x) * 0.5f;
       const float ry = std::fabs(sub.anchors[3].pt.y - sub.anchors[1].pt.y) * 0.5f;
       check(near(rx, ry), "ellipse + Shift: equal radii (a circle)");
+      // Equal radii alone does not prove WHICH extent won -- a bug that
+      // shrank the box to the SMALLER of the two drag extents would still
+      // pass the check above (both radii still equal, just both wrong).
+      // dragBBox()'s own rule is the larger extent, so the diameter here
+      // must be 40 (the drag's width), not 20 (its height).
+      check(near(rx, 20.0f) && near(ry, 20.0f),
+            "ellipse + Shift: sized to the LARGER of the drag's two extents (diameter 40, "
+            "not 20)");
     } else {
       check(false, "ellipse + Shift: equal radii (a circle)");
+      check(false, "ellipse + Shift: sized to the LARGER of the drag's two extents (diameter 40, "
+                   "not 20)");
     }
   }
 
@@ -170,8 +180,12 @@ bool runShapeToolTest() {
 
     // Every vertex of a Shift-held (equal rx/ry) polygon sits the same
     // distance from the box's centre -- the analytic definition of
-    // "inscribed in a circle."
-    const VectorShape reg = shapeToolGeometry(tool, PathPoint{0, 0}, PathPoint{20, 20}, true, false);
+    // "inscribed in a circle." A DELIBERATELY non-square drag (40 wide, 20
+    // tall): a square 20x20 drag would pass this same check even if the
+    // implementation picked the SMALLER extent instead of the larger one
+    // (`dragBBox()`'s own rule), since a square input makes "smaller" and
+    // "larger" the same number.
+    const VectorShape reg = shapeToolGeometry(tool, PathPoint{0, 0}, PathPoint{40, 20}, true, false);
     if (reg.path.subpaths.size() == 1 && reg.path.subpaths[0].anchors.size() == 6) {
       const SubPath& sub = reg.path.subpaths[0];
       float minX = sub.anchors[0].pt.x, maxX = minX, minY = sub.anchors[0].pt.y, maxY = minY;
@@ -187,8 +201,16 @@ bool runShapeToolTest() {
       for (const Anchor& a : sub.anchors)
         if (!near(std::hypot(a.pt.x - cx, a.pt.y - cy), r0, 0.01f)) allEqual = false;
       check(allEqual, "polygon + Shift: every vertex the same distance from centre (regular)");
+      // And that shared radius is the LARGER extent's (20, half of the 40
+      // wide drag), not the smaller one's (10, half of the 20 tall drag) --
+      // the same magnitude check the ellipse's own Shift test makes, closing
+      // the identical gap (an "equal radii" check alone cannot tell a
+      // shrunk-but-still-regular polygon from a correctly sized one).
+      check(near(r0, 20.0f, 0.05f),
+            "polygon + Shift: the shared radius is the LARGER extent's half (20, not 10)");
     } else {
       check(false, "polygon + Shift: every vertex the same distance from centre (regular)");
+      check(false, "polygon + Shift: the shared radius is the LARGER extent's half (20, not 10)");
     }
 
     // Fewer than 3 sides clamps to a triangle rather than degenerating.
