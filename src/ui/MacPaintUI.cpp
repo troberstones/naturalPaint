@@ -45,6 +45,8 @@
 #include "app/CommandsLayers.hpp"
 #include "app/CompPanel.hpp"
 #include "app/CropTool.hpp"  // Tool::Crop, both modes
+#include "app/RegionTool.hpp"  // Tool::Frame, Tool::Slice
+#include "io/ExportRegions.hpp"
 #include "app/ActionsPanel.hpp"
 #include "app/Recorder.hpp"
 #include "app/Replay.hpp"
@@ -96,6 +98,7 @@
 #include "ops/FloodFill.hpp"
 #include "ops/Gradient.hpp"
 #include "io/ExportStates.hpp"
+#include "io/GradientPresetFile.hpp"
 #include "brush/BrushModelFields.hpp"
 #include "ui/BrushFieldPresentation.hpp"
 #include "ui/BrushSettingsWindow.hpp"
@@ -6642,8 +6645,25 @@ VectorStyle penVectorStyle(const AppState& st) {
   return style;
 }
 
-GradientStops currentGradientStops(const BrushState& brush) {
-  return gradientToolStops(foregroundLinearRgba(brush));
+GradientStops currentGradientStops(const BrushState& brush, const GradientToolState& gradient) {
+  return gradientToolStops(foregroundLinearRgba(brush),
+                           gradient.hasCustomStops ? &gradient.customStops : nullptr);
+}
+
+// The gradient preset library cache -- `g_actionsLibrary`'s own shape, one
+// library over, exposed cross-TU (see this pair's declaration in
+// ui/MacPaintUI.hpp for why).
+std::vector<GradientPresetLibraryRow> g_gradientPresetLibrary;
+bool g_gradientPresetLibraryLoaded = false;
+
+const std::vector<GradientPresetLibraryRow>& gradientPresetLibraryRows() {
+  if (!g_gradientPresetLibraryLoaded) refreshGradientPresetLibrary();
+  return g_gradientPresetLibrary;
+}
+
+void refreshGradientPresetLibrary() {
+  g_gradientPresetLibrary = gradientPresetLibrary(gradientPresetsDirectoryPath());
+  g_gradientPresetLibraryLoaded = true;
 }
 
 EyedropperPick applyEyedropperPick(AppState& st, PixelCoord at) {
@@ -7536,7 +7556,18 @@ bool g_exportAsRequested = false;
 // the export dialogs, because a successful Export As now closes its dialog and
 // reports here rather than into a line the popup had already closed over.
 std::string g_docStatus;
+// How wide the `ImGui::BeginMenu()` row actually drew last frame, beyond
+// `kTitleWordmarkW`, on platforms with no native menu bar (see
+// ui/MacNativeMenu.hpp). Fed into the NEXT frame's `atelierLayout()` calls as
+// `menuBarReservedW`, so the document tab strip starts after the menus
+// instead of being drawn on top of them -- see this file's own
+// `BeginMainMenuBar()` block for the measurement and AtelierLayout.hpp's
+// `menuBarReservedW` parameter for why one frame's lag here is fine. Always
+// 0 once a native menu bar is installed, since then nothing is drawn into
+// this row for the tab strip to collide with.
+float g_linuxMenuBarReservedW = 0.0f;
 bool g_exportStatesRequested = false;
+bool g_exportRegionsRequested = false;
 bool g_batchRequested = false;
 
 namespace {
@@ -8210,6 +8241,250 @@ void drawExportStatesDialog(AppState& st) {
       break;
     case DialogAction::Cancel:
       st.openExportStatesDialog = false;
+      ImGui::CloseCurrentPopup();
+      break;
+    default:
+      break;
+  }
+  endDialog();
+}
+
+// ---------------------------------------------- Export Frames and Slices
+//
+// `drawExportStatesDialog()`'s own shape, one region-shaped step over:
+// `io/ExportRegions` is the loop (this header's own "reuse, and where it
+// stops" argues why it is not a third `ExportStateSource`), and
+// `ExportStatesReport`/`ExportStateItem` are literally the same types, so
+// `exportStatesBlockedReason()` and `exportStatesSummary()` -- both already
+// pure functions of an `ExportStatesReport` -- are reused verbatim rather
+// than forked for a cosmetic rename.
+//
+// No `AppState::openExportRegionsDialog` flag: `--open-modal ExportRegions`
+// (main.cpp's generic "every dialog a menu item opens" door) already reaches
+// this one, and a bespoke bool here would be a second way to say the same
+// thing -- see AppState.hpp's own note by the export dialogs' flags.
+void drawExportRegionsDialog(AppState& st) {
+  static ExportRegionsRequest request;
+  static char dirBuf[512] = "";
+  static char templateBuf[256] = "{name}";
+  static std::vector<bool> picked;
+  static std::string status;
+  static ExportStatesReport lastRun;
+  static bool hasRun = false;
+  static bool justOpened = false;
+  static bool regionsOpenLatched = false;
+
+  const bool wantOpen = g_exportRegionsRequested;
+  if (wantOpen && !regionsOpenLatched) {
+    regionsOpenLatched = true;
+    justOpened = true;
+    ImGui::OpenPopup("Export Frames and Slices");
+  }
+  if (!wantOpen) regionsOpenLatched = false;
+  g_exportRegionsRequested = false;
+  static bool statusIsError = false;
+  if (!beginDialog("Export Frames and Slices", DialogWidth::Wide)) return;
+
+  const OpenDocument* activeDoc = st.documents.active();
+  if (activeDoc == nullptr) {
+    dialogStatusLine(DialogStatus::Warning, exportStatesBlockedReason(false, 0, ExportStatesReport{}));
+    dialogHint("The painting canvas is a solver texture, not a document: it has no regions.");
+    DialogFooter footer;
+    footer.commit = "OK";
+    footer.cancel = nullptr;
+    if (dialogFooter(footer) != DialogAction::None) ImGui::CloseCurrentPopup();
+    endDialog();
+    return;
+  }
+  const Document& doc = activeDoc->document;
+  request.documentName = documentDisplayName(*activeDoc);
+  const size_t dot = request.documentName.rfind('.');
+  if (dot != std::string::npos && dot > 0) request.documentName.resize(dot);
+
+  if (justOpened) {
+    justOpened = false;
+    picked.clear();
+    hasRun = false;
+    status.clear();
+  }
+
+  size_t frameCount = 0, sliceCount = 0;
+  for (const Region& r : doc.regions) (r.kind == RegionKind::Frame ? frameCount : sliceCount)++;
+
+  dialogHint("One image file per region from \xe2\x80\x9c%s\xe2\x80\x9d (%zu frame%s, %zu "
+             "slice%s), each the visible composite cropped to that region's rectangle.",
+             request.documentName.c_str(), frameCount, frameCount == 1 ? "" : "s", sliceCount,
+             sliceCount == 1 ? "" : "s");
+
+  // --- Which kinds (the export dialog's own two checkboxes -- io/ExportRegions
+  // §"RegionExportScope") ---------------------------------------------------
+  int scopeIdx = request.scope == RegionExportScope::FramesOnly
+                     ? 1
+                     : (request.scope == RegionExportScope::SlicesOnly ? 2 : 0);
+  static const char* kScopes[] = {"All", "Frames only", "Slices only"};
+  if (dialogRadioRow("Export", &scopeIdx, kScopes, 3)) picked.clear();
+  request.scope = scopeIdx == 1 ? RegionExportScope::FramesOnly
+                                 : (scopeIdx == 2 ? RegionExportScope::SlicesOnly
+                                                  : RegionExportScope::All);
+
+  // --- The four settings, shared with every other export path -------------
+  dialogSection("Format");
+  drawExportSettingsControls(request.format);
+  // **No single "Output size" here, unlike the other two export dialogs.**
+  // Each file is its region cropped first and resized second
+  // (`exportDocumentRegions()`), so there is one size per file, not one per
+  // dialog -- this used to validate against the document and promise
+  // "1024 x 1024" for a 430x290 Frame. The per-file sizes, and the settings'
+  // warnings and refusals computed against each region's own image
+  // (`validateRegionExport()`), are in the Plan below.
+  dialogHint("Each file is its own region's size -- listed in the plan below. A resize applies "
+             "to each file after it is cropped.");
+
+  // --- Where, and under what names -----------------------------------------
+  dialogSection("Output");
+  dialogInputText("Folder", dirBuf, sizeof(dirBuf));
+  dialogInputText("Name template", templateBuf, sizeof(templateBuf));
+  {
+    std::string tokenLine = "Tokens:";
+    for (const std::string& t : exportNameTemplateTokens()) tokenLine += " " + t;
+    tokenLine += ". Hover for what each does.";
+    dialogHint("%s", tokenLine.c_str());
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::BeginTooltip();
+      ImGui::PushTextWrapPos(420.0f);
+      ImGui::TextUnformatted(exportNameTemplateHelp().c_str());
+      ImGui::PopTextWrapPos();
+      ImGui::EndTooltip();
+    }
+  }
+  dialogCheckbox("Overwrite files that already exist", &request.overwriteExisting);
+  if (!request.overwriteExisting)
+    dialogHint("Off: a file that already exists refuses the whole batch.");
+  request.outputDirectory = dirBuf;
+  request.nameTemplate = templateBuf;
+
+  // --- Which regions -- filtered by scope, `drawExportStatesDialog()`'s own
+  // pick-list shape --------------------------------------------------------
+  std::vector<size_t> candidates;
+  for (size_t i = 0; i < doc.regions.size(); ++i) {
+    const RegionKind k = doc.regions[i].kind;
+    const bool inScope = request.scope == RegionExportScope::All ||
+                         (request.scope == RegionExportScope::FramesOnly && k == RegionKind::Frame) ||
+                         (request.scope == RegionExportScope::SlicesOnly && k == RegionKind::Slice);
+    if (inScope) candidates.push_back(i);
+  }
+  if (picked.size() != candidates.size()) picked.assign(candidates.size(), true);
+  dialogSection(request.scope == RegionExportScope::FramesOnly
+                    ? "Frames"
+                    : (request.scope == RegionExportScope::SlicesOnly ? "Slices" : "Regions"));
+  float listW = 0.0f;
+  dialogLabelRow(nullptr, &listW);
+  if (ImGui::SmallButton("All")) picked.assign(candidates.size(), true);
+  ImGui::SameLine();
+  if (ImGui::SmallButton("None")) picked.assign(candidates.size(), false);
+  dialogLabelRow(nullptr, &listW);
+  if (ImGui::BeginChild("##regionpick", ImVec2(listW, exportListHeight(candidates.size(), 6, true)),
+                        true)) {
+    for (size_t n = 0; n < candidates.size(); ++n) {
+      const Region& r = doc.regions[candidates[n]];
+      const std::string label =
+          std::string(regionKindName(r.kind)) + " \"" + r.name + "\"##" + std::to_string(n);
+      bool on = picked[n];
+      if (ImGui::Checkbox(label.c_str(), &on)) picked[n] = on;
+    }
+  }
+  ImGui::EndChild();
+  request.selection.clear();
+  for (size_t n = 0; n < candidates.size(); ++n)
+    if (picked[n]) request.selection.push_back(candidates[n]);
+  const bool noneChosen = request.selection.empty();
+
+  // --- The plan -------------------------------------------------------------
+  ExportStatesReport plan;
+  if (!noneChosen) plan = planRegionExport(doc, request);
+  std::string blocked = exportStatesBlockedReason(true, request.selection.size(), plan);
+  // The four settings, validated once per file against the image that file
+  // actually is. The first refusal blocks the batch -- the Export button used
+  // to stay live over a refused combination and let every item fail -- and
+  // the warnings are collected once each, since most (8-bit quantisation,
+  // JPEG is lossy) say the same thing for every region.
+  std::vector<ExportValidation> perItem(plan.items.size());
+  std::vector<std::string> planWarnings;
+  if (blocked.empty()) {
+    for (size_t i = 0; i < plan.items.size(); ++i) {
+      const ExportStateItem& item = plan.items[i];
+      if (item.filename.empty()) continue;
+      const Region& r = doc.regions[item.sourceIndex];
+      perItem[i] = validateRegionExport(doc, r, request.format);
+      if (!perItem[i].ok) {
+        blocked = std::string(regionKindName(r.kind)) + " \"" + r.name + "\": " + perItem[i].error;
+        break;
+      }
+      for (const std::string& w : perItem[i].warnings)
+        if (std::find(planWarnings.begin(), planWarnings.end(), w) == planWarnings.end())
+          planWarnings.push_back(w);
+    }
+  }
+  dialogSection("Plan");
+  if (!blocked.empty()) {
+    if (noneChosen) dialogHint("%s", blocked.c_str());
+    else dialogStatusLine(DialogStatus::Error, blocked);
+  } else {
+    dialogText("Will write %zu file%s (%zu skipped):", plan.items.size() - plan.skipped(),
+               plan.items.size() - plan.skipped() == 1 ? "" : "s", plan.skipped());
+    if (ImGui::BeginChild("##regionplan",
+                          ImVec2(0.0f, exportListHeight(plan.items.size(), 6, false)), true)) {
+      for (size_t i = 0; i < plan.items.size(); ++i) {
+        const ExportStateItem& item = plan.items[i];
+        if (item.filename.empty()) {
+          dialogStatusLine(DialogStatus::Warning, "skipped: " + item.reason);
+        } else {
+          ImGui::Text("%s   %u \xc3\x97 %u px", item.filename.c_str(), perItem[i].outWidth,
+                      perItem[i].outHeight);
+        }
+      }
+    }
+    ImGui::EndChild();
+    for (const std::string& w : planWarnings) dialogStatusLine(DialogStatus::Warning, w);
+  }
+
+  if (hasRun) {
+    dialogSection("Result");
+    dialogStatusLine(statusIsError ? DialogStatus::Error : DialogStatus::Info, status);
+    if (!lastRun.items.empty()) {
+      if (ImGui::BeginChild("##regionreport",
+                            ImVec2(0.0f, exportListHeight(lastRun.items.size(), 6, false)),
+                            true)) {
+        for (const ExportStateItem& item : lastRun.items) {
+          const bool bad = item.outcome == ExportItemOutcome::Failed ||
+                           item.outcome == ExportItemOutcome::NotAttempted;
+          if (bad) ImGui::PushStyleColor(ImGuiCol_Text, dialogStatusColor(DialogStatus::Error));
+          ImGui::TextWrapped("%-13s %s%s%s", exportItemOutcomeName(item.outcome),
+                             item.filename.empty() ? item.stateName.c_str() : item.filename.c_str(),
+                             item.reason.empty() ? "" : " -- ", item.reason.c_str());
+          if (bad) ImGui::PopStyleColor();
+          for (const std::string& w : item.warnings)
+            dialogStatusLine(DialogStatus::Warning, "    ! " + w);
+        }
+      }
+      ImGui::EndChild();
+    }
+  } else {
+    dialogStatusLine(statusIsError ? DialogStatus::Error : DialogStatus::Info, status);
+  }
+
+  DialogFooter footer;
+  footer.commit = "Export";
+  footer.commitEnabled = blocked.empty();
+  footer.cancel = hasRun ? "Close" : "Cancel";
+  switch (dialogFooter(footer)) {
+    case DialogAction::Commit:
+      lastRun = exportDocumentRegions(doc, request);
+      hasRun = true;
+      status = exportStatesSummary(lastRun);
+      statusIsError = !lastRun.ok;
+      break;
+    case DialogAction::Cancel:
       ImGui::CloseCurrentPopup();
       break;
     default:
@@ -9972,13 +10247,20 @@ void drawInpaintDialog(AppState& st) {
   f.commit = "Inpaint";
   const DialogAction act = dialogFooter(f);
   if (act == DialogAction::Commit && od != nullptr) {
-    const FilterOpResult r = applyInpaint(*od, radius);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "inpaint");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed -- the fill matched what was already there.";
-      ImGui::CloseCurrentPopup();
+    // Through `inpaintCommand()`/`runPixelCommand()`, not `applyInpaint()`
+    // directly -- `pixelOpFooter()`'s own comment argues this for every
+    // filter dialog above: the recorder taps `applyCommand()`, and a dialog
+    // that called its applier straight would run correctly and record
+    // nothing. Kept as this dialog's own footer (button labelled "Inpaint",
+    // not "Apply") rather than switched to `pixelOpFooter()`, so the label
+    // stays what it was.
+    const PixelCommandOutcome out =
+        runPixelCommand(*od, inpaintCommand(radius),
+                       "Nothing changed -- the fill matched what was already there.");
+    if (!out.closeDialog) {
+      status = out.status;
     } else {
+      if (!out.status.empty()) g_docStatus = out.status;
       status.clear();
       ImGui::CloseCurrentPopup();
     }
@@ -10054,13 +10336,16 @@ void drawRemoveLightingGradientDialog(AppState& st) {
   f.commit = "Remove";
   const DialogAction act = dialogFooter(f);
   if (act == DialogAction::Commit && od != nullptr) {
-    const FilterOpResult r = applyRemoveLightingGradient(*od, sigma);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "lighting-gradient removal");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (no selected texels, or an empty layer).";
-      ImGui::CloseCurrentPopup();
+    // Through `removeLightingGradientCommand()`/`runPixelCommand()` -- see
+    // `drawInpaintDialog()`'s identical comment just above for why a direct
+    // `applyRemoveLightingGradient()` call here would run and record nothing.
+    const PixelCommandOutcome out =
+        runPixelCommand(*od, removeLightingGradientCommand(sigma),
+                       "Nothing changed (no selected texels, or an empty layer).");
+    if (!out.closeDialog) {
+      status = out.status;
     } else {
+      if (!out.status.empty()) g_docStatus = out.status;
       status.clear();
       ImGui::CloseCurrentPopup();
     }
@@ -10138,13 +10423,25 @@ void drawOffsetDialog(AppState& st) {
   f.commit = "Offset";
   const DialogAction act = dialogFooter(f);
   if (act == DialogAction::Commit && od != nullptr) {
-    const FilterOpResult r = applyOffset(*od, request);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "offset");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (an offset of zero, or an empty layer).";
-      ImGui::CloseCurrentPopup();
+    // Through `offsetCommand()`/`runPixelCommand()`, not `applyOffset()`
+    // directly -- see `drawInpaintDialog()`'s comment above for why. The one
+    // extra step this call site owns and `offsetCommand()`'s header says an
+    // encoder may not (app/CommandsImage.hpp): this dialog holds `dx`/`dy` in
+    // whole texels, and `filter_offset`'s own parameters are a FRACTION of
+    // the canvas (`doOffset()`'s reasoning), so the division happens here,
+    // against THIS document's current size, before the command is built.
+    const double width = static_cast<double>(od->document.width);
+    const double height = static_cast<double>(od->document.height);
+    const float dxFraction = width > 0.0 ? static_cast<float>(static_cast<double>(dx) / width) : 0.0f;
+    const float dyFraction =
+        height > 0.0 ? static_cast<float>(static_cast<double>(dy) / height) : 0.0f;
+    const PixelCommandOutcome out = runPixelCommand(
+        *od, offsetCommand(dxFraction, dyFraction, request.edge),
+        "Nothing changed (an offset of zero, or an empty layer).");
+    if (!out.closeDialog) {
+      status = out.status;
     } else {
+      if (!out.status.empty()) g_docStatus = out.status;
       status.clear();
       ImGui::CloseCurrentPopup();
     }
@@ -10917,6 +11214,451 @@ void drawGradientMapDialog(AppState& st) {
   endDialog();
 }
 
+// ---------------------------------------------------------------------------
+// PRD D24's stop editor -- the gradient TOOL's own ramp, not Gradient Map's
+// ---------------------------------------------------------------------------
+//
+// **Not shared with `drawGradientMapDialog()` above, and here is why.** The
+// brief for this feature asks for one shared widget or an explanation in the
+// code; the honest explanation is that the two dialogs disagree at the DATA
+// level, not merely in layout. Gradient Map edits a plain
+// `ops/Gradient::GradientStops` -- one list, no opacity stops (a Gradient Map
+// has nothing to fade; `ops/MonoOps.hpp`'s op has no alpha channel), no
+// "Foreground" stop, no midpoint control in its UI though the type happens to
+// carry one unused. This editor's own type, `GradientPresetStops`
+// (`app/GradientTool.hpp` § 2a), is two independently-positioned lists, one
+// of which can name the swatch instead of a fixed colour. A widget general
+// enough to draw and drag BOTH shapes would need a callback for nearly
+// everything it draws -- which list, which marker glyph, whether "add" takes
+// a colour argument at all -- and at that point the callback plumbing costs
+// more than the dozen lines `drawGradientMapDialog()` already has. Worse,
+// that dialog's OWN appearance (sliders, no strip, no drag) is pinned by its
+// existing golden views and selftests -- the brief says so -- so building a
+// shared drag-strip widget and leaving that dialog on its sliders would give
+// the widget exactly one caller, and switching it over would change a dialog
+// the brief says must not change.
+//
+// What genuinely IS shared is everything that is not ImGui: every mutation
+// below reaches the ramp only through `app/GradientTool.hpp`'s headless
+// `addGradient*Stop()` / `moveGradient*Stop()` / `removeGradient*Stop()` /
+// `clampGradientStop*()` -- the same functions `--selftest` exercises with no
+// frame of ImGui at all, so this dialog and that suite can never disagree
+// about what "add a stop" or "delete refuses below two" means.
+//
+// `drawGradientStopStrip()` immediately below is the one widget this editor's
+// OWN two rows -- colour stops below the ramp, opacity stops above it, the
+// brief's own layout -- share with EACH OTHER: they differ only in which
+// typed list backs the three callbacks, never in the strip mechanics.
+
+// One interactive strip spanning `width` px, `margin` px inset on each side
+// so a marker centred at t=0 or t=1 draws whole rather than half-clipped by
+// the strip's own edge (a marker's radius is a few px; without the margin the
+// t=1 stop's right half sat outside the strip rect and the window clipped
+// it, leaving a marker that LOOKED like it had lost its far half). `margin`
+// only affects where t=0/t=1 map to on screen -- the strip's drawn rect and
+// hit area still span the full `width`. Clicking empty strip calls `onAdd(t)`
+// and selects whatever index it returns; dragging an existing marker calls
+// `onMove(index, t)` every frame of the drag and follows whatever index IT
+// returns -- both mirror `moveGradientColorStop()`'s own "the index can
+// change under a sort" contract, so a caller passing that function straight
+// through never needs a second search to find the stop it just moved.
+// `drawMarker(dl, x, y, index, selected)` draws one stop's own glyph; this
+// function owns only the strip's line, its hit test (`hitTestGradientStop()`,
+// `app/GradientTool.hpp`) and the drag, never how a stop looks. `*selected`,
+// when non-null, is read on entry and written on any add or move
+// (`drawCurveWidget()`'s own `ImGuiStorage`-backed drag-index idiom, one
+// dimension over). Returns true on any add or move.
+bool drawGradientStopStrip(const char* strId, float width, float height, float margin,
+                           size_t count, const std::function<float(size_t)>& positionAt,
+                           const std::function<size_t(size_t, float)>& onMove,
+                           const std::function<size_t(float)>& onAdd,
+                           const std::function<void(ImDrawList*, float, float, size_t, bool)>&
+                               drawMarker,
+                           size_t* selected) {
+  bool changed = false;
+  ImGui::PushID(strId);
+  const ImVec2 origin = ImGui::GetCursorScreenPos();
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImVec2 hiPt(origin.x + width, origin.y + height);
+  dl->AddRectFilled(origin, hiPt, IM_COL32(28, 28, 30, 255));
+
+  const float innerW = std::max(width - 2.0f * margin, 1.0f);
+  std::vector<float> positions(count);
+  for (size_t i = 0; i < count; ++i) positions[i] = positionAt(i);
+  for (size_t i = 0; i < count; ++i) {
+    const float x = origin.x + margin + positions[i] * innerW;
+    drawMarker(dl, x, origin.y + height * 0.5f, i, selected != nullptr && *selected == i);
+  }
+  dl->AddRect(origin, hiPt, ImGui::GetColorU32(ImGuiCol_Border));
+
+  ImGui::InvisibleButton("##strip", ImVec2(width, height));
+  const float mx = ImGui::GetIO().MousePos.x - origin.x - margin;
+  constexpr float kHitRadiusPx = 9.0f;
+
+  ImGuiStorage* storage = ImGui::GetStateStorage();
+  const ImGuiID dragKey = ImGui::GetID("dragIdx");
+  int dragIdx = storage->GetInt(dragKey, -1);
+
+  if (ImGui::IsItemActivated()) {
+    const float t = std::clamp(mx / innerW, 0.0f, 1.0f);
+    const std::optional<size_t> hit = hitTestGradientStop(positions, t, kHitRadiusPx / innerW);
+    if (hit) {
+      dragIdx = static_cast<int>(*hit);
+      if (selected) *selected = *hit;
+    } else {
+      const size_t newIdx = onAdd(t);
+      changed = true;
+      dragIdx = static_cast<int>(newIdx);
+      if (selected) *selected = newIdx;
+    }
+    storage->SetInt(dragKey, dragIdx);
+  }
+  if (dragIdx >= 0 && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    const float t = std::clamp(mx / innerW, 0.0f, 1.0f);
+    const size_t newIdx = onMove(static_cast<size_t>(dragIdx), t);
+    dragIdx = static_cast<int>(newIdx);
+    storage->SetInt(dragKey, dragIdx);
+    if (selected) *selected = newIdx;
+    changed = true;
+  } else if (dragIdx >= 0) {
+    storage->SetInt(dragKey, -1);
+  }
+
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+    ImGui::SetTooltip("Click empty strip: add a stop\nDrag a stop: move it");
+  ImGui::PopID();
+  return changed;
+}
+
+void drawGradientEditorDialog(AppState& st) {
+  enum class GradientEditorSel { Color, Opacity };
+  static GradientEditorSel selKind = GradientEditorSel::Color;
+  static size_t selIndex = 0;
+  static bool wasOpen = false;
+  static char nameBuf[128] = "";
+  static std::string status;
+
+  if (st.openGradientEditorDialog) {
+    st.openGradientEditorDialog = false;
+    ImGui::OpenPopup("Gradient Editor");
+  }
+  if (!beginDialog("Gradient Editor", DialogWidth::Wide)) {
+    wasOpen = false;
+    return;
+  }
+  if (!wasOpen) {
+    // Freshly opened. Seed the buffer from the built-in default WITHOUT
+    // flipping `hasCustomStops` yet: pressing Done without ever touching a
+    // stop must leave `gradientToolStops()`'s null-custom path exactly as
+    // untaken as before this dialog existed -- `app/GradientTool.hpp` § 5's
+    // bit-identical promise is about which CODE runs, not about equal
+    // values, and setting the flag here would take the custom path on a
+    // ramp that only happens to match it today.
+    if (!st.gradient.hasCustomStops) st.gradient.customStops = builtInGradientPresets()[0].stops;
+    selKind = GradientEditorSel::Color;
+    selIndex = 0;
+    std::snprintf(nameBuf, sizeof(nameBuf), "%s", st.gradient.presetName.c_str());
+    status.clear();
+    wasOpen = true;
+  }
+
+  GradientPresetStops& stops = st.gradient.customStops;
+  bool changed = false;
+  const std::array<float, 4> fg = foregroundLinearRgba(st.brush);
+
+  // --- opacity row, above the ramp (the brief's own layout) -----------------
+  {
+    float avail = 0.0f;
+    dialogLabelRow("Opacity", &avail);
+    const float w = std::max(80.0f, avail);
+    const float h = 22.0f;
+    auto positionAt = [&](size_t i) { return stops.opacityStops[i].position; };
+    auto onMove = [&](size_t i, float t) { return moveGradientOpacityStop(stops, i, t); };
+    auto onAdd = [&](float t) { return addGradientOpacityStop(stops, t, 1.0f); };
+    auto drawMarker = [&](ImDrawList* dl, float x, float y, size_t i, bool sel) {
+      // A downward-pointing diamond whose fill brightness IS the stop's own
+      // opacity -- 0 reads as a hollow outline, 1 as solid white -- so the
+      // row shows the fade shape at a glance.
+      const float op = stops.opacityStops[i].opacity;
+      const ImU32 fillCol = IM_COL32(255, 255, 255, static_cast<int>(op * 255.0f + 0.5f));
+      const ImU32 outline = sel ? IM_COL32(255, 200, 90, 255) : IM_COL32(200, 200, 200, 255);
+      const ImVec2 pts[4] = {ImVec2(x, y - 7.0f), ImVec2(x + 6.0f, y), ImVec2(x, y + 7.0f),
+                             ImVec2(x - 6.0f, y)};
+      dl->AddConvexPolyFilled(pts, 4, fillCol);
+      dl->AddPolyline(pts, 4, outline, ImDrawFlags_Closed, sel ? 2.5f : 1.5f);
+    };
+    size_t sel = selIndex;
+    const bool wasSel = selKind == GradientEditorSel::Opacity;
+    if (drawGradientStopStrip("opacityStrip", w, h, 8.0f, stops.opacityStops.size(), positionAt,
+                              onMove, onAdd, drawMarker, wasSel ? &sel : nullptr)) {
+      changed = true;
+      selKind = GradientEditorSel::Opacity;
+      selIndex = sel;
+    }
+  }
+
+  // --- the ramp preview, non-interactive ------------------------------------
+  //
+  // Sampled through the SAME `resolveGradientPresetStops()` +
+  // `gradientSampleStraight()` pair the options-bar swatch and the canvas
+  // read (`app/GradientTool.hpp` § 1), so this preview cannot show a ramp the
+  // canvas would refuse to draw. Foreground stops resolve against the LIVE
+  // foreground, exactly as that swatch does.
+  {
+    float avail = 0.0f;
+    dialogLabelRow("Ramp", &avail);
+    const float w = std::max(80.0f, avail);
+    const float h = 28.0f;
+    const ImVec2 o = ImGui::GetCursorScreenPos();
+    const ImVec2 hiPt(o.x + w, o.y + h);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    constexpr float kCell = 5.0f;
+    constexpr ImU32 kCheckA = IM_COL32(0x9a, 0x9a, 0x9a, 0xff);
+    constexpr ImU32 kCheckB = IM_COL32(0x6e, 0x6e, 0x6e, 0xff);
+    dl->PushClipRect(o, hiPt, true);
+    dl->AddRectFilled(o, hiPt, kCheckA);
+    for (int row = 0; static_cast<float>(row) * kCell < h; ++row)
+      for (int col = 0; static_cast<float>(col) * kCell < w; ++col) {
+        if (((row + col) & 1) == 0) continue;
+        const ImVec2 c0(o.x + static_cast<float>(col) * kCell, o.y + static_cast<float>(row) * kCell);
+        dl->AddRectFilled(c0, ImVec2(c0.x + kCell, c0.y + kCell), kCheckB);
+      }
+    const GradientStops resolved = resolveGradientPresetStops(stops, {fg[0], fg[1], fg[2]});
+    const int columns = static_cast<int>(w);
+    for (int i = 0; i < columns; ++i) {
+      const float t = (static_cast<float>(i) + 0.5f) / static_cast<float>(columns);
+      const std::array<float, 4> c = gradientSampleStraight(resolved, t);
+      const std::array<float, 3> enc =
+          clampToDisplayRange({srgbEncode(c[0]), srgbEncode(c[1]), srgbEncode(c[2])});
+      const ImU32 col = IM_COL32(static_cast<int>(enc[0] * 255.0f + 0.5f),
+                                 static_cast<int>(enc[1] * 255.0f + 0.5f),
+                                 static_cast<int>(enc[2] * 255.0f + 0.5f),
+                                 static_cast<int>(c[3] * 255.0f + 0.5f));
+      dl->AddRectFilled(ImVec2(o.x + static_cast<float>(i), o.y),
+                        ImVec2(o.x + static_cast<float>(i) + 1.0f, hiPt.y), col);
+    }
+    dl->PopClipRect();
+    dl->AddRect(o, hiPt, ImGui::GetColorU32(ImGuiCol_Border));
+    ImGui::Dummy(ImVec2(w, h));
+  }
+
+  // --- colour row, below the ramp --------------------------------------------
+  {
+    float avail = 0.0f;
+    dialogLabelRow("Colour", &avail);
+    const float w = std::max(80.0f, avail);
+    const float h = 22.0f;
+    auto positionAt = [&](size_t i) { return stops.colorStops[i].position; };
+    auto onMove = [&](size_t i, float t) { return moveGradientColorStop(stops, i, t); };
+    auto onAdd = [&](float t) {
+      // A new stop starts as a plain colour matching the CURRENT foreground,
+      // not marked "Foreground" -- so adding one never silently changes what
+      // an already-authored ramp resolves to the next time the swatch
+      // colour changes; only an explicit "Follow foreground" tick does that.
+      return addGradientColorStop(stops, t, false, {fg[0], fg[1], fg[2]});
+    };
+    auto drawMarker = [&](ImDrawList* dl, float x, float y, size_t i, bool sel) {
+      const GradientColorStopSpec& s = stops.colorStops[i];
+      std::array<float, 3> lin = s.color;
+      if (s.foreground) lin = {fg[0], fg[1], fg[2]};
+      const std::array<float, 3> enc =
+          clampToDisplayRange({srgbEncode(lin[0]), srgbEncode(lin[1]), srgbEncode(lin[2])});
+      const ImU32 fillCol = IM_COL32(static_cast<int>(enc[0] * 255.0f + 0.5f),
+                                     static_cast<int>(enc[1] * 255.0f + 0.5f),
+                                     static_cast<int>(enc[2] * 255.0f + 0.5f), 255);
+      const ImU32 outline = sel ? IM_COL32(255, 200, 90, 255) : IM_COL32(20, 20, 20, 255);
+      dl->AddCircleFilled(ImVec2(x, y), 7.0f, fillCol);
+      dl->AddCircle(ImVec2(x, y), 7.0f, outline, 0, sel ? 2.5f : 1.5f);
+      // A "Foreground" stop has no fixed colour of its own to show -- the
+      // inner ring is what distinguishes it from a fixed colour that merely
+      // happens to match the swatch right now.
+      if (s.foreground) dl->AddCircle(ImVec2(x, y), 3.0f, IM_COL32(255, 255, 255, 220), 0, 1.0f);
+    };
+    size_t sel = selIndex;
+    const bool wasSel = selKind == GradientEditorSel::Color;
+    if (drawGradientStopStrip("colorStrip", w, h, 8.0f, stops.colorStops.size(), positionAt,
+                              onMove, onAdd, drawMarker, wasSel ? &sel : nullptr)) {
+      changed = true;
+      selKind = GradientEditorSel::Color;
+      selIndex = sel;
+    }
+  }
+  dialogHint("Click a strip to add a stop; drag a stop to move it. Opacity stops fade the ramp "
+             "independently of colour (app/GradientTool.hpp).");
+
+  // --- the selected stop's own controls -------------------------------------
+  dialogSection("Selected Stop");
+  if (selKind == GradientEditorSel::Color && !stops.colorStops.empty()) {
+    if (selIndex >= stops.colorStops.size()) selIndex = stops.colorStops.size() - 1;
+    float pos = stops.colorStops[selIndex].position;
+    if (dialogSlider("Position", &pos, 0.0f, 1.0f, "%.3f").changed) {
+      selIndex = moveGradientColorStop(stops, selIndex, pos);
+      changed = true;
+    }
+    bool followsFg = stops.colorStops[selIndex].foreground;
+    if (dialogCheckbox("Follow foreground", &followsFg)) {
+      stops.colorStops[selIndex].foreground = followsFg;
+      changed = true;
+    }
+    ImGui::SetItemTooltip("A \"Foreground\" stop has no fixed colour of its own: it takes "
+                          "whatever the swatch holds at the moment the gradient is drawn, "
+                          "which is how today's default ramp stays expressible once other "
+                          "gradients exist to choose instead of it.");
+    if (!stops.colorStops[selIndex].foreground) {
+      if (dialogColor("Colour", stops.colorStops[selIndex].color.data(), ImGuiColorEditFlags_Float)
+              .changed)
+        changed = true;
+    }
+    const bool hasNext = selIndex + 1 < stops.colorStops.size();
+    float mid = stops.colorStops[selIndex].midpoint;
+    ImGui::BeginDisabled(!hasNext);
+    if (dialogSlider("Midpoint", &mid, 0.001f, 0.999f, "%.3f").changed) {
+      stops.colorStops[selIndex].midpoint = clampGradientStopMidpoint(mid);
+      changed = true;
+    }
+    ImGui::EndDisabled();
+    if (!hasNext) ImGui::SetItemTooltip("The last stop has no neighbour to skew a blend toward.");
+    dialogLabelRow(nullptr);
+    ImGui::BeginDisabled(stops.colorStops.size() <= 2);
+    if (ImGui::SmallButton("Delete Stop")) {
+      if (removeGradientColorStop(stops, selIndex)) {
+        changed = true;
+        if (selIndex >= stops.colorStops.size()) selIndex = stops.colorStops.size() - 1;
+      }
+    }
+    ImGui::EndDisabled();
+    if (stops.colorStops.size() <= 2)
+      ImGui::SetItemTooltip(
+          "Two is the floor: a one-stop ramp has no span to interpolate across "
+          "(app/GradientTool.hpp).");
+  } else if (selKind == GradientEditorSel::Opacity && !stops.opacityStops.empty()) {
+    if (selIndex >= stops.opacityStops.size()) selIndex = stops.opacityStops.size() - 1;
+    float pos = stops.opacityStops[selIndex].position;
+    if (dialogSlider("Position", &pos, 0.0f, 1.0f, "%.3f").changed) {
+      selIndex = moveGradientOpacityStop(stops, selIndex, pos);
+      changed = true;
+    }
+    float op = stops.opacityStops[selIndex].opacity;
+    if (dialogSlider("Opacity", &op, 0.0f, 1.0f, "%.3f").changed) {
+      stops.opacityStops[selIndex].opacity = std::clamp(op, 0.0f, 1.0f);
+      changed = true;
+    }
+    const bool hasNext = selIndex + 1 < stops.opacityStops.size();
+    float mid = stops.opacityStops[selIndex].midpoint;
+    ImGui::BeginDisabled(!hasNext);
+    if (dialogSlider("Midpoint", &mid, 0.001f, 0.999f, "%.3f").changed) {
+      stops.opacityStops[selIndex].midpoint = clampGradientStopMidpoint(mid);
+      changed = true;
+    }
+    ImGui::EndDisabled();
+    if (!hasNext) ImGui::SetItemTooltip("The last stop has no neighbour to skew a blend toward.");
+    dialogLabelRow(nullptr);
+    ImGui::BeginDisabled(stops.opacityStops.size() <= 2);
+    if (ImGui::SmallButton("Delete Stop")) {
+      if (removeGradientOpacityStop(stops, selIndex)) {
+        changed = true;
+        if (selIndex >= stops.opacityStops.size()) selIndex = stops.opacityStops.size() - 1;
+      }
+    }
+    ImGui::EndDisabled();
+    if (stops.opacityStops.size() <= 2)
+      ImGui::SetItemTooltip(
+          "Two is the floor: a one-stop ramp has no span to interpolate across "
+          "(app/GradientTool.hpp).");
+  }
+
+  if (changed) st.gradient.hasCustomStops = true;
+
+  // --- presets: save as / rename / delete -----------------------------------
+  //
+  // File-backed, beside the actions library (`io/GradientPresetFile.hpp`'s
+  // own header argues the parallel). SAVE and RENAME both write through
+  // `saveGradientPresetToFile()`, which is total -- a preset never fails to
+  // serialise -- so the only refusal either can report is the file-name
+  // sanitiser finding nothing usable in the typed name.
+  dialogSection("Preset");
+  // `IsItemActive()` checked before this frame's own `dialogInputText()`
+  // reads the STILL-STANDING result of last frame's call to it -- the ID is
+  // stable across frames, so this is "is the user still typing", not "was
+  // the item above this one active" -- `drawActionsSection()`'s own
+  // `nameBuf` idiom, copied rather than reinvented.
+  if (!ImGui::IsItemActive())
+    std::snprintf(nameBuf, sizeof(nameBuf), "%s", st.gradient.presetName.c_str());
+  dialogInputText("Name", nameBuf, sizeof(nameBuf));
+
+  const std::vector<GradientPresetLibraryRow>& library = gradientPresetLibraryRows();
+  std::string existingPath;
+  for (const GradientPresetLibraryRow& row : library)
+    if (row.name == nameBuf) existingPath = row.path;
+
+  dialogLabelRow(nullptr);
+  if (ImGui::SmallButton(existingPath.empty() ? "Save As" : "Save (Overwrite)")) {
+    const std::string fileName = gradientPresetFileNameFor(nameBuf);
+    if (fileName.empty()) {
+      status = "refused: that name has nothing usable in it for a file name.";
+    } else {
+      const std::string path = gradientPresetsDirectoryPath() + "/" + fileName;
+      std::string err;
+      if (saveGradientPresetToFile(path, nameBuf, stops, &err)) {
+        st.gradient.presetName = nameBuf;
+        refreshGradientPresetLibrary();
+        status = "Saved to " + path;
+      } else {
+        status = err;
+      }
+    }
+  }
+  ImGui::SameLine();
+  // RENAME: save under the new name, then delete whichever library file held
+  // the OLD name -- so a rename with the same stops as an existing OTHER
+  // preset does not silently merge the two, and a rename to a name with
+  // nothing usable in it refuses before either file is touched.
+  ImGui::BeginDisabled(st.gradient.presetName.empty() ||
+                      st.gradient.presetName == std::string(nameBuf));
+  if (ImGui::SmallButton("Rename")) {
+    const std::string fileName = gradientPresetFileNameFor(nameBuf);
+    if (fileName.empty()) {
+      status = "refused: that name has nothing usable in it for a file name.";
+    } else {
+      const std::string newPath = gradientPresetsDirectoryPath() + "/" + fileName;
+      std::string err;
+      if (saveGradientPresetToFile(newPath, nameBuf, stops, &err)) {
+        std::string oldPath;
+        for (const GradientPresetLibraryRow& row : library)
+          if (row.name == st.gradient.presetName) oldPath = row.path;
+        if (!oldPath.empty() && oldPath != newPath) deleteGradientPresetFile(oldPath);
+        st.gradient.presetName = nameBuf;
+        refreshGradientPresetLibrary();
+        status = "Renamed to " + newPath;
+      } else {
+        status = err;
+      }
+    }
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::BeginDisabled(existingPath.empty());
+  if (ImGui::SmallButton("Delete Preset")) {
+    std::string err;
+    if (deleteGradientPresetFile(existingPath, &err)) {
+      if (st.gradient.presetName == std::string(nameBuf)) st.gradient.presetName.clear();
+      refreshGradientPresetLibrary();
+      status = "Deleted " + existingPath;
+    } else {
+      status = err;
+    }
+  }
+  ImGui::EndDisabled();
+  if (!status.empty()) dialogHint("%s", status.c_str());
+
+  DialogFooter footer;
+  footer.commit = "Done";
+  footer.cancel = nullptr;
+  footer.note = "Changes apply as you make them.";
+  if (dialogFooter(footer) != DialogAction::None) ImGui::CloseCurrentPopup();
+  endDialog();
+}
+
 // The five commands with no dialog: Invert and the four solvers. Each runs
 // through the same app/AdjustmentOps entry point the menu would call, so each
 // records one history entry and refuses on the same layers for the same
@@ -11322,6 +12064,36 @@ void drawNumericTransformDialog(AppState& st, GpuContext& gpu) {
   footer.commitEnabled = od != nullptr;
   switch (dialogFooter(footer)) {
     case DialogAction::Commit: {
+      // The whole-layer case goes through `numericTransformCommand()`/
+      // `applyCommand()` instead of `TransformSession::commit()` -- the same
+      // reroute every filter dialog above makes, for the same reason
+      // (docs/automation.md §7): a commit that wrote the pixels itself would
+      // run correctly and the recorder would never see it. This is safe to
+      // switch at exactly this line and nowhere upstream of it (the brief for
+      // this change is explicit that app/TransformSession itself is not to be
+      // touched): the session's own header states that nothing is written to
+      // the document before `commit()` runs (`pending_` lives only in the
+      // session, and the on-screen preview is a separate GPU texture,
+      // `g_transformPreview`) -- so cancelling an uncommitted session and
+      // issuing the identical rotate/scale/translate through the command is
+      // not a second code path beside the interactive one, it is the same
+      // numbers reaching `ops/DocumentTransform` a different way.
+      // `TransformTarget::SelectionPixels` is untouched below: that case has
+      // no registered command (`numericTransformRefusal()` refuses a live
+      // selection by name), so it keeps committing through the session
+      // exactly as it always has.
+      if (st.transform.target() == TransformTarget::Layer) {
+        st.transform.cancel();
+        const CommandResult r = applyCommand(
+            *od, numericTransformCommand(rotateDeg, scaleXPercent, scaleYPercent, translateX,
+                                         translateY));
+        status = r.ok ? std::string() : r.status;
+        if (r.ok) {
+          ImGui::CloseCurrentPopup();
+          g_transformPreview.reset();
+        }
+        break;
+      }
       const TransformCommitResult done = st.transform.commit(*od);
       status = done.ok ? std::string() : done.error;
       if (done.ok) {
@@ -11834,6 +12606,7 @@ MenuContext menuContextFromState(AppState& st) {
   ctx.showPigmentPanel = st.panels.placementOf(ControlsSection::Pigment) != PanelPlacement::Hidden;
   ctx.showGuides = st.showGuides;
   ctx.showGrid = st.showGrid;
+  ctx.showRegions = st.showRegions;
   ctx.snappingEnabled = st.snappingEnabled;
   ctx.hasGuides = !st.guides.empty();
 
@@ -12198,6 +12971,10 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
       g_exportStatesRequested = true;
       break;
 
+    case MenuAction::ExportRegions:
+      g_exportRegionsRequested = true;
+      break;
+
     case MenuAction::Batch:
       g_batchRequested = true;
       break;
@@ -12407,6 +13184,7 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     }
     case MenuAction::Guides:           st.showGuides = !st.showGuides;           break;
     case MenuAction::Grid:             st.showGrid = !st.showGrid;               break;
+    case MenuAction::ShowRegions:      st.showRegions = !st.showRegions;         break;
     case MenuAction::Snap:             st.snappingEnabled = !st.snappingEnabled; break;
 
     case MenuAction::AddGuide:
@@ -15112,7 +15890,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // will -- this is the same value computed twice, not two different
   // answers.
   const AtelierRect earlyTabStrip =
-      atelierLayout(vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y, !st.documents.empty()).tabStrip;
+      atelierLayout(vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y, !st.documents.empty(),
+                    nativeMenuBarInstalled() ? 0.0f : g_linuxMenuBarReservedW)
+          .tabStrip;
 
   // ------------------------------------------------------------ title bar
   //
@@ -15164,6 +15944,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   const bool menuBarOpen = ImGui::BeginMainMenuBar();
   ImGui::PopStyleVar();
   if (menuBarOpen) {
+    // Row-local origin for `g_linuxMenuBarReservedW`'s measurement below --
+    // captured before the wordmark, so the delta to the end of the menu loop
+    // is the wordmark's own rendered width plus the menus', not just the
+    // menus' share on top of `kTitleWordmarkW`'s nominal 100 px (the two can
+    // differ by a few px depending on the font actually loaded).
+    const float titleRowStartX = ImGui::GetCursorPosX();
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
                          (kTitleBarH - ImGui::GetFrameHeight()) * 0.5f);
 
@@ -15222,6 +16008,17 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           ImGui::EndMenu();
         }
       }
+      // Measured so next frame's `atelierLayout()` calls can reserve exactly
+      // this much room for the tab strip -- see `g_linuxMenuBarReservedW`'s
+      // own comment. `titleRowStartX` is this same row's origin, so the delta
+      // to here is the wordmark's actual rendered width plus the menus',
+      // and subtracting `kTitleWordmarkW` converts that into "how much MORE
+      // than the nominal wordmark reservation the row just used" -- exactly
+      // what `atelierLayout()`'s `menuBarReservedW` parameter adds on top of.
+      g_linuxMenuBarReservedW = std::max(
+          0.0f, (ImGui::GetCursorPosX() - titleRowStartX) - kTitleWordmarkW);
+    } else {
+      g_linuxMenuBarReservedW = 0.0f;
     }
 
     // The active document's name used to be here, with a `*` dirty marker,
@@ -15448,6 +16245,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // PLAN.md Phase 5 step 13 ("Export comps to files, and layers to files"),
   // out here for the same ID-stack reason.
   drawExportStatesDialog(st);
+  drawExportRegionsDialog(st);
   drawBatchDialog(st);
 
   // PLAN.md Phase 4 step 8 ("Document lifecycle"), out here for the same
@@ -15476,6 +16274,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   drawRemoveLightingGradientDialog(st);
   drawOffsetDialog(st);
   drawAdjustmentDialogs(st);
+  // PRD D24: the gradient tool's own stop editor, opened from the options
+  // bar's swatch rather than a menu -- same placement rule again, so it
+  // draws (and can be photographed by --open-gradient-editor) whichever tool
+  // is actually selected this frame.
+  drawGradientEditorDialog(st);
   drawImageSizeDialog(st);
   drawCanvasSizeDialog(st);
   drawNumericTransformDialog(st, gpu);
@@ -15682,8 +16485,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   dockExtents.right = pd.right;
   dockExtents.top = pd.top;
   dockExtents.bottom = pd.bottom;
-  const AtelierBands bands = atelierLayout(vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y,
-                                           /*showTabStrip=*/!st.documents.empty(), dockExtents);
+  const AtelierBands bands = atelierLayout(
+      vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y,
+      /*showTabStrip=*/!st.documents.empty(), dockExtents,
+      nativeMenuBarInstalled() ? 0.0f : g_linuxMenuBarReservedW);
 
   // Any dock, splitter or header gesture below sets this; it is written back
   // once, after every dock has drawn. One write per frame that changed
@@ -16090,44 +16895,94 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     if (st.requestFreeTransform) {
       st.requestFreeTransform = false;
       OpenDocument* od = st.documents.active();
-      const std::optional<size_t> li = od != nullptr ? activeLayerIndex(*od) : std::nullopt;
-      if (od == nullptr || !li) {
-        g_docStatus = "Free Transform needs an open document with a layer.";
+      // Track `xform` (PRD C12): a LAYERS panel multi-selection of two or
+      // more rows takes the set path -- `g_layers.selection`, restricted to
+      // what the filter currently shows, exactly the way every other
+      // multi-selection gesture (`runLayerSetCommand()`, above) reads it,
+      // so a row a search box is hiding is never swept into a set transform
+      // it was never clicked into. A single-row (or empty/filtered-away)
+      // selection falls through to the ordinary single-layer path below
+      // unchanged -- this is not a second door into it, it is the same door,
+      // reached by a selection that happens to have one member.
+      const LayerSelection visibleSet =
+          od != nullptr ? restrictSelectionToFilter(od->document, g_layers.selection, g_layers.filter)
+                        : LayerSelection{};
+      if (od != nullptr && visibleSet.size() >= 2) {
+        // **Contiguity is decided HERE, not inside `beginLayerSet()`.**
+        // `app/TransformSession.hpp` section 8's closing paragraph leaves the
+        // live-preview fallback to "the one place that already knows what it
+        // can and cannot draw" -- this UI. A non-contiguous set has no single
+        // below/above boundary for `ui/TransformCompositeSplit` to cut at,
+        // and this build's answer is the plainest of the sanctioned ones: a
+        // refusal by name before the gizmo appears, rather than starting a
+        // session whose live preview cannot be trusted to show what commit()
+        // will actually write. `beginLayerSet()` itself does not check this
+        // -- it is agnostic to which indices are in the set -- so a caller
+        // that skipped this check would get a session with an honest commit
+        // and a dishonest preview.
+        bool contiguous = true;
+        for (size_t i = 1; i < visibleSet.indices.size(); ++i) {
+          if (visibleSet.indices[i] != visibleSet.indices[i - 1] + 1) {
+            contiguous = false;
+            break;
+          }
+        }
+        if (!contiguous) {
+          g_docStatus = "Free Transform refused: the " + std::to_string(visibleSet.size()) +
+                       " selected layers are not a contiguous block, so there is no single "
+                       "arrangement to preview them moving in. Select a contiguous run of rows, "
+                       "or transform one layer at a time.";
+        } else {
+          const TransformBeginResult began = st.transform.beginLayerSet(*od, visibleSet);
+          if (!began.ok) g_docStatus = began.error;
+          if (began.ok) enterTransformTool(st);
+          // No pixel preview for a set -- see `beginTransformPreview()`'s own
+          // guard and `ui/TransformCompositeSplit.hpp`'s
+          // `documentWithLayerRangeHidden()` header for why: the wireframe
+          // box alone, the identical fallback a Pigment layer's single-layer
+          // transform already uses.
+          beginTransformPreview(st, gpu);
+        }
       } else {
-        // A selection transforms the pixels under it; no selection transforms
-        // the whole layer. Photoshop's own rule, and the one a user who has
-        // just drawn a marquee will expect -- the alternative (always the
-        // whole layer) would silently ignore a selection they made on purpose.
-        const TransformBeginResult began =
-            od->selection ? st.transform.beginSelectionPixels(*od, *od->selection, *li)
-                          : st.transform.beginLayer(*od, *li);
-        // Refusals are shown, never swallowed: `beginLayer`/
-        // `beginSelectionPixels` refuse a locked layer, an empty one and a
-        // Pigment selection-transform BY NAME (app/TransformSession.hpp), and
-        // a menu item that appeared enabled and then did nothing at all is
-        // the defect docs/reachability-audit.md is named after.
-        if (!began.ok) g_docStatus = began.error;
-        // The gizmo is up, so the pointer stops being whatever tool was
-        // making content and becomes the Move tool -- app/ToolSwitch.hpp's
-        // `enterTransformTool()` carries the argument. Only on success: a
-        // refused begin (a locked layer, an empty one) leaves no session, and
-        // changing the tool for a command that did nothing would be a second
-        // surprise on top of the refusal.
-        //
-        // This is also what puts a live Text caret away, on the paths that
-        // have not already: the Text block accepts its session the moment
-        // `toolEditsText()` stops being true, so Edit > Free Transform from
-        // the menu bar -- which raises this same flag without going through
-        // the keymap's own session-ending step -- ends up in the same state
-        // as the Cmd+T chord.
-        if (began.ok) enterTransformTool(st);
-        // T14: the live pixel preview's ONE upload for this whole session --
-        // never from the drag loop below, which only ever moves WHERE this
-        // already-uploaded texture is drawn (`pending()` changing the quad's
-        // four corners), never what it holds. A no-op on `!began.ok` (the
-        // session stayed inactive), which `beginTransformPreview()` checks
-        // itself rather than this call site re-deriving it.
-        beginTransformPreview(st, gpu);
+        const std::optional<size_t> li = od != nullptr ? activeLayerIndex(*od) : std::nullopt;
+        if (od == nullptr || !li) {
+          g_docStatus = "Free Transform needs an open document with a layer.";
+        } else {
+          // A selection transforms the pixels under it; no selection transforms
+          // the whole layer. Photoshop's own rule, and the one a user who has
+          // just drawn a marquee will expect -- the alternative (always the
+          // whole layer) would silently ignore a selection they made on purpose.
+          const TransformBeginResult began =
+              od->selection ? st.transform.beginSelectionPixels(*od, *od->selection, *li)
+                            : st.transform.beginLayer(*od, *li);
+          // Refusals are shown, never swallowed: `beginLayer`/
+          // `beginSelectionPixels` refuse a locked layer, an empty one and a
+          // Pigment selection-transform BY NAME (app/TransformSession.hpp), and
+          // a menu item that appeared enabled and then did nothing at all is
+          // the defect docs/reachability-audit.md is named after.
+          if (!began.ok) g_docStatus = began.error;
+          // The gizmo is up, so the pointer stops being whatever tool was
+          // making content and becomes the Move tool -- app/ToolSwitch.hpp's
+          // `enterTransformTool()` carries the argument. Only on success: a
+          // refused begin (a locked layer, an empty one) leaves no session, and
+          // changing the tool for a command that did nothing would be a second
+          // surprise on top of the refusal.
+          //
+          // This is also what puts a live Text caret away, on the paths that
+          // have not already: the Text block accepts its session the moment
+          // `toolEditsText()` stops being true, so Edit > Free Transform from
+          // the menu bar -- which raises this same flag without going through
+          // the keymap's own session-ending step -- ends up in the same state
+          // as the Cmd+T chord.
+          if (began.ok) enterTransformTool(st);
+          // T14: the live pixel preview's ONE upload for this whole session --
+          // never from the drag loop below, which only ever moves WHERE this
+          // already-uploaded texture is drawn (`pending()` changing the quad's
+          // four corners), never what it holds. A no-op on `!began.ok` (the
+          // session stayed inactive), which `beginTransformPreview()` checks
+          // itself rather than this call site re-deriving it.
+          beginTransformPreview(st, gpu);
+        }
       }
     }
 
@@ -16219,12 +17074,37 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // the canvas stops showing the picture twice -- the original standing
     // still underneath the moving copy -- which is the defect being fixed.
     // The document is NOT modified to achieve it; see the header.
-    const size_t transformLayer = st.transform.layerIndex();
+    //
+    // Track `xform` (PRD C12): a `TransformTarget::LayerSet` session widens
+    // "the transformed layer" to a contiguous `[loIndex, hiIndex]` block
+    // (`layerIndices()` is sorted ascending, so `.front()`/`.back()` ARE that
+    // block's ends -- the UI already refused a non-contiguous selection
+    // before the session began, in the `requestFreeTransform` handler
+    // above). There is no moving-pixels quad for a set (`beginTransformPreview()`'s
+    // own guard), so `transformSplitDraws` is unconditionally false for one:
+    // with nothing to sandwich between a below-half and an above-half, the
+    // split has nothing to buy, and the whole block is simply hidden from
+    // one ordinary composite via `documentWithLayerRangeHidden()` -- the
+    // identical "hide" arrangement a single layer takes when its own split
+    // is not exact, generalised from one index to a range.
+    const bool transformIsSet = st.transform.target() == TransformTarget::LayerSet;
+    const size_t transformLoIndex = transformIsSet
+                                        ? (st.transform.layerIndices().empty()
+                                               ? static_cast<size_t>(-1)
+                                               : st.transform.layerIndices().front())
+                                        : st.transform.layerIndex();
+    const size_t transformHiIndex = transformIsSet
+                                        ? (st.transform.layerIndices().empty()
+                                               ? static_cast<size_t>(-1)
+                                               : st.transform.layerIndices().back())
+                                        : st.transform.layerIndex();
+    const size_t transformLayer = transformLoIndex;  // single-layer targets: lo == hi == it
     const bool transformOnThisDoc = st.transform.active() && activeDocument != nullptr &&
                                     st.transform.documentId() == activeDocument->id &&
-                                    transformLayer < activeDocument->document.layers.size();
+                                    transformHiIndex < activeDocument->document.layers.size();
     const bool transformSplitDraws =
-        transformOnThisDoc && anyVisibleLayerAbove(activeDocument->document, transformLayer) &&
+        !transformIsSet && transformOnThisDoc &&
+        anyVisibleLayerAbove(activeDocument->document, transformLayer) &&
         transformSplitIsExact(activeDocument->document, transformLayer);
 
     // The two hidden-layer views, rebuilt only when the document, its
@@ -16238,9 +17118,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       DocumentId id = 0;
       uint64_t revision = 0;
       size_t layerIndex = static_cast<size_t>(-1);
+      size_t hiIndex = static_cast<size_t>(-1);  // == layerIndex except for a LayerSet range
       bool split = false;
       bool valid = false;
-      OpenDocument below;  // layers strictly below (split), or all but one (hide)
+      OpenDocument below;  // layers strictly below (split), all but one (hide), or all but a range
       OpenDocument above;  // layers strictly above; unused when `split` is false
     };
     static TransformSplitViews views;
@@ -16251,16 +17132,21 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (views.valid) views = TransformSplitViews{};
     } else if (!views.valid || views.id != activeDocument->id ||
                views.revision != activeDocument->revision ||
-               views.layerIndex != transformLayer || views.split != transformSplitDraws) {
+               views.layerIndex != transformLayer || views.hiIndex != transformHiIndex ||
+               views.split != transformSplitDraws) {
       views = TransformSplitViews{};
       views.id = activeDocument->id;
       views.revision = activeDocument->revision;
       views.layerIndex = transformLayer;
+      views.hiIndex = transformHiIndex;
       views.split = transformSplitDraws;
       views.below.id = activeDocument->id;
       views.below.revision = activeDocument->revision;
       views.below.document =
-          transformSplitDraws
+          transformIsSet
+              ? documentWithLayerRangeHidden(activeDocument->document, transformLoIndex,
+                                             transformHiIndex)
+          : transformSplitDraws
               ? documentWithLayersAtOrAboveHidden(activeDocument->document, transformLayer)
               : documentWithLayerHidden(activeDocument->document, transformLayer);
       if (transformSplitDraws) {
@@ -16293,9 +17179,15 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     static DocumentTexture transformAboveTexture;
     // Distinct, and carrying the layer index: two transforms on two different
     // layers of an unedited document are the same {id, revision} and would
-    // otherwise hit each other's cached composite.
-    const uint64_t belowVariant = 1u + static_cast<uint64_t>(transformLayer) * 2u;
-    const uint64_t aboveVariant = 2u + static_cast<uint64_t>(transformLayer) * 2u;
+    // otherwise hit each other's cached composite. A LayerSet range folds
+    // BOTH ends into the key (not just `transformLayer`, i.e. `lo`) so two
+    // sets sharing a lower bound -- {2,3} and {2,3,4} -- cannot collide.
+    const uint64_t transformRangeKey =
+        transformIsSet
+            ? (static_cast<uint64_t>(transformLoIndex) * 1000003ull + transformHiIndex)
+            : static_cast<uint64_t>(transformLayer);
+    const uint64_t belowVariant = 1u + transformRangeKey * 2u;
+    const uint64_t aboveVariant = 2u + transformRangeKey * 2u;
 
     // Declared out here rather than inside the block that computes it: the
     // above-half of a split transform is drawn much later, from the gizmo
@@ -16368,51 +17260,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // section 2 has the argument.
     if (documentOpen) dl->AddQuad(q00, q10, q11, q01, ImGui::GetColorU32(ImGuiCol_Border));
 
-    // --- navigator (docs/ui.md section 2) --------------------------------
-    //
-    // The same composite texture the canvas just drew, at thumbnail size in
-    // the bottom-right corner, with the visible region marked in the accent.
-    // Free: `DocumentTexture::viewFor()` is revision-cached, so the second
-    // call in a frame is a map lookup and no second composite happens.
-    //
-    // Drawn into the canvas window rather than as its own floating window,
-    // because it floats over the *surround* -- a window would take focus and
-    // would have to be excluded from the canvas hit test.
-    //
-    // The viewport rectangle is derived from `origin`/`drawSize`/`avail`, the
-    // same three the canvas block computed for itself, rather than from a
-    // second reconstruction of the same arithmetic. It is axis-aligned, so
-    // under a rotated view it marks the *bounding box* of what is visible
-    // rather than the rotated quad -- honest at a glance and wrong only in the
-    // corners, which is the same compromise drawRulers() makes for the same
-    // reason.
-    const AtelierRect navBox =
-        st.showNavigator && documentView != nullptr
-            ? atelierNavigatorRect(focusedRect, texW, texH)
-            : AtelierRect{};
-    if (!navBox.empty()) {
-      const ImVec2 navMin(navBox.x, navBox.y);
-      const ImVec2 navMax(navBox.right(), navBox.bottom());
-      dl->AddRectFilled(ImVec2(navMin.x + 4, navMin.y + 4), ImVec2(navMax.x + 4, navMax.y + 4),
-                        IM_COL32(0, 0, 0, 110));
-      // Paper, not chrome: the document composites with straight alpha, so an
-      // unpainted region is transparent and takes whatever is behind it. On
-      // the canvas that is the paper quad, and a navigator backed by chrome
-      // deep would show black where the canvas shows white -- a thumbnail that
-      // does not match the picture it is a thumbnail of.
-      dl->AddRectFilled(navMin, navMax, atelierToken(kCanvasPaper));
-      addCanvasImage(dl, documentView, navMin, navMax);
+    // The navigator is drawn at the END of this block, after every overlay --
+    // see the note there.
 
-      const float visX0 = (paintOrigin.x - origin.x) / st.view.zoom;
-      const float visY0 = (paintOrigin.y - origin.y) / st.view.zoom;
-      const AtelierRect vis = atelierNavigatorMap(navBox, texW, texH, visX0, visY0,
-                                                  visX0 + avail.x / st.view.zoom,
-                                                  visY0 + avail.y / st.view.zoom);
-      if (!vis.empty())
-        dl->AddRect(ImVec2(vis.x, vis.y), ImVec2(vis.right(), vis.bottom()),
-                    atelierToken(kAccent), 0.0f, 0, kRuleThickness);
-      dl->AddRect(navMin, navMax, atelierToken(kRule), 0.0f, 0, kRuleThickness);
-    }
 
     ImGui::SetCursorScreenPos(paintOrigin);
     ImGui::InvisibleButton("##canvasHit", avail,
@@ -17158,13 +18008,16 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           od->recordEdit("paste", EditKind::Structural);
         }
       }
-      if (st.requestDeleteSelection && target != nullptr && !target->locked) {
-        size_t changed = 0;
-        if (target->rgbTiles.has_value())
-          changed += clearThroughSelection(*target->rgbTiles, sel);
-        if (target->pigmentTiles.has_value())
-          changed += clearThroughSelection(*target->pigmentTiles, sel);
-        if (changed > 0) od->recordEdit("clear selection", EditKind::Content);
+      // Through `deleteSelectionCommand()`/`applyCommand()`, not a direct
+      // `clearThroughSelection()` -- the same reroute the crop/trim pair just
+      // above already makes, for the same reason (docs/automation.md §7): a
+      // gesture that mutated the tiles itself would run correctly and the
+      // recorder would never see it. `deleteSelectionUnavailable()` (app/
+      // CommandsImage.cpp) restates the `target != nullptr && !target->locked`
+      // guard this line used to make inline, so nothing here duplicates it.
+      if (st.requestDeleteSelection && od != nullptr) {
+        const CommandResult r = applyCommand(*od, deleteSelectionCommand());
+        if (!r.ok) g_strokeRefusal = r.status;
       }
 
       st.requestSelectAll = false;
@@ -17590,6 +18443,99 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     }
     // ===== Tool::Crop -- END ==============================================
 
+    // ===== Tool::Frame / Tool::Slice -- BEGIN: the gesture (app/RegionTool.hpp)
+    //
+    // One gesture module for both palette cells (`regionKindForTool()` picks
+    // which `RegionKind` a drag creates); everything else -- select, move,
+    // resize, delete -- is identical between the two. Gated on
+    // `toolCreatesRegions()`, the eleventh canvas gate, for
+    // `toolCropsCanvas()`'s own reason above: it is this module's own answer
+    // about its own two tools.
+    //
+    // Unlike Crop, a region gesture commits **on pen-up**, with no separate
+    // Enter/Escape confirmation step -- there is nothing destructive here to
+    // hold open for review, only a document edit no different in kind from a
+    // Move drag.
+    if (toolCreatesRegions(st.brush.tool) && !panning && !rotating && !sizingHeld &&
+        !st.pendingGuide.has_value()) {
+      RegionSession& region = st.region;
+      OpenDocument* regionDoc = st.documents.active();
+      const DocumentId regionDocId = regionDoc != nullptr ? regionDoc->id : 0u;
+      const RegionKind kind = regionKindForTool(st.brush.tool);
+
+      // A gesture begun on another tab means nothing here -- `CropSession`'s
+      // own rule for its own reason -- and neither does a SELECTION made
+      // there: region ids are a per-document counter, so document B's
+      // region 1 is not document A's. One normalisation here keeps
+      // `region.doc` naming the document every other field refers to.
+      if (region.doc != regionDocId) {
+        regionCancelGesture(region);
+        region.selectedId = 0;
+        region.doc = regionDocId;
+      }
+
+      if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && region.gesture != RegionGesture::Idle)
+        regionCancelGesture(region);
+
+      // Every commit below goes through `applyCommand()` (app/RegionTool.hpp:
+      // those functions are this tool's boundary into the command layer), so
+      // the history entry and the recorded step are already done by the time
+      // one returns. What is left for the canvas is the refusal sentence:
+      // `ok == false` with an EMPTY status is "not an edit" (a click), and
+      // must not be shown as a mistake.
+      const auto reportRegion = [](const CommandResult& r) {
+        if (!r.ok && !r.status.empty()) g_strokeRefusal = r.status;
+      };
+
+      // Delete/Backspace removes the selected region -- brief's own words.
+      // Guarded on `!WantTextInput` so renaming a region in the options row
+      // (a text field) does not also delete the row being renamed.
+      if (region.gesture == RegionGesture::Idle && region.selectedId != 0 && regionDoc != nullptr &&
+          !ImGui::GetIO().WantTextInput &&
+          (ImGui::IsKeyPressed(ImGuiKey_Delete, false) ||
+           ImGui::IsKeyPressed(ImGuiKey_Backspace, false))) {
+        reportRegion(regionDeleteSelected(region, *regionDoc));
+      }
+
+      // `--region-demo`'s pin, `CropSession::demoHeld`'s exact twin.
+      if (!region.demoHeld && regionDoc != nullptr) {
+        const float grabTexels = std::max(4.0f, 9.0f / std::max(0.05f, st.view.zoom));
+        const ImGuiIO& regionMods = ImGui::GetIO();
+
+        if (hovered && !transformActive && region.gesture == RegionGesture::Idle &&
+            ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+          const Region* selected = findRegionById(regionDoc->document, region.selectedId);
+          const int handle = (selected != nullptr && selected->kind == kind)
+                                 ? regionHandleAt(*selected, tx, ty, grabTexels)
+                                 : -1;
+          if (handle >= 0) {
+            regionBeginResize(region, regionDoc->document, handle);
+          } else if (const Region* hit = regionAt(regionDoc->document, kind, tx, ty)) {
+            region.selectedId = hit->id;
+            regionBeginMove(region, regionDoc->document, tx, ty);
+          } else {
+            // A click on empty canvas of this kind starts a new rectangle and
+            // deselects whatever was selected -- `regionBeginDefine()`'s own
+            // contract.
+            regionBeginDefine(region, regionDocId, kind, tx, ty);
+          }
+        }
+
+        if (region.gesture == RegionGesture::Defining &&
+            ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+          reportRegion(regionCommitDefine(region, *regionDoc, kind, tx, ty, regionMods.KeyShift,
+                                          regionMods.KeyAlt));
+        } else if (region.gesture == RegionGesture::Moving &&
+                   ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+          reportRegion(regionCommitMove(region, *regionDoc, tx, ty));
+        } else if (region.gesture == RegionGesture::Resizing &&
+                   ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+          reportRegion(regionCommitResize(region, *regionDoc, tx, ty));
+        }
+      }
+    }
+    // ===== Tool::Frame / Tool::Slice -- END ================================
+
     // ===== Tool::Move -- BEGIN: the drag (app/MoveTool.hpp) ===============
     //
     // A Move gesture IS a Free Transform restricted to a pure translation: the
@@ -17960,8 +18906,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
             pathEditEnd(&st.pathEdit, pathLayer->shapes);
           } else {
-            const PathEditChange changed =
-                pathEditUpdate(&st.pathEdit, &pathLayer->shapes, PathPoint{tx, ty});
+            // Shift read LIVE, every frame -- app/PenTool.hpp's own rule for
+            // this parameter, matching every other modifier this canvas
+            // block reads during a live drag (`gnomonSuppressed` above,
+            // `how`'s Alt/Shift, both read fresh rather than latched at
+            // pen-down). It locks a Corner scale to uniform and snaps a
+            // Rotate to 15 degrees; every other drag kind ignores it.
+            const PathEditChange changed = pathEditUpdate(
+                &st.pathEdit, &pathLayer->shapes, PathPoint{tx, ty}, ImGui::GetIO().KeyShift);
             // recordEdit on the FIRST frame that moves anything and amendEdit
             // after, so a drag is ONE undo step and a click that never moved
             // leaves no entry at all (app/DocumentLifecycle.hpp's rule, and the
@@ -17984,6 +18936,103 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
 
+    // --- Tool::Shape: rectangle/ellipse/rounded-rect/polygon/line -----------
+    //
+    // Gated on `toolCreatesShapes()` -- app/ShapeTool's own predicate, and a
+    // NEW term in `toolHasCanvasHandler()` for that header's own reason:
+    // Shape's gesture (one closed primitive from exactly two points, built
+    // once at release) is not the Pen's (one anchor per press, built up over
+    // many frames), so widening `toolEditsPath()` to cover it would hand
+    // Shape's clicks to a handler written for anchor placement.
+    //
+    // **This block writes `st.shapeDrag` directly** (`GradientDrag`'s own
+    // arrangement, `app/ShapeTool.hpp`'s comment on it) and writes
+    // `st.pathEdit` only THROUGH `commitShapeTool()`'s call into
+    // `pathEditSelectShapes()` -- so the single-writer rule
+    // `app/PenTool.hpp` states for that struct still holds across every tool
+    // that touches it.
+    if (toolCreatesShapes(st.brush.tool) && !panning && !rotating && !sizingHeld &&
+        !st.pendingGuide.has_value()) {
+      OpenDocument* shapeDoc = st.documents.active();
+      const DocumentId shapeDocId = shapeDoc != nullptr ? shapeDoc->id : 0u;
+
+      // A drag begun on another tab means nothing here -- `CropSession`'s
+      // rule, and the Pen's own block above reuses it the identical way.
+      if (st.shapeDrag.active && st.shapeDrag.documentId != shapeDocId) st.shapeDrag.active = false;
+
+      Layer* shapeLayer = shapeDoc != nullptr ? activeLayerOf(*shapeDoc) : nullptr;
+      bool shapeTargetOk = shapeLayer != nullptr && shapeLayer->kind == LayerKind::Vector;
+
+      if (!shapeTargetOk && shapeDoc == nullptr) {
+        // No document at all: refused exactly as the Pen refuses the
+        // identical case, out loud rather than silently dropped.
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+          g_strokeRefusal =
+              std::string("Shape needs a layer to draw into: this document has none selected.");
+        }
+      } else if (!shapeTargetOk && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        // **Auto-create a Vector layer, the Pen's own rule, reused rather
+        // than re-derived** (this track's own instruction): the identical
+        // `LayerCommand::NewVectorLayer` insertion `pathEditBeginPen()`'s
+        // caller uses above, so this gets the identical undo entry, default
+        // name and selection move that gesture already has, and the press
+        // that triggered it is not lost -- `pathTargetOk` (there, the
+        // identical local here) drops straight into the block below on the
+        // SAME frame.
+        runLayerCommand(st, LayerCommand::NewVectorLayer);
+        shapeLayer = activeLayerOf(*shapeDoc);
+        shapeTargetOk = shapeLayer != nullptr && shapeLayer->kind == LayerKind::Vector;
+      }
+
+      if (shapeTargetOk) {
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+          st.shapeDrag.active = true;
+          st.shapeDrag.documentId = shapeDocId;
+          st.shapeDrag.x0 = tx;
+          st.shapeDrag.y0 = ty;
+          // The far corner starts ON the near one -- `GradientDrag`'s own
+          // convention -- so the first frame of the drag is a plain click
+          // for `shapeToolGeometry()`'s purposes until the pointer actually
+          // moves.
+          st.shapeDrag.x1 = tx;
+          st.shapeDrag.y1 = ty;
+        }
+
+        if (st.shapeDrag.active) {
+          st.shapeDrag.x1 = tx;
+          st.shapeDrag.y1 = ty;
+
+          // Shift squares/circles the box (or snaps Line to 45 degrees);
+          // Option draws from the centre. Read live, every frame, so
+          // pressing or releasing either mid-drag updates the preview the
+          // same frame it updates the cursor -- the same live-modifier
+          // convention the gnomon's `gnomonSuppressed` above already uses.
+          const bool shiftConstrain = ImGui::GetIO().KeyShift;
+          const bool fromCenter = ImGui::GetIO().KeyAlt;
+
+          // **Ended when the button is NOT DOWN, not only on a release
+          // event** -- the Pen's own block states the reason two arms up:
+          // a release ImGui never saw (outside the window) must not leave a
+          // document-writing drag live forever.
+          if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            const ShapeCommitResult committed = commitShapeTool(
+                st.shapeTool, PathPoint{st.shapeDrag.x0, st.shapeDrag.y0},
+                PathPoint{st.shapeDrag.x1, st.shapeDrag.y1}, shiftConstrain, fromCenter,
+                penVectorStyle(st), &shapeLayer->shapes, &shapeLayer->nextShapeId, &st.pathEdit);
+            // ONE history entry per drag, exactly the Pen's own rule for a
+            // gesture that is itself the whole edit: `Empty` (a plain click,
+            // or a drag that collapsed to nothing) records nothing, because
+            // an undo entry for an edit that changed nothing is the empty
+            // entry `app/PenTool.hpp` refuses to open anywhere in this
+            // family.
+            if (committed == ShapeCommitResult::Committed) {
+              shapeDoc->recordEdit("draw shape", EditKind::Content);
+            }
+            st.shapeDrag.active = false;
+          }
+        }
+      }
+    }
 
     // --- Tool::Text: setting type --------------------------------------------
     //
@@ -19018,7 +20067,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                              gradientToolGeometry(st.gradient, st.gradientDrag.x0,
                                                   st.gradientDrag.y0, st.gradientDrag.x1,
                                                   st.gradientDrag.y1),
-                             currentGradientStops(st.brush),
+                             currentGradientStops(st.brush, st.gradient),
                              previewSel);
               setFilterPreview(FilterPreviewOwner::GradientTool, od->id, *previewLayer,
                                std::move(scratch));
@@ -19065,7 +20114,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                                  gradientToolGeometry(st.gradient, st.gradientDrag.x0,
                                                       st.gradientDrag.y0, st.gradientDrag.x1,
                                                       st.gradientDrag.y1),
-                                 currentGradientStops(st.brush), sel) > 0) {
+                                 currentGradientStops(st.brush, st.gradient), sel) > 0) {
                 od->recordEdit("gradient", EditKind::Content);
               }
             }
@@ -20572,6 +21621,51 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     }
     // === END Tool::Pen / Tool::Curve overlay ================================
 
+    // === BEGIN Tool::Shape preview (app/ShapeTool) ===========================
+    //
+    // Drawn only while a drag is live: unlike the Pen's own outline above,
+    // there is no PLACED geometry to keep showing between drags, because
+    // Shape has no open-placement session -- one drag is the whole gesture.
+    //
+    // Built through `shapeToolGeometry()`, the SAME function the commit
+    // calls at release (`app/GradientTool.hpp` section 1's rule, restated in
+    // `app/ShapeTool.hpp`: the preview and the commit are one computation
+    // run twice, never two that merely happen to agree) -- so what is drawn
+    // here is exactly the shape pen-up will create, not an approximation of
+    // it.
+    if (st.brush.tool == Tool::Shape && st.shapeDrag.active) {
+      const VectorShape shapePreview = shapeToolGeometry(
+          st.shapeTool, PathPoint{st.shapeDrag.x0, st.shapeDrag.y0},
+          PathPoint{st.shapeDrag.x1, st.shapeDrag.y1}, ImGui::GetIO().KeyShift,
+          ImGui::GetIO().KeyAlt);
+      if (!pathIsEmpty(shapePreview.path)) {
+        // Flattening tolerance in DEVICE pixels, the Pen overlay's own rule
+        // two arms up, so the preview stays smooth rather than visibly
+        // faceted when zoomed in.
+        const float overlayZoom = std::max(0.05f, st.view.zoom);
+        const float overlayTol = 0.3f / overlayZoom;
+        const ImU32 kShapeCasing = IM_COL32(0, 0, 0, 150);
+        const ImU32 kShapeCore = atelierToken(kAccent);
+        const std::vector<FlatContour> contours = flattenPath(shapePreview.path, overlayTol);
+        for (const FlatContour& c : contours) {
+          if (c.points.size() < 2) continue;
+          const size_t segs = c.closed ? c.points.size() : c.points.size() - 1;
+          for (size_t i = 0; i < segs; ++i) {
+            const PathPoint& p0 = c.points[i];
+            const PathPoint& p1 = c.points[(i + 1) % c.points.size()];
+            const Vec2 a = xform.toScreen(Vec2{p0.x, p0.y});
+            const Vec2 b = xform.toScreen(Vec2{p1.x, p1.y});
+            // A dark casing under a light core -- the Pen overlay's own
+            // reason: this is drawn over the user's picture at whatever
+            // colour that happens to be.
+            dl->AddLine(ImVec2(a.x, a.y), ImVec2(b.x, b.y), kShapeCasing, 2.0f);
+            dl->AddLine(ImVec2(a.x, a.y), ImVec2(b.x, b.y), kShapeCore, 1.0f);
+          }
+        }
+      }
+    }
+    // === END Tool::Shape preview =============================================
+
     // === BEGIN Tool::Text overlay (app/TextTool, core/TextContent) ==========
     //
     // Three things, and each is the answer to a question a user has while
@@ -20917,6 +22011,112 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     }
     // === END Tool::Crop overlay ============================================
 
+    // === BEGIN Tool::Frame / Tool::Slice overlay (app/RegionTool) ==========
+    //
+    // Outlines with a name label, drawn while either tool is active, and
+    // also whenever View > Show Frames and Slices is on (`st.showRegions`) --
+    // `AppState::showRegions`'s own comment: "a view toggle beside the
+    // tool-active condition that already draws the same overlay, not a
+    // replacement for it." No shield: unlike Crop, a region is not
+    // destructive, so there is nothing to darken the rest of the picture
+    // against.
+    //
+    // Frame and Slice are styled with two already-blessed design tokens
+    // (`ui/AtelierTheme.hpp`) rather than an invented third colour --
+    // `kAccent` (the active-tool / dirty-marker colour) for Frame,
+    // `kWarning` for Slice -- so the two read as distinct without adding a
+    // hue this design language does not already have a role for.
+    //
+    // **The live gesture is drawn too, and the selected region carries its
+    // four corner handles** -- without either, a Frame drag showed nothing
+    // until pen-up and a resize was a guess at where the corners were. The
+    // live rectangle comes from the same `regionDefineRect()` /
+    // `regionMoveOrigin()` / `regionResizeRect()` the commit calls with the
+    // same pointer, so what is drawn during the drag is what lands; the
+    // handles come from `regionHandlePoints()`, the function
+    // `regionHandleAt()` hit-tests, so a handle is never drawn where it
+    // cannot be grabbed (the Crop overlay's own rule, above).
+    //
+    // Every outline is four transformed corners, not two: the view can be
+    // rotated, and a rotated rectangle is not the axis-aligned box of two of
+    // its corners.
+    {
+      const OpenDocument* overlayDoc = st.documents.active();
+      const bool toolOn = toolCreatesRegions(st.brush.tool);
+      const bool sessionHere = overlayDoc != nullptr && st.region.doc == overlayDoc->id;
+      const bool defining = toolOn && sessionHere && st.region.gesture == RegionGesture::Defining;
+      if (overlayDoc != nullptr && (toolOn || st.showRegions) &&
+          (!overlayDoc->document.regions.empty() || defining)) {
+        const ImVec2 bandMin(paintOrigin.x, paintOrigin.y);
+        const ImVec2 bandMax(paintOrigin.x + avail.x, paintOrigin.y + avail.y);
+        dl->PushClipRect(bandMin, bandMax, true);
+        const auto corners = [&](int32_t x, int32_t y, uint32_t w, uint32_t h) {
+          const float x0 = static_cast<float>(x), y0 = static_cast<float>(y);
+          const float x1 = x0 + static_cast<float>(w), y1 = y0 + static_cast<float>(h);
+          const Vec2 c[4] = {xform.toScreen(Vec2{x0, y0}), xform.toScreen(Vec2{x1, y0}),
+                             xform.toScreen(Vec2{x1, y1}), xform.toScreen(Vec2{x0, y1})};
+          return std::array<ImVec2, 4>{ImVec2(c[0].x, c[0].y), ImVec2(c[1].x, c[1].y),
+                                       ImVec2(c[2].x, c[2].y), ImVec2(c[3].x, c[3].y)};
+        };
+        const ImGuiIO& overlayIo = ImGui::GetIO();
+        for (const Region& stored : overlayDoc->document.regions) {
+          const bool isSelected = toolOn && sessionHere && st.region.selectedId == stored.id;
+          // The selected region is drawn where the live gesture has it, not
+          // where the document last stored it.
+          Region r = stored;
+          if (isSelected && st.region.gesture == RegionGesture::Moving) {
+            regionMoveOrigin(st.region, tx, ty, &r.x, &r.y);
+          } else if (isSelected && st.region.gesture == RegionGesture::Resizing) {
+            const DocumentRegion live = regionResizeRect(st.region, tx, ty);
+            r.x = live.x;
+            r.y = live.y;
+            r.width = live.width;
+            r.height = live.height;
+          }
+          const ImU32 color = atelierToken(r.kind == RegionKind::Frame ? kAccent : kWarning);
+          const std::array<ImVec2, 4> q = corners(r.x, r.y, r.width, r.height);
+          dl->AddPolyline(q.data(), 4, color, ImDrawFlags_Closed, isSelected ? 2.5f : 1.5f);
+          // The name label, above the top-left corner. Clipped by the
+          // band's own `PushClipRect` above, so a region dragged mostly
+          // off-screen does not paint its label into the panels beside the
+          // canvas.
+          //
+          // **On a chrome-coloured plate**, because the label sits on the
+          // picture and the picture can be any colour: the Slice's warning
+          // yellow was close to unreadable over the demo's own pink and
+          // yellow, and the Frame's accent would vanish over red. The plate
+          // is the one background both are designed to read against.
+          const ImVec2 textSize = ImGui::CalcTextSize(r.name.c_str());
+          const ImVec2 textPos(q[0].x + 3.0f, q[0].y - textSize.y - 4.0f);
+          dl->AddRectFilled(ImVec2(textPos.x - 3.0f, textPos.y - 1.0f),
+                            ImVec2(textPos.x + textSize.x + 3.0f, textPos.y + textSize.y + 1.0f),
+                            (atelierToken(kChromeBase) & 0x00FFFFFFu) | 0xD8000000u);
+          dl->AddText(textPos, color, r.name.c_str());
+          if (isSelected) {
+            for (const ImVec2& hp : q) {
+              constexpr float hr = 4.5f;
+              dl->AddRectFilled(ImVec2(hp.x - hr, hp.y - hr), ImVec2(hp.x + hr, hp.y + hr),
+                                atelierToken(kCanvasPaper));
+              dl->AddRect(ImVec2(hp.x - hr, hp.y - hr), ImVec2(hp.x + hr, hp.y + hr), color, 0.0f,
+                          0, 1.0f);
+            }
+          }
+        }
+        if (defining) {
+          const DocumentRegion live =
+              regionDefineRect(st.region, tx, ty, overlayIo.KeyShift, overlayIo.KeyAlt);
+          if (live.width > 0u && live.height > 0u) {
+            const ImU32 color = atelierToken(
+                regionKindForTool(st.brush.tool) == RegionKind::Frame ? kAccent : kWarning);
+            const std::array<ImVec2, 4> q = corners(live.x, live.y, live.width, live.height);
+            dl->AddPolyline(q.data(), 4, color, ImDrawFlags_Closed, 1.5f);
+          }
+        }
+        dl->PopClipRect();
+      }
+    }
+    // === END Tool::Frame / Tool::Slice overlay ==============================
+
     // === BEGIN Tool::Measure ruler (app/MeasureLine) =======================
     //
     // Drawn from `xform`, like the marquee band and the transform wireframe
@@ -21118,6 +22318,61 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (st.pendingGuide)
         drawGuideLine(dl, xform, st.pendingGuide->orientation, st.pendingGuide->position, texW,
                       texH, kPendingGuideCol);
+    }
+
+    // --- navigator (docs/ui.md section 2) --------------------------------
+    //
+    // The same composite texture the canvas just drew, at thumbnail size in
+    // the bottom-right corner, with the visible region marked in the accent.
+    // Free: `DocumentTexture::viewFor()` is revision-cached, so the second
+    // call in a frame is a map lookup and no second composite happens.
+    //
+    // Drawn into the canvas window rather than as its own floating window,
+    // because it floats over the *surround* -- a window would take focus and
+    // would have to be excluded from the canvas hit test.
+    //
+    // **Drawn here, after every tool overlay, and not beside the canvas quad
+    // where it used to be.** It shares the canvas's draw list, so draw order
+    // is z-order: drawn first, it sat UNDER the marquee, the crop shield, the
+    // transform gizmo, the Frame/Slice outlines and the guides, each of which
+    // painted straight across the thumbnail whenever it reached the corner.
+    // It reads only view state, never anything an overlay computes, so moving
+    // it costs nothing but this paragraph. The brush ring still draws over it,
+    // because that is the pointer.
+    //
+    // The viewport rectangle is derived from `origin`/`drawSize`/`avail`, the
+    // same three the canvas block computed for itself, rather than from a
+    // second reconstruction of the same arithmetic. It is axis-aligned, so
+    // under a rotated view it marks the *bounding box* of what is visible
+    // rather than the rotated quad -- honest at a glance and wrong only in the
+    // corners, which is the same compromise drawRulers() makes for the same
+    // reason.
+    const AtelierRect navBox =
+        st.showNavigator && documentView != nullptr
+            ? atelierNavigatorRect(focusedRect, texW, texH)
+            : AtelierRect{};
+    if (!navBox.empty()) {
+      const ImVec2 navMin(navBox.x, navBox.y);
+      const ImVec2 navMax(navBox.right(), navBox.bottom());
+      dl->AddRectFilled(ImVec2(navMin.x + 4, navMin.y + 4), ImVec2(navMax.x + 4, navMax.y + 4),
+                        IM_COL32(0, 0, 0, 110));
+      // Paper, not chrome: the document composites with straight alpha, so an
+      // unpainted region is transparent and takes whatever is behind it. On
+      // the canvas that is the paper quad, and a navigator backed by chrome
+      // deep would show black where the canvas shows white -- a thumbnail that
+      // does not match the picture it is a thumbnail of.
+      dl->AddRectFilled(navMin, navMax, atelierToken(kCanvasPaper));
+      addCanvasImage(dl, documentView, navMin, navMax);
+
+      const float visX0 = (paintOrigin.x - origin.x) / st.view.zoom;
+      const float visY0 = (paintOrigin.y - origin.y) / st.view.zoom;
+      const AtelierRect vis = atelierNavigatorMap(navBox, texW, texH, visX0, visY0,
+                                                  visX0 + avail.x / st.view.zoom,
+                                                  visY0 + avail.y / st.view.zoom);
+      if (!vis.empty())
+        dl->AddRect(ImVec2(vis.x, vis.y), ImVec2(vis.right(), vis.bottom()),
+                    atelierToken(kAccent), 0.0f, 0, kRuleThickness);
+      dl->AddRect(navMin, navMax, atelierToken(kRule), 0.0f, 0, kRuleThickness);
     }
 
     // --- brush cursor ring ---
@@ -21640,6 +22895,22 @@ const DocumentTexturePool& canvasDocumentTexture() { return g_documentTextures; 
 // inlining the upload twice.
 void beginTransformPreview(AppState& st, GpuContext& gpu) {
   if (!st.transform.active()) return;
+  // Track `xform` (PRD C12): `TransformTarget::LayerSet` gets the wireframe-
+  // only fallback, deliberately -- `layerIndex()` is 0-always-meaningless for
+  // this target (app/TransformSession.hpp section 8's own accessor comment),
+  // so falling through below would upload LAYER 0's crop under the union
+  // box's corners: a real quad, at the wrong content, for the wrong reason.
+  // `g_transformPreview.reset()` rather than leaving whatever the previous
+  // session uploaded, for the identical reason every other session-end path
+  // resets it: a session's first draw frame must never show a previous
+  // session's pixels. Compositing N members' mutual blend modes into one
+  // preview crop is real work `ui/TransformPreviewTexture` does not take on
+  // (its own header's scope note already makes this trade for one Pigment
+  // layer; this is the identical trade for a whole set, of any kind).
+  if (st.transform.target() == TransformTarget::LayerSet) {
+    g_transformPreview.reset();
+    return;
+  }
   OpenDocument* od = st.documents.active();
   const size_t li = st.transform.layerIndex();
   if (od == nullptr || li >= od->document.layers.size()) return;

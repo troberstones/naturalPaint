@@ -107,6 +107,51 @@ std::string layerLabel(const Document& doc, size_t index) {
         (index < doc.layers.size() ? " ('" + doc.layers[index].name + "')" : "");
 }
 
+// One member's admission to a `TransformTarget::LayerSet` session -- header
+// section 8: exactly `beginLayer()`'s own predicate (locked; Text is
+// geometry-only and always admitted; every other kind needs RGB or Pigment
+// tiles; the bounds must be non-empty), duplicated here rather than factored
+// out of `beginLayer()` so that function's code is untouched by this feature
+// and its bit-identical guarantee costs nothing to believe. `bounds` is
+// undefined when `ok` is false.
+struct MemberAdmission {
+  bool ok = false;
+  std::string error;
+  LayerBounds bounds;
+};
+
+MemberAdmission admitLayerSetMember(const Document& doc, size_t index) {
+  MemberAdmission a;
+  if (index >= doc.layers.size()) {
+    a.error = "transform refused: index " + std::to_string(index) +
+             " is out of range; this document has " + std::to_string(doc.layers.size()) +
+             " layer(s).";
+    return a;
+  }
+  const Layer& layer = doc.layers[index];
+  if (layer.locked) {
+    a.error = "transform refused: " + layerLabel(doc, index) + " is locked. Unlock it first.";
+    return a;
+  }
+  const bool geometryOnlyText = layer.kind == LayerKind::Text;
+  if (!geometryOnlyText && !layer.rgbTiles.has_value() && !layer.pigmentTiles.has_value()) {
+    // Covers Group and Adjustment with no special case for either -- section
+    // 8's stated decision: a Group is refused exactly as an Adjustment layer
+    // is, because neither holds a pixel for a matrix to resample.
+    a.error = "transform refused: " + layerLabel(doc, index) + " is a " +
+             layerKindName(layer.kind) + " layer, which holds no pixels to transform.";
+    return a;
+  }
+  a.bounds = geometryOnlyText ? boundsFromTextContent(layer.text) : layerContentBounds(layer);
+  if (a.bounds.empty) {
+    a.error = "transform refused: " + layerLabel(doc, index) + " has no content -- nothing to "
+             "transform.";
+    return a;
+  }
+  a.ok = true;
+  return a;
+}
+
 }  // namespace
 
 // --------------------------------------------------------------------------
@@ -467,6 +512,50 @@ TransformBeginResult TransformSession::beginSelectionPixels(OpenDocument& od,
   return r;
 }
 
+TransformBeginResult TransformSession::beginLayerSet(OpenDocument& od, const LayerSelection& sel,
+                                                     const Mat3& initialPending) {
+  TransformBeginResult r;
+  // Section 8: a one-layer selection is `beginLayer()`'s own path, and this
+  // is not a second door into it.
+  if (sel.size() < 2) {
+    r.error = "transform refused: a set transform needs at least two selected layers (" +
+             std::to_string(sel.size()) + " selected). Use Free Transform on the single layer "
+             "directly.";
+    return r;
+  }
+  const Document& doc = od.document;
+  LayerBounds unioned;  // empty; unionLayerBounds() treats empty as identity.
+  for (const size_t index : sel.indices) {
+    const MemberAdmission a = admitLayerSetMember(doc, index);
+    if (!a.ok) {
+      r.error = a.error;
+      return r;
+    }
+    unioned = unionLayerBounds(unioned, a.bounds);
+  }
+
+  // Every member admitted. Stamp ids for all of them before the reset below
+  // wipes the session -- the identical ordering `beginLayer()` uses and for
+  // the identical reason: `ensureLayerId()` mutates `od.document`, and doing
+  // that after `*this = TransformSession{}` would be fine too since they are
+  // independent objects, but matching the single-layer function's own order
+  // keeps the two readable side by side.
+  std::vector<uint64_t> ids;
+  ids.reserve(sel.indices.size());
+  for (const size_t index : sel.indices) ids.push_back(ensureLayerId(od.document, index));
+
+  *this = TransformSession{};
+  sourceBounds_ = regionFromBounds(unioned);
+  documentId_ = od.id;
+  layerIndices_ = sel.indices;  // already sorted, duplicate-free (LayerSelection's invariant)
+  layerIds_ = std::move(ids);
+  target_ = TransformTarget::LayerSet;
+  pending_ = initialPending;
+  active_ = true;
+  r.ok = true;
+  return r;
+}
+
 TransformCommitResult TransformSession::commit(OpenDocument& od,
                                                const DocumentTransformParams& params) {
   TransformCommitResult out;
@@ -506,8 +595,25 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
   // own bounds check, so that the two halves of one question ("is the layer
   // still there, and is it still the same layer") answer in one sentence
   // instead of two written in different files.
-  if (layerIndex_ >= od.document.layers.size() ||
-      od.document.layers[layerIndex_].id != layerId_) {
+  //
+  // `TransformTarget::LayerSet` re-checks EVERY member against its own
+  // stamped id (header section 8) rather than just one -- the identical
+  // hazard `layerIndex_`/`layerId_` close for a single layer, closed once
+  // per member here, because `Layer > Delete Layer` reachable mid-gizmo
+  // (docs/testing-issues.md T29) can shift any one of them.
+  if (target_ == TransformTarget::LayerSet) {
+    for (size_t i = 0; i < layerIndices_.size(); ++i) {
+      const size_t index = layerIndices_[i];
+      if (index >= od.document.layers.size() || od.document.layers[index].id != layerIds_[i]) {
+        out.error = "transform commit refused: " + layerLabel(od.document, index) +
+                    " -- one of the transformed set -- is no longer at that position in the "
+                    "stack -- it was deleted, reordered or merged, or the document was undone "
+                    "past it. Press Escape to discard the transform.";
+        return out;
+      }
+    }
+  } else if (layerIndex_ >= od.document.layers.size() ||
+             od.document.layers[layerIndex_].id != layerId_) {
     out.error = "transform commit refused: the layer this transform began on is no longer at "
                 "that position in the stack -- it was deleted, reordered or merged, or the "
                 "document was undone past it. Press Escape to discard the transform.";
@@ -521,6 +627,39 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
     active_ = false;
     out.ok = true;
     out.exact = ExactRemap::Identity;
+    return out;
+  }
+
+  if (target_ == TransformTarget::LayerSet) {
+    // Header section 8 / `core/LayerSetOps.hpp` section 3's atomicity
+    // discipline, one level up: run against a COPY of the document, one
+    // member at a time, through the identical per-layer entry point the
+    // single-layer path uses; the first refusal discards the copy and `od`
+    // is never touched. `transformLayer()`'s own refusals (locked, no
+    // pixels) cannot fire here -- `beginLayerSet()` already excluded every
+    // layer that would trip them -- but a non-invertible `pending_` still
+    // can, uniformly, since it is the one matrix every member shares; this
+    // loop is what makes that refusal atomic across the whole set rather
+    // than something a partial loop could half-apply before discovering it.
+    Document scratch = od.document;
+    for (const size_t index : layerIndices_) {
+      const bool textLayer =
+          index < scratch.layers.size() && scratch.layers[index].kind == LayerKind::Text;
+      const LayerTransformResult r = textLayer ? transformTextLayer(scratch, index, pending_)
+                                               : transformLayer(scratch, index, pending_, params);
+      if (!r.ok) {
+        out.error = "transform commit refused: " + layerLabel(od.document, index) +
+                   " -- " + r.error;
+        return out;
+      }
+      out.reconstructionPasses = std::max(out.reconstructionPasses, r.reconstructionPasses);
+    }
+    od.document = std::move(scratch);
+    out.exact = exactRemapKind(pending_);
+    out.editLabel = "transform " + std::to_string(layerIndices_.size()) + " layers";
+    od.recordEdit(out.editLabel, EditKind::Structural);
+    active_ = false;
+    out.ok = true;
     return out;
   }
 

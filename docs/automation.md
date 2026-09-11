@@ -243,11 +243,16 @@ in the `.npaction`, nothing else you check will tell you.
 Kept here rather than in the plan because these are what the next contributor
 walks into, not what a finished phase decided:
 
-* Two `NotYetRegistered` document edits: `NumericTransform` (needs a policy for
-  what a recorded transform means at another resolution) and `DeleteSelection`
-  (waiting on how a step names the selection it acted through). The count is
-  asserted; register one and the number in `app/selftest/Command.cpp` §G comes
-  down by hand.
+* The five `NotYetRegistered` document edits this section used to name --
+  `NumericTransform`, `DeleteSelection`, `Inpaint`, `RemoveLightingGradient`
+  and `Offset` -- are now all `Registered` (`numeric_transform`,
+  `delete_selection`, `filter_inpaint`, `filter_remove_lighting_gradient`,
+  `filter_offset`). `DeleteSelection` and `Inpaint` both turned out to need the
+  recorder's existing channel-match rule (§3's `selectionBounded`), not a
+  second mechanism for "how a step names the selection it acted through".
+  `NumericTransform` is registered for the whole-active-layer case only; a
+  live selection still goes through `app/TransformSession`'s interactive path,
+  untouched. The count in `app/selftest/Command.cpp` §G is 0.
 * Six layer call sites that cannot be migrated until `Layer::id` is handed out.
   A layer name is not unique, so a control acting on a panel *row* has no target
   a command can name. This is smaller than it sounds: the identity machinery

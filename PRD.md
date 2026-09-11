@@ -1,6 +1,6 @@
 # naturalPaint — Product Requirements
 
-**Status:** draft · **Owner:** Chris Harvey · **Last updated:** 2026-08-17
+**Status:** draft · **Owner:** Chris Harvey · **Last updated:** 2026-09-11
 
 Engineering design lives in [DESIGN-imaging.md](DESIGN-imaging.md); terminology in
 [CONTEXT.md](CONTEXT.md); settled decisions in [docs/adr/](docs/adr/). This document
@@ -102,7 +102,7 @@ plugin ecosystem; attacking it head-on is how every competitor has lost.
 | **Text on a path, vertical text, rich-text runs** | The multi-year part of a text engine, and none of it serves annotation. Basic text *is* in scope as of the UI direction — see §6 area K. |
 | **Own text shaping** | CoreText does shaping, bidi, cluster breaking and font fallback correctly. Hand-rolling these is where text engines die. |
 | ~~Selection → path tracing~~ | Moved to §12 Future work — deferred, not refused. |
-| **Slice / web export** | The one tool in the source wireframe with no constituency in visdev or texture work. |
+| ~~Slice / web export~~ | Moved into scope on the owner's request (2026-09-11) — see I19. Built lean: named rectangles and per-region export, no HTML, image maps or optimisation. |
 | **CMYK / prepress** | Separations, spot channels, Pantone. Real capability, no overlap with texture or visdev work. |
 | **Layer styles, smart objects, arbitrary smart-filter stacks** | The unwinnable part of PSD fidelity, and the live op stack covers the useful 95% at a fraction of the machinery. Neither read nor written. |
 | **Wet mix outside Media layers** | Requires film depth and a contact mask a flat layer does not have. Smudge covers the cheap case. |
@@ -317,6 +317,7 @@ Watercolour fields cost **184 bytes/pixel**, so a full-document Media layer woul
 | I16 | Export layers to individual files | **P1** |
 | I17 | **Export layer comps to files** — one file per comp, with a name template, a choice of which comps, and I15's format/space/depth/resize options | **P1** |
 | I18 | Revert, duplicate document, save a copy, save incremental, open recent | **P1** |
+| I19 | **Frames and slices**: named rectangular regions saved in the document, drawn with the Frame and Slice tools, each exported to its own file (all, frames only, or slices only) with I17's name template and I15's format/space/depth/resize options. A region partly off the canvas exports the part on it | **P2** |
 
 > **I16 and I17 are one feature, not two.** Both are the same loop: set a document state,
 > composite, write with a naming rule. Splitting them across phases would mean building the

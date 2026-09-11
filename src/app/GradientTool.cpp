@@ -1,6 +1,9 @@
 #include "app/GradientTool.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <type_traits>
+#include <utility>
 
 namespace np {
 
@@ -68,12 +71,32 @@ const char* gradientSpreadLabel(GradientSpread spread) {
   return "Clamp";
 }
 
-GradientStops gradientToolStops(const std::array<float, 4>& foregroundLinear) {
+GradientStops resolveGradientPresetStops(const GradientPresetStops& spec,
+                                         const std::array<float, 3>& foregroundLinear) {
+  GradientStops stops;
+  stops.colorStops.reserve(spec.colorStops.size());
+  for (const GradientColorStopSpec& s : spec.colorStops) {
+    const std::array<float, 3>& c = s.foreground ? foregroundLinear : s.color;
+    stops.colorStops.push_back(ColorStop{s.position, c, s.midpoint});
+  }
+  stops.opacityStops.reserve(spec.opacityStops.size());
+  for (const GradientOpacityStopSpec& s : spec.opacityStops)
+    stops.opacityStops.push_back(OpacityStop{s.position, s.opacity, s.midpoint});
+  return stops;
+}
+
+GradientStops gradientToolStops(const std::array<float, 4>& foregroundLinear,
+                                const GradientPresetStops* custom) {
+  if (custom != nullptr) {
+    return resolveGradientPresetStops(
+        *custom, {foregroundLinear[0], foregroundLinear[1], foregroundLinear[2]});
+  }
   GradientStops stops;
   // The midpoint on every stop is 0.5 -- the linear interpolation
   // `gradientParameterAt()` degenerates to when the control is centred. This
-  // build surfaces no midpoint control, so writing anything else here would
-  // be a bias nothing in the UI could explain or undo.
+  // build surfaces no midpoint control on the built-in default, so writing
+  // anything else here would be a bias nothing in the UI could explain or
+  // undo.
   const float r = foregroundLinear[0];
   const float g = foregroundLinear[1];
   const float b = foregroundLinear[2];
@@ -82,6 +105,146 @@ GradientStops gradientToolStops(const std::array<float, 4>& foregroundLinear) {
   stops.opacityStops.push_back(OpacityStop{0.0f, 1.0f, 0.5f});
   stops.opacityStops.push_back(OpacityStop{1.0f, 0.0f, 0.5f});
   return stops;
+}
+
+float clampGradientStopPosition(float t) noexcept { return std::clamp(t, 0.0f, 1.0f); }
+
+float clampGradientStopMidpoint(float m) noexcept {
+  // The exact band `ops/Gradient.cpp`'s `applyMidpointSkew()` clamps to --
+  // copied as a literal rather than shared through a header, because that
+  // function is `ops/Gradient.cpp`'s own file-local `static`, and promoting
+  // it to a header for one constant would be a bigger seam than restating a
+  // number both files already state once each. `--selftest` (Gradient
+  // Editor §C) asserts the two literals still agree.
+  return std::clamp(m, 1e-3f, 1.0f - 1e-3f);
+}
+
+void sortGradientPresetStops(GradientPresetStops& stops) {
+  std::stable_sort(stops.colorStops.begin(), stops.colorStops.end(),
+                   [](const GradientColorStopSpec& a, const GradientColorStopSpec& b) {
+                     return a.position < b.position;
+                   });
+  std::stable_sort(stops.opacityStops.begin(), stops.opacityStops.end(),
+                   [](const GradientOpacityStopSpec& a, const GradientOpacityStopSpec& b) {
+                     return a.position < b.position;
+                   });
+}
+
+size_t addGradientColorStop(GradientPresetStops& stops, float position, bool foreground,
+                            const std::array<float, 3>& color, float midpoint) {
+  GradientColorStopSpec s;
+  s.position = clampGradientStopPosition(position);
+  s.foreground = foreground;
+  s.color = color;
+  s.midpoint = clampGradientStopMidpoint(midpoint);
+  // Sorted insert via upper_bound rather than push_back-then-sort: the sort
+  // is a stable_sort, and finding which of possibly several equal-position
+  // stops is "the one just inserted" after it ran would need a second search
+  // this avoids entirely -- `insertPoint()`'s own shape (`app/CurveEdit.cpp`).
+  const auto it = std::upper_bound(
+      stops.colorStops.begin(), stops.colorStops.end(), s.position,
+      [](float t, const GradientColorStopSpec& c) { return t < c.position; });
+  const size_t idx = static_cast<size_t>(it - stops.colorStops.begin());
+  stops.colorStops.insert(it, s);
+  return idx;
+}
+
+size_t addGradientOpacityStop(GradientPresetStops& stops, float position, float opacity,
+                              float midpoint) {
+  GradientOpacityStopSpec s;
+  s.position = clampGradientStopPosition(position);
+  s.opacity = std::clamp(opacity, 0.0f, 1.0f);
+  s.midpoint = clampGradientStopMidpoint(midpoint);
+  const auto it = std::upper_bound(
+      stops.opacityStops.begin(), stops.opacityStops.end(), s.position,
+      [](float t, const GradientOpacityStopSpec& o) { return t < o.position; });
+  const size_t idx = static_cast<size_t>(it - stops.opacityStops.begin());
+  stops.opacityStops.insert(it, s);
+  return idx;
+}
+
+bool removeGradientColorStop(GradientPresetStops& stops, size_t index) {
+  if (stops.colorStops.size() <= 2 || index >= stops.colorStops.size()) return false;
+  stops.colorStops.erase(stops.colorStops.begin() + static_cast<ptrdiff_t>(index));
+  return true;
+}
+
+bool removeGradientOpacityStop(GradientPresetStops& stops, size_t index) {
+  if (stops.opacityStops.size() <= 2 || index >= stops.opacityStops.size()) return false;
+  stops.opacityStops.erase(stops.opacityStops.begin() + static_cast<ptrdiff_t>(index));
+  return true;
+}
+
+size_t moveGradientColorStop(GradientPresetStops& stops, size_t index, float position) {
+  const GradientColorStopSpec moved = stops.colorStops.at(index);
+  stops.colorStops.erase(stops.colorStops.begin() + static_cast<ptrdiff_t>(index));
+  GradientColorStopSpec placed = moved;
+  placed.position = clampGradientStopPosition(position);
+  const auto it = std::upper_bound(
+      stops.colorStops.begin(), stops.colorStops.end(), placed.position,
+      [](float t, const GradientColorStopSpec& s) { return t < s.position; });
+  const size_t idx = static_cast<size_t>(it - stops.colorStops.begin());
+  stops.colorStops.insert(it, placed);
+  return idx;
+}
+
+size_t moveGradientOpacityStop(GradientPresetStops& stops, size_t index, float position) {
+  const GradientOpacityStopSpec moved = stops.opacityStops.at(index);
+  stops.opacityStops.erase(stops.opacityStops.begin() + static_cast<ptrdiff_t>(index));
+  GradientOpacityStopSpec placed = moved;
+  placed.position = clampGradientStopPosition(position);
+  const auto it = std::upper_bound(
+      stops.opacityStops.begin(), stops.opacityStops.end(), placed.position,
+      [](float t, const GradientOpacityStopSpec& s) { return t < s.position; });
+  const size_t idx = static_cast<size_t>(it - stops.opacityStops.begin());
+  stops.opacityStops.insert(it, placed);
+  return idx;
+}
+
+std::optional<size_t> hitTestGradientStop(const std::vector<float>& positions, float t,
+                                          float hitRadius) noexcept {
+  std::optional<size_t> best;
+  float bestDist = 0.0f;
+  for (size_t i = 0; i < positions.size(); ++i) {
+    const float d = std::fabs(positions[i] - t);
+    if (d <= hitRadius && (!best.has_value() || d < bestDist)) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+namespace {
+constexpr const char* kDefaultGradientPresetNameLiteral = "Foreground to Transparent";
+}  // namespace
+
+const char* defaultGradientPresetName() { return kDefaultGradientPresetNameLiteral; }
+
+std::vector<GradientBuiltInPreset> builtInGradientPresets() {
+  std::vector<GradientBuiltInPreset> presets;
+
+  // Index 0, matching § 5's hard-coded default exactly (same positions, same
+  // 0.5 midpoints) -- `--selftest` checks the two agree.
+  GradientPresetStops fgToTransparent;
+  fgToTransparent.colorStops.push_back(GradientColorStopSpec{0.0f, true, {0, 0, 0}, 0.5f});
+  fgToTransparent.colorStops.push_back(GradientColorStopSpec{1.0f, true, {0, 0, 0}, 0.5f});
+  fgToTransparent.opacityStops.push_back(GradientOpacityStopSpec{0.0f, 1.0f, 0.5f});
+  fgToTransparent.opacityStops.push_back(GradientOpacityStopSpec{1.0f, 0.0f, 0.5f});
+  presets.push_back({kDefaultGradientPresetNameLiteral, std::move(fgToTransparent)});
+
+  // A second, fixed-colour built-in: proof that the picker's "not written to
+  // disk" list is not just a re-statement of the one default, and a ramp a
+  // user reaches for often enough that shipping it beats making everyone
+  // author it themselves.
+  GradientPresetStops blackToWhite;
+  blackToWhite.colorStops.push_back(GradientColorStopSpec{0.0f, false, {0.0f, 0.0f, 0.0f}, 0.5f});
+  blackToWhite.colorStops.push_back(GradientColorStopSpec{1.0f, false, {1.0f, 1.0f, 1.0f}, 0.5f});
+  blackToWhite.opacityStops.push_back(GradientOpacityStopSpec{0.0f, 1.0f, 0.5f});
+  blackToWhite.opacityStops.push_back(GradientOpacityStopSpec{1.0f, 1.0f, 0.5f});
+  presets.push_back({"Black to White", std::move(blackToWhite)});
+
+  return presets;
 }
 
 GradientGeometry gradientToolGeometry(const GradientToolState& tool, float x0, float y0,

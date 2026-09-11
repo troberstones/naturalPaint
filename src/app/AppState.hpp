@@ -14,10 +14,12 @@
 #include "app/BrushLibraryFile.hpp"
 #include "app/CloseDecision.hpp"
 #include "app/CropTool.hpp"
+#include "app/RegionTool.hpp"
 #include "app/ActionsPanel.hpp"
 #include "app/BatchDialog.hpp"
 #include "app/PanelLayout.hpp"
 #include "app/PenTool.hpp"
+#include "app/ShapeTool.hpp"
 #include "app/PointerQueue.hpp"
 #include "app/TextTool.hpp"
 #include "app/TilePreview.hpp"
@@ -1177,6 +1179,18 @@ struct AppState {
   // user set that nothing painted with.
   VectorStyle vectorStyle;
 
+  // `Tool::Shape`'s own settings -- which primitive, and its one parameter
+  // (`app/ShapeTool.hpp`). The options bar's KIND segment and the RADIUS/
+  // SIDES control beside it are the only writers.
+  ShapeToolState shapeTool;
+
+  // `Tool::Shape`'s live two-point drag -- `GradientDrag`'s exact shape and
+  // for the identical reason (`app/ShapeTool.hpp`'s own comment):
+  // `ui/MacPaintUI.cpp`'s canvas block is its only writer, so nothing else in
+  // the build can clear it out from under an in-progress drag the way
+  // `marqueeDragging`'s shared flag once did to the gradient tool.
+  ShapeDrag shapeDrag;
+
   // `--text-demo frame`'s pin, `pathEditDemo` above's exact twin and for the
   // identical reason: the paragraph-frame rubber band exists ONLY while the
   // pointer is down, and a screenshot run has no pointer down.
@@ -1200,6 +1214,13 @@ struct AppState {
   // and `applyCropSession()` refuses on that id rather than cropping the wrong
   // picture to plausible numbers.
   CropSession crop;
+
+  // `Tool::Frame` and `Tool::Slice`'s shared gesture (app/RegionTool.hpp).
+  // Here rather than on `OpenDocument` for `crop`'s own reason: an on-canvas
+  // gesture in document texel space, and it carries its own `DocumentId`
+  // for `CropSession`'s reason -- a selected region's id means nothing in
+  // another document.
+  RegionSession region;
 
   // What the last eyedropper click did, in one sentence, or empty when there
   // has not been one. Shown in the options bar.
@@ -1656,11 +1677,21 @@ struct AppState {
   // which is itself a state worth photographing -- so this is optional and
   // both states are golden views. `exportStatesFolder`'s pattern.
   std::string exportAsPath;
+  // Frame/Slice export (PLAN.md gap-closing wave, track `region`) has no
+  // dedicated `--open-export-*` flag of its own: `--open-modal ExportRegions`
+  // (below) already reaches it through the generic door "every dialog a menu
+  // item opens" was built for, and a bespoke bool here would be a second way
+  // to say the same thing.
   // --open-layer-properties: holds the LAYERS panel's own gear-button modal
   // open, so a `--screenshot` can photograph it -- `openExportStatesDialog`'s
   // justification exactly, one dialog over: it too is opened by a click and
   // the screenshot path has no input.
   bool openLayerProperties = false;
+  // --open-gradient-editor: holds the gradient tool's stop editor open
+  // (PRD D24), `openLayerProperties`'s justification exactly one tool over --
+  // it too is reached only by clicking the options bar's gradient swatch, and
+  // `--screenshot` has no click.
+  bool openGradientEditorDialog = false;
   // --controls-all-open <SECTION>: scrolls that header to the top of the
   // column, every frame, so a `--screenshot` can photograph a section that
   // sits below the fold once every section is open. Empty means "do not
@@ -2039,6 +2070,11 @@ struct AppState {
   int brushSettingsDemoTab = -1;
   bool showGuides = true;
   bool showGrid = false;
+  // View > Show Frames and Slices (brief item 2). Drawn whenever true, in
+  // addition to whenever `Tool::Frame` or `Tool::Slice` is the active tool --
+  // `showGuides`'s own shape: a view toggle beside the tool-active condition
+  // that already draws the same overlay, not a replacement for it.
+  bool showRegions = false;
   // PRD Q6: global toggle. When true, dragging a new guide off a ruler
   // snaps to existing guides, grid lines and canvas edges (app/Snapping.hpp
   // resolveSnap()) -- never freehand brush painting, which has no code path

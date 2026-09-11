@@ -6,6 +6,7 @@
 #include "app/Command.hpp"
 #include "app/CommandsImage.hpp"
 #include "app/CommandsLayers.hpp"
+#include "app/CommandsRegions.hpp"
 #include "app/CropTool.hpp"
 #include "app/FilterOps.hpp"
 #include "app/Recorder.hpp"
@@ -488,7 +489,12 @@ bool runCommandCallsitesTest() {
                                     setLayerLockedCommand(true),
                                     setLayerClippedCommand(true),
                                     setLayerNameCommand("x"),
-                                    setLayerColorLabelCommand("red")};
+                                    setLayerColorLabelCommand("red"),
+                                    addRegionCommand(RegionKind::Frame, 1, 2, 3, 4, "x"),
+                                    deleteRegionCommand("x"),
+                                    renameRegionCommand("x", "y"),
+                                    moveRegionCommand("x", 1, 2),
+                                    resizeRegionCommand("x", 1, 2, 3, 4)};
     bool everyIdKnown = true;
     bool everyKeyAdvertised = true;
     std::string firstBad;
@@ -509,7 +515,7 @@ bool runCommandCallsitesTest() {
       }
     }
     if (!firstBad.empty()) std::printf("     first problem: %s\n", firstBad.c_str());
-    check(encoded.size() == 37, "encoders: every encoder this build publishes is exercised");
+    check(encoded.size() == 42, "encoders: every encoder this build publishes is exercised");
     check(everyIdKnown, "encoders: every id an encoder writes resolves to a registered row");
     check(everyKeyAdvertised, "encoders: and every key it writes is one that row advertises");
   }

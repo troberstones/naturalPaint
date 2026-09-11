@@ -17,6 +17,7 @@ const std::vector<CommandSpec>& table() {
     registerImageCommands(&rows);
     registerOpStackCommands(&rows);
     registerPatternCommands(&rows);
+    registerRegionCommands(&rows);
     return rows;
   }();
   return kTable;

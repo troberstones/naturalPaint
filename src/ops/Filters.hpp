@@ -490,6 +490,14 @@ enum class OffsetEdge {
   Transparent,
 };
 
+// The wire names for `OffsetEdge`, added for `app/CommandsImage.cpp`'s
+// `offset` command -- app/Command.hpp §3's rule applies here exactly as it
+// does to `blurKindName()`/`blurKindFromName()`: an enum crosses a `.npaction`
+// file by NAME, never by ordinal, because the enum is appended to and a file
+// keyed by position would change meaning the day it is.
+const char* offsetEdgeName(OffsetEdge edge) noexcept;
+std::optional<OffsetEdge> offsetEdgeFromName(std::string_view name) noexcept;
+
 struct OffsetParams {
   // The picture moves by `(+dx, +dy)`: a source texel at `s` appears at
   // `s + (dx, dy)`. Same sign convention as `RoiOp::dx`, which is the one an

@@ -4,6 +4,7 @@
 
 #include "app/CropTool.hpp"
 #include "app/MoveTool.hpp"       // toolMovesPixels(), one of the gates Crop must NOT answer
+#include "app/RegionTool.hpp"     // toolCreatesRegions() -- Tool::Slice's OWN gate, not Crop's
 #include "app/StrokeSession.hpp"  // the four Crop must not answer either
 #include "app/ToolSurface.hpp"    // the sixth surface-refusal row
 #include "app/ToolSwitch.hpp"     // a tool change discards a pending crop
@@ -108,9 +109,16 @@ bool runCropToolTest() {
     }
     check(othersFalse,
           "gate: and false for every other tool -- Tool::Slice shares the palette group and "
-          "the cursor and is still not built");
-    check(!toolImplemented(Tool::Slice) && !toolHasCanvasHandler(Tool::Slice),
-          "gate: Slice stays unbuilt -- a group pairing is a layout fact, not a capability");
+          "the cursor and is built through app/RegionTool's OWN gate, not this one");
+    // PLAN.md gap-closing wave, track `region`: Slice is built now, through
+    // `toolCreatesRegions()` (app/RegionTool.hpp), not through
+    // `toolCropsCanvas()` -- this is the OTHER half of the group-pairing
+    // claim above: sharing a palette slot with Crop never made Slice share
+    // Crop's gate, in either direction.
+    check(toolImplemented(Tool::Slice) && toolHasCanvasHandler(Tool::Slice) &&
+              !toolCropsCanvas(Tool::Slice) && toolCreatesRegions(Tool::Slice),
+          "gate: Slice is built, through its own gate -- a group pairing is a layout fact, not "
+          "a shared capability");
     check(toolImplemented(Tool::Crop) && toolHasCanvasHandler(Tool::Crop) &&
               toolNoHandlerException(Tool::Crop) == nullptr,
           "gate: Crop is implemented, has a canvas handler and needs no recorded exception");
@@ -124,9 +132,13 @@ bool runCropToolTest() {
     check(surface != nullptr && std::strstr(surface, "Nothing to crop") != nullptr &&
               std::strstr(surface, "File > New Document makes one.") != nullptr,
           "gate: with no document the surface names CROP and ends in the build's own clause");
-    check(toolSurfaceRefusal(Tool::Slice, false) == nullptr,
-          "gate: and Slice gets no surface sentence -- one reason per cell, and its reason is "
-          "\"Not built yet.\"");
+    // Slice is built now (PLAN.md gap-closing wave), through
+    // `toolCreatesRegions()` (app/RegionTool.hpp, app/ToolSurface.cpp's ninth
+    // gate) -- its own sentence, not Crop's and not "Not built yet."
+    const char* sliceSurface = toolSurfaceRefusal(Tool::Slice, false);
+    check(sliceSurface != nullptr && std::strstr(sliceSurface, "Nothing to mark out") != nullptr,
+          "gate: and Slice gets its OWN surface sentence, sharing Crop's palette group but not "
+          "Crop's gate");
   }
 
   // -----------------------------------------------------------------------

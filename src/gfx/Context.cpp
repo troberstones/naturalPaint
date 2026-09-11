@@ -265,7 +265,15 @@ void GpuContext::tick() {
 
 void GpuContext::shutdown() {
   if (queue) { wgpuQueueRelease(queue); queue = nullptr; }
-  if (surface) { wgpuSurfaceRelease(surface); surface = nullptr; }
+  // Unconfigure before releasing: skipping straight to release left the live
+  // VkSwapchainKHR/VkSurfaceKHR for wgpu-native's Rust Drop path to tear down
+  // inside the release call rather than in an ordered unconfigure-then-destroy
+  // sequence -- correct per the WebGPU surface lifecycle regardless of
+  // platform. Investigated as a candidate for a full-desktop redraw on quit
+  // under KWin/X11/NVIDIA; measured to make no difference there (see
+  // main.cpp's SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR comment for the
+  // actual cause). Kept anyway because the ordering itself is correct.
+  if (surface) { wgpuSurfaceUnconfigure(surface); wgpuSurfaceRelease(surface); surface = nullptr; }
   if (device) { wgpuDeviceRelease(device); device = nullptr; }
   if (adapter) { wgpuAdapterRelease(adapter); adapter = nullptr; }
   if (instance) { wgpuInstanceRelease(instance); instance = nullptr; }

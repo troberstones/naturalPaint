@@ -104,4 +104,48 @@ Command canvasSizeCommand(uint32_t width, uint32_t height, CanvasAnchor anchor);
 Command cropToSelectionCommand();
 Command trimToContentCommand();
 
+// --- PLAN.md phases 8 and 9's three, closing the gap CommandCoverage.cpp
+//     used to carry as NotYetRegistered ------------------------------------
+
+// `radius` is Telea's `eps`, in texels, straight to `InpaintParams::radius` --
+// see `doInpaint()` for why the selection it acts through is never a
+// parameter here (app/FilterOps.hpp already argues it is the hole, not a
+// bound, and is `doc.selection` alone).
+Command inpaintCommand(int32_t radius);
+
+// `sigma` is in document texels, exactly as `applyRemoveLightingGradient()`
+// declares it -- a pixel-unit parameter, listed in app/Batch.cpp's
+// `kPixelUnitParams` for the same reason `filter_gaussian_blur`'s is.
+Command removeLightingGradientCommand(float sigma);
+
+// **`dxFraction`/`dyFraction`, not texels** -- `doOffset()`'s own comment
+// argues why: the canonical use is `offsetByHalf()`, which is a FRACTION of
+// whatever canvas it runs on, and only a fraction reads the same after the
+// document is resized. A caller holding raw texel deltas divides by the
+// document's own width/height first (`ui/MacPaintUI.cpp`'s Offset dialog is
+// the one caller today) -- kept out of this encoder because §(3) above is
+// this header's own rule: an encoder writes what it is given and validates
+// nothing, and threading a document through it to do the division would be
+// this header quietly growing a second kind of parameter.
+Command offsetCommand(float dxFraction, float dyFraction, OffsetEdge edge);
+
+// No parameters: the region is `OpenDocument::selection`, exactly as
+// `cropToSelectionCommand()` above -- an absent selection clears the whole
+// layer (`core::clearThroughSelection()`'s own documented default), so this
+// row is bounded by the selection exactly as every filter above it is.
+Command deleteSelectionCommand();
+
+// The numeric-entry Transform dialog's five fields, in the units the runner
+// documents: `rotateDegrees` (clockwise) and the two scale fractions are
+// resolution-independent; `translateX`/`translateY` are document texels and
+// are listed in `kPixelUnitParams`. The pivot is NOT a parameter -- the
+// runner recomputes it from the replaying document's own active-layer content
+// bounds, which is what makes a recorded rotate or scale pivot correctly
+// around a differently-sized layer without a fourth resolution-dependent
+// number to carry. See `doNumericTransform()` for the rest of the policy
+// (docs/automation-plan.md §5) and for why this is scoped to the whole-active-
+// layer case only.
+Command numericTransformCommand(float rotateDegrees, float scaleXPercent, float scaleYPercent,
+                                float translateX, float translateY);
+
 }  // namespace np

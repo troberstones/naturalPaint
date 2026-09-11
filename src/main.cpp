@@ -45,6 +45,7 @@
 #include "app/StrokeBake.hpp"
 #include "app/StrokeSession.hpp"
 #include "app/CropTool.hpp"
+#include "app/RegionTool.hpp"  // --region-demo
 #include "app/TilePreview.hpp"
 #include "app/ToolSwitch.hpp"
 #include "app/ZoomAndSize.hpp"
@@ -1745,6 +1746,11 @@ int main(int argc, char** argv) {
   np::GradientKind gradientDemoKind = np::GradientKind::Linear;
   bool cropDemo = false;
   int cropDemoShape = 0;  // 0 = rectangle, 1 = perspective, 2 = the refused bow-tie
+  // --region-demo [slice]: see the argument-parsing block for what this
+  // covers and why a flag is the only way to photograph it. Frame by
+  // default; "slice" selects Tool::Slice and RegionKind::Slice instead.
+  bool regionDemo = false;
+  bool regionDemoSlice = false;
   bool wandDemo = false;
   bool wandDemoBucket = false;
   bool wandDemoFlats = false;
@@ -1793,6 +1799,7 @@ int main(int argc, char** argv) {
   bool openExportAs = false;
   const char* exportAsPath = nullptr;
   bool openLayerProperties = false;
+  bool openGradientEditorDialog = false;
   // --open-modal <MenuActionName>: enqueue one menu action on the first frame
   // so `--screenshot` can photograph the modal it opens. `MenuAction::None`
   // means the flag was not given. See the flag's own comment in the parse
@@ -2152,6 +2159,22 @@ int main(int argc, char** argv) {
         const std::string_view k(argv[i + 1]);
         if (k == "perspective") { cropDemoShape = 1; ++i; }
         else if (k == "bowtie") { cropDemoShape = 2; ++i; }
+      }
+    } else if (a == "--region-demo") {
+      // `--region-demo [slice]`: `Tool::Frame` (or `Tool::Slice`) with one
+      // region already laid down and SELECTED -- the options row and the
+      // canvas overlay are both per-region-selection state a screenshot run
+      // has no drag to produce, the same gap `--crop-demo` closes for
+      // `Tool::Crop`.
+      //
+      // `demoHeld` pins the session exactly as `CropSession::demoHeld`
+      // pins Crop's: it is not a live gesture, only a selection, but
+      // pinning it stops a stray pointer read from clearing `selectedId`
+      // before the frame is photographed.
+      regionDemo = true;
+      if (i + 1 < argc) {
+        const std::string_view k(argv[i + 1]);
+        if (k == "slice") { regionDemoSlice = true; ++i; }
       }
     } else if (a == "--wand-demo") {
       // Selects `Tool::MagicWand`, or `Tool::PaintBucket` with the optional
@@ -2559,6 +2582,12 @@ int main(int argc, char** argv) {
       // --open-export-states one dialog over: it too is opened by a click and
       // --screenshot has no input. See AppState::openLayerProperties.
       openLayerProperties = true;
+    } else if (a == "--open-gradient-editor") {
+      // The gradient tool's own options-bar swatch, same justification one
+      // dialog over again -- clicking it is the only way to open PRD D24's
+      // stop editor, and --screenshot has no click. See
+      // AppState::openGradientEditorDialog.
+      openGradientEditorDialog = true;
     } else if (a == "--patt-write") {
       if (i + 1 < argc) pattWritePath = argv[++i];
     } else if (a == "--batch") {
@@ -2624,6 +2653,19 @@ int main(int argc, char** argv) {
     return np::runBrushSheet(brushSheetAbr, brushSheetOut, brushSheetExperiment);
   if (strokePreviewOut != nullptr)
     return np::runStrokePreviewDump(strokePreviewOut, strokePreviewRadius, strokePreviewSpacing);
+
+  // SDL's X11 backend tags every "normal" window _NET_WM_BYPASS_COMPOSITOR=1
+  // by default -- a standing request for the window manager to unredirect
+  // it (unrelated to fullscreen; it fires for this window at its ordinary
+  // 1480x940 size). Under KWin's X11 backend on NVIDIA's proprietary driver,
+  // honouring that request means the compositor has to fully re-redirect
+  // and recomposite every window on the desktop when this one closes --
+  // observed as every window and the wallpaper blanking and redrawing.
+  // vkcube and a bare SDL_CreateWindow with this hint off do not trigger it;
+  // an otherwise-identical SDL window with the hint left at its default
+  // does, every time. Harmless to set unconditionally: it is an X11-only
+  // hint SDL ignores on every other platform.
+  SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
 
   if (!SDL_Init(SDL_INIT_VIDEO)) {
     std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
@@ -4156,6 +4198,19 @@ int main(int argc, char** argv) {
     // PLAN.md phase 16 (ADR-0009): the flatting library absorbed from
     // autoFlats, bit-exact against its reference on the shared fixtures.
     const bool flatsOk = !wanted("runFlatsTest") || np::runFlatsTest();
+    // docs/ui.md §4a: Tool::Shape's headless geometry and commit --
+    // app/ShapeTool. Appended at the end of the chain per this wave's own
+    // convention for a new section.
+    const bool shapeToolOk = !wanted("runShapeToolTest") || np::runShapeToolTest();
+    // Track `xform` (PRD C12): a multi-layer selection transformed together
+    // as one set, through app/TransformSession's `TransformTarget::LayerSet`.
+    // Appended at the end of the chain, per this wave's own convention.
+    const bool transformLayerSetOk = !wanted("runTransformLayerSetTest") || np::runTransformLayerSetTest();
+    // PLAN.md gap-closing wave, track `region`: core::Region, the Frame and
+    // Slice tools' shared gesture, np:regions persistence, the geometry-edit
+    // hookup in ops/DocumentTransform, and io/ExportRegions. Headless and
+    // GPU-free.
+    const bool regionOk = !wanted("runRegionTest") || np::runRegionTest();
     // Track B / B1+B2: `BrushTip::edgePx`'s pixel-wide antialiasing floor on
     // the procedural falloff, and `BrushTipBitmap::mips`' box-filter chain
     // for a minified sampled tip. Headless and GPU-free.
@@ -4245,9 +4300,9 @@ int main(int argc, char** argv) {
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk && dialogModuleOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
                     penToolOk && pathOpsOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
-                    textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && tipEdgeOk &&
-                    brushBlendModeOk && nativeBrushOk &&
-                    strokeInputOk && pointerQueueOk &&
+                    textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
+                    transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
+                    nativeBrushOk && strokeInputOk && pointerQueueOk &&
                     stabiliserOk && brushTaperOk;
     if (!selfTestOnly.empty()) {
       std::printf("[selftest] --selftest-only \"%s\": %d section(s) run\n", selfTestOnly.c_str(),
@@ -4586,6 +4641,7 @@ int main(int argc, char** argv) {
   }
   st.openExportAsDialog = openExportAs;
   st.openLayerProperties = openLayerProperties;
+  st.openGradientEditorDialog = openGradientEditorDialog;
   // Through the same queue a native menu click uses, drained at the top of the
   // first UI frame -- which is the only moment `performMenuAction()` has an
   // ImGui frame, an `AppState&` and a canvas size all at once. Everything the
@@ -4686,6 +4742,35 @@ int main(int argc, char** argv) {
         std::printf("[crop-demo] Tool::Crop, Perspective (bow-tie): %s\n",
                     np::cropQuadRefusal(st.crop.quad).c_str());
       }
+    }
+  }
+  if (regionDemo) {
+    if (np::OpenDocument* od = st.documents.active()) {
+      // One region of EACH kind, so either view photographs both overlay
+      // styles side by side, and the one matching the active tool selected
+      // (handles + the options row's NAME field). Straight into the model
+      // rather than through `applyCommand()`: this is a fixture, and a
+      // history entry would mark the document dirty in the title band --
+      // a pixel difference the view is not about.
+      //
+      // Both inside `--crop-demo`'s measured visible part of the 1024x1024
+      // demo document (x 0..899, y 0..675), neither square nor centred, and
+      // not overlapping, so a label drawn at a swapped corner lands
+      // somewhere visibly wrong rather than on the other region.
+      np::Document& doc = od->document;
+      doc.regions.clear();
+      np::addRegion(doc, np::RegionKind::Frame, 110, 90, 430u, 290u, "Cover");
+      np::addRegion(doc, np::RegionKind::Slice, 600, 400, 230u, 170u, "Buy button");
+      const np::RegionKind kind = regionDemoSlice ? np::RegionKind::Slice : np::RegionKind::Frame;
+      np::setActiveTool(st, np::toolForRegionKind(kind));
+      st.region = np::RegionSession{};
+      st.region.doc = od->id;
+      st.region.demoHeld = true;
+      for (const np::Region& r : doc.regions)
+        if (r.kind == kind) st.region.selectedId = r.id;
+      std::printf("[region-demo] Tool::%s, \"Cover\" (Frame) and \"Buy button\" (Slice); the %s "
+                  "selected\n",
+                  np::regionKindName(kind), np::regionKindName(kind));
     }
   }
   if (cloneDemo) {

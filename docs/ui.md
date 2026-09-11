@@ -672,7 +672,7 @@ scope**, which changes the PRD's non-goals.
 | **PEN, CURVE, + PATHS tab** | New subsystem. Phase 13. Pen and Curve shipped 2026-09-03 (§4a); **the PATHS tab has not** — §5 still reserves it. |
 | **TEXT** | Was a documented non-goal. Now phase 14. |
 | MEASURE | **Un-dropped** (sidequest/lucide-toolbox). This row used to say "**Dropped.** The pixel probe and the rulers cover what it was for." The supplied palette design draws Measure as its own cell regardless of that judgement, and the user's own words on reversing it: **"the palette keeps them for now, and we'll prune the unneeded tools in the future as the capabilities settle in."** No PRD id assigned yet — drawn disabled (§4a) until one is. |
-| SLICE | **Un-dropped** (sidequest/lucide-toolbox), same reversal and the same words as MEASURE above. This row used to say "Web-export slicing. Dropped — no plausible use in visdev or texture work, and it is the one tool here with no constituency." That judgement about its usefulness is not retracted, only the disposition is: the palette draws its cell either way, and a cell that exists gets a name rather than a silent gap. No PRD id assigned yet — drawn disabled (§4a) until one is. |
+| SLICE | **Un-dropped** (sidequest/lucide-toolbox), same reversal and the same words as MEASURE above. This row used to say "Web-export slicing. Dropped — no plausible use in visdev or texture work, and it is the one tool here with no constituency." That judgement about its usefulness is not retracted, only the disposition is: the palette draws its cell either way, and a cell that exists gets a name rather than a silent gap. No PRD id assigned yet — drawn disabled (§4a) until one is. **Now PRD I19** (2026-09-11): the owner asked for frames and slices after all, and both shipped together on `app/RegionTool` — see §4a. The judgement about its usefulness above is kept as the record of why it was once dropped. |
 
 > **This table used to say "Fold into existing phases" for six tools, and four of them then
 > never became requirements.** That is how GRAD, FILL and MEASURE went missing for a
@@ -688,19 +688,27 @@ The palette also needs two tools the wireframe did not draw: the **eraser** (PRD
 
 ### 4a. What the palette actually does today
 
-Of the 28 `Tool` values (`app/AppState.hpp`) — reachable either directly, as the icon a
+Of the 30 `Tool` values (`app/AppState.hpp`) — reachable either directly, as the icon a
 palette cell shows, or through a flyout for every group with more than one member (§2b) —
-**25 have real behaviour and 3 exist for their name, icon and keyboard-shortcut slot
-only.** As of 2026-09-03 the unbuilt three are **Frame, Shape and Slice**, and they are not
-three instances of the same gap:
+**all 30 have real behaviour as of 2026-09-11.** The last three, **Frame, Shape and
+Slice**, shipped in the gap-closing wave. As of 2026-09-03 they had been unbuilt for two
+different reasons, and each was closed on its own terms:
 
-* **Frame and Slice** are blocked on a *receiving model* rather than on effort. Both name a
-  document-level region concept that does not exist, and building the gesture without it
-  produces a tool that draws a rectangle and forgets it.
-* **Shape** is blocked on nothing structural and is the natural next one. It is no longer
-  blocked on geometry either: `core/Path`, `core/PathRaster` and `core/VectorShape` are
-  built, so a Shape tool is a gesture that emits a `VectorShape` into the layer the Pen
-  already edits.
+* **Frame and Slice** were blocked on a *receiving model* rather than on effort: both named
+  a document-level region concept that did not exist, and building the gesture without it
+  would have produced a tool that draws a rectangle and forgets it. The model came first —
+  `core/Region`, held in `Document::regions` so Undo covers it, saved as `np:regions` —
+  and both tools share one gesture module, `app/RegionTool`. Every edit it commits is a
+  recordable command (`add_region`, `move_region`, `resize_region`, `rename_region`,
+  `delete_region`). **File > Export Frames and Slices** writes one file per region (PRD
+  I19), and **View > Show Frames and Slices** draws the overlay with any tool active.
+* **Shape** was blocked on nothing structural: `core/Path`, `core/PathRaster` and
+  `core/VectorShape` were already built, so `app/ShapeTool` is a gesture that emits a
+  `VectorShape` into the layer the Pen already edits.
+
+With nothing unbuilt, the "Not built yet." tooltip and the slashed cursor have no subject;
+both are still keyed on `toolImplemented()`, and the selftest now pins "every tool is built"
+so a gate lost in a merge fails by count instead of greying a cell.
 
 **Text** shipped on 2026-09-03 with PLAN Phase 14: `text/Shaper` and its CoreText
 implementation, `core/TextContent`, a live `LayerKind::Text` layer, the `np:text` attribute,
@@ -759,7 +767,7 @@ filing them somewhere unrelated to painting.
 
 Section 2 gives the options bar the job of showing "the active tool and its options".
 Most tools take the default — the brush's SIZE / HARD / LOAD / WET — because they all
-put down a tip. Six take an early return instead and draw their own row, and the test
+put down a tip. Seven take an early return instead and draw their own row, and the test
 for whether a tool belongs here is not "does it have settings" but **would the four brush
 sliders be live controls over something this tool provably never reads**:
 
@@ -767,10 +775,11 @@ sliders be live controls over something this tool provably never reads**:
 | --- | --- | --- |
 | Eyedropper | SAMPLE (the `kProbeSampleSizes` ladder), SOURCE (Current Layer / Current & Below / All Layers), and a sentence saying what the last pick did | It samples; it has no tip. |
 | Measure | W, H, L, A — the ruler's readout in monospace | No tip at all, so SIZE would control nothing. |
-| Gradient | RAMP (the live ramp drawn over a transparency checkerboard), KIND (Linear / Radial / Angular) and SPREAD (Clamp / Repeat / Reflect) | It has no *stroke*, let alone a tip. |
+| Gradient | RAMP (the live ramp drawn over a transparency checkerboard — click it to open the stop editor, PRD D24), PRESET (the built-in and saved ramps), KIND (Linear / Radial / Angular) and SPREAD (Clamp / Repeat / Reflect) | It has no *stroke*, let alone a tip. |
 | Magic Wand | TOLERANCE (0..255), REACH (Contiguous / All Similar), ANTI-ALIAS | It selects; nothing it does deposits a texel. |
 | Paint Bucket | The same three, over its **own** parameter block | It fills a region found by a predicate, not a shape walked by a tip. |
 | Crop | MODE (Rectangle / Perspective), SIZE (the extent that will result), CROP and CANCEL, and the refusal sentence when there is one | It has no tip, no stroke and no deposit; nothing in `app/CropTool` or in the two engines behind it reads a `BrushTip`. |
+| Frame / Slice | NAME (editable), the kind label and its rectangle read-only in monospace, and DELETE | Neither `app/RegionTool` nor `core::RegionOps` reads a `BrushTip`; a region is a named rectangle, not a shape walked by a tip. |
 | Text | FONT (the installed families, with a filter box), SIZE (px), B and I, ALIGN (L / C / R / J) and COLOR | A glyph is an outline filled by `core/PathRaster`, not a stroke walked by a tip. |
 
 **ALIGN goes dead on point text**, greyed with the reason in a tooltip — SPREAD-on-Angular
@@ -842,12 +851,13 @@ here to there", which is true only of Linear, and one preview standing in for ge
 that differ is precisely the mistake that had a gradient drag drawing a stale lasso
 outline.
 
-Five golden views cover what `--selftest` cannot reach: `gradient` and
-`gradient_spread_off` for the options bar (the second showing the disabled SPREAD), and
+Six golden views cover what `--selftest` cannot reach: `gradient` and
+`gradient_spread_off` for the options bar (the second showing the disabled SPREAD),
 `gradient_drag` / `gradient_radial` / `gradient_angular` for the three geometries under one
-identical held drag. The canvas views exist because the defect that made this tool useless
-for its whole history (T3) was invisible to `--selftest` by construction: it lived in a
-canvas block, in a mutable flag two unrelated gestures shared.
+identical held drag, and `gradient_editor` for PRD D24's stop editor dialog. The canvas
+views exist because the defect that made this tool useless for its whole history (T3) was
+invisible to `--selftest` by construction: it lived in a canvas block, in a mutable flag two
+unrelated gestures shared.
 
 **The crop is the sixth, and §4b's test settles it without argument.** Unlike the smudge
 below — which was a genuinely marginal call, and stayed out of the table because

@@ -11,6 +11,10 @@
 #include "app/CommandSupport.hpp"
 #include "app/CropTool.hpp"
 #include "app/FilterOps.hpp"
+#include "app/TransformSession.hpp"
+#include "core/LayerGeometry.hpp"
+#include "core/SelectionMask.hpp"
+#include "ops/DocumentTransform.hpp"
 #include "ops/Transform.hpp"
 
 // app/CommandsImage -- the command rows for everything that changes pixels or
@@ -389,6 +393,281 @@ CommandResult doMotionBlur(OpenDocument& doc, const JsonValue& params) {
     return commandRefused(std::string("refused: ") + kId +
                           " was given a smear ops/Filters cannot build.");
   return fromFilterResult(applyMotionBlur(doc, p), doc, "motion blur");
+}
+
+// ==========================================================================
+// PLAN.md phases 8 and 9's three -- Inpaint, Remove Lighting Gradient, Offset
+// ==========================================================================
+//
+// The three CommandCoverage.cpp used to carry as `NotYetRegistered`. Same
+// shape as the seven filters above -- an adapter and nothing more -- with two
+// decisions the seven did not have to make, both argued at length where they
+// are used: Inpaint's selection is the hole it fills rather than a bound
+// (app/FilterOps.hpp's own section on the point), and Offset's `dx`/`dy` are
+// recorded as a FRACTION of the canvas rather than as texels, because its
+// canonical use (`offsetByHalf()`) is defined AS a fraction and only a
+// fraction still means "by half" after the document is resized.
+
+CommandResult doInpaint(OpenDocument& doc, const JsonValue& params) {
+  const char* kId = "filter_inpaint";
+  int32_t radius = 0;
+  const std::string why = readWhole(params, kId, "radius", kRequired, &radius);
+  if (!why.empty()) return commandRefused(why);
+  // `inpaintParamsValid()` (app/FilterOps.hpp) is the engine's own bound, but
+  // it takes an already-built `InpaintParams` this adapter never holds --
+  // `applyInpaint()` builds `hole` from `doc.selection` itself, and passing a
+  // radius-only stand-in here would be a second, narrower copy of the same
+  // range check. `kInpaintMaxRadius` is public precisely so this file can
+  // quote it without one.
+  if (radius < 1 || radius > kInpaintMaxRadius)
+    return commandRefused(refuseValue(
+        kId, "radius", "from 1 to " + std::to_string(kInpaintMaxRadius) + " texels"));
+  return fromFilterResult(applyInpaint(doc, radius), doc, "inpaint");
+}
+
+// Shared by the precondition and the applier -- `applyInpaint()` would refuse
+// a locked layer or a missing selection itself (app/PixelOpBridge's own
+// belt-and-suspenders argument, restated for `inpaintRefusal()` on section E
+// of app/selftest/Command.cpp), but a replayer asks `unavailableReason()`
+// BEFORE calling `apply`, so the same question has to be answerable standing
+// alone.
+std::string inpaintUnavailable(const OpenDocument& doc, const JsonValue&) {
+  const PixelOpRefusal why = inpaintRefusal(doc);
+  if (why == PixelOpRefusal::None) return {};
+  return pixelOpRefusalMessage(why, activeLayerOf(doc), "inpaint");
+}
+
+CommandResult doRemoveLightingGradient(OpenDocument& doc, const JsonValue& params) {
+  const char* kId = "filter_remove_lighting_gradient";
+  float sigma = 0.0f;
+  std::string why = readNumber(params, kId, "sigma", kRequired, &sigma);
+  // Sigma 0 is not this op's identity -- it is the erase (ops/Filters.hpp
+  // section 10: every ratio becomes exactly 1 and the layer flattens to a
+  // single colour) -- but it is still refused here for §2's reason: a request
+  // the engine cannot honour is a batch file written unmodified and reported
+  // as a success unless something upstream of the engine says no by name.
+  if (why.empty()) why = requireAbove(kId, "sigma", sigma, 0.0f);
+  if (!why.empty()) return commandRefused(why);
+  return fromFilterResult(applyRemoveLightingGradient(doc, sigma), doc,
+                          "remove lighting gradient");
+}
+
+CommandResult doOffset(OpenDocument& doc, const JsonValue& params) {
+  const char* kId = "filter_offset";
+  float dxFraction = 0.0f;
+  float dyFraction = 0.0f;
+  std::string why = readNumber(params, kId, "dx_fraction", kOptional, &dxFraction);
+  if (why.empty()) why = readNumber(params, kId, "dy_fraction", kOptional, &dyFraction);
+  OffsetEdge edge = OffsetEdge::Wrap;
+  if (why.empty()) why = readEnumByName(params, kId, "edge", offsetEdgeFromName, &edge);
+  if (!why.empty()) return commandRefused(why);
+
+  // The one arithmetic step this file's header (§3) says an adapter may not
+  // invent: turning a stored fraction back into the whole-texel addressing
+  // change `OffsetParams::dx`/`dy` actually are. This is not "the engine's
+  // own default", the way every other conversion in this file is -- it is the
+  // resolution-independence policy CommandCoverage.cpp's `Offset` row states,
+  // and it belongs here rather than in `ops/Filters.hpp` because `ops/` has no
+  // notion of "a fraction of the canvas" at all, only whole texels
+  // (ops/Filters.hpp section 4).
+  const double width = static_cast<double>(doc.document.width);
+  const double height = static_cast<double>(doc.document.height);
+  const int32_t dx =
+      static_cast<int32_t>(std::lround(static_cast<double>(dxFraction) * width));
+  const int32_t dy =
+      static_cast<int32_t>(std::lround(static_cast<double>(dyFraction) * height));
+  // The identity refusal (§2): a fraction that resolves to zero texels on
+  // BOTH axes on THIS document is indistinguishable from an offset nobody
+  // asked for, and `OffsetEdge::Wrap` at (0, 0) is a bit-exact copy either
+  // way. A fraction that resolves to zero on only one axis is a real,
+  // deliberate one-dimensional offset and is not refused.
+  if (dx == 0 && dy == 0)
+    return commandRefused(
+        "refused: " + std::string(kId) +
+        "'s \"dx_fraction\" and \"dy_fraction\" both resolve to zero texels on this "
+        "document; an offset of (0, 0) is the identity.");
+
+  const OffsetRequest request{dx, dy, edge};
+  return fromFilterResult(applyOffset(doc, request), doc, "offset");
+}
+
+std::string offsetUnavailable(const OpenDocument& doc, const JsonValue&) {
+  const PixelOpRefusal why = offsetRefusalFor(doc);
+  if (why == PixelOpRefusal::None) return {};
+  return pixelOpRefusalMessage(why, activeLayerOf(doc), "offset");
+}
+
+// ==========================================================================
+// Delete Selection -- core/SelectionMask.hpp's `clearThroughSelection()`
+// ==========================================================================
+//
+// Not through `pixelOpUnavailable()`/`applyPixelFilter()`: those two require
+// `rgbTiles` specifically (app/StrokeSession.hpp's `PixelOpRefusal::
+// NoRgbStore`), because every filter above needs a working-space RGBA buffer
+// to run a kernel over. A clear needs nothing of the kind -- `core/
+// SelectionMask.hpp` publishes a `clearThroughSelection()` overload for
+// `PigmentTileStore` too, weighted by mass rather than by premultiplied alpha
+// -- and `ui/MacPaintUI.cpp`'s own Delete gesture already clears whichever
+// store a layer actually holds. A command that refused a Pigment layer here
+// would be narrower than the menu item it registers, which is exactly the
+// parity docs/automation.md asks for.
+std::string deleteSelectionUnavailable(const OpenDocument& doc, const JsonValue&) {
+  const Layer* target = activeLayerOf(doc);
+  if (target == nullptr)
+    return "refused: delete_selection has nothing to clear. Open a document, or add a layer "
+          "in LAYERS.";
+  if (target->locked)
+    return "locked layer: \"" + target->name + "\" cannot take delete_selection. Clear its "
+          "Lock in LAYERS.";
+  if (!target->rgbTiles.has_value() && !target->pigmentTiles.has_value())
+    return "\"" + target->name + "\" is " + layerKindName(target->kind) +
+          " and holds no pixels for delete_selection.";
+  return {};
+}
+
+CommandResult doDeleteSelection(OpenDocument& doc, const JsonValue&) {
+  Layer* target = activeLayerOf(doc);
+  // `unavailableReason()` already refused a null/locked/storeless target
+  // before this runs (app/Command.cpp's `applyCommand()`) -- this null check
+  // is the same belt-and-suspenders every applier in this file keeps rather
+  // than trusting a caller that might reach `apply` directly.
+  if (target == nullptr) return commandRefused(deleteSelectionUnavailable(doc, JsonValue::object()));
+
+  size_t changed = 0;
+  // A null `doc.selection` clears the whole layer -- `clearThroughSelection()`
+  // documents that as its own default, matching every filter above: absent
+  // selection means no restriction. That is what makes this row
+  // `selectionBounded`, exactly as `filter_gaussian_blur` is.
+  const Selection* sel = doc.selection ? &*doc.selection : nullptr;
+  if (target->rgbTiles.has_value()) changed += clearThroughSelection(*target->rgbTiles, sel);
+  if (target->pigmentTiles.has_value())
+    changed += clearThroughSelection(*target->pigmentTiles, sel);
+
+  CommandResult r;
+  r.ok = true;
+  r.changesPixels = true;
+  r.texelsChanged = changed;
+  r.status = "delete selection: " + std::to_string(changed) + " texels changed";
+  if (changed > 0) doc.recordEdit("clear selection", EditKind::Content);
+  return r;
+}
+
+// ==========================================================================
+// Numeric Transform -- `ops/DocumentTransform`'s `transformLayer()`, driven by
+// the same `composeNumericTransform()` the interactive dialog uses
+// ==========================================================================
+//
+// **Deliberately scoped to `TransformTarget::Layer` alone.** The interactive
+// dialog (`ui/MacPaintUI.cpp`'s `drawNumericTransformDialog()`) also drives
+// `TransformTarget::SelectionPixels` when a selection is live, through
+// `app/TransformSession`'s `beginSelectionPixels()`/`commit()`. This command
+// does not reach for either: another track is making Free Transform work on a
+// multi-layer selection through that exact session, and this file's brief is
+// "do not touch app/TransformSession or core/LayerSetOps". So a live selection
+// is refused here by name rather than silently taking the whole-layer
+// reading -- the interactive dialog and the Free Transform gizmo remain the
+// way to numeric-transform a selection's pixels; this command is the
+// recordable half of the OTHER case, which is also the more common one.
+//
+// **The pivot is not a parameter.** `numericTransformPivot()` (the dialog's
+// own helper) is the centre of the session's frozen `sourceBounds()`, itself
+// `regionFromBounds(layerContentBounds(layer))` at the moment the gizmo began.
+// This command instead recomputes that same quantity from the REPLAYING
+// document's active layer, every time it runs -- which is what lets a rotate
+// or a non-uniform scale pivot correctly around a layer whose content bounds
+// differ from the one the step was recorded against, with no fourth
+// resolution-dependent number (docs/automation-plan.md §5's own suggestion,
+// "pivot as a fraction of the layer/canvas bounds", would still need the
+// layer's bounds at replay time to turn a fraction back into a point -- so
+// recomputing the point directly is the same idea with one fewer parameter).
+//
+// `translate_x`/`translate_y` are the one pair of texel-valued parameters
+// here (`app/Batch.cpp`'s `kPixelUnitParams` lists them); `rotate_degrees` and
+// the two scale percentages are resolution-independent numbers, exactly as
+// docs/automation-plan.md §5's unit rule asks: a value is pixel-unit only when
+// its MEANING is relative to the resolution, and a rotation or a scale factor
+// is not.
+std::string numericTransformRefusal(const OpenDocument& doc) {
+  const char* kId = "numeric_transform";
+  const std::optional<size_t> li = activeLayerIndex(doc);
+  if (!li) return std::string("refused: ") + kId + " has no layer to act on.";
+  const Layer& layer = doc.document.layers[*li];
+  if (layer.locked)
+    return "locked layer: \"" + layer.name + "\" cannot take " + kId + ". Clear its Lock in LAYERS.";
+  if (doc.selection)
+    return std::string("refused: ") + kId +
+          " acts on the whole active layer, and a selection is live. This command does not "
+          "carry a selection-bounded transform (that stays the interactive Numeric Transform "
+          "dialog's and Free Transform's job) -- deselect first, or use one of those.";
+  if (layer.kind == LayerKind::Text)
+    return "\"" + layer.name + "\" is a Text layer: its geometry is a Mat3 on TextContent, not "
+          "tile-store pixels, and " + std::string(kId) + " does not carry that path.";
+  if (!layer.rgbTiles.has_value() && !layer.pigmentTiles.has_value())
+    return "\"" + layer.name + "\" is " + layerKindName(layer.kind) + " and holds no pixels for " +
+          std::string(kId) + ".";
+  if (layerContentBounds(layer).empty)
+    return "\"" + layer.name + "\" has no content -- nothing for " + std::string(kId) +
+          " to transform.";
+  return {};
+}
+
+std::string numericTransformUnavailable(const OpenDocument& doc, const JsonValue&) {
+  return numericTransformRefusal(doc);
+}
+
+CommandResult doNumericTransform(OpenDocument& doc, const JsonValue& params) {
+  const char* kId = "numeric_transform";
+  float rotateDeg = 0.0f;
+  float scaleXPercent = 100.0f;
+  float scaleYPercent = 100.0f;
+  float translateX = 0.0f;
+  float translateY = 0.0f;
+  std::string why = readNumber(params, kId, "rotate_degrees", kOptional, &rotateDeg);
+  if (why.empty()) why = readNumber(params, kId, "scale_x_percent", kOptional, &scaleXPercent);
+  if (why.empty()) why = readNumber(params, kId, "scale_y_percent", kOptional, &scaleYPercent);
+  if (why.empty()) why = readNumber(params, kId, "translate_x", kOptional, &translateX);
+  if (why.empty()) why = readNumber(params, kId, "translate_y", kOptional, &translateY);
+  if (!why.empty()) return commandRefused(why);
+  if (scaleXPercent <= 0.0f)
+    return commandRefused(refuseValue(kId, "scale_x_percent", "a positive percentage"));
+  if (scaleYPercent <= 0.0f)
+    return commandRefused(refuseValue(kId, "scale_y_percent", "a positive percentage"));
+
+  const std::string refusal = numericTransformRefusal(doc);
+  if (!refusal.empty()) return commandRefused(refusal);
+
+  const std::optional<size_t> li = activeLayerIndex(doc);
+  const LayerBounds bounds = layerContentBounds(doc.document.layers[*li]);
+  const DocumentRegion region = regionFromBounds(bounds);
+  const Point2 pivot{static_cast<float>(region.x) + static_cast<float>(region.width) * 0.5f,
+                     static_cast<float>(region.y) + static_cast<float>(region.height) * 0.5f};
+
+  const Mat3 m = composeNumericTransform(rotateDeg, scaleXPercent / 100.0f,
+                                         scaleYPercent / 100.0f, translateX, translateY, pivot);
+  // TransformSession::commit()'s own rule, matched exactly (app/
+  // TransformSession.cpp): an identity transform succeeds and records
+  // nothing, rather than being refused as a would-be no-op the way a zero
+  // sigma is above. Numeric Transform's own dialog can produce this
+  // legitimately -- every field at its default is "apply nothing", which the
+  // dialog itself treats as a harmless commit, not a mistake to catch.
+  if (m.m == mat3Identity().m) {
+    CommandResult r;
+    r.ok = true;
+    r.changesPixels = true;
+    r.status = std::string(kId) + ": identity request, nothing changed";
+    return r;
+  }
+
+  const LayerTransformResult t =
+      transformLayer(doc.document, *li, m, DocumentTransformParams{});
+  if (!t.ok) return commandRefused(t.error);
+  doc.recordEdit(t.editLabel, EditKind::Structural);
+  CommandResult r;
+  r.ok = true;
+  r.changesPixels = true;
+  r.texelsChanged = 1;
+  r.status = t.editLabel;
+  return r;
 }
 
 // ==========================================================================
@@ -844,7 +1123,26 @@ void registerImageCommands(std::vector<CommandSpec>* out) {
                   doCropToSelection, /*selectionBounded=*/true});
   out->push_back({"trim_to_content", "Trim to Content", {}, documentUnavailable, doTrimToContent});
 
-  // ---- the Filter menu's seven -------------------------------------------
+  // `delete_selection` joins `crop_to_selection` as the second row bounded by
+  // the selection without going through `pixelOpUnavailable` -- it needs
+  // `deleteSelectionUnavailable()` instead because it must accept a Pigment
+  // layer, which the shared pixel-op bridge does not. Both are named as the
+  // exception in app/selftest/Command.cpp section H.
+  out->push_back({"delete_selection", "Delete", {}, deleteSelectionUnavailable, doDeleteSelection,
+                  /*selectionBounded=*/true});
+
+  // `numeric_transform` acts on the whole active layer (never bounded by the
+  // selection -- a live one is refused by name instead, see `doNumericTransform()`),
+  // exactly as `image_size`/`canvas_size`/`trim_to_content` above it are not
+  // bounded either.
+  out->push_back({"numeric_transform",
+                  "Transform",
+                  {"rotate_degrees", "scale_x_percent", "scale_y_percent", "translate_x",
+                   "translate_y"},
+                  numericTransformUnavailable,
+                  doNumericTransform});
+
+  // ---- the Filter menu's seven, plus three more ---------------------------
   out->push_back({"filter_gaussian_blur", "Gaussian Blur", {"sigma"}, pixelOpUnavailable,
                   doGaussianBlur, /*selectionBounded=*/true});
   out->push_back({"filter_sharpen", "Sharpen", {"strength"}, pixelOpUnavailable, doSharpen,
@@ -871,6 +1169,32 @@ void registerImageCommands(std::vector<CommandSpec>* out) {
                   {"radius", "angle_radians"},
                   pixelOpUnavailable,
                   doMotionBlur, /*selectionBounded=*/true});
+  // `filter_inpaint` is the one row here NOT bounded through the shared
+  // `pixelOpUnavailable()` bridge -- `inpaintUnavailable()` calls
+  // `inpaintRefusal()` instead, because an absent selection is a hard refusal
+  // for this op rather than "the whole canvas" (app/FilterOps.hpp's own
+  // argument). It is still `selectionBounded`: the recorder's channel-match
+  // rule (app/Recorder.hpp §4) is exactly the protection this op needs against
+  // a live, unsaved marquee, even though the flag's usual reading ("absent
+  // means whole canvas") does not literally hold for it -- see
+  // app/selftest/Command.cpp section H, which names this row as the second
+  // bounded exception beside `crop_to_selection`.
+  out->push_back({"filter_inpaint", "Inpaint", {"radius"}, inpaintUnavailable, doInpaint,
+                  /*selectionBounded=*/true});
+  out->push_back({"filter_remove_lighting_gradient",
+                  "Remove Lighting Gradient",
+                  {"sigma"},
+                  pixelOpUnavailable,
+                  doRemoveLightingGradient, /*selectionBounded=*/true});
+  // NOT selectionBounded: `offsetUnavailable()` refuses outright under ANY
+  // live selection (`offsetRefusalFor()`'s `SelectionActive`), so an absent
+  // one is never "the whole canvas" reading that needed protecting -- it is
+  // the ONLY reading this op has.
+  out->push_back({"filter_offset",
+                  "Offset",
+                  {"dx_fraction", "dy_fraction", "edge"},
+                  offsetUnavailable,
+                  doOffset});
 
   // ---- Image > Adjustments -----------------------------------------------
   out->push_back({"adjust_levels", "Levels", {"channels"}, pixelOpUnavailable, doLevels,
@@ -1200,5 +1524,38 @@ Command canvasSizeCommand(uint32_t width, uint32_t height, CanvasAnchor anchor) 
 
 Command cropToSelectionCommand() { return command("crop_to_selection", JsonValue::object()); }
 Command trimToContentCommand() { return command("trim_to_content", JsonValue::object()); }
+
+Command inpaintCommand(int32_t radius) {
+  JsonValue p = JsonValue::object();
+  p.set("radius", JsonValue::number(radius));
+  return command("filter_inpaint", std::move(p));
+}
+
+Command removeLightingGradientCommand(float sigma) {
+  JsonValue p = JsonValue::object();
+  p.set("sigma", JsonValue::number(sigma));
+  return command("filter_remove_lighting_gradient", std::move(p));
+}
+
+Command offsetCommand(float dxFraction, float dyFraction, OffsetEdge edge) {
+  JsonValue p = JsonValue::object();
+  p.set("dx_fraction", JsonValue::number(dxFraction));
+  p.set("dy_fraction", JsonValue::number(dyFraction));
+  p.set("edge", JsonValue::string(offsetEdgeName(edge)));
+  return command("filter_offset", std::move(p));
+}
+
+Command deleteSelectionCommand() { return command("delete_selection", JsonValue::object()); }
+
+Command numericTransformCommand(float rotateDegrees, float scaleXPercent, float scaleYPercent,
+                                float translateX, float translateY) {
+  JsonValue p = JsonValue::object();
+  p.set("rotate_degrees", JsonValue::number(rotateDegrees));
+  p.set("scale_x_percent", JsonValue::number(scaleXPercent));
+  p.set("scale_y_percent", JsonValue::number(scaleYPercent));
+  p.set("translate_x", JsonValue::number(translateX));
+  p.set("translate_y", JsonValue::number(translateY));
+  return command("numeric_transform", std::move(p));
+}
 
 }  // namespace np

@@ -67,4 +67,11 @@ Document documentWithLayersAtOrBelowHidden(const Document& doc, size_t layerInde
   return out;
 }
 
+Document documentWithLayerRangeHidden(const Document& doc, size_t lo, size_t hi) {
+  Document out = doc;
+  const size_t last = hi < out.layers.size() ? hi : (out.layers.empty() ? 0 : out.layers.size() - 1);
+  for (size_t i = lo; i <= last && i < out.layers.size(); ++i) out.layers[i].visible = false;
+  return out;
+}
+
 }  // namespace np

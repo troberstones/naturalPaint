@@ -1,9 +1,15 @@
 #include "app/selftest/Support.hpp"
 
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+
 #include "app/AppState.hpp"
 #include "app/GradientTool.hpp"
 #include "app/StrokeSession.hpp"
+#include "io/GradientPresetFile.hpp"
 #include "ops/Gradient.hpp"
+#include "ui/MacPaintUI.hpp"  // currentGradientStops() -- § 12 calls the real wrapper, not a copy
 
 namespace np {
 
@@ -572,6 +578,393 @@ bool runGradientToolTest() {
     }
     check(spreadInert,
           "gradient/angular: all three spreads render the identical picture");
+  }
+
+  // -----------------------------------------------------------------------
+  // § 11. PRD D24 -- the stop editor's own headless operations
+  // -----------------------------------------------------------------------
+  //
+  // Everything the stop editor's UI does (`ui/MacPaintUI.cpp`'s
+  // `drawGradientEditorDialog()`) is a call into one of these functions
+  // (`app/GradientTool.hpp` § 2b) -- so what is asserted here is exactly what
+  // a frame of ImGui cannot be asked to prove: add keeps the list sorted,
+  // delete refuses below two, move clamps into [0,1], and midpoint clamps
+  // away from the two values that send its exponent to infinity.
+  {
+    check(clampGradientStopPosition(-0.4f) == 0.0f && clampGradientStopPosition(1.7f) == 1.0f &&
+              clampGradientStopPosition(0.31f) == 0.31f,
+          "gradient/editor: clampGradientStopPosition clamps to [0,1]");
+    check(clampGradientStopMidpoint(0.0f) > 0.0f && clampGradientStopMidpoint(1.0f) < 1.0f &&
+              clampGradientStopMidpoint(0.5f) == 0.5f,
+          "gradient/editor: clampGradientStopMidpoint clamps away from 0 and 1");
+
+    // --- add keeps stops sorted ------------------------------------------
+    GradientPresetStops s;
+    s.colorStops = {GradientColorStopSpec{0.0f, false, {0, 0, 0}, 0.5f},
+                    GradientColorStopSpec{1.0f, false, {1, 1, 1}, 0.5f}};
+    s.opacityStops = {GradientOpacityStopSpec{0.0f, 1.0f, 0.5f},
+                      GradientOpacityStopSpec{1.0f, 1.0f, 0.5f}};
+    const size_t addedIdx = addGradientColorStop(s, 0.5f, false, {0.5f, 0.25f, 0.75f});
+    bool sorted = s.colorStops.size() == 3;
+    for (size_t i = 1; sorted && i < s.colorStops.size(); ++i)
+      if (s.colorStops[i - 1].position > s.colorStops[i].position) sorted = false;
+    check(sorted && addedIdx == 1 && s.colorStops[1].position == 0.5f &&
+              s.colorStops[1].color[1] == 0.25f,
+          "gradient/editor: addGradientColorStop inserts sorted and reports the new index");
+    // A position past either end clamps rather than sorting off the list's
+    // own ends -- `clampGradientStopPosition()` runs INSIDE add, not left to
+    // the caller to remember.
+    const size_t clampedIdx = addGradientColorStop(s, 5.0f, false, {0, 0, 0});
+    check(clampedIdx == s.colorStops.size() - 1 && s.colorStops.back().position == 1.0f,
+          "gradient/editor: addGradientColorStop clamps an out-of-range position first");
+    addGradientOpacityStop(s, 0.25f, 0.4f);
+    check(s.opacityStops.size() == 3 && s.opacityStops[1].position == 0.25f &&
+              s.opacityStops[1].opacity == 0.4f,
+          "gradient/editor: addGradientOpacityStop inserts sorted on its own, independent list");
+
+    // --- delete refuses below two -----------------------------------------
+    GradientPresetStops twoStops;
+    twoStops.colorStops = {GradientColorStopSpec{0.0f, false, {0, 0, 0}},
+                           GradientColorStopSpec{1.0f, false, {1, 1, 1}}};
+    twoStops.opacityStops = {GradientOpacityStopSpec{0.0f, 1.0f}, GradientOpacityStopSpec{1.0f, 0.0f}};
+    check(!removeGradientColorStop(twoStops, 0) && twoStops.colorStops.size() == 2,
+          "gradient/editor: removeGradientColorStop refuses to drop below two colour stops");
+    check(!removeGradientOpacityStop(twoStops, 1) && twoStops.opacityStops.size() == 2,
+          "gradient/editor: removeGradientOpacityStop refuses to drop below two opacity stops");
+    // Three stops: a delete succeeds and the SPECIFIC remaining two are the
+    // ones not asked for, not merely "the count went down by one".
+    GradientPresetStops threeStops = twoStops;
+    addGradientColorStop(threeStops, 0.5f, false, {0.2f, 0.4f, 0.6f});
+    const bool removed = removeGradientColorStop(threeStops, 1);
+    check(removed && threeStops.colorStops.size() == 2 &&
+              threeStops.colorStops[0].position == 0.0f && threeStops.colorStops[1].position == 1.0f,
+          "gradient/editor: a delete above the floor removes exactly the requested stop");
+
+    // --- move clamps to [0,1] and keeps the list sorted --------------------
+    GradientPresetStops moveTest;
+    moveTest.colorStops = {GradientColorStopSpec{0.0f, false, {0, 0, 0}},
+                           GradientColorStopSpec{0.5f, false, {0.5f, 0.5f, 0.5f}},
+                           GradientColorStopSpec{1.0f, false, {1, 1, 1}}};
+    // Moving the middle stop past the LAST one must cross it: the target
+    // clamps to 1.0 (`clampGradientStopPosition()`, run inside the move),
+    // `upper_bound`'s own "insert after equal positions" rule then lands the
+    // moved stop AFTER the original {1,1,1} stop rather than before it, and
+    // the new index (2) is the one this function's contract promises the
+    // caller for exactly this reason -- a caller that kept using the OLD
+    // index (1) would now be reading the crossed neighbour, not the stop it
+    // moved.
+    const size_t movedIdx = moveGradientColorStop(moveTest, 1, 3.5f);
+    check(movedIdx == 2 && moveTest.colorStops[2].position == 1.0f &&
+              moveTest.colorStops[2].color[0] == 0.5f,
+          "gradient/editor: moveGradientColorStop clamps an out-of-range target to 1.0 and "
+          "reports the post-sort index");
+    check(moveTest.colorStops[1].position == 1.0f && moveTest.colorStops[1].color[0] == 1.0f &&
+              moveTest.colorStops[1].color[1] == 1.0f,
+          "gradient/editor: the stop that got crossed keeps its own colour, just a new index");
+    bool moveSorted = true;
+    for (size_t i = 1; i < moveTest.colorStops.size(); ++i)
+      if (moveTest.colorStops[i - 1].position > moveTest.colorStops[i].position) moveSorted = false;
+    check(moveSorted, "gradient/editor: the list stays sorted after a move that crosses a neighbour");
+  }
+
+  // -----------------------------------------------------------------------
+  // § 12. The default is bit-identical -- a fact about which CODE runs
+  // -----------------------------------------------------------------------
+  //
+  // `app/GradientTool.hpp` § 5's own claim: with no custom gradient chosen,
+  // `gradientToolStops()` must take the SAME branch as before PRD D24's
+  // presets existed, not a resolved copy that merely holds equal values.
+  // Proven by handing it a `customStops` full of poison -- if the null-vs-
+  // non-null branch in `gradientToolStops()` were ever replaced by "resolve
+  // unconditionally, defaulting `customStops` to the built-in ramp", this
+  // section is what would turn red, because the poisoned values would leak
+  // through.
+  {
+    const GradientStops withNull = gradientToolStops(kFg, nullptr);
+    GradientPresetStops poison;
+    poison.colorStops = {GradientColorStopSpec{0.3f, false, {0.9f, 0.1f, 0.9f}, 0.2f},
+                         GradientColorStopSpec{0.7f, false, {0.1f, 0.9f, 0.1f}, 0.8f}};
+    poison.opacityStops = {GradientOpacityStopSpec{0.1f, 0.3f, 0.9f},
+                           GradientOpacityStopSpec{0.9f, 0.7f, 0.1f}};
+    // `custom` not passed at all (defaults to nullptr) -- the exact call
+    // every one of the three readers makes when `GradientToolState::
+    // hasCustomStops` is false (`ui/MacPaintUI.cpp`'s `currentGradientStops()`
+    // and the two `drawUI()` call sites).
+    const GradientStops stillDefault = gradientToolStops(kFg);
+    bool identical = withNull.colorStops.size() == stillDefault.colorStops.size() &&
+                     withNull.opacityStops.size() == stillDefault.opacityStops.size();
+    for (size_t i = 0; identical && i < withNull.colorStops.size(); ++i)
+      if (withNull.colorStops[i].position != stillDefault.colorStops[i].position ||
+          withNull.colorStops[i].color != stillDefault.colorStops[i].color ||
+          withNull.colorStops[i].midpoint != stillDefault.colorStops[i].midpoint)
+        identical = false;
+    check(identical,
+          "gradient/default: gradientToolStops() with no custom argument is the untouched "
+          "default, unaffected by an in-scope poisoned GradientPresetStops it was never handed");
+
+    // `currentGradientStops()` (`ui/MacPaintUI.cpp`) is the REAL wrapper all
+    // three readers call, not a copy of its ternary written here -- so this
+    // calls it directly. `hasCustomStops == false` with `customStops` itself
+    // set to poison is that wrapper's exact input shape when a user has
+    // never opened the editor; it must still resolve to the default. This is
+    // the "is the flag ACTUALLY read" reachability check `app/GradientTool.hpp`
+    // § 5 promises: sabotaged by resolving unconditionally against
+    // `&gradient.customStops` inside `currentGradientStops()`, this goes red
+    // because the poisoned values leak through.
+    BrushState brush;
+    GradientToolState freshWithPoison;
+    freshWithPoison.customStops = poison;
+    check(!freshWithPoison.hasCustomStops,
+          "gradient/default: a fresh GradientToolState has hasCustomStops == false");
+    const GradientStops viaWrapper = currentGradientStops(brush, freshWithPoison);
+    const GradientStops viaDirect = gradientToolStops(foregroundLinearRgba(brush), nullptr);
+    bool untouchedByPoison = viaWrapper.colorStops.size() == viaDirect.colorStops.size() &&
+                             viaWrapper.opacityStops.size() == viaDirect.opacityStops.size();
+    for (size_t i = 0; untouchedByPoison && i < viaWrapper.colorStops.size(); ++i)
+      if (viaWrapper.colorStops[i].color != viaDirect.colorStops[i].color ||
+          viaWrapper.colorStops[i].position != viaDirect.colorStops[i].position)
+        untouchedByPoison = false;
+    check(untouchedByPoison,
+          "gradient/default: currentGradientStops() with hasCustomStops == false renders the "
+          "default even with poison sitting in customStops");
+  }
+
+  // -----------------------------------------------------------------------
+  // § 13. Presets: built-ins agree with the hard-coded default, and a
+  // Foreground stop tracks the swatch through resolveGradientPresetStops()
+  // -----------------------------------------------------------------------
+  {
+    const std::vector<GradientBuiltInPreset> builtIns = builtInGradientPresets();
+    check(builtIns.size() >= 2, "gradient/presets: at least two built-ins ship");
+    check(std::strcmp(builtIns[0].name, defaultGradientPresetName()) == 0,
+          "gradient/presets: index 0 is defaultGradientPresetName()'s own preset");
+
+    // Index 0's data, resolved against `kFg`, must equal § 5's hard-coded
+    // default EXACTLY -- the picker's first row and the built-in ramp
+    // describe the same gradient, not two authored copies that can drift.
+    const GradientStops fromPreset =
+        resolveGradientPresetStops(builtIns[0].stops, {kFg[0], kFg[1], kFg[2]});
+    const GradientStops fromDefault = gradientToolStops(kFg, nullptr);
+    bool agree = fromPreset.colorStops.size() == fromDefault.colorStops.size() &&
+                fromPreset.opacityStops.size() == fromDefault.opacityStops.size();
+    for (size_t i = 0; agree && i < fromPreset.colorStops.size(); ++i)
+      if (fromPreset.colorStops[i].position != fromDefault.colorStops[i].position ||
+          fromPreset.colorStops[i].color != fromDefault.colorStops[i].color)
+        agree = false;
+    for (size_t i = 0; agree && i < fromPreset.opacityStops.size(); ++i)
+      if (fromPreset.opacityStops[i].position != fromDefault.opacityStops[i].position ||
+          fromPreset.opacityStops[i].opacity != fromDefault.opacityStops[i].opacity)
+        agree = false;
+    check(agree, "gradient/presets: builtInGradientPresets()[0] resolves to the same ramp as "
+                "the hard-coded default");
+
+    // A Foreground stop tracks whichever foreground it is resolved against --
+    // the whole point of the flag (`app/GradientTool.hpp` § 2a).
+    GradientPresetStops fgOnly;
+    fgOnly.colorStops = {GradientColorStopSpec{0.0f, true, {0, 0, 0}},
+                         GradientColorStopSpec{1.0f, true, {0, 0, 0}}};
+    fgOnly.opacityStops = {GradientOpacityStopSpec{0.0f, 1.0f}, GradientOpacityStopSpec{1.0f, 1.0f}};
+    const GradientStops resolvedA = resolveGradientPresetStops(fgOnly, {0.1f, 0.2f, 0.3f});
+    const GradientStops resolvedB = resolveGradientPresetStops(fgOnly, {0.9f, 0.8f, 0.7f});
+    check(resolvedA.colorStops[0].color[0] == 0.1f && resolvedB.colorStops[0].color[0] == 0.9f &&
+              resolvedA.colorStops[0].color != resolvedB.colorStops[0].color,
+          "gradient/presets: a Foreground stop resolves to whatever foreground it is given");
+
+    // And a custom gradient reaches gradientToolStops() end to end when
+    // `custom` is non-null: fixed colours pass through untouched (they do
+    // not depend on kFg at all).
+    GradientPresetStops fixed;
+    fixed.colorStops = {GradientColorStopSpec{0.0f, false, {0.2f, 0.4f, 0.6f}},
+                        GradientColorStopSpec{1.0f, false, {0.8f, 0.1f, 0.05f}}};
+    fixed.opacityStops = {GradientOpacityStopSpec{0.0f, 1.0f}, GradientOpacityStopSpec{1.0f, 1.0f}};
+    const GradientStops customResult = gradientToolStops(kFg, &fixed);
+    check(customResult.colorStops.size() == 2 && customResult.colorStops[0].color[0] == 0.2f &&
+              customResult.colorStops[1].color[2] == 0.05f,
+          "gradient/presets: gradientToolStops() with a non-null custom argument uses it, not "
+          "the built-in default");
+  }
+
+  // -----------------------------------------------------------------------
+  // § 14. .npgradient: a JSON round trip, including a Foreground stop
+  // -----------------------------------------------------------------------
+  {
+    GradientPresetStops original;
+    original.colorStops = {GradientColorStopSpec{0.0f, true, {0, 0, 0}, 0.4f},
+                           GradientColorStopSpec{0.6f, false, {0.25f, 0.5f, 0.75f}, 0.6f},
+                           GradientColorStopSpec{1.0f, false, {1.0f, 0.0f, 0.5f}, 0.5f}};
+    original.opacityStops = {GradientOpacityStopSpec{0.0f, 1.0f, 0.5f},
+                             GradientOpacityStopSpec{0.5f, 0.3f, 0.7f},
+                             GradientOpacityStopSpec{1.0f, 0.0f, 0.5f}};
+    std::string text;
+    writeGradientPreset("Round Trip Test", original, &text);
+
+    std::string readName;
+    GradientPresetStops readBack;
+    std::string err;
+    const bool ok2 = readGradientPreset(text, "selftest buffer", &readName, &readBack, &err);
+    check(ok2 && err.empty() && readName == "Round Trip Test",
+          "gradient/json: a written preset reads back with its name and no refusal");
+
+    bool stopsMatch = ok2 && readBack.colorStops.size() == original.colorStops.size() &&
+                      readBack.opacityStops.size() == original.opacityStops.size();
+    for (size_t i = 0; stopsMatch && i < original.colorStops.size(); ++i) {
+      const GradientColorStopSpec& a = original.colorStops[i];
+      const GradientColorStopSpec& b = readBack.colorStops[i];
+      if (a.foreground != b.foreground || a.position != b.position || a.midpoint != b.midpoint)
+        stopsMatch = false;
+      // A Foreground stop carries no "color" key at all (this header's own
+      // note on why), so its `color` field is whatever the struct's default
+      // is -- NOT compared here, since the file never claimed to state it.
+      if (!a.foreground && a.color != b.color) stopsMatch = false;
+    }
+    for (size_t i = 0; stopsMatch && i < original.opacityStops.size(); ++i) {
+      const GradientOpacityStopSpec& a = original.opacityStops[i];
+      const GradientOpacityStopSpec& b = readBack.opacityStops[i];
+      if (a.position != b.position || a.opacity != b.opacity || a.midpoint != b.midpoint)
+        stopsMatch = false;
+    }
+    check(stopsMatch,
+          "gradient/json: every colour stop (incl. its Foreground flag) and opacity stop round "
+          "trips exactly");
+
+    check(text.find("\"foreground\": true") != std::string::npos,
+          "gradient/json: a Foreground stop is written with a \"foreground\" key");
+
+    // The written text must NOT carry a "color" key for the Foreground stop
+    // -- the header's own rule: a reader that saw both a foreground flag and
+    // a colour would have to pick a winner. A preset holding ONLY Foreground
+    // colour stops isolates the claim: the round-trip check above cannot see
+    // this, since a writer that wrote a placeholder colour alongside
+    // "foreground": true and a reader that ignored it would still round trip
+    // byte-for-byte on the STRUCT, even though the file itself now carries a
+    // colour it should not.
+    GradientPresetStops allForeground;
+    allForeground.colorStops = {GradientColorStopSpec{0.0f, true, {0, 0, 0}, 0.5f},
+                                GradientColorStopSpec{1.0f, true, {0, 0, 0}, 0.5f}};
+    allForeground.opacityStops = {GradientOpacityStopSpec{0.0f, 1.0f}, GradientOpacityStopSpec{1.0f, 1.0f}};
+    std::string fgText;
+    writeGradientPreset("All Foreground", allForeground, &fgText);
+    check(fgText.find("\"color\"") == std::string::npos,
+          "gradient/json: a Foreground stop's own JSON carries no \"color\" key at all");
+
+    // Refusals: no version key, and a colour stop with neither foreground
+    // nor a valid colour.
+    std::string badName, badErr;
+    GradientPresetStops badOut;
+    check(!readGradientPreset("{}", "no-version.npgradient", &badName, &badOut, &badErr) &&
+              !badErr.empty(),
+          "gradient/json: a document with no version key refuses, naming the file");
+    check(!readGradientPreset(
+              R"({"npgradientpreset":1,"color_stops":[{"position":0.0}]})", "bad-stop.npgradient",
+              &badName, &badOut, &badErr) &&
+              !badErr.empty(),
+          "gradient/json: a colour stop with neither foreground nor a colour array refuses");
+  }
+
+  // -----------------------------------------------------------------------
+  // § 15. The library directory honours NP_GRADIENT_DIR
+  // -----------------------------------------------------------------------
+  //
+  // `io/ActionFile`'s own §6, one library over: `--selftest` and the golden
+  // harness must never read or write the real
+  // `~/Library/Application Support/naturalPaint/gradients/` directory, and
+  // this is the override that keeps that true.
+  {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const std::string root = "selftest_gradients";
+    fs::remove_all(root, ec);
+    fs::create_directories(root, ec);
+    const char* previousDir = std::getenv("NP_GRADIENT_DIR");
+    const std::string savedDir = previousDir ? previousDir : "";
+    setenv("NP_GRADIENT_DIR", root.c_str(), 1);
+
+    check(gradientPresetsDirectoryPath() == root,
+          "gradient/library: $NP_GRADIENT_DIR overrides the path, so the real one is untouched");
+
+    GradientPresetStops toSave;
+    toSave.colorStops = {GradientColorStopSpec{0.0f, false, {0, 0, 0}},
+                         GradientColorStopSpec{1.0f, false, {1, 1, 1}}};
+    toSave.opacityStops = {GradientOpacityStopSpec{0.0f, 1.0f}, GradientOpacityStopSpec{1.0f, 1.0f}};
+    const std::string pathA =
+        gradientPresetsDirectoryPath() + "/" + gradientPresetFileNameFor("Zebra Ramp");
+    const std::string pathB =
+        gradientPresetsDirectoryPath() + "/" + gradientPresetFileNameFor("Alpha Ramp");
+    std::string saveErrA, saveErrB;
+    const bool savedA = saveGradientPresetToFile(pathA, "Zebra Ramp", toSave, &saveErrA);
+    const bool savedB = saveGradientPresetToFile(pathB, "Alpha Ramp", toSave, &saveErrB);
+    check(savedA && savedB && saveErrA.empty() && saveErrB.empty(),
+          "gradient/library: two presets save under the overridden directory");
+
+    { std::ofstream(root + "/notes.txt") << "not a gradient\n"; }
+    const std::vector<std::string> listed = listGradientPresetFiles(gradientPresetsDirectoryPath());
+    check(listed.size() == 2 && listed[0] == pathB && listed[1] == pathA,
+          "gradient/library: only .npgradient regular files, sorted by name");
+
+    const std::vector<GradientPresetLibraryRow> rows = gradientPresetLibrary(root);
+    bool rowsMatch = rows.size() == 2;
+    if (rowsMatch)
+      rowsMatch = rows[0].name == "Alpha Ramp" && rows[1].name == "Zebra Ramp";
+    check(rowsMatch, "gradient/library: gradientPresetLibrary() reads each file's own saved name");
+
+    std::string loadedName, loadErr;
+    GradientPresetStops loadedStops;
+    check(loadGradientPresetFromFile(pathA, &loadedName, &loadedStops, &loadErr) &&
+              loadedName == "Zebra Ramp" && loadErr.empty(),
+          "gradient/library: a saved preset loads back by path");
+
+    std::string delErr;
+    check(deleteGradientPresetFile(pathA, &delErr) && delErr.empty(),
+          "gradient/library: delete removes a preset that exists");
+    check(!deleteGradientPresetFile(pathA, &delErr) && !delErr.empty(),
+          "gradient/library: delete refuses -- naming the reason -- on a preset already gone");
+    check(listGradientPresetFiles(root + "/never-created").empty(),
+          "gradient/library: a library that does not exist yet lists as empty, not as an error");
+
+    if (savedDir.empty()) unsetenv("NP_GRADIENT_DIR");
+    else setenv("NP_GRADIENT_DIR", savedDir.c_str(), 1);
+    fs::remove_all(root, ec);
+  }
+
+  // -----------------------------------------------------------------------
+  // § 16. A custom gradient reaches the committed pixels
+  // -----------------------------------------------------------------------
+  //
+  // § 6 above proved the swatch equals the canvas for the BUILT-IN ramp; this
+  // is the same claim for a CUSTOM one, through the exact path
+  // `ui/MacPaintUI.cpp`'s `drawUI()` gradient-commit block takes:
+  // `gradientToolStops(fg, &tool.customStops)` into `renderGradient()`.
+  {
+    GradientPresetStops custom;
+    custom.colorStops = {GradientColorStopSpec{0.0f, false, {0.9f, 0.1f, 0.1f}},
+                         GradientColorStopSpec{1.0f, false, {0.1f, 0.1f, 0.9f}}};
+    custom.opacityStops = {GradientOpacityStopSpec{0.0f, 1.0f}, GradientOpacityStopSpec{1.0f, 1.0f}};
+    const GradientStops resolved = gradientToolStops(kFg, &custom);
+
+    constexpr int32_t kW = 32, kH = 4;
+    const GradientRegion region{0, 0, kW, kH};
+    GradientToolState tool;
+    TileStore tiles;
+    const GradientGeometry geom =
+        gradientToolGeometry(tool, 0.0f, 0.0f, static_cast<float>(kW), 0.0f);
+    const size_t written = renderGradient(tiles, region, geom, resolved, nullptr);
+    check(written > 0, "gradient/custom: a custom gradient's drag wrote texels");
+
+    // The start is close to the red stop, fully opaque, and the end is close
+    // to the blue stop -- a ramp rendered from the WRONG stop list (the
+    // built-in default, say) would read the foreground's colour here
+    // instead, and kFg is neither red nor blue.
+    const PixelCoord first{0, 1};
+    const PixelCoord last{kW - 1, 1};
+    const std::array<float, 4> f =
+        tiles.getOrCreate(tileCoordAt(first)).readPixel(tileLocalOffset(first));
+    const std::array<float, 4> l =
+        tiles.getOrCreate(tileCoordAt(last)).readPixel(tileLocalOffset(last));
+    check(f[3] > 0.98f && l[3] > 0.98f,
+          "gradient/custom: both ends are fully opaque (this custom ramp has no fade)");
+    check(f[0] > f[2] && l[2] > l[0],
+          "gradient/custom: the start reads redder than blue and the end reads bluer than red -- "
+          "the CUSTOM stops reached the pixels, not the built-in default");
   }
 
   return ok;

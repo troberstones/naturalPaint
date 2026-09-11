@@ -512,6 +512,56 @@ bool runBatchTest() {
     const BatchReport resizedReport = runBatch(resized);
     check(resizedReport.ok && resizedReport.written() == 2,
           "sigma: image_size's width/height are a DESTINATION, not a pixel unit");
+
+    // The two pixel-unit parameters this wave's registrations added
+    // (`app/Batch.cpp`'s `kPixelUnitParams`) get the identical mixed-
+    // resolution refusal gaussian blur's sigma does, above -- there is no
+    // separate rescaling machinery to exercise (app/Batch.hpp §2 is explicit
+    // that v1 refuses rather than scales), so this IS the guarantee a
+    // "sigma authored on one plate is wrong on another" parameter gets: the
+    // run stops rather than writing some files right and some wrong.
+    Action grad;
+    grad.name = "Remove Lighting Gradient";
+    grad.steps.push_back(step("filter_remove_lighting_gradient", "sigma", 6.0));
+    BatchRequest mixedGrad;
+    mixedGrad.action = grad;
+    mixedGrad.sources = {sources[0], odd};
+    mixedGrad.outputDirectory = mixedDir;
+    const BatchReport mixedGradReport = planBatch(mixedGrad);
+    check(!mixedGradReport.error.empty() && contains(mixedGradReport.error, "sigma"),
+          "sigma: filter_remove_lighting_gradient's sigma is pixel-unit too -- a mixed set "
+          "refuses, naming it");
+
+    Action xform;
+    xform.name = "Numeric Transform";
+    xform.steps.push_back(step("numeric_transform", "translate_x", 5.0));
+    BatchRequest mixedXform;
+    mixedXform.action = xform;
+    mixedXform.sources = {sources[0], odd};
+    mixedXform.outputDirectory = mixedDir;
+    const BatchReport mixedXformReport = planBatch(mixedXform);
+    check(!mixedXformReport.error.empty() && contains(mixedXformReport.error, "translate_x"),
+          "sigma: numeric_transform's translate_x is pixel-unit too -- a mixed set refuses, "
+          "naming it");
+
+    // `numeric_transform`'s OTHER four fields are deliberately not pixel-unit
+    // (`rotate_degrees`, the two scale percentages, and -- proven here --
+    // `translate_y` is, so this is not "the row is pixel-unit", it is "this
+    // ONE field is"). A step carrying only `rotate_degrees` must NOT be
+    // refused by the mixed set: mixing sigma with translate_x would prove the
+    // table flags the row rather than the field.
+    Action rotateOnly;
+    rotateOnly.name = "Rotate Only";
+    rotateOnly.steps.push_back(step("numeric_transform", "rotate_degrees", 12.0));
+    BatchRequest mixedRotate;
+    mixedRotate.action = rotateOnly;
+    mixedRotate.sources = {sources[0], odd};
+    mixedRotate.outputDirectory = mixedDir;
+    mixedRotate.nameTemplate = "rot_{name}";
+    const BatchReport mixedRotateReport = runBatch(mixedRotate);
+    check(mixedRotateReport.ok && mixedRotateReport.written() == 2,
+          "sigma: numeric_transform's rotate_degrees is NOT pixel-unit -- a mixed set is not "
+          "refused for carrying only that field");
   }
 
   // ======================================================================

@@ -6237,6 +6237,19 @@ bool runPenToolTest();
 // app/selftest/PenDraw.cpp.
 bool runPenDrawTest();
 
+// app/ShapeTool -- Tool::Shape's headless geometry and commit (docs/ui.md
+// §4a: "a Shape tool is a gesture that emits a `VectorShape` into the layer
+// the Pen already edits"). `shapeToolGeometry()` for all five kinds
+// (rectangle, ellipse, rounded rectangle, polygon, line) crossed with each of
+// Shift (square/circle/regular-polygon/45-degree-line) and Option
+// (draw-from-centre), a rasterised-coverage check against the analytic area
+// of a drawn rectangle, and `commitShapeTool()`'s one-shape-one-id-one-
+// selection contract, including that a plain click commits nothing and a
+// second draw replaces rather than extends the selection. Headless and
+// GPU-free; writes no files; touches no ui/ file. See
+// app/selftest/ShapeTool.cpp.
+bool runShapeToolTest();
+
 // app/VectorStyle -- the Pen's PAINT (docs/path-editing-plan.md section 2).
 //
 // The section exists because a pen-drawn path was invisible: the shape was
@@ -6456,6 +6469,31 @@ bool runTextKeyCaptureTest();
 // Headless, GPU-free, writes no files. See app/selftest/CommandCallsites.cpp.
 bool runCommandCallsitesTest();
 
+// Track `xform` (PRD C12): `app::TransformSession`'s `TransformTarget::
+// LayerSet` -- a multi-layer selection transformed together as one set. One
+// gizmo around the union of every admitted member's content bounds, one
+// shared matrix, one atomic multi-layer commit, ONE `recordEdit()`. Headless,
+// GPU-free. See app/selftest/TransformLayerSet.cpp.
+bool runTransformLayerSetTest();
+// core/Region + core/RegionOps + app/RegionTool + io/RegionSerial +
+// io/ExportRegions (PLAN.md gap-closing wave, track `region`) -- `Tool::Frame`
+// and `Tool::Slice`, and the document-level named-rectangle model they both
+// need (docs/ui.md §4a).
+//
+// Five sections: the model itself (add/delete/rename/move/resize and unique
+// naming across both kinds); `.npaint` persistence (`np:regions`'s exact
+// round trip, the no-regions-writes-nothing byte-identity claim, and a
+// payload this build cannot parse being refused whole); the geometry-edit
+// hookup core/Region.hpp §4 argues (crop, canvas size, image size and a
+// quarter turn each keep a region's rectangle correct, or drop it); the
+// gesture (one history entry per completed define/move/resize/delete, a
+// click-without-a-drag creating nothing, and undo restoring the list
+// exactly); and export (N files at the right pixel extents and names, the
+// off-canvas intersection rule). Headless and GPU-free throughout -- the
+// overlay, the options row and the two menu items' dialog are UI, out of
+// this suite's reach for the reason every on-canvas gesture in
+// ui/MacPaintUI.cpp is. See app/selftest/Region.cpp.
+bool runRegionTest();
 // Track B / B1+B2 (brush/Deposit.hpp §2, §2c): `BrushTip::edgePx`'s minimum
 // pixel-wide smoothstep skirt on the procedural falloff, and
 // `BrushTipBitmap::mips`' box-filter chain for a sampled bitmap tip.

@@ -500,6 +500,20 @@ bool sharpenTiles(const TileStore& src, const PixelRect& outRect, float strength
 // 4. Offset with wrap
 // ==========================================================================
 
+const char* offsetEdgeName(OffsetEdge edge) noexcept {
+  switch (edge) {
+    case OffsetEdge::Wrap: return "wrap";
+    case OffsetEdge::Transparent: return "transparent";
+  }
+  return "unknown";
+}
+
+std::optional<OffsetEdge> offsetEdgeFromName(std::string_view name) noexcept {
+  for (const OffsetEdge e : {OffsetEdge::Wrap, OffsetEdge::Transparent})
+    if (name == offsetEdgeName(e)) return e;
+  return std::nullopt;
+}
+
 bool offsetParamsValid(const OffsetParams& p) noexcept {
   if (p.edge == OffsetEdge::Transparent) return true;
   // Wrapping is modular arithmetic and modular arithmetic needs a period. An

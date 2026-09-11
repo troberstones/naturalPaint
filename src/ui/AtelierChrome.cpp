@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "app/PenTool.hpp"
+#include "app/ShapeTool.hpp"
 #include "app/TextTool.hpp"    // toolEditsText()
 #include "app/VectorStyle.hpp"
 #include "app/CloseDecision.hpp"
@@ -18,10 +19,12 @@
 #include "app/GradientTool.hpp"
 #include "app/Memory.hpp"
 #include "app/MoveTool.hpp"
+#include "app/RegionTool.hpp"
 #include "app/StrokeSession.hpp"
 #include "app/ZoomAndSize.hpp"
 #include "color/Space.hpp"
 #include "core/TileStore.hpp"
+#include "io/GradientPresetFile.hpp"
 #include "ui/AtelierTheme.hpp"
 #include "ui/Fonts.hpp"
 #include "ui/MacPaintUI.hpp"
@@ -236,8 +239,8 @@ constexpr ToolMeta kToolMeta[] = {
     // `commitDrawnSelection()`. Two modes, chosen in this band's own row
     // below -- a rectangle through `cropDocument()` and a four-corner
     // perspective through `transformFromQuad()` + `transformDocument()`.
-    // `Tool::Slice`, which shares its palette group and its cursor, is still
-    // one of the not-built cells and stays false.
+    // `Tool::Slice`, which shares its palette group and its cursor, is now
+    // built too -- see its own row below, app/RegionTool.
     {"Crop", "crop", 57515u, "C", "crop", true},
     // **Built**: app/MeasureLine, gated by `toolMeasuresCanvas()` -- the one
     // tool in this palette whose gesture writes no texel at all. Same
@@ -245,7 +248,12 @@ constexpr ToolMeta kToolMeta[] = {
     // order, so a built tool stays where the enum puts it and the divider
     // above marks the enum's not-built run, not a second sorted half.
     {"Measure", "ruler", 57675u, "", "measure", true},
-    {"Frame", "frame", 58001u, "", "frame", false},
+    // **Built**: app/RegionTool, gated by `toolCreatesRegions()` -- the
+    // eleventh canvas gate, shared with `Tool::Slice` below. Both tools draw
+    // a named rectangle into `Document::regions` (core/Region.hpp,
+    // PLAN.md gap-closing wave); the only difference between the two rows is
+    // which `RegionKind` `regionKindForTool()` hands the gesture.
+    {"Frame", "frame", 58001u, "", "frame", true},
     // **Built**, as of the clone route: brush/CloneStamp, and
     // app/StrokeSession §1b for the table it routes through. It stays in this
     // half of the table for the same reason the Eraser row just below does --
@@ -311,8 +319,20 @@ constexpr ToolMeta kToolMeta[] = {
     {"Pen", "pen-tool", 57649u, "P", "pen", true},
     {"Curve", "spline", 58251u, "Shift+P", "curve", true},
     {"Text", "type", 57752u, "T", "text", true},
-    {"Shape", "shapes", 58547u, "", "shape", false},
-    {"Slice", "slice", 58096u, "", "slice", false},
+    // **Built**: app/ShapeTool, gated by `toolCreatesShapes()` -- its own
+    // predicate rather than a name folded into `toolEditsPath()`, for
+    // `app/PenTool.hpp` section 2's reason, restated in `app/ShapeTool.hpp`
+    // section 1: Shape's gesture (one closed primitive from exactly two
+    // points) is not the Pen's (one anchor per press), and widening the
+    // Pen's gate would hand Shape's clicks to a handler written for anchor
+    // placement. No shortcut letter: docs/shortcuts.md reserves none for it,
+    // and `app/selftest/ToolHotkeys.cpp` walks both directions of that file
+    // against this table, so an empty `shortcut` here needs no exception
+    // there -- it already skips a tool with nothing to check.
+    {"Shape", "shapes", 58547u, "", "shape", true},
+    // **Built**: app/RegionTool, `Tool::Frame`'s own row above -- one gesture
+    // module for both, gated by the shared `toolCreatesRegions()` predicate.
+    {"Slice", "slice", 58096u, "", "slice", true},
     // **Built**: app/PenTool, gated by `toolEditsPath()` alongside Pen and
     // Curve. Photoshop's black arrow, and the tool that lets the Pen stop
     // being one: before this, Pen presses on existing geometry ran the
@@ -415,10 +435,23 @@ bool toolHasCanvasHandler(Tool t) noexcept {
   // way to make this go true for Crop -- would hand every crop drag to
   // `commitDrawnSelection()`. Placed before the allocating `toolBeginsStroke()`
   // for the ordering reason stated above: it is cheap and `noexcept`.
+  // `toolCreatesShapes()` is the ELEVENTH term, and app/ShapeTool.hpp's own
+  // reason applies here as it does at every other row of this function: it
+  // is a new predicate rather than a name added to `toolEditsPath()`,
+  // because Shape's gesture (one closed primitive from exactly two points)
+  // is not the Pen's (one anchor per press), and widening that gate would
+  // route Shape's clicks into a handler built for anchor placement.
+  //
+  // `toolCreatesRegions()` is the TWELFTH, `app/CropTool`'s own reason again:
+  // it lives in `app/RegionTool` because it is that module's own answer about
+  // its own two tools, and widening `toolCropsCanvas()` to cover `Slice` (the
+  // one-line way to make this go true) would hand every Frame/Slice drag to
+  // `applyCropSession()`.
   return toolWritesRgbPixels(t) || toolDrawsSelection(t) || toolSamplesCanvas(t) ||
          toolMeasuresCanvas(t) || toolPansView(t) || toolMovesPixels(t) ||
          toolCropsCanvas(t) || toolBeginsStroke(t) || toolZoomsView(t) ||
-         toolEditsPath(t) || toolEditsText(t);
+         toolEditsPath(t) || toolEditsText(t) || toolCreatesShapes(t) ||
+         toolCreatesRegions(t);
 }
 
 const char* toolNoHandlerException(Tool) noexcept {
@@ -780,6 +813,204 @@ bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands,
   return newDocument;
 }
 
+// STROKE and FILL, shared by every vector-producing tool -- `Tool::Pen`,
+// `Tool::Curve` and `Tool::PathSelect` (via `toolEditsPath()`) and, as of
+// this track, `Tool::Shape`. Factored out rather than duplicated a second
+// time for `Tool::Shape`'s options row, per this codebase's own rule against
+// a second implementation of a control this file already has (`docs/ui.md`'s
+// "look near ui/AtelierChrome.cpp for the existing shape style controls --
+// reuse").
+//
+// **Without this row the Pen drew nothing.** `pathEditBeginPen()` built a
+// default-constructed `VectorShape`, whose `fill.on` and `stroke.on` are
+// both false, so every path it ever laid down rasterised to nothing;
+// app/VectorStyle.hpp section 1 has the whole account. The paint now comes
+// from `st.vectorStyle` plus the foreground, and this is where a user says
+// what it should be.
+//
+// **Selection first, else default** -- app/VectorStyle.hpp section 3, and
+// the one rule both controls follow. With shapes selected (in EITHER mode:
+// Component mode's anchors resolve to the shapes they sit on) these edit
+// THOSE SHAPES and record a document edit; with nothing selected they edit
+// the tool default, which is what the next drawn shape will use. That rule
+// reads the same way for Shape as it does for the Pen: a freshly drawn shape
+// is left selected (`app/ShapeTool.hpp`'s `commitShapeTool()`), so adjusting
+// STROKE/FILL right after drawing one edits the shape just drawn, not some
+// future one -- exactly the behaviour a user reaching for these controls
+// right after a drag expects.
+//
+// The consequence, and the reason the readout is computed before anything
+// is drawn: **the control shows the SELECTION's value, not the default's.**
+// A width box reading 1.0 while a drag would change a selected 12 px stroke
+// is a control lying about what it is about to do -- the same class of
+// defect as a menu item wired to the wrong engine.
+//
+// Cap and join are deliberately NOT here: they are per-shape finishing
+// choices and they belong in the PATHS panel.
+//
+// `pathOd`/`pathLayer` are the caller's own document/layer -- `nullptr` when
+// there is no Vector layer to edit, in which case the controls edit the tool
+// default and stay visually enabled (a user picks a colour before drawing
+// the first shape, same as the Pen).
+void drawVectorFillStrokeControls(AppState& st, OpenDocument* pathOd, Layer* pathLayer) {
+  VectorStyleReadout pathStyle;
+  pathStyle.style = st.vectorStyle;
+  if (pathLayer != nullptr)
+    pathStyle = vectorStyleReadout(pathLayer->shapes, st.pathEdit.selection, st.vectorStyle);
+
+  // **A drag is ONE undo entry, not sixty** -- the same split
+  // `pathEditUpdate()` returns as `EditBegan` / `EditContinued`, and the
+  // reason it returns it. The first frame of a gesture that changes anything
+  // records; every frame after it amends.
+  //
+  // "Still the same gesture" is asked as "is the pointer still down", NOT as
+  // ImGui's item-active state, because the colour swatch's picker lives in a
+  // popup: the swatch itself is not the active item while the user drags
+  // inside that popup, so an active-state test would open a fresh undo entry
+  // per frame for exactly the control that needs the grouping most.
+  struct PathStyleGesture {
+    bool open = false;
+  };
+  static PathStyleGesture gStrokeWidth, gStrokeColor, gFillColor;
+  if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    gStrokeWidth.open = false;
+    gStrokeColor.open = false;
+    gFillColor.open = false;
+  }
+  // One funnel for both controls, so the rule above is written once rather
+  // than five times. `gesture` null means a single-click change (the NONE
+  // chips) that can never need amending.
+  auto editPathStyle = [&](const char* what, PathStyleGesture* gesture,
+                           const VectorStyleMutator& mutate) {
+    std::vector<VectorShape>* shapesPtr = pathLayer != nullptr ? &pathLayer->shapes : nullptr;
+    const size_t n =
+        applyVectorStyleEdit(shapesPtr, st.pathEdit.selection, &st.vectorStyle, mutate);
+    // Zero means the selection named no shape and the TOOL DEFAULT was
+    // written. Nothing in the document moved, so recording an edit here
+    // would put an undo entry on the stack that undoes nothing visible.
+    if (n == 0 || pathOd == nullptr) return;
+    const bool continuing = gesture != nullptr && gesture->open;
+    if (gesture != nullptr) gesture->open = true;
+    // `amendEdit()` answers false when there is no entry of ours to fold
+    // into; falling back to a fresh record is the honest recovery, and is
+    // what its own header asks a caller to do rather than assume.
+    if (!continuing || !pathOd->amendEdit(what, EditKind::Content))
+      pathOd->recordEdit(what, EditKind::Content);
+  };
+
+  bandSeparator();
+  capsLabel("STROKE");
+  ImGui::SameLine();
+  pushAtelierMono();
+  ImGui::BeginDisabled(pathLayer == nullptr);
+
+  ImGui::SetNextItemWidth(86.0f);
+  float pathStrokeW = pathStyle.style.strokeStyle.width;
+  // A drag, not a slider, for the reason SIZE above is one: a stroke width
+  // has no natural maximum and a slider would have to invent one. The `~`
+  // in the mixed format string is the mixed affordance -- the number shown
+  // is the FIRST selected shape's, and without the mark it would read as
+  // everybody's.
+  if (ImGui::DragFloat("##pathStrokeWidth", &pathStrokeW, 0.1f, 0.0f, 4096.0f,
+                       pathStyle.mixedStrokeWidth ? "~%.2f px" : "%.2f px")) {
+    const float w = std::max(0.0f, pathStrokeW);
+    editPathStyle("stroke width", &gStrokeWidth,
+                  [w](VectorStyle& vs) { vs.strokeStyle.width = w; });
+  }
+  ImGui::SetItemTooltip(
+      "Stroke width in document pixels. %s A width of 0 draws nothing, which is not the "
+      "same as NONE: the stroke is still there and still round-trips.",
+      pathStyle.fromSelection ? "Edits the SELECTED shapes."
+                              : "Nothing is selected, so this sets what the NEXT path "
+                                "you draw will use.");
+
+  ImGui::SameLine();
+  // sRGB-encoded into the picker and decoded back out. `Paint::rgba` is
+  // linear-light STRAIGHT alpha (core/VectorShape.hpp section 1) and ImGui's
+  // picker is display-referred; skipping either half is how a stroke ends up
+  // roughly twice as dark as the swatch that promised it.
+  {
+    const std::array<float, 4>& lin = pathStyle.style.stroke.rgba;
+    float enc[4] = {srgbEncode(lin[0]), srgbEncode(lin[1]), srgbEncode(lin[2]), lin[3]};
+    if (ImGui::ColorEdit4("##pathStrokeColor", enc,
+                          ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar |
+                              ImGuiColorEditFlags_AlphaPreviewHalf)) {
+      const std::array<float, 4> out = {srgbDecode(enc[0]), srgbDecode(enc[1]),
+                                        srgbDecode(enc[2]), enc[3]};
+      editPathStyle("stroke colour", &gStrokeColor, [out](VectorStyle& vs) {
+        vs.stroke.rgba = out;
+        // Setting a colour means wanting to see it. Leaving `on` false would
+        // make the swatch a control with no visible effect.
+        vs.stroke.on = true;
+      });
+    }
+  }
+  ImGui::SetItemTooltip(
+      "Stroke colour.%s A new path takes the FOREGROUND colour instead -- the same colour "
+      "every other tool here paints with -- and this overrides it.",
+      pathStyle.mixedStrokeColor ? " The selection has more than one; this is the first "
+                                   "shape's."
+                                 : "");
+
+  ImGui::SameLine();
+  // NONE is lit when the paint is OFF, which is what it is naming. SVG's
+  // `stroke="none"` is a real state and is not an alpha of zero
+  // (core/VectorShape.hpp): a shape with neither fill nor stroke still
+  // exists, still hit-tests and still round-trips.
+  const bool pathStrokeOff = !pathStyle.style.stroke.on;
+  if (atelierToggleChip(pathStyle.mixedStrokeOn ? "NONE ~##pathStrokeNone"
+                                                : "NONE##pathStrokeNone",
+                        pathStrokeOff && !pathStyle.mixedStrokeOn)) {
+    const bool on = pathStrokeOff;
+    editPathStyle("stroke on", nullptr, [on](VectorStyle& vs) { vs.stroke.on = on; });
+  }
+  ImGui::SetItemTooltip(
+      "No stroke at all -- SVG's `stroke=\"none\"`, which is different from a "
+      "transparent one: the shape keeps no stroke rather than an invisible one.");
+
+  bandSeparator();
+  capsLabel("FILL");
+  ImGui::SameLine();
+  // **Fill is off by default and there is no width control for it**, because
+  // a fill is only defined over an enclosed region: filling an OPEN path
+  // means implicitly closing it, so the user would see a straight edge they
+  // never drew joining the last anchor back to the first, moving with every
+  // further click. app/VectorStyle.hpp section 2.
+  {
+    const std::array<float, 4>& lin = pathStyle.style.fill.rgba;
+    float enc[4] = {srgbEncode(lin[0]), srgbEncode(lin[1]), srgbEncode(lin[2]), lin[3]};
+    if (ImGui::ColorEdit4("##pathFillColor", enc,
+                          ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar |
+                              ImGuiColorEditFlags_AlphaPreviewHalf)) {
+      const std::array<float, 4> out = {srgbDecode(enc[0]), srgbDecode(enc[1]),
+                                        srgbDecode(enc[2]), enc[3]};
+      editPathStyle("fill colour", &gFillColor, [out](VectorStyle& vs) {
+        vs.fill.rgba = out;
+        vs.fill.on = true;
+      });
+    }
+  }
+  ImGui::SetItemTooltip(
+      "Fill colour. Setting one turns the fill ON.%s An OPEN path is filled as though "
+      "closed, which is SVG's rule and why this is off until you ask for it.",
+      pathStyle.mixedFillColor ? " The selection has more than one; this is the first "
+                                 "shape's."
+                               : "");
+
+  ImGui::SameLine();
+  const bool pathFillOff = !pathStyle.style.fill.on;
+  if (atelierToggleChip(pathStyle.mixedFillOn ? "NONE ~##pathFillNone" : "NONE##pathFillNone",
+                        pathFillOff && !pathStyle.mixedFillOn)) {
+    const bool on = pathFillOff;
+    editPathStyle("fill on", nullptr, [on](VectorStyle& vs) { vs.fill.on = on; });
+  }
+  ImGui::SetItemTooltip("No fill at all -- SVG's `fill=\"none\"`. The default for a pen, "
+                        "which draws lines.");
+
+  ImGui::EndDisabled();
+  popAtelierMono();
+}
+
 void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& refusal) {
   // **Content only -- no window of its own.** The options bar used to be a
   // band welded under the tab strip, so it opened its own `beginBand()` window
@@ -1036,7 +1267,7 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     // far darker than the paint it is promising. Alpha is a coverage fraction
     // and is not a colour, so it is passed through untouched; encoding it
     // would make the fade reach halfway across the swatch instead of a third.
-    const GradientStops stops = currentGradientStops(st.brush);
+    const GradientStops stops = currentGradientStops(st.brush, st.gradient);
     const int columns = static_cast<int>(rampW);
     for (int i = 0; i < columns; ++i) {
       // Sampled at the column's CENTRE. Sampling at its left edge puts the
@@ -1066,11 +1297,80 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     // `Dummy` rather than nothing: the drawing above is on the draw list and
     // ImGui knows nothing about it, so without a laid-out item of the same
     // size the SPREAD combo would be positioned on top of the swatch.
+    //
+    // PRD D24's stop editor opens from a click on this swatch, exactly as the
+    // brief asks -- `IsItemClicked()` needs no `Button()` underneath it, only
+    // the item this `Dummy()` already laid out, so the swatch keeps drawing
+    // itself with the checkerboard-and-ramp code above rather than becoming a
+    // button with a picture drawn over it.
     ImGui::Dummy(ImVec2(rampW, ImGui::GetFrameHeight()));
+    if (ImGui::IsItemClicked()) st.openGradientEditorDialog = true;
+    if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     ImGui::SetItemTooltip(
-        "Foreground to transparent -- the one ramp this build offers, because there is no "
-        "background colour for a second one to end at. Drag on the canvas from the ramp's "
-        "start to its end.");
+        "Click to open the gradient editor: add, move or remove colour and opacity stops, mark "
+        "a stop \"Foreground\" so it tracks the swatch, or choose a saved preset below. Drag on "
+        "the canvas from the ramp's start to its end.");
+
+    bandSeparator();
+    capsLabel("PRESET");
+    ImGui::SameLine();
+    {
+      // The built-ins first (index 0 is always "Foreground to Transparent",
+      // `defaultGradientPresetName()`'s own promise), then the on-disk
+      // library, in the order `gradientPresetLibraryRows()` already sorted
+      // them. Selecting a row LOADS it -- copies its stops into
+      // `st.gradient.customStops` -- rather than merely naming it, so the
+      // ramp a save/rename/delete acts on afterwards is never a stale
+      // in-memory copy of a file the picker only pointed at.
+      const std::vector<GradientBuiltInPreset> builtIns = builtInGradientPresets();
+      const std::vector<GradientPresetLibraryRow>& library = gradientPresetLibraryRows();
+      // "(Custom, unsaved)" is the PREVIEW text for an edited-but-unsaved
+      // ramp (`presetName` empty is what flags that), not a row of its own in
+      // the list below -- there is nothing to select it INTO, since it names
+      // whatever is already live.
+      const std::string preview = !st.gradient.hasCustomStops   ? builtIns[0].name
+                                  : st.gradient.presetName.empty() ? "(Custom, unsaved)"
+                                                                    : st.gradient.presetName;
+      ImGui::SetNextItemWidth(140.0f);
+      pushAtelierMono();
+      if (ImGui::BeginCombo("##gradientPreset", preview.c_str())) {
+        for (const GradientBuiltInPreset& p : builtIns) {
+          if (ImGui::Selectable(p.name, !st.gradient.hasCustomStops && preview == p.name)) {
+            // Index 0's own name is `defaultGradientPresetName()` -- picking
+            // it returns to the NULL-custom path (`hasCustomStops = false`),
+            // never a custom copy that merely happens to hold equal values,
+            // so `gradientToolStops()`'s bit-identical guarantee
+            // (`app/GradientTool.hpp` § 5) stays a fact about which code ran.
+            if (std::strcmp(p.name, defaultGradientPresetName()) == 0) {
+              st.gradient.hasCustomStops = false;
+            } else {
+              st.gradient.customStops = p.stops;
+              st.gradient.hasCustomStops = true;
+            }
+            st.gradient.presetName = p.name;
+          }
+        }
+        if (!library.empty()) {
+          ImGui::Separator();
+          for (const GradientPresetLibraryRow& row : library) {
+            if (ImGui::Selectable(row.name.c_str(), st.gradient.presetName == row.name)) {
+              std::string loadedName, err;
+              GradientPresetStops loaded;
+              if (loadGradientPresetFromFile(row.path, &loadedName, &loaded, &err)) {
+                st.gradient.customStops = loaded;
+                st.gradient.hasCustomStops = true;
+                st.gradient.presetName = loadedName;
+              }
+            }
+            ImGui::SetItemTooltip("%s", row.path.c_str());
+          }
+        }
+        ImGui::EndCombo();
+      }
+      popAtelierMono();
+      ImGui::SetItemTooltip("Saved gradients (PRD D24). Save, rename or delete one from the "
+                            "gradient editor -- click the ramp above to open it.");
+    }
 
     bandSeparator();
     capsLabel("KIND");
@@ -1290,10 +1590,81 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     return;
   }
 
+  // --- Tool::Frame / Tool::Slice: the selected region's name and rectangle --
+  //
+  // The fifth early return in this band, Crop's own reason immediately
+  // above: neither `app/RegionTool` nor `core::RegionOps` reads a
+  // `BrushTip`, so the four brush sliders would be live controls over
+  // nothing.
+  //
+  // **The rectangle is read-only here; only the name is editable**, the
+  // brief's own words ("the selected region's name (editable) and
+  // x/y/w/h"). A region's rectangle is set by the same drag gesture Crop's
+  // own SIZE readout describes -- typing four numbers into an options-bar
+  // field is a second way to move a shape this build already has a precise
+  // one for (the corner handles), and that second way is not built here.
+  if (toolCreatesRegions(st.brush.tool)) {
+    bandSeparator();
+    OpenDocument* od = st.documents.active();
+    const Region* selected =
+        od != nullptr && st.region.doc == od->id ? findRegionById(od->document, st.region.selectedId)
+                                                 : nullptr;
+    if (selected == nullptr) {
+      capsLabel("REGION");
+      ImGui::SameLine();
+      ImGui::TextDisabled("Nothing selected -- drag on the canvas to create one.");
+      return;
+    }
+
+    capsLabel("NAME");
+    ImGui::SameLine();
+    // Synced from the model on every frame the field was NOT active last
+    // frame, so switching which region is selected shows its own name
+    // immediately, and a name typed mid-edit is never overwritten by a
+    // resync. **The flag is read back AFTER the field**: `IsItemActive()`
+    // asked before it answers for the previous item (the NAME label), which
+    // is never active -- that version rewrote the buffer every frame and
+    // threw away every keystroke.
+    static char nameBuf[128] = "";
+    static bool nameFieldActive = false;
+    if (!nameFieldActive) std::snprintf(nameBuf, sizeof(nameBuf), "%s", selected->name.c_str());
+    ImGui::SetNextItemWidth(160.0f);
+    // A plain `InputText`, not `ctlInputText()`: that one is a DOCKED-PANEL
+    // control -- it draws its label into the panel's label column and
+    // stretches the field to the panel edge -- and in this band it printed
+    // "##regionName" as a visible label and pushed the readout and the
+    // Delete button off the right of the window.
+    const bool nameEntered = ImGui::InputText("##regionName", nameBuf, sizeof(nameBuf),
+                                              ImGuiInputTextFlags_EnterReturnsTrue);
+    nameFieldActive = ImGui::IsItemActive();
+    // Through `rename_region` (app/RegionTool's `regionRenameSelected()`),
+    // never `core::renameRegion()` from here -- a widget that reaches the
+    // model directly records nothing (docs/automation.md §7).
+    if (nameEntered && od != nullptr) {
+      regionRenameSelected(st.region, *od, nameBuf);
+      // An edit went through the document; do not trust a pointer into it.
+      selected = findRegionById(od->document, st.region.selectedId);
+      if (selected == nullptr) return;
+    }
+
+    bandSeparator();
+    capsLabel(selected->kind == RegionKind::Frame ? "FRAME" : "SLICE");
+    ImGui::SameLine();
+    pushAtelierMono();
+    ImGui::Text("%d, %d   %u x %u", selected->x, selected->y, selected->width, selected->height);
+    popAtelierMono();
+
+    bandSeparator();
+    if (ImGui::Button("Delete") && od != nullptr) regionDeleteSelected(st.region, *od);
+    ImGui::SetItemTooltip("Delete this region. Backspace does the same.");
+    return;
+  }
+
 
   // --- Tool::Text: FONT, SIZE, style, ALIGN and COLOUR --------------------
   //
-  // **The fifth early return in this band, and docs/ui.md section 4b's test
+  // **The sixth early return in this band (`Tool::Frame`/`Tool::Slice`,
+  // immediately above, is now the fifth), and docs/ui.md section 4b's test
   // settles it without argument.** That test is not "does this tool have
   // settings" but *would the four brush sliders be live controls over
   // something this tool provably never reads*, and the Text tool reads none
@@ -1348,186 +1719,7 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     // about what the next click does.
     if (pathLayer != nullptr && pathLayer->kind != LayerKind::Vector) pathLayer = nullptr;
 
-    // --- STROKE and FILL ----------------------------------------------------
-    //
-    // **Without this row the Pen drew nothing.** `pathEditBeginPen()` built a
-    // default-constructed `VectorShape`, whose `fill.on` and `stroke.on` are
-    // both false, so every path it ever laid down rasterised to nothing;
-    // app/VectorStyle.hpp section 1 has the whole account. The paint now comes
-    // from `st.vectorStyle` plus the foreground, and this is where a user says
-    // what it should be.
-    //
-    // **Selection first, else default** -- app/VectorStyle.hpp section 3, and
-    // the one rule both controls follow. With shapes selected (in EITHER mode:
-    // Component mode's anchors resolve to the shapes they sit on) these edit
-    // THOSE SHAPES and record a document edit; with nothing selected they edit
-    // the tool default, which is what the next pen stroke will be.
-    //
-    // The consequence, and the reason the readout is computed before anything
-    // is drawn: **the control shows the SELECTION's value, not the default's.**
-    // A width box reading 1.0 while a drag would change a selected 12 px stroke
-    // is a control lying about what it is about to do -- the same class of
-    // defect as a menu item wired to the wrong engine.
-    //
-    // Cap and join are deliberately NOT here: they are per-shape finishing
-    // choices, they belong in the PATHS panel, and this band already carries
-    // MODE and SELECTED.
-    VectorStyleReadout pathStyle;
-    pathStyle.style = st.vectorStyle;
-    if (pathLayer != nullptr)
-      pathStyle = vectorStyleReadout(pathLayer->shapes, st.pathEdit.selection, st.vectorStyle);
-
-    // **A drag is ONE undo entry, not sixty** -- the same split
-    // `pathEditUpdate()` returns as `EditBegan` / `EditContinued`, and the
-    // reason it returns it. The first frame of a gesture that changes anything
-    // records; every frame after it amends.
-    //
-    // "Still the same gesture" is asked as "is the pointer still down", NOT as
-    // ImGui's item-active state, because the colour swatch's picker lives in a
-    // popup: the swatch itself is not the active item while the user drags
-    // inside that popup, so an active-state test would open a fresh undo entry
-    // per frame for exactly the control that needs the grouping most.
-    struct PathStyleGesture {
-      bool open = false;
-    };
-    static PathStyleGesture gStrokeWidth, gStrokeColor, gFillColor;
-    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-      gStrokeWidth.open = false;
-      gStrokeColor.open = false;
-      gFillColor.open = false;
-    }
-    // One funnel for both controls, so the rule above is written once rather
-    // than five times. `gesture` null means a single-click change (the NONE
-    // chips) that can never need amending.
-    auto editPathStyle = [&](const char* what, PathStyleGesture* gesture,
-                             const VectorStyleMutator& mutate) {
-      std::vector<VectorShape>* shapesPtr = pathLayer != nullptr ? &pathLayer->shapes : nullptr;
-      const size_t n =
-          applyVectorStyleEdit(shapesPtr, st.pathEdit.selection, &st.vectorStyle, mutate);
-      // Zero means the selection named no shape and the TOOL DEFAULT was
-      // written. Nothing in the document moved, so recording an edit here
-      // would put an undo entry on the stack that undoes nothing visible.
-      if (n == 0 || pathOd == nullptr) return;
-      const bool continuing = gesture != nullptr && gesture->open;
-      if (gesture != nullptr) gesture->open = true;
-      // `amendEdit()` answers false when there is no entry of ours to fold
-      // into; falling back to a fresh record is the honest recovery, and is
-      // what its own header asks a caller to do rather than assume.
-      if (!continuing || !pathOd->amendEdit(what, EditKind::Content))
-        pathOd->recordEdit(what, EditKind::Content);
-    };
-
-    bandSeparator();
-    capsLabel("STROKE");
-    ImGui::SameLine();
-    pushAtelierMono();
-    ImGui::BeginDisabled(pathLayer == nullptr);
-
-    ImGui::SetNextItemWidth(86.0f);
-    float pathStrokeW = pathStyle.style.strokeStyle.width;
-    // A drag, not a slider, for the reason SIZE above is one: a stroke width
-    // has no natural maximum and a slider would have to invent one. The `~`
-    // in the mixed format string is the mixed affordance -- the number shown
-    // is the FIRST selected shape's, and without the mark it would read as
-    // everybody's.
-    if (ImGui::DragFloat("##pathStrokeWidth", &pathStrokeW, 0.1f, 0.0f, 4096.0f,
-                         pathStyle.mixedStrokeWidth ? "~%.2f px" : "%.2f px")) {
-      const float w = std::max(0.0f, pathStrokeW);
-      editPathStyle("stroke width", &gStrokeWidth,
-                    [w](VectorStyle& vs) { vs.strokeStyle.width = w; });
-    }
-    ImGui::SetItemTooltip(
-        "Stroke width in document pixels. %s A width of 0 draws nothing, which is not the "
-        "same as NONE: the stroke is still there and still round-trips.",
-        pathStyle.fromSelection ? "Edits the SELECTED shapes."
-                                : "Nothing is selected, so this sets what the NEXT path "
-                                  "you draw will use.");
-
-    ImGui::SameLine();
-    // sRGB-encoded into the picker and decoded back out. `Paint::rgba` is
-    // linear-light STRAIGHT alpha (core/VectorShape.hpp section 1) and ImGui's
-    // picker is display-referred; skipping either half is how a stroke ends up
-    // roughly twice as dark as the swatch that promised it.
-    {
-      const std::array<float, 4>& lin = pathStyle.style.stroke.rgba;
-      float enc[4] = {srgbEncode(lin[0]), srgbEncode(lin[1]), srgbEncode(lin[2]), lin[3]};
-      if (ImGui::ColorEdit4("##pathStrokeColor", enc,
-                            ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar |
-                                ImGuiColorEditFlags_AlphaPreviewHalf)) {
-        const std::array<float, 4> out = {srgbDecode(enc[0]), srgbDecode(enc[1]),
-                                          srgbDecode(enc[2]), enc[3]};
-        editPathStyle("stroke colour", &gStrokeColor, [out](VectorStyle& vs) {
-          vs.stroke.rgba = out;
-          // Setting a colour means wanting to see it. Leaving `on` false would
-          // make the swatch a control with no visible effect.
-          vs.stroke.on = true;
-        });
-      }
-    }
-    ImGui::SetItemTooltip(
-        "Stroke colour.%s A new path takes the FOREGROUND colour instead -- the same colour "
-        "every other tool here paints with -- and this overrides it.",
-        pathStyle.mixedStrokeColor ? " The selection has more than one; this is the first "
-                                     "shape's."
-                                   : "");
-
-    ImGui::SameLine();
-    // NONE is lit when the paint is OFF, which is what it is naming. SVG's
-    // `stroke="none"` is a real state and is not an alpha of zero
-    // (core/VectorShape.hpp): a shape with neither fill nor stroke still
-    // exists, still hit-tests and still round-trips.
-    const bool pathStrokeOff = !pathStyle.style.stroke.on;
-    if (atelierToggleChip(pathStyle.mixedStrokeOn ? "NONE ~##pathStrokeNone"
-                                                  : "NONE##pathStrokeNone",
-                          pathStrokeOff && !pathStyle.mixedStrokeOn)) {
-      const bool on = pathStrokeOff;
-      editPathStyle("stroke on", nullptr, [on](VectorStyle& vs) { vs.stroke.on = on; });
-    }
-    ImGui::SetItemTooltip(
-        "No stroke at all -- SVG's `stroke=\"none\"`, which is different from a "
-        "transparent one: the shape keeps no stroke rather than an invisible one.");
-
-    bandSeparator();
-    capsLabel("FILL");
-    ImGui::SameLine();
-    // **Fill is off by default and there is no width control for it**, because
-    // a fill is only defined over an enclosed region: filling an OPEN path
-    // means implicitly closing it, so the user would see a straight edge they
-    // never drew joining the last anchor back to the first, moving with every
-    // further click. app/VectorStyle.hpp section 2.
-    {
-      const std::array<float, 4>& lin = pathStyle.style.fill.rgba;
-      float enc[4] = {srgbEncode(lin[0]), srgbEncode(lin[1]), srgbEncode(lin[2]), lin[3]};
-      if (ImGui::ColorEdit4("##pathFillColor", enc,
-                            ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar |
-                                ImGuiColorEditFlags_AlphaPreviewHalf)) {
-        const std::array<float, 4> out = {srgbDecode(enc[0]), srgbDecode(enc[1]),
-                                          srgbDecode(enc[2]), enc[3]};
-        editPathStyle("fill colour", &gFillColor, [out](VectorStyle& vs) {
-          vs.fill.rgba = out;
-          vs.fill.on = true;
-        });
-      }
-    }
-    ImGui::SetItemTooltip(
-        "Fill colour. Setting one turns the fill ON.%s An OPEN path is filled as though "
-        "closed, which is SVG's rule and why this is off until you ask for it.",
-        pathStyle.mixedFillColor ? " The selection has more than one; this is the first "
-                                   "shape's."
-                                 : "");
-
-    ImGui::SameLine();
-    const bool pathFillOff = !pathStyle.style.fill.on;
-    if (atelierToggleChip(pathStyle.mixedFillOn ? "NONE ~##pathFillNone" : "NONE##pathFillNone",
-                          pathFillOff && !pathStyle.mixedFillOn)) {
-      const bool on = pathFillOff;
-      editPathStyle("fill on", nullptr, [on](VectorStyle& vs) { vs.fill.on = on; });
-    }
-    ImGui::SetItemTooltip("No fill at all -- SVG's `fill=\"none\"`. The default for a pen, "
-                          "which draws lines.");
-
-    ImGui::EndDisabled();
-    popAtelierMono();
+    drawVectorFillStrokeControls(st, pathOd, pathLayer);
 
     bandSeparator();
     capsLabel("MODE");
@@ -1598,6 +1790,77 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
       else ImGui::Text("%zu anchor%s", n, n == 1 ? "" : "s");
     }
     popAtelierMono();
+    return;
+  }
+
+  // --- Tool::Shape ----------------------------------------------------------
+  //
+  // Gated on `toolCreatesShapes()` rather than folded into the block above --
+  // `app/ShapeTool.hpp` section 1's own reason, restated at every other gate
+  // in this file: Shape's gesture is not the Pen's, so it gets its own
+  // predicate rather than widening `toolEditsPath()`.
+  //
+  // KIND and the kind's one parameter are new; STROKE/FILL is
+  // `drawVectorFillStrokeControls()` above, called a second time rather than
+  // written a second time -- this track's own instruction not to duplicate
+  // the row `docs/ui.md` points at. MODE and SELECTED are deliberately NOT
+  // repeated here: Shape places no anchors and runs no marquee, so a mode
+  // segment here would offer a distinction with nothing behind it
+  // (`app/PenTool.hpp` section 2's own phrase for exactly this shape of
+  // control). `st.pathEdit.selection` still exists underneath -- carried over
+  // from whatever `Tool::PathSelect` last selected, or from the shape this
+  // tool just drew -- and STROKE/FILL reads and writes through it exactly as
+  // it does for the Pen.
+  if (st.brush.tool == Tool::Shape) {
+    OpenDocument* shapeOd = st.documents.active();
+    Layer* shapeLayer = shapeOd != nullptr ? activeLayerOf(*shapeOd) : nullptr;
+    if (shapeLayer != nullptr && shapeLayer->kind != LayerKind::Vector) shapeLayer = nullptr;
+
+    bandSeparator();
+    capsLabel("KIND");
+    ImGui::SameLine();
+    pushAtelierMono();
+    for (const ShapeKindRow& row : kShapeKinds) {
+      std::string id = std::string(row.label) + "##shapeKind" + row.label;
+      if (atelierToggleChip(id.c_str(), st.shapeTool.kind == row.kind)) st.shapeTool.kind = row.kind;
+      ImGui::SetItemTooltip("%s", row.tip);
+      ImGui::SameLine();
+    }
+    ImGui::NewLine();
+    popAtelierMono();
+
+    // The kind's own one parameter -- greyed for every kind it does not
+    // apply to, rather than hidden, so the row does not jump as KIND changes
+    // (`docs/ui.md`'s rule that no dead control looks live applies in the
+    // other direction too: a control that vanishes and reappears reads as a
+    // layout glitch, not as "this does not apply here").
+    bandSeparator();
+    capsLabel("PARAM");
+    ImGui::SameLine();
+    pushAtelierMono();
+    ImGui::BeginDisabled(st.shapeTool.kind != ShapeKind::RoundedRect);
+    ImGui::SetNextItemWidth(86.0f);
+    float radius = st.shapeTool.cornerRadius;
+    if (ImGui::DragFloat("##shapeCornerRadius", &radius, 0.5f, 0.0f, 4096.0f, "%.1f px radius"))
+      st.shapeTool.cornerRadius = std::max(0.0f, radius);
+    ImGui::SetItemTooltip("Corner radius, in document pixels. Only Rounded Rectangle uses it.");
+    ImGui::EndDisabled();
+
+    ImGui::SameLine();
+    ImGui::BeginDisabled(st.shapeTool.kind != ShapeKind::Polygon);
+    ImGui::SetNextItemWidth(86.0f);
+    int sides = st.shapeTool.sides;
+    if (ImGui::DragInt("##shapePolygonSides", &sides, 0.1f, 3, 24, "%d sides"))
+      st.shapeTool.sides = std::clamp(sides, 3, 24);
+    ImGui::SetItemTooltip("How many sides. Only Polygon uses it.");
+    ImGui::EndDisabled();
+    popAtelierMono();
+
+    drawVectorFillStrokeControls(st, shapeOd, shapeLayer);
+    if (shapeLayer == nullptr)
+      ImGui::SetItemTooltip(
+          "Shape draws into a Vector layer. Dragging on the canvas makes one "
+          "automatically if the active layer is not one already.");
     return;
   }
 

@@ -76,4 +76,27 @@ Document documentWithLayersAtOrAboveHidden(const Document& doc, size_t layerInde
 // "what is above a layer that does not exist".
 Document documentWithLayersAtOrBelowHidden(const Document& doc, size_t layerIndex);
 
+// Track `xform` (PRD C12): `app::TransformSession`'s `TransformTarget::
+// LayerSet` has no moving-pixels quad at all (`ui/TransformPreviewTexture`'s
+// scope stays one `Layer&`; compositing N members' mutual blend modes into
+// one crop is real work this step does not take on -- the identical scope
+// reduction that file's header already accepts for a single Pigment layer,
+// applied to a whole set instead of one kind). With no quad to sandwich
+// between a below-half and an above-half, the three-way split above has
+// nothing to arrange: a layer set gets the wireframe-only fallback (the box,
+// no moving paint), and the ONE thing the canvas needs is every member of
+// the set hidden from the ordinary composite so the still-in-place original
+// does not sit under a box that claims to be moving it.
+//
+// `[lo, hi]` inclusive, so a caller can pass a contiguous set's own bounds
+// directly -- `app::TransformSession::layerIndices()` is sorted ascending,
+// so its `.front()`/`.back()` are exactly `lo`/`hi`. Every index strictly
+// between them is hidden too, on the (checked at the UI layer, before a
+// session ever begins) assumption that the set IS the whole contiguous span
+// -- see `app/TransformSession.hpp` section 8's closing paragraph for why a
+// non-contiguous set never reaches this function at all: it is refused, by
+// name, before the gizmo appears, rather than hiding indices that were never
+// part of the selection.
+Document documentWithLayerRangeHidden(const Document& doc, size_t lo, size_t hi);
+
 }  // namespace np

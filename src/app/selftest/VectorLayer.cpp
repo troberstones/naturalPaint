@@ -11,8 +11,10 @@
 #include "core/Path.hpp"
 #include "core/VectorRaster.hpp"
 #include "core/VectorShape.hpp"
+#include "io/FlatsSerial.hpp"
 #include "io/NpaintFile.hpp"
 #include "io/PathSerial.hpp"
+#include "io/TextSerial.hpp"
 
 namespace np {
 
@@ -737,6 +739,33 @@ bool runVectorLayerTest() {
     std::remove(p3);
   }
 
+  // Sections 13 and 13b both need a payload this build CANNOT write -- a
+  // future carrier version -- inside a real file, and there is one way to get
+  // it: save a document, then patch the version tag of its only `oldTag` in
+  // the EXR header (same length, and an EXR header is not compressed). The
+  // Strokes layer's section F2 makes its `npdabs3:` file the same way.
+  auto retagFile = [](const char* from, const char* to, const std::string& oldTag,
+                      const std::string& newTag) {
+    if (oldTag.size() != newTag.size()) return false;
+    std::ifstream in(from, std::ios::binary);
+    std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const size_t at = bytes.find(oldTag);
+    if (at == std::string::npos || bytes.find(oldTag, at + 1) != std::string::npos) return false;
+    bytes.replace(at, oldTag.size(), newTag);
+    std::ofstream out(to, std::ios::binary | std::ios::trunc);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    return out.good();
+  };
+  // The value of the attribute `name` held in layer `layer`'s carry, or "" --
+  // the loader files an `np:text` / `np:flats` there only when it could not
+  // decode it, so "" after a reload also means "this build read it".
+  auto carriedAttr = [](const NpaintLoadResult& r, size_t layer, const char* name) {
+    if (r.carry.layerAttributes.size() <= layer) return std::string();
+    for (const NpaintAttribute& a : r.carry.layerAttributes[layer])
+      if (a.name == name) return a.stringValue;
+    return std::string();
+  };
+
   // --- 13. A Text layer's .npaint round trip (PLAN.md phase 14) ------------
   //
   // Here rather than in app/selftest/TextContent.cpp for one concrete reason:
@@ -887,6 +916,180 @@ bool runVectorLayerTest() {
             "its attribute where an empty Vector layer does not");
     }
     std::remove(tp3);
+
+    // **A future `np:text` survives a save by this build (PRD I10).** The
+    // loader opens an `nptext3:` Text layer with a default `TextContent` and
+    // keeps the attribute in the carry, promising to write it back verbatim.
+    // The writer used to break that promise: it wrote `np:text` for every
+    // Text layer unconditionally, and its carry replay skips a carried
+    // `np:text` whenever it wrote its own, so the next save replaced a newer
+    // build's text with an EMPTY one -- and reopened cleanly, because that
+    // empty payload is one this build reads. The round trips above cannot see
+    // it: they never hold a payload this build cannot decode.
+    {
+      const char* fa = "selftest_text_future_a.npaint";
+      const char* fb = "selftest_text_future_b.npaint";
+      const char* fc = "selftest_text_future_c.npaint";
+      const char* fd = "selftest_text_future_d.npaint";
+      const char* fe = "selftest_text_future_typed.npaint";
+      const std::string v1(kTextContentSerialPrefix);
+      const std::string written = serializeTextContent(t.text);
+      const std::string futureValue = "nptext3:" + written.substr(v1.size());
+      const bool patched = written.compare(0, v1.size(), v1) == 0 &&
+                           saveNpaint(doc, fa, NpaintSaveOptions{}).ok &&
+                           retagFile(fa, fb, v1, "nptext3:");
+      check(patched, "npaint future: premise -- a Text file was written and its one nptext1: "
+                     "tag patched to nptext3:");
+      const NpaintLoadResult future = patched ? loadNpaint(fb) : NpaintLoadResult{};
+      bool named = false;
+      for (const std::string& w : future.warnings)
+        if (w.find("nptext1:") != std::string::npos && w.find("nptext2:") != std::string::npos)
+          named = true;
+      const bool opened = future.ok && future.document.layers.size() == 2 &&
+                          future.document.layers[1].kind == LayerKind::Text;
+      check(opened &&
+                serializeTextContent(future.document.layers[1].text) ==
+                    serializeTextContent(TextContent{}) &&
+                named && carriedAttr(future, 1, "np:text") == futureValue,
+            "npaint future: an nptext3: Text layer opens with DEFAULT content, a warning naming "
+            "the versions this build reads, and its payload held in the carry byte for byte");
+      std::string gen1, gen2;
+      if (opened && saveNpaint(future.document, fc, NpaintSaveOptions{}, &future.carry).ok) {
+        const NpaintLoadResult again = loadNpaint(fc);
+        gen1 = carriedAttr(again, 1, "np:text");
+        if (again.ok && saveNpaint(again.document, fd, NpaintSaveOptions{}, &again.carry).ok)
+          gen2 = carriedAttr(loadNpaint(fd), 1, "np:text");
+      }
+      check(gen1 == futureValue,
+            "npaint future: SAVED by this build, the nptext3: payload is written back "
+            "verbatim -- not replaced by the empty default the layer opened with (PRD I10)");
+      check(gen2 == futureValue,
+            "npaint future: and it is still verbatim after a SECOND save of that reopened file");
+      // The other half of the rule, so the fix cannot pass by always
+      // preferring the carry: once the user types into the layer, THEIR text
+      // is what saves, alone. Both copies on one part would leave
+      // OpenImageIO's last-write-wins to pick, and it picks the carried one.
+      bool typedWins = false;
+      if (opened) {
+        Document typed = future.document;
+        typed.layers[1].text.utf8 = "typed over a newer build's text";
+        if (saveNpaint(typed, fe, NpaintSaveOptions{}, &future.carry).ok) {
+          const NpaintLoadResult r = loadNpaint(fe);
+          typedWins = r.ok && r.document.layers.size() == 2 &&
+                      r.document.layers[1].text.utf8 == "typed over a newer build's text" &&
+                      carriedAttr(r, 1, "np:text").empty();
+        }
+      }
+      check(typedWins,
+            "npaint future: but once the user TYPES into that layer, their text is what saves "
+            "-- this build cannot merge an edit into a payload it cannot read");
+      for (const char* p : {fa, fb, fc, fd, fe}) std::remove(p);
+    }
+  }
+
+  // --- 13b. A Flats layer's .npaint round trip -----------------------------
+  //
+  // Section 13's claims for `np:flats`, which the loader handles on
+  // `np:text`'s rules exactly: the content is parameters, repairs and a
+  // palette rather than pixels, it is written even at its defaults (a fresh
+  // Flats layer still flats the drawing), and a payload this build cannot
+  // decode is carried to the next save. Nothing else in `--selftest` writes a
+  // Flats layer to a file.
+  {
+    Document doc = Document::createBlank(kW, kH, WorkingSpace{});
+    doc.layers.clear();
+    addLayer(doc, 0, makeRgbLayer("inks"));
+    addLayer(doc, 1, makeFlatsLayer("flats"));
+    Layer& f = doc.layers[1];
+    f.opacity = 0.5f;
+    f.blend = "multiply";
+    // Something in each of the three parts: parameters, a recorded repair and
+    // the id allocator it advanced, and a palette with a HOLE -- position is
+    // meaning there (flats/Model.hpp), so a reader that compacted it would
+    // move every later swatch.
+    f.flats.params.gapSize = 5;
+    f.flats.params.sheet = 0.0f;
+    f.flats.params.lineThreshold = 0.125f;
+    FlatBridgeStroke bridge;
+    bridge.id = f.flats.edits.nextId++;
+    bridge.pts = {4.0f, 4.0f, 20.0f, 9.5f};
+    f.flats.edits.bridges.push_back(bridge);
+    f.flats.palette = {FlatRgb{200, 150, 120}, std::nullopt, FlatRgb{10, 20, 30}};
+    const std::string written = serializeFlatsContent(f.flats);
+
+    const char* fa = "selftest_flats_roundtrip.npaint";
+    const NpaintSaveResult saved = saveNpaint(doc, fa, NpaintSaveOptions{});
+    check(saved.ok, "npaint: a document containing a Flats layer saves");
+    if (!saved.ok) std::printf("      save error: %s\n", saved.error.c_str());
+    const NpaintLoadResult loaded = saved.ok ? loadNpaint(fa) : NpaintLoadResult{};
+    const bool shaped = loaded.ok && loaded.document.layers.size() == 2 &&
+                        loaded.document.layers[1].kind == LayerKind::Flats;
+    check(shaped && !loaded.document.layers[1].rgbTiles.has_value() &&
+              loaded.document.layers[1].blend == "multiply" &&
+              loaded.document.layers[1].opacity == 0.5f,
+          "npaint: and loads back as a Flats layer with no tiles and its layer metadata");
+    check(shaped && serializeFlatsContent(loaded.document.layers[1].flats) == written &&
+              loaded.document.layers[1].flats.params.gapSize == 5 &&
+              loaded.document.layers[1].flats.edits.bridges.size() == 1 &&
+              loaded.document.layers[1].flats.palette.size() == 3 &&
+              !loaded.document.layers[1].flats.palette[1].has_value(),
+          "npaint: its parameters, repair and palette -- hole included -- come back exactly");
+
+    // **A future `np:flats` survives a save by this build (PRD I10)** --
+    // section 13's closing block, for the same writer defect: `np:flats` was
+    // written unconditionally for the kind, so an `npflats2:` payload the
+    // loader carried was replaced on the next save by the default content
+    // the layer opened with.
+    const char* fb = "selftest_flats_future_b.npaint";
+    const char* fc = "selftest_flats_future_c.npaint";
+    const char* fd = "selftest_flats_future_d.npaint";
+    const char* fe = "selftest_flats_future_edited.npaint";
+    const std::string v1 = "npflats1:";
+    const std::string futureValue = "npflats2:" + written.substr(v1.size());
+    const bool patched =
+        saved.ok && written.compare(0, v1.size(), v1) == 0 && retagFile(fa, fb, v1, "npflats2:");
+    check(patched, "npaint future: premise -- the Flats file's one npflats1: tag patched to "
+                   "npflats2:");
+    const NpaintLoadResult future = patched ? loadNpaint(fb) : NpaintLoadResult{};
+    bool named = false;
+    for (const std::string& w : future.warnings)
+      if (w.find("npflats1:") != std::string::npos) named = true;
+    const bool opened = future.ok && future.document.layers.size() == 2 &&
+                        future.document.layers[1].kind == LayerKind::Flats;
+    check(opened &&
+              serializeFlatsContent(future.document.layers[1].flats) ==
+                  serializeFlatsContent(FlatsContent{}) &&
+              named && carriedAttr(future, 1, "np:flats") == futureValue,
+          "npaint future: an npflats2: Flats layer opens with DEFAULT content, a warning "
+          "naming the version this build reads, and its payload held in the carry byte for byte");
+    std::string gen1, gen2;
+    if (opened && saveNpaint(future.document, fc, NpaintSaveOptions{}, &future.carry).ok) {
+      const NpaintLoadResult again = loadNpaint(fc);
+      gen1 = carriedAttr(again, 1, "np:flats");
+      if (again.ok && saveNpaint(again.document, fd, NpaintSaveOptions{}, &again.carry).ok)
+        gen2 = carriedAttr(loadNpaint(fd), 1, "np:flats");
+    }
+    check(gen1 == futureValue,
+          "npaint future: SAVED by this build, the npflats2: payload is written back verbatim "
+          "-- not replaced by the default parameters the layer opened with (PRD I10)");
+    check(gen2 == futureValue,
+          "npaint future: and it is still verbatim after a SECOND save of that reopened file");
+    // Section 13's other half: a user edit to the carried layer wins, alone.
+    bool editWins = false;
+    if (opened) {
+      Document edited = future.document;
+      edited.layers[1].flats.params.gapSize = 11;
+      if (saveNpaint(edited, fe, NpaintSaveOptions{}, &future.carry).ok) {
+        const NpaintLoadResult r = loadNpaint(fe);
+        editWins = r.ok && r.document.layers.size() == 2 &&
+                   r.document.layers[1].flats.params.gapSize == 11 &&
+                   carriedAttr(r, 1, "np:flats").empty();
+      }
+    }
+    check(editWins,
+          "npaint future: but once the user changes that layer's parameters, theirs are what "
+          "save -- this build cannot merge an edit into a payload it cannot read");
+    for (const char* p : {fa, fb, fc, fd, fe}) std::remove(p);
   }
 
   // --- 14. The rest of the layer attribute table, edited after load --------

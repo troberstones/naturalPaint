@@ -126,6 +126,12 @@ enum class MenuAction : uint16_t {
   CloseDocument,
   ExportAs,
   ExportStates,
+  // File > Export Frames and Slices... (PLAN.md gap-closing wave, track
+  // `region`). One file per `core::Region`, through io/ExportRegions --
+  // `ExportStates`'s own sibling operation, not a variant of it (see that
+  // header's "reuse, and where it stops" section for why the two are not one
+  // enumerator with a mode flag).
+  ExportRegions,
   Batch,
   Quit,
 
@@ -242,6 +248,11 @@ enum class MenuAction : uint16_t {
   AddGuide,
   ClearGuides,
   Grid,
+  // View > Show Frames and Slices (PLAN.md gap-closing wave, track `region`).
+  // A Check, `Guides`'s own shape: the overlay also draws whenever
+  // `Tool::Frame`/`Tool::Slice` is active, so this is "keep them visible
+  // after switching away", not the only way to see them.
+  ShowRegions,
   Snap,
 
   // --- Window -------------------------------------------------------------
@@ -743,6 +754,9 @@ struct MenuContext {
   bool showNavigator = false;
   bool showGuides = false;
   bool showGrid = false;
+  // View > Show Frames and Slices (PLAN.md gap-closing wave, track `region`):
+  // `AppState::showRegions`'s own checkmark, `showGrid`'s own shape.
+  bool showRegions = false;
   bool snappingEnabled = false;
   bool hasGuides = false;           // Clear Guides is dead with none placed
 

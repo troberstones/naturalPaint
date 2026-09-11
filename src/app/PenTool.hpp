@@ -198,9 +198,24 @@ void combineComponentSelection(std::vector<ComponentRef>* current,
 //      marquee
 enum class PathHitKind { None, GnomonHandle, PivotMarker, Anchor, Tangent, Segment };
 
+// Which specific gnomon control was hit -- meaningful only when
+// `PathHit::kind == PathHitKind::GnomonHandle`. `pathEditBegin()` copies it
+// into `PathEditState::gnomonHandle` once, at the press, and section 7's
+// `gnomonHandleAffine()` is the only thing that reads it back.
+//
+// The four scale-box corners share ONE value, `Corner`, not four. Unlike
+// `app/TransformSession.hpp`'s eight box handles, which scale from an
+// ANCHORED opposite corner/edge and so must know which one, this
+// manipulator's corners all scale about the same PIVOT (docs/vector-editing
+// .md section 1 -- there is no "opposite corner" concept here), and the
+// pivot-relative ratio a corner drag computes is identical no matter which of
+// the four was grabbed.
+enum class GnomonPart { Center, AxisX, AxisY, Corner, Rotate };
+
 struct PathHit {
   PathHitKind kind = PathHitKind::None;
   ComponentRef component;  // meaningful for Anchor/Tangent
+  GnomonPart gnomonPart = GnomonPart::Center;  // meaningful for GnomonHandle
   uint64_t shapeId = 0;    // meaningful for Anchor/Tangent/Segment
 };
 
@@ -333,6 +348,64 @@ void applyAffineToSelection(std::vector<VectorShape>* shapes, const PathSelectio
 // out of).
 void setShapePivot(VectorShape* shape, PathPoint to) noexcept;
 
+// The handle -> affine map, factored out of `pathEditUpdate()`'s Manipulator
+// arm so it is pure geometry -- pivot, handle, two points, one modifier ->
+// `Mat3` -- testable with no `PathEditState`, no `AppState`, no UI.
+// `dragStart` and `current` are both document-space pointer positions, not a
+// delta: `pathEditUpdate()` passes `state->dragStart` and the live `at`,
+// which is what lets the whole drag be rebuilt from `shapesAtDragStart` every
+// frame (this file's stated rule) instead of accumulating.
+//
+//   Center  -- translate by `current - dragStart`. Today's only behaviour,
+//              unchanged bit for bit: the free-move handle, and the
+//              whole-shape-by-segment gesture in `pathEditBegin()`'s Segment
+//              case, which never touches the gnomon but is the same
+//              operation and is dispatched through here too.
+//   AxisX/Y -- scale ONE axis about `pivot`, by the ratio of `current`'s
+//              signed offset from `pivot` on that axis to `dragStart`'s.
+//              **Not specified by docs/vector-editing.md; chosen here**
+//              because it is the one operation the omnidirectional scale
+//              corners cannot offer (a single constrained axis), and because
+//              "translate along an axis" is already reachable from the
+//              free-move centre with no precision lost, so the arrows would
+//              otherwise duplicate an existing handle. `shiftHeld` has no
+//              effect: "uniform" names a relationship BETWEEN two axes, and
+//              an axis handle only ever touches one.
+//   Corner  -- scale about `pivot` by the ratio of `current`'s offset from
+//              `pivot` to `dragStart`'s, independently per axis.
+//              `shiftHeld` locks both axes to the SAME factor -- the radial
+//              distance ratio `|current-pivot| / |dragStart-pivot|`, not
+//              either per-axis ratio alone, so a diagonal drag and an
+//              axis-aligned one both read as "how far the pointer moved from
+//              the pivot," which is what Shift is asked to lock to.
+//   Rotate  -- rotate about `pivot` by the signed angle between
+//              `dragStart`'s bearing from `pivot` and `current`'s.
+//              `shiftHeld` snaps the result to the nearest 15 degrees.
+//
+// **Degenerate guard.** A ratio or a bearing is undefined when its reference
+// vector from `pivot` has zero length -- `dragStart` exactly on `pivot` for
+// Corner/AxisX/AxisY (nothing to divide by), or either endpoint exactly on
+// `pivot` for Rotate (no bearing to read off a zero vector). Rather than
+// divide by ~0 or feed `atan2(0, 0)` into a spurious angle, each case below
+// refuses the one axis (Corner/AxisX/AxisY: that axis' factor stays 1) or the
+// whole handle (Rotate: the identity) for that frame, rather than propagate a
+// NaN into `applyAffineToSelection()` and collapse the selection to a point
+// no later frame can scale back out of.
+//
+// **Stroke width does NOT scale.** `app/VectorStyle.hpp`'s `strokeStyle
+// .width` is a scalar independent of the path geometry -- the same file's
+// section 1 argues at length for "one document pixel" being the width every
+// vector shape starts at regardless of its own size, and a scale drag has no
+// more claim to that scalar than a resize of the document would. It is also
+// ill-defined for a non-uniform Corner/AxisX/AxisY scale (there is no single
+// number "the" width would become when X and Y grow by different factors,
+// short of picking one axis arbitrarily), so leaving it untouched is the one
+// answer this function can give for every handle without a special case for
+// some of them. A user who wants a heavier stroke on a bigger shape sets it
+// explicitly, the same as they do today after any other edit.
+Mat3 gnomonHandleAffine(GnomonPart part, PathPoint pivot, PathPoint dragStart, PathPoint current,
+                        bool shiftHeld) noexcept;
+
 // ==========================================================================
 // 8. GESTURE STATE -- the enum only; the struct lives on `AppState`
 // ==========================================================================
@@ -396,6 +469,15 @@ struct PathEditState {
 
   // What is being dragged, for AnchorDrag / TangentDrag.
   ComponentRef dragComponent;
+
+  // Which gnomon control `PathDragKind::Manipulator` is dragging. Recorded
+  // once, at `pathEditBegin()`'s press -- the hit test does not re-run every
+  // frame -- and read every frame by `pathEditUpdate()`'s call to
+  // `gnomonHandleAffine()`. Defaults to `Center` so the one Manipulator entry
+  // that never touches the gnomon at all (`pathEditBegin()`'s Segment tier,
+  // a whole-shape translate reached by clicking the outline) still behaves as
+  // a translate without having to name itself.
+  GnomonPart gnomonHandle = GnomonPart::Center;
 
   // Geometry as it was at pen-down. See this struct's own comment.
   std::vector<VectorShape> shapesAtDragStart;
@@ -467,8 +549,16 @@ enum class PathEditChange {
 
 // Pointer moved to `at` during a live drag. Rewrites `*shapes` from
 // `shapesAtDragStart`.
+//
+// `shiftHeld` is read LIVE every call, never latched at `pathEditBegin()` --
+// `app/TransformSession.hpp` section 6's own convention, and for the same
+// reason: releasing Shift mid-drag must switch a scale back to free, or a
+// rotate back off its 15-degree snap, on the very next frame, the way every
+// other modifier this codebase reads during a live drag does. It is used
+// only by the Manipulator arm (`gnomonHandleAffine()`); every other drag
+// kind ignores it, so a caller with nothing to report simply defaults it.
 PathEditChange pathEditUpdate(PathEditState* state, std::vector<VectorShape>* shapes,
-                              PathPoint at);
+                              PathPoint at, bool shiftHeld = false);
 
 // Pen-up. Commits the marquee's selection if that is the live drag, clears the
 // drag, and releases `shapesAtDragStart`.

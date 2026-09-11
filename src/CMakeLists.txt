@@ -15,6 +15,7 @@ add_executable(naturalPaint
   app/CommandsLayers.cpp
   app/CommandsOpStack.cpp
   app/CommandsPatterns.cpp
+  app/CommandsRegions.cpp
   app/CompPanel.cpp
   app/PanelLayout.cpp
   app/ControlsLayout.cpp
@@ -30,6 +31,7 @@ add_executable(naturalPaint
   app/PathOps.cpp
   app/PathsPanel.cpp
   app/PenTool.cpp
+  app/ShapeTool.cpp
   app/VectorStyle.cpp
   app/TextTool.cpp
   app/PsdExportCli.cpp
@@ -277,6 +279,7 @@ add_executable(naturalPaint
   app/selftest/TransformCompositeSplit.cpp
   app/selftest/TransformPreviewTexture.cpp
   app/selftest/TransformSession.cpp
+  app/selftest/TransformLayerSet.cpp
   app/selftest/FramePacing.cpp
   app/selftest/GradientTool.cpp
   app/selftest/MaskTarget.cpp
@@ -288,6 +291,7 @@ add_executable(naturalPaint
   app/selftest/PathsPanel.cpp
   app/selftest/PenTool.cpp
   app/selftest/PenDraw.cpp
+  app/selftest/ShapeTool.cpp
   app/selftest/VectorStyle.cpp
   app/selftest/TextTool.cpp
   app/selftest/TextShaper.cpp
@@ -303,6 +307,7 @@ add_executable(naturalPaint
   app/selftest/PathConsumers.cpp
   app/selftest/TextKeyCapture.cpp
   app/selftest/Tileable.cpp
+  app/selftest/Region.cpp
   app/selftest/TipEdge.cpp
   app/selftest/BrushBlendMode.cpp
   app/selftest/NativeBrush.cpp
@@ -316,6 +321,7 @@ add_executable(naturalPaint
   app/MeasureLine.cpp
   app/GradientTool.cpp
   app/CropTool.cpp
+  app/RegionTool.cpp
   app/OpenAnyFile.cpp
   app/QuitSequence.cpp
   app/Snapping.cpp
@@ -381,6 +387,8 @@ add_executable(naturalPaint
   core/PathFlatten.cpp
   core/PathRaster.cpp
   core/PathStroke.cpp
+  core/Region.cpp
+  core/RegionOps.cpp
   core/VectorRaster.cpp
   core/VectorShape.cpp
   core/TextContent.cpp
@@ -411,6 +419,7 @@ add_executable(naturalPaint
   io/SourceGamut.cpp
   io/ImageIO.cpp
   io/ActionFile.cpp
+  io/GradientPresetFile.cpp
   io/Json.cpp
   io/NpaintFile.cpp
   io/OpSerial.cpp
@@ -421,6 +430,8 @@ add_executable(naturalPaint
   io/PsdLayerSection.cpp
   io/PsdLayerExtras.cpp
   io/PathSerial.cpp
+  io/RegionSerial.cpp
+  io/ExportRegions.cpp
   io/PsPatterns.cpp
   io/PsdImport.cpp
   io/SvgImport.cpp

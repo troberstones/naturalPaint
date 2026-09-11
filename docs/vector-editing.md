@@ -274,13 +274,23 @@ photographed** (golden views `vector_shape`, `vector_components`,
 
 **Not on screen yet, by name:**
 
-- **Scale and rotate.** The gnomon's corners and ring are drawn and hit-tested,
-  and a press on either starts a `Manipulator` drag — but `pathEditUpdate()`
-  (`app/PenTool.cpp`, the `Manipulator` arm) applies `transformTranslate` for
-  every drag kind that is not a `TangentDrag`. Nothing reads which handle was
-  pressed once the drag kind is set, so §2's gnomon is a visible target whose
-  scale and rotate handles move the selection. Tracked as a row in
-  `docs/spec-vs-implementation.md` §2.
+- ~~**Scale and rotate.** The gnomon's corners and ring are drawn and
+  hit-tested, and a press on either starts a `Manipulator` drag — but
+  `pathEditUpdate()` (`app/PenTool.cpp`, the `Manipulator` arm) applies
+  `transformTranslate` for every drag kind that is not a `TangentDrag`.
+  Nothing reads which handle was pressed once the drag kind is set, so §2's
+  gnomon is a visible target whose scale and rotate handles move the
+  selection.~~ **Built 2026-09-11.** `hitTestPath()` now names the specific
+  `GnomonPart` it hit (`Center`/`AxisX`/`AxisY`/`Corner`/`Rotate`),
+  `pathEditBegin()` records it on `PathEditState::gnomonHandle`, and the pure
+  function `gnomonHandleAffine()` (pivot, handle, drag-start point, current
+  point, Shift → `Mat3`) is what `pathEditUpdate()`'s `Manipulator` arm now
+  applies instead of an unconditional translate: a corner free-scales the
+  selection about the pivot (Shift locks it to the radial ratio, i.e.
+  uniform), an axis arrow single-axis scales (this track's own choice, not
+  specified above), and the ring rotates by the pivot-relative bearing
+  change (Shift snaps to 15°). Stroke width does not scale — see
+  `gnomonHandleAffine()`'s header comment.
 - ~~**The PATHS panel**, and the three PRD J consumers.~~ **Built 2026-09-09**
   (`docs/path-editing-plan.md` §4). `ControlsSection::Paths` is a `Tool`-role
   panel on the flyout rail, revealed on the transition into a Vector layer the
