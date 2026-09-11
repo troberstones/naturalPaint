@@ -67,7 +67,9 @@ enum class DynamicSource {
   // one, RE-SAMPLED EVERY DAB. Stroke-local like the four above it
   // (`sourceIsStrokeLocal()`), for the identical reason: a dab's direction
   // of travel is not known until its own position is, so this cannot be
-  // sampled once per frame the way Pressure/Tilt/Azimuth/Barrel are. See
+  // read off the pen the way Pressure/Tilt/Azimuth/Barrel are (once per
+  // render frame on the solver route; once per pointer sample, interpolated
+  // per dab, on the CPU route -- the stroke-local sources' section below). See
   // this header's own "DIRECTION" section, below the other four
   // stroke-local sources, for the normalisation, the wrap point, and the
   // first-dab default.
@@ -639,8 +641,8 @@ float dynamicPressureEma(float previousSmoothed, float rawPressure) noexcept;
 // `dynamicPressureEma()`'s 0.7/0.3 blend has a time constant measured in
 // CALLS, not seconds or pixels -- fine when every caller feeds it exactly one
 // sample per render frame, which is what every caller did until Track A's
-// full-rate pointer queue (`app/AppState::PointerSample`, drained once per
-// raw SDL event rather than once per frame -- brush/StrokePath.hpp's own
+// full-rate pointer queue (`app/PointerQueue`: one `PointerSample` per
+// raw SDL position event rather than one per frame -- brush/StrokePath.hpp's own
 // header on why). A tablet reporting at 133-200 Hz into a 60 Hz frame loop
 // now hands the interactive canvas block two to three samples in some
 // frames and none in others. Feeding each of them through the call-shaped
@@ -715,10 +717,18 @@ float dynamicPressureSmoothedByDistance(float previousSmoothed, float rawPressur
 // The stroke-local sources -- VELOCITY, FADE, NOISE, RANDOM and DIRECTION
 // ---------------------------------------------------------------------------
 //
-// The other four (Pressure, Tilt, Azimuth, Barrel) are hardware readings:
-// `app/StrokeSession::dynamicInputsFor()` samples them straight off a pen,
-// once per render frame, before a stroke's geometry is even known. These five
-// cannot be -- they are properties of the stroke itself (how fast it moved,
+// The other four (Pressure, Tilt, Azimuth, Barrel) are hardware readings,
+// known before a stroke's geometry is. How often they are read depends on the
+// route, and this paragraph used to claim the solver's answer for both:
+//   * the SOLVER route (`sim::PaintSim`, watercolour/oil) still reads them
+//     once per render frame, through `app/StrokeSession::dynamicInputsFor()`
+//     -- the latest-wins `AppState` scalars;
+//   * the CPU deposit route reads them once per POINTER SAMPLE: each queued
+//     sample carries the axes of its own device report (`app/PointerQueue`
+//     patches them in), and `brush/StrokePath` interpolates them per DAB
+//     between the two samples a dab lies between -- linearly for pressure
+//     and tilt, along the short arc for azimuth and barrel.
+// These five cannot be either -- they are properties of the stroke itself (how fast it moved,
 // how far it has travelled, a value that should wander smoothly or jump
 // freshly along it, which way it is currently heading) -- so they are
 // resolved once per DAB, inside the deposit loop, and are pure functions here

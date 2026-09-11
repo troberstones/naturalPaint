@@ -18,6 +18,7 @@
 #include "app/BatchDialog.hpp"
 #include "app/PanelLayout.hpp"
 #include "app/PenTool.hpp"
+#include "app/PointerQueue.hpp"
 #include "app/TextTool.hpp"
 #include "app/TilePreview.hpp"
 #include "app/DocumentLifecycle.hpp"
@@ -857,47 +858,6 @@ struct PigmentOverride {
   float granulation = 0.0f;
 };
 
-// One raw pointer sample, queued between render frames (Track A: full-rate
-// pen input). `main.cpp`'s SDL event loop appends one of these on every
-// event that carries a fresh position WHILE THE POINTER IS DOWN --
-// `SDL_EVENT_PEN_DOWN` and in-contact `SDL_EVENT_PEN_MOTION` for a pen,
-// `SDL_EVENT_MOUSE_BUTTON_DOWN` (left) and left-held `SDL_EVENT_MOUSE_MOTION`
-// for a mouse, never the pen's own SDL-synthesized mouse duplicates (see
-// `queueMousePointerSample()`'s comment) -- and `ui/MacPaintUI.cpp`'s
-// canvas block drains `AppState::pointerQueue` once per render frame, converts
-// each entry from window space to canvas texel space through the SAME
-// `ViewTransform` the single per-frame sample used to go through, and feeds
-// the result to `StrokeSession::addSample()` as its own `brush::StrokeSample`.
-//
-// **Window space, not canvas space.** The view (pan/zoom/rotate/mirror) can
-// change between the moment an event is queued and the moment its frame
-// drains it -- unlikely within one frame, but the conversion is cheap and
-// doing it at drain time means this struct owes nothing to which document or
-// view was active when the event arrived; it is pure SDL/ImGui-side data.
-//
-// **Raw axis degrees, not normalised [0,1] sources.** `tiltXDeg`/`tiltYDeg`/
-// `rotationDeg` are what `app/PenAxes.hpp` consumes (`penTiltNormalised()`
-// etc.), and normalising here would mean re-deriving that conversion a
-// second time at the point of capture instead of once, at the point of use --
-// `brush/StrokePath.hpp`'s own header says why the boundary belongs there.
-//
-// Fields left at a mouse motion event's own values -- `pressure = 1.0f`,
-// the three degree fields at 0.0 -- are already a mouse's neutral reading
-// once run through those same conversions (`penTiltNormalised(0,0) == 0`,
-// `penAzimuthNormalised(0,0) == 0`, `penBarrelNormalised(0) == 0.5`, the
-// pen's own rest orientation) -- so a mouse sample needs no special-casing
-// at capture time, only `isPen = false` at the source.
-struct PointerSample {
-  float x = 0.0f, y = 0.0f;  // window space (ImGui screen coordinates -- the
-                             // same space `mouse` is read in, just above
-                             // `xform.toCanvas()`, in the canvas block)
-  float pressure = 1.0f;
-  float tiltXDeg = 0.0f;
-  float tiltYDeg = 0.0f;
-  float rotationDeg = 0.0f;
-  bool isPen = false;
-};
-
 struct AppState {
   PaintMode mode = PaintMode::Watercolor;
   // The stroke bridge's per-frame cycle. It lives here rather than as a local
@@ -1613,12 +1573,10 @@ struct AppState {
   // once -- an x-tilt event alone cannot compute an azimuth.
   float penTiltXDeg = 0.0f;
   float penTiltYDeg = 0.0f;
-  // Raw SDL barrel rotation in degrees (SDL_PEN_AXIS_ROTATION), kept
-  // alongside the tilt pair for the identical reason: `PointerSample` below
-  // snapshots the whole raw axis state at PEN_MOTION/PEN_DOWN rather than
-  // re-deriving it from the already-normalised `penBarrel`, and the raw
-  // degrees are what `app/PenAxes.hpp`'s `penBarrelNormalised()` consumes.
-  float penRotationDeg = 0.0f;
+  // (Track A kept a raw `penRotationDeg` here for its samples to snapshot.
+  // The raw axis state a sample snapshots now lives in `pointerQueue` below
+  // -- `PointerQueue::latestAxes()` -- and nothing else read this copy, so it
+  // is gone; `penBarrel` above is the reading the rest of the app uses.)
 
   // Whether the pen has EVER reported a tilt axis (either of
   // SDL_PEN_AXIS_XTILT/YTILT) or a barrel-rotation axis this session. SDL
@@ -1633,18 +1591,17 @@ struct AppState {
   bool penReportsTilt = false;
   bool penReportsBarrel = false;
 
-  // Track A: the full-rate pointer sample queue. `main.cpp`'s event loop
-  // appends to it; `ui/MacPaintUI.cpp`'s canvas block drains and clears it
-  // every render frame, and `main.cpp` clears it unconditionally after
-  // `drawUI()` returns so that a frame on which the canvas block did NOT run
-  // (its window collapsed or clipped) still cannot carry samples forward into
-  // a later gesture. See `PointerSample`'s own comment above for the full
-  // argument -- this exists because a tablet reporting at 133-200 Hz into a
-  // 60 Hz frame loses more than half its samples to `penPressure` et al.'s
-  // latest-wins scalars above, which stay exactly as they are (other code
-  // still reads them: the DYNAMICS gutter, `dynamicInputsFor()`, `--latency`)
-  // and simply end up holding whatever this queue's last entry left there.
-  std::vector<PointerSample> pointerQueue;
+  // The full-rate pointer queue (app/PointerQueue.hpp, whose header is the
+  // whole argument). `main.cpp`'s SDL poll loop pushes every pointer event
+  // into it, dates ImGui's progress through its own input queue once per frame
+  // (`beginFrame()`), and calls `endFrame()` after `drawUI()`; the canvas block
+  // in `ui/MacPaintUI.cpp` claims a gesture when it begins a stroke and takes
+  // only that gesture's samples. It replaced a plain per-frame vector that
+  // was cleared every frame and ignored gesture boundaries (wave-1 review,
+  // finding 2). The latest-wins scalars above stay as they are -- other code
+  // reads them (the DYNAMICS gutter, `dynamicInputsFor()`, `--latency`) -- and
+  // are still written by `main.cpp`'s `handlePenEvent()` from the same events.
+  PointerQueue pointerQueue;
 
   // Freshest pointer-input timestamp (SDL_GetTicksNS) seen during this
   // frame's poll loop; 0 if no pen/mouse sample arrived this frame. Feeds

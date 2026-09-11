@@ -19203,24 +19203,27 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     st.paintingThisFrame = false;
     st.pendingDabs.clear();
 
-    // Track A: this frame's full-rate pointer samples, claimed here whether
-    // or not a stroke ends up painting them -- a sample queued while the
-    // pointer was over a panel, or during a frame no tool below reaches,
-    // must not survive to be fed to a LATER stroke as a catch-up burst of
-    // positions from a different gesture. Every frame owns exactly its own
-    // queue. Converted from window space to canvas space below, through the
-    // same `xform` the single per-frame sample used to go through.
-    std::vector<PointerSample> pointerSamplesThisFrame;
-    pointerSamplesThisFrame.swap(st.pointerQueue);
+    // The gesture the active CPU stroke paints (app/PointerQueue.hpp section
+    // 3), latched by `claimGesture()` on the frame `g_stroke.begin()`
+    // succeeds. The stroke takes that gesture's samples and no other: a
+    // LATER gesture's samples wait in the queue for the stroke that begins on
+    // it, and whatever the canvas is offered and does not take -- a press on
+    // a panel, a pan, a refused stroke -- is dropped by the queue's
+    // `endFrame()` in main.cpp, never fed to a later stroke. This used to be a
+    // per-frame swap of the whole queue, which fed a stroke every sample of
+    // whichever frame it was drained in, gesture boundaries or not (wave-1
+    // review, finding 2).
+    static uint64_t strokeGesture = 0;
 
-    // Feeds this frame's queued samples to the active CPU stroke, in arrival
-    // order. One definition for the two places that need it: the painting
+    // Feeds the stroke's own gesture's queued samples to the active CPU
+    // stroke, in arrival order, each converted from window space to canvas
+    // space through the same `xform` the single per-frame sample used to go
+    // through. One definition for the two places that need it: the painting
     // branch below (every frame the pointer is held) and the pen-up branch
-    // (the frame it is released, BEFORE `end()` -- the samples a fast flick
-    // reported between the last painted frame and the release were all
-    // captured while the pointer was down, main.cpp only queues those, and
-    // dropping them would chord exactly the stroke tail this queue exists
-    // to keep).
+    // (the frame ImGui reports the release, BEFORE `end()` -- the samples a
+    // fast flick reported between the last painted frame and the release
+    // belong to this gesture, and dropping them would chord exactly the
+    // stroke tail this queue exists to keep).
     //
     // `ds` for the distance-keyed pressure filter
     // (brush/Dynamics.hpp's `dynamicPressureSmoothedByDistance()`) is THIS
@@ -19229,7 +19232,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // every sample, so a frame that drains three samples measures three real
     // per-sample distances rather than one frame-sized jump split three ways.
     const auto feedQueuedSamplesToStroke = [&]() {
-      for (const PointerSample& qs : pointerSamplesThisFrame) {
+      for (const PointerSample& qs : st.pointerQueue.takeForStroke(strokeGesture)) {
         const Vec2 canvasPos = xform.toCanvas(Vec2{qs.x, qs.y});
         StrokeSample ss = strokeSampleFromPointer(qs, canvasPos);
         const float ds = std::hypot(ss.pos.x - st.lastX, ss.pos.y - st.lastY);
@@ -19354,6 +19357,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         if (!g_stroke.begin(*strokeDoc, strokeDoc->activeLayer, tip, st.brush.tool,
                             &g_strokeRefusal, &st.brush.model, live, &st.clone)) {
           st.paintingThisFrame = false;
+        } else {
+          // Which gesture this stroke is: the one ImGui is inside right now
+          // -- its press already reported (that is why `down` is true), its
+          // release not yet. app/PointerQueue.hpp section 3 argues why that
+          // is exactly one gesture. Only on a successful `begin()`: a refused
+          // stroke claims nothing, and its gesture's samples are dropped at
+          // the end of the frame like any other press the canvas did not use.
+          strokeGesture = st.pointerQueue.claimGesture();
         }
         st.lastX = tx;
         st.lastY = ty;
@@ -19373,8 +19384,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // bit-identical `BrushTip`.
         g_stroke.setTip(tip, live);
 
-        // Track A: drain this frame's full-rate samples instead of the
-        // single per-frame `(tx, ty)` the solver route below still uses.
+        // Track A: drain this stroke's gesture's full-rate samples instead of
+        // the single per-frame `(tx, ty)` the solver route below still uses.
         // Each queued window-space sample becomes its own `StrokeSample` --
         // canvas position plus ITS OWN axes -- so `StrokePath` can
         // interpolate pressure/tilt/azimuth/barrel per DAB instead of every
@@ -19392,8 +19403,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // when this called `addPoint(tx, ty)` every frame: then, the repeats
         // added zero travel and emitted nothing; now they are simply not
         // made. Either way `flush()` sees `movedPx_ == 0` and lays the one
-        // stationary-click dab from the click's own sample (main.cpp queues
-        // the button-/pen-down event itself for exactly that reason).
+        // stationary-click dab from the click's own sample (app/PointerQueue
+        // queues the button-/pen-down event itself for exactly that reason).
         feedQueuedSamplesToStroke();
       }
     } else if (strokeTool && down && hovered && inside && !panning && !rotating && !sizingHeld &&
@@ -19654,13 +19665,16 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // happens to leave behind -- the same discipline the counters below
         // rely on, which `end()` deliberately does not clear.
         const char* routeName = strokeRouteName(g_stroke.route());
-        // Track A: the release frame's own samples first -- all captured
-        // while the pointer was still down (main.cpp queues nothing else),
-        // so they are the real tail of this stroke, not a new gesture. See
-        // `feedQueuedSamplesToStroke`'s comment. Safe on an interrupted
-        // stroke for the reason `end()` just below is: `depositPending()`
-        // re-validates the target on every call.
+        // Track A: this stroke's own gesture's remaining samples first --
+        // the real tail of this stroke. ONLY its own: a new press that
+        // arrived in the same poll as this release (a lift and re-touch
+        // inside one frame) is a later gesture, and its samples stay queued
+        // for the stroke that begins on it rather than bridging from this
+        // stroke's end to its start. See `feedQueuedSamplesToStroke`'s
+        // comment. Safe on an interrupted stroke for the reason `end()` just
+        // below is: `depositPending()` re-validates the target on every call.
         feedQueuedSamplesToStroke();
+        strokeGesture = 0;
         g_stroke.end();
         std::printf("[stroke] %s (%s): %zu dabs, %zu texels, %zu tiles\n",
                     g_stroke.label().c_str(), routeName, g_stroke.dabCount(),

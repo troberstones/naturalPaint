@@ -15,10 +15,37 @@ Vec2 lerp(Vec2 a, Vec2 b, float t) {
   return Vec2{a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t};
 }
 
-// The scalar form -- axis interpolation (pressure, tilt, azimuth, barrel)
-// uses this rather than `Vec2 lerp()` above, which would need a fabricated
-// second coordinate for one number.
+// The scalar form -- axis interpolation for pressure and tilt uses this
+// rather than `Vec2 lerp()` above, which would need a fabricated second
+// coordinate for one number.
 float lerp(float a, float b, float t) { return a + (b - a) * t; }
+
+// Shortest-arc interpolation for the two axes that are ANGLES normalised to
+// [0,1] with 0 and 1 the same orientation (app/PenAxes.hpp): azimuth (a full
+// turn anticlockwise from +x, in [0,1)) and barrel rotation
+// (`penBarrelNormalised()`, SDL's [-180,180] degrees -> [0,1], so the seam is
+// at +-180 degrees and both 0 and 1 are reachable). A plain `lerp()` across
+// that seam goes the long way round: a pen turning 4 degrees through
+// +-180 (barrel 0.9986 -> 0.0097) swept every in-between dab through 0.5 --
+// half a turn of Angle offset -- which is the wave-1 review's finding 3.
+//
+// `d -= round(d)` folds the difference into [-0.5, 0.5]: the short way. For
+// every pair less than half a turn apart without crossing the seam
+// `round(d) == 0` and this is `a + (b - a) * t` exactly, the same float
+// operations `lerp()` performs, so every such dab is bit-identical to what
+// the linear form produced. The result is folded back into [0,1] only when it
+// leaves it -- NOT `v -= floor(v)`, which would also turn an input of exactly
+// 1.0 (a barrel held at +180 degrees, a value `penBarrelNormalised()` really
+// returns) into 0.0 at every dab between two such samples: the same
+// orientation, but the other end of every Control curve's domain.
+float lerpAngle01(float a, float b, float t) {
+  float d = b - a;
+  d -= std::round(d);
+  float v = a + d * t;
+  if (v < 0.0f) v += 1.0f;
+  else if (v > 1.0f) v -= 1.0f;
+  return v;
+}
 
 // Reflects `through` across `about`: 2*about - through. Used to extrapolate
 // a control point that doesn't exist yet -- before the first real sample of
@@ -122,14 +149,16 @@ void StrokePath::emitAlongSegment(const StrokeSample& S0, const StrokeSample& S1
         // `t` that places its position between `prev` and `cur`. Axes are
         // then interpolated between S1 and S2 -- the two REAL samples this
         // whole segment spans -- at that parameter, exactly this header's
-        // documented "linear in u across the P1->P2 span" rule; S0/S3's own
-        // axes are never read here, extrapolated points as they may be.
+        // documented "linear in u across the P1->P2 span" rule -- linear
+        // for pressure and tilt, along the SHORT arc for the two angle axes
+        // (`lerpAngle01()`'s comment); S0/S3's own axes are never read here,
+        // extrapolated points as they may be.
         const float uAt = uPrev + t * (u - uPrev);
         out.push_back(StrokeDab{Vec2{prev.x + dx * t, prev.y + dy * t},
                                 lerp(S1.pressure, S2.pressure, uAt),
                                 lerp(S1.tilt, S2.tilt, uAt),
-                                lerp(S1.azimuth, S2.azimuth, uAt),
-                                lerp(S1.barrel, S2.barrel, uAt)});
+                                lerpAngle01(S1.azimuth, S2.azimuth, uAt),
+                                lerpAngle01(S1.barrel, S2.barrel, uAt)});
         leftover_ = 0.0f;
       }
       leftover_ += (edgeLen - walked);

@@ -15,7 +15,7 @@ struct Vec2 {
 // instant, already normalised to [0,1] -- the same four fields
 // `app/PenAxes.hpp`'s conversions and `brush/Dynamics.hpp`'s `DynamicInputs`
 // carry (pressure, tilt, azimuth, barrel). Track A (full-rate pen input):
-// `app/AppState`'s per-frame `PointerSample` queue is converted to these at
+// the `PointerSample`s `app/PointerQueue` hands a stroke are converted to these at
 // the canvas block's boundary -- through `penTiltNormalised()` etc., never
 // re-derived here -- so this type and everything downstream of it never sees
 // a raw SDL axis or a window coordinate.
@@ -62,8 +62,8 @@ using StrokeDab = StrokeSample;
 // Hz into a 60 Hz frame had its pressure/tilt/azimuth/barrel samples
 // collapsed to whichever one arrived last, so a single frame's worth of
 // dabs (a fast stroke can emit dozens) all shared one pressure. Feeding this
-// class every raw sample -- `app/AppState`'s per-frame `PointerSample`
-// queue, drained by the canvas block -- and letting it interpolate the axes
+// class every raw sample -- `app/PointerQueue`'s samples of the stroke's own
+// gesture, drained by the canvas block -- and letting it interpolate the axes
 // PER DAB rather than share one per frame is what fixes that without
 // touching ADR-0003 at all: dab POSITIONS still come from the identical
 // arc-length walk over the identical Catmull-Rom curve, at the identical
@@ -80,8 +80,13 @@ using StrokeDab = StrokeSample;
 // sparsely still lay dabs down at the identical spatial spacing over the
 // identical path -- the property that makes deposition speed-independent.
 //
-// **Each emitted dab's axes are linearly interpolated in the Catmull-Rom
-// parameter `u` across the P1->P2 span it falls in**, between the two REAL
+// **Each emitted dab's axes are interpolated in the Catmull-Rom parameter `u`
+// across the P1->P2 span it falls in** -- linearly for pressure and tilt, and
+// along the SHORTER arc for azimuth and barrel, which are angles normalised to
+// [0,1] with 0 and 1 the same orientation (a linear lerp from barrel 0.9986 to
+// 0.0097, a 4-degree turn through the +-180 seam, swept the dabs between
+// through half a turn: the wave-1 review's finding 3; `StrokePath.cpp`'s
+// `lerpAngle01()`) -- between the two REAL
 // samples that bound that span (P1 and P2 are always real recorded samples
 // in both `addPoint()` and `flush()` -- only P0/P3, the curve's look-ahead/
 // look-behind control points, are ever extrapolated, and extrapolated points

@@ -6549,4 +6549,34 @@ bool runBrushBlendModeTest();
 // Headless, GPU-free, writes no files. See app/selftest/StrokeInput.cpp.
 bool runStrokeInputTest();
 
+// Fix wave 1 (F1-input): the pointer queue between SDL's events and the
+// canvas's strokes -- `app/PointerQueue`, extracted from main.cpp and the
+// canvas block precisely so this path can be tested at all. It replays SDL
+// 3.2.24's own per-backend event ORDER (macOS, Wayland, Windows, X11) through
+// a model of SDL's pen core, and ImGui 1.92.9b's trickled frame boundaries as
+// measured headless, and asserts:
+//  1. every queued pen sample carries its OWN report's axes -- SDL sends a
+//     report's PEN_AXIS events after its position on every backend, and the
+//     opening sample of every macOS stroke used to carry the previous lift's
+//     pressure 0 (wave-1 review, finding 1);
+//  2. a press-and-hold dot (one sample, no motion) carries the contact's
+//     pressure, and later stationary reports do not rewrite it;
+//  3. a click ImGui holds back a frame behind a wheel event still reaches
+//     the stroke that begins on it, including a click whose release arrived
+//     in the same poll (finding 2);
+//  4. a lift and re-touch inside one frame gives stroke 1 only its own tail
+//     and stroke 2 its own down sample first -- no bridge (finding 2);
+//  5. a gesture the canvas never began a stroke for -- a panel click, a pan
+//     -- is never delivered to a later stroke;
+//  6. the Track A behaviours the review found correct: the pen's
+//     synthesised mouse events and every button-up queue nothing, touch-
+//     generated mouse events are kept, hover is never queued;
+//  7. barrel and azimuth interpolate along the short arc through their seam
+//     (finding 3), and a barrel held at exactly +180 degrees stays 1.0;
+//  8. the queue's stated memory bound holds against 10 000 unclaimed samples
+//     and 10 000 unprocessed clicks.
+//
+// Headless, GPU-free, writes no files. See app/selftest/PointerQueue.cpp.
+bool runPointerQueueTest();
+
 }  // namespace np

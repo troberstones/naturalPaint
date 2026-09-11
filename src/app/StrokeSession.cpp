@@ -1329,8 +1329,8 @@ StrokeSample strokeSampleFromPointer(const PointerSample& sample, Vec2 canvasPos
   // defaults (brush/StrokePath.hpp) already ARE a mouse's neutral reading,
   // so there is nothing left to compute. Written as an early return rather
   // than relying on `PointerSample`'s own fields happening to already be
-  // neutral for a mouse event (true today, `queueMousePointerSample()`'s own
-  // construction in main.cpp) so that fact is an INVARIANT of this function,
+  // neutral for a mouse event (true today, `PointerQueue::push()`'s own
+  // construction in app/PointerQueue.cpp) so that fact is an INVARIANT of this function,
   // not an accident of two call sites agreeing.
   if (!sample.isPen) return out;
   out.pressure = std::clamp(sample.pressure, 0.0f, 1.0f);
