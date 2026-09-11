@@ -56,7 +56,7 @@ while [ $# -gt 0 ]; do
     -o|--out)     out="$2"; shift ;;
     --tar)        make_tar=1 ;;
     --no-strip)   do_strip=0 ;;
-    -h|--help)    sed -n '3,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)    awk 'NR < 3 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "${BASH_SOURCE[0]}"; exit 0 ;;
     *)            printf 'unrecognised argument: %s\n' "$1" >&2; exit 1 ;;
   esac
   shift
