@@ -924,6 +924,49 @@ bool runPenToolTest() {
                 near(mappedRotCur.y, probe.y),
             "gnomonHandleAffine(Rotate): the same refusal when CURRENT, not dragStart, is the "
             "one sitting on the pivot");
+
+      // The other end of the same hazard: a scale drag that ENDS on the pivot
+      // (or, free-scaling, on the pivot's own vertical line) has an honest
+      // ratio of 0, and a 0 scale flattens the selection beyond any later
+      // drag's reach. Found at gather -- the section's own heading promised
+      // "must not collapse the geometry" and only the start was tested.
+      const PathPoint cornerStart{pivot.x + 40.0f, pivot.y + 30.0f};
+      const Point2 off{pivot.x + 20.0f, pivot.y + 10.0f};
+      const Point2 offMirror{pivot.x - 20.0f, pivot.y - 10.0f};
+
+      const PathPoint onVertical{pivot.x, pivot.y + 60.0f};
+      const Point2 v = mat3MapPoint(
+          gnomonHandleAffine(GnomonPart::Corner, pivot, cornerStart, onVertical, false), off);
+      check(std::isfinite(v.x) && std::fabs(v.x - pivot.x) > 0.1f &&
+                std::fabs(v.x - pivot.x) < 1.0f,
+            "gnomonHandleAffine(Corner): REQUIRED -- a free scale that ENDS on the pivot's "
+            "vertical line clamps x to a 1% floor instead of flattening every anchor onto "
+            "x == pivot.x (a point 20 px right of the pivot lands 0.2 px right, not 0)");
+
+      const Mat3 uniformOnPivot =
+          gnomonHandleAffine(GnomonPart::Corner, pivot, cornerStart, onPivot, true);
+      const Point2 u = mat3MapPoint(uniformOnPivot, off);
+      const Point2 um = mat3MapPoint(uniformOnPivot, offMirror);
+      check(std::isfinite(u.x) && std::isfinite(u.y) && std::fabs(u.x - um.x) > 0.1f &&
+                std::fabs(u.y - um.y) > 0.05f,
+            "gnomonHandleAffine(Corner, Shift): REQUIRED -- a uniform scale that ENDS on the "
+            "pivot keeps two distinct points distinct (1% floor) rather than collapsing the "
+            "whole selection to the pivot");
+
+      const PathPoint pastPivot{pivot.x - 20.0f, pivot.y + 30.0f};
+      const Point2 m = mat3MapPoint(
+          gnomonHandleAffine(GnomonPart::Corner, pivot, cornerStart, pastPivot, false), off);
+      check(near(m.x, pivot.x - 10.0f) && near(m.y, off.y),
+            "gnomonHandleAffine(Corner): the floor does not interfere with a real mirror -- "
+            "dragging THROUGH the pivot to half the distance on the other side still scales x "
+            "by exactly -0.5");
+
+      const PathPoint axisOnPivot{pivot.x, pivot.y + 5.0f};
+      const Point2 a = mat3MapPoint(
+          gnomonHandleAffine(GnomonPart::AxisX, pivot, cornerStart, axisOnPivot, false), off);
+      check(std::isfinite(a.x) && std::fabs(a.x - pivot.x) > 0.1f && near(a.y, off.y),
+            "gnomonHandleAffine(AxisX): the same 1% floor when the axis drag ends on the "
+            "pivot's vertical line");
     }
 
     // ---- 9g. Component mode: the manipulator scales about the TRANSIENT

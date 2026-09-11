@@ -61,6 +61,24 @@ constexpr float kPi = 3.14159265358979323846f;
 // guard is for.
 constexpr float kGnomonDegenerateEpsilon = 0.2f;
 
+// The smallest scale factor, in magnitude, one scale drag may apply. The
+// degenerate guard above covers a drag that STARTS on the pivot; this covers
+// the other end -- a drag that ENDS on it (or, free-scaling, anywhere on the
+// pivot's own vertical or horizontal line), where the ratio is honestly 0 and
+// `transformScaleAbout(0, ...)` would flatten every selected anchor onto one
+// line or one point. That is not recoverable by dragging back: a later scale
+// of a zero-width shape is still zero-width, so the geometry would be gone
+// with only Undo to bring it back. 1% keeps the sign (dragging THROUGH the
+// pivot still mirrors) and keeps the shape's proportions intact at any size,
+// and a user who wants it smaller drags again. `clampGnomonScale()` below is
+// the one place it is applied.
+constexpr float kGnomonMinScale = 0.01f;
+
+float clampGnomonScale(float s) noexcept {
+  if (std::fabs(s) >= kGnomonMinScale) return s;
+  return s < 0.0f ? -kGnomonMinScale : kGnomonMinScale;
+}
+
 bool rectContains(PathBounds rect, PathPoint p) noexcept {
   return rect.valid && p.x >= rect.minX && p.x <= rect.maxX && p.y >= rect.minY &&
          p.y <= rect.maxY;
@@ -380,21 +398,22 @@ Mat3 gnomonHandleAffine(GnomonPart part, PathPoint pivot, PathPoint dragStart, P
         if (std::fabs(dxStart) >= kGnomonDegenerateEpsilon) sx = dxCur / dxStart;
         if (std::fabs(dyStart) >= kGnomonDegenerateEpsilon) sy = dyCur / dyStart;
       }
-      return transformScaleAbout(sx, sy, Point2{pivot.x, pivot.y});
+      return transformScaleAbout(clampGnomonScale(sx), clampGnomonScale(sy),
+                                 Point2{pivot.x, pivot.y});
     }
 
     case GnomonPart::AxisX: {
       float sx = 1.0f;
       const float dxStart = dragStart.x - pivot.x;
       if (std::fabs(dxStart) >= kGnomonDegenerateEpsilon) sx = (current.x - pivot.x) / dxStart;
-      return transformScaleAbout(sx, 1.0f, Point2{pivot.x, pivot.y});
+      return transformScaleAbout(clampGnomonScale(sx), 1.0f, Point2{pivot.x, pivot.y});
     }
 
     case GnomonPart::AxisY: {
       float sy = 1.0f;
       const float dyStart = dragStart.y - pivot.y;
       if (std::fabs(dyStart) >= kGnomonDegenerateEpsilon) sy = (current.y - pivot.y) / dyStart;
-      return transformScaleAbout(1.0f, sy, Point2{pivot.x, pivot.y});
+      return transformScaleAbout(1.0f, clampGnomonScale(sy), Point2{pivot.x, pivot.y});
     }
   }
   return mat3Identity();
