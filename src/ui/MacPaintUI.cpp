@@ -16020,44 +16020,94 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     if (st.requestFreeTransform) {
       st.requestFreeTransform = false;
       OpenDocument* od = st.documents.active();
-      const std::optional<size_t> li = od != nullptr ? activeLayerIndex(*od) : std::nullopt;
-      if (od == nullptr || !li) {
-        g_docStatus = "Free Transform needs an open document with a layer.";
+      // Track `xform` (PRD C12): a LAYERS panel multi-selection of two or
+      // more rows takes the set path -- `g_layers.selection`, restricted to
+      // what the filter currently shows, exactly the way every other
+      // multi-selection gesture (`runLayerSetCommand()`, above) reads it,
+      // so a row a search box is hiding is never swept into a set transform
+      // it was never clicked into. A single-row (or empty/filtered-away)
+      // selection falls through to the ordinary single-layer path below
+      // unchanged -- this is not a second door into it, it is the same door,
+      // reached by a selection that happens to have one member.
+      const LayerSelection visibleSet =
+          od != nullptr ? restrictSelectionToFilter(od->document, g_layers.selection, g_layers.filter)
+                        : LayerSelection{};
+      if (od != nullptr && visibleSet.size() >= 2) {
+        // **Contiguity is decided HERE, not inside `beginLayerSet()`.**
+        // `app/TransformSession.hpp` section 8's closing paragraph leaves the
+        // live-preview fallback to "the one place that already knows what it
+        // can and cannot draw" -- this UI. A non-contiguous set has no single
+        // below/above boundary for `ui/TransformCompositeSplit` to cut at,
+        // and this build's answer is the plainest of the sanctioned ones: a
+        // refusal by name before the gizmo appears, rather than starting a
+        // session whose live preview cannot be trusted to show what commit()
+        // will actually write. `beginLayerSet()` itself does not check this
+        // -- it is agnostic to which indices are in the set -- so a caller
+        // that skipped this check would get a session with an honest commit
+        // and a dishonest preview.
+        bool contiguous = true;
+        for (size_t i = 1; i < visibleSet.indices.size(); ++i) {
+          if (visibleSet.indices[i] != visibleSet.indices[i - 1] + 1) {
+            contiguous = false;
+            break;
+          }
+        }
+        if (!contiguous) {
+          g_docStatus = "Free Transform refused: the " + std::to_string(visibleSet.size()) +
+                       " selected layers are not a contiguous block, so there is no single "
+                       "arrangement to preview them moving in. Select a contiguous run of rows, "
+                       "or transform one layer at a time.";
+        } else {
+          const TransformBeginResult began = st.transform.beginLayerSet(*od, visibleSet);
+          if (!began.ok) g_docStatus = began.error;
+          if (began.ok) enterTransformTool(st);
+          // No pixel preview for a set -- see `beginTransformPreview()`'s own
+          // guard and `ui/TransformCompositeSplit.hpp`'s
+          // `documentWithLayerRangeHidden()` header for why: the wireframe
+          // box alone, the identical fallback a Pigment layer's single-layer
+          // transform already uses.
+          beginTransformPreview(st, gpu);
+        }
       } else {
-        // A selection transforms the pixels under it; no selection transforms
-        // the whole layer. Photoshop's own rule, and the one a user who has
-        // just drawn a marquee will expect -- the alternative (always the
-        // whole layer) would silently ignore a selection they made on purpose.
-        const TransformBeginResult began =
-            od->selection ? st.transform.beginSelectionPixels(*od, *od->selection, *li)
-                          : st.transform.beginLayer(*od, *li);
-        // Refusals are shown, never swallowed: `beginLayer`/
-        // `beginSelectionPixels` refuse a locked layer, an empty one and a
-        // Pigment selection-transform BY NAME (app/TransformSession.hpp), and
-        // a menu item that appeared enabled and then did nothing at all is
-        // the defect docs/reachability-audit.md is named after.
-        if (!began.ok) g_docStatus = began.error;
-        // The gizmo is up, so the pointer stops being whatever tool was
-        // making content and becomes the Move tool -- app/ToolSwitch.hpp's
-        // `enterTransformTool()` carries the argument. Only on success: a
-        // refused begin (a locked layer, an empty one) leaves no session, and
-        // changing the tool for a command that did nothing would be a second
-        // surprise on top of the refusal.
-        //
-        // This is also what puts a live Text caret away, on the paths that
-        // have not already: the Text block accepts its session the moment
-        // `toolEditsText()` stops being true, so Edit > Free Transform from
-        // the menu bar -- which raises this same flag without going through
-        // the keymap's own session-ending step -- ends up in the same state
-        // as the Cmd+T chord.
-        if (began.ok) enterTransformTool(st);
-        // T14: the live pixel preview's ONE upload for this whole session --
-        // never from the drag loop below, which only ever moves WHERE this
-        // already-uploaded texture is drawn (`pending()` changing the quad's
-        // four corners), never what it holds. A no-op on `!began.ok` (the
-        // session stayed inactive), which `beginTransformPreview()` checks
-        // itself rather than this call site re-deriving it.
-        beginTransformPreview(st, gpu);
+        const std::optional<size_t> li = od != nullptr ? activeLayerIndex(*od) : std::nullopt;
+        if (od == nullptr || !li) {
+          g_docStatus = "Free Transform needs an open document with a layer.";
+        } else {
+          // A selection transforms the pixels under it; no selection transforms
+          // the whole layer. Photoshop's own rule, and the one a user who has
+          // just drawn a marquee will expect -- the alternative (always the
+          // whole layer) would silently ignore a selection they made on purpose.
+          const TransformBeginResult began =
+              od->selection ? st.transform.beginSelectionPixels(*od, *od->selection, *li)
+                            : st.transform.beginLayer(*od, *li);
+          // Refusals are shown, never swallowed: `beginLayer`/
+          // `beginSelectionPixels` refuse a locked layer, an empty one and a
+          // Pigment selection-transform BY NAME (app/TransformSession.hpp), and
+          // a menu item that appeared enabled and then did nothing at all is
+          // the defect docs/reachability-audit.md is named after.
+          if (!began.ok) g_docStatus = began.error;
+          // The gizmo is up, so the pointer stops being whatever tool was
+          // making content and becomes the Move tool -- app/ToolSwitch.hpp's
+          // `enterTransformTool()` carries the argument. Only on success: a
+          // refused begin (a locked layer, an empty one) leaves no session, and
+          // changing the tool for a command that did nothing would be a second
+          // surprise on top of the refusal.
+          //
+          // This is also what puts a live Text caret away, on the paths that
+          // have not already: the Text block accepts its session the moment
+          // `toolEditsText()` stops being true, so Edit > Free Transform from
+          // the menu bar -- which raises this same flag without going through
+          // the keymap's own session-ending step -- ends up in the same state
+          // as the Cmd+T chord.
+          if (began.ok) enterTransformTool(st);
+          // T14: the live pixel preview's ONE upload for this whole session --
+          // never from the drag loop below, which only ever moves WHERE this
+          // already-uploaded texture is drawn (`pending()` changing the quad's
+          // four corners), never what it holds. A no-op on `!began.ok` (the
+          // session stayed inactive), which `beginTransformPreview()` checks
+          // itself rather than this call site re-deriving it.
+          beginTransformPreview(st, gpu);
+        }
       }
     }
 
@@ -16149,12 +16199,37 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // the canvas stops showing the picture twice -- the original standing
     // still underneath the moving copy -- which is the defect being fixed.
     // The document is NOT modified to achieve it; see the header.
-    const size_t transformLayer = st.transform.layerIndex();
+    //
+    // Track `xform` (PRD C12): a `TransformTarget::LayerSet` session widens
+    // "the transformed layer" to a contiguous `[loIndex, hiIndex]` block
+    // (`layerIndices()` is sorted ascending, so `.front()`/`.back()` ARE that
+    // block's ends -- the UI already refused a non-contiguous selection
+    // before the session began, in the `requestFreeTransform` handler
+    // above). There is no moving-pixels quad for a set (`beginTransformPreview()`'s
+    // own guard), so `transformSplitDraws` is unconditionally false for one:
+    // with nothing to sandwich between a below-half and an above-half, the
+    // split has nothing to buy, and the whole block is simply hidden from
+    // one ordinary composite via `documentWithLayerRangeHidden()` -- the
+    // identical "hide" arrangement a single layer takes when its own split
+    // is not exact, generalised from one index to a range.
+    const bool transformIsSet = st.transform.target() == TransformTarget::LayerSet;
+    const size_t transformLoIndex = transformIsSet
+                                        ? (st.transform.layerIndices().empty()
+                                               ? static_cast<size_t>(-1)
+                                               : st.transform.layerIndices().front())
+                                        : st.transform.layerIndex();
+    const size_t transformHiIndex = transformIsSet
+                                        ? (st.transform.layerIndices().empty()
+                                               ? static_cast<size_t>(-1)
+                                               : st.transform.layerIndices().back())
+                                        : st.transform.layerIndex();
+    const size_t transformLayer = transformLoIndex;  // single-layer targets: lo == hi == it
     const bool transformOnThisDoc = st.transform.active() && activeDocument != nullptr &&
                                     st.transform.documentId() == activeDocument->id &&
-                                    transformLayer < activeDocument->document.layers.size();
+                                    transformHiIndex < activeDocument->document.layers.size();
     const bool transformSplitDraws =
-        transformOnThisDoc && anyVisibleLayerAbove(activeDocument->document, transformLayer) &&
+        !transformIsSet && transformOnThisDoc &&
+        anyVisibleLayerAbove(activeDocument->document, transformLayer) &&
         transformSplitIsExact(activeDocument->document, transformLayer);
 
     // The two hidden-layer views, rebuilt only when the document, its
@@ -16168,9 +16243,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       DocumentId id = 0;
       uint64_t revision = 0;
       size_t layerIndex = static_cast<size_t>(-1);
+      size_t hiIndex = static_cast<size_t>(-1);  // == layerIndex except for a LayerSet range
       bool split = false;
       bool valid = false;
-      OpenDocument below;  // layers strictly below (split), or all but one (hide)
+      OpenDocument below;  // layers strictly below (split), all but one (hide), or all but a range
       OpenDocument above;  // layers strictly above; unused when `split` is false
     };
     static TransformSplitViews views;
@@ -16181,16 +16257,21 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (views.valid) views = TransformSplitViews{};
     } else if (!views.valid || views.id != activeDocument->id ||
                views.revision != activeDocument->revision ||
-               views.layerIndex != transformLayer || views.split != transformSplitDraws) {
+               views.layerIndex != transformLayer || views.hiIndex != transformHiIndex ||
+               views.split != transformSplitDraws) {
       views = TransformSplitViews{};
       views.id = activeDocument->id;
       views.revision = activeDocument->revision;
       views.layerIndex = transformLayer;
+      views.hiIndex = transformHiIndex;
       views.split = transformSplitDraws;
       views.below.id = activeDocument->id;
       views.below.revision = activeDocument->revision;
       views.below.document =
-          transformSplitDraws
+          transformIsSet
+              ? documentWithLayerRangeHidden(activeDocument->document, transformLoIndex,
+                                             transformHiIndex)
+          : transformSplitDraws
               ? documentWithLayersAtOrAboveHidden(activeDocument->document, transformLayer)
               : documentWithLayerHidden(activeDocument->document, transformLayer);
       if (transformSplitDraws) {
@@ -16223,9 +16304,15 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     static DocumentTexture transformAboveTexture;
     // Distinct, and carrying the layer index: two transforms on two different
     // layers of an unedited document are the same {id, revision} and would
-    // otherwise hit each other's cached composite.
-    const uint64_t belowVariant = 1u + static_cast<uint64_t>(transformLayer) * 2u;
-    const uint64_t aboveVariant = 2u + static_cast<uint64_t>(transformLayer) * 2u;
+    // otherwise hit each other's cached composite. A LayerSet range folds
+    // BOTH ends into the key (not just `transformLayer`, i.e. `lo`) so two
+    // sets sharing a lower bound -- {2,3} and {2,3,4} -- cannot collide.
+    const uint64_t transformRangeKey =
+        transformIsSet
+            ? (static_cast<uint64_t>(transformLoIndex) * 1000003ull + transformHiIndex)
+            : static_cast<uint64_t>(transformLayer);
+    const uint64_t belowVariant = 1u + transformRangeKey * 2u;
+    const uint64_t aboveVariant = 2u + transformRangeKey * 2u;
 
     // Declared out here rather than inside the block that computes it: the
     // above-half of a split transform is drawn much later, from the gizmo
@@ -21438,6 +21525,22 @@ const DocumentTexturePool& canvasDocumentTexture() { return g_documentTextures; 
 // inlining the upload twice.
 void beginTransformPreview(AppState& st, GpuContext& gpu) {
   if (!st.transform.active()) return;
+  // Track `xform` (PRD C12): `TransformTarget::LayerSet` gets the wireframe-
+  // only fallback, deliberately -- `layerIndex()` is 0-always-meaningless for
+  // this target (app/TransformSession.hpp section 8's own accessor comment),
+  // so falling through below would upload LAYER 0's crop under the union
+  // box's corners: a real quad, at the wrong content, for the wrong reason.
+  // `g_transformPreview.reset()` rather than leaving whatever the previous
+  // session uploaded, for the identical reason every other session-end path
+  // resets it: a session's first draw frame must never show a previous
+  // session's pixels. Compositing N members' mutual blend modes into one
+  // preview crop is real work `ui/TransformPreviewTexture` does not take on
+  // (its own header's scope note already makes this trade for one Pigment
+  // layer; this is the identical trade for a whole set, of any kind).
+  if (st.transform.target() == TransformTarget::LayerSet) {
+    g_transformPreview.reset();
+    return;
+  }
   OpenDocument* od = st.documents.active();
   const size_t li = st.transform.layerIndex();
   if (od == nullptr || li >= od->document.layers.size()) return;
