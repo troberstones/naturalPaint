@@ -1868,9 +1868,14 @@ class StrokeSession {
   // ramped up from there (wave-1 review, finding 1). The promise holds again
   // because `PointerQueue` now patches each sample with its own report's
   // axes before any stroke can take it: the first sample carries the
-  // pressure the pen reported at contact, exactly on macOS, Wayland,
-  // Windows, X11, Android and iOS (that section lists the backends' own
-  // approximate cases, none of which is a stroke's first sample).
+  // pressure the pen reported at contact, exactly, on macOS, Wayland,
+  // Windows, X11, Android and iOS. (That section lists where its rule is
+  // approximate. The only case that can reach a first sample is rule (b)'s
+  // stationary-report one on X11/Android/Web: an axis the contact report did
+  // NOT change, changing in the next report while the pen has not moved. For
+  // pressure that needs a contact at exactly the pressure already held --
+  // after a lift, 0 -- so in practice it is tilt or rotation at a stationary
+  // contact that can take the next report's value, one report later.)
   float smoothPressureByDistance(float rawPressure, float distancePx) noexcept;
 
   // One raw pointer sample, in document texel coordinates and nothing else.

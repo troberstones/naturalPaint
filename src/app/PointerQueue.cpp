@@ -20,6 +20,9 @@ int axisSlot(PointerAxis a) noexcept {
 
 float clamp01(float v) noexcept { return std::clamp(v, 0.0f, 1.0f); }
 
+// The header's memory bound (section 4) is stated in bytes from this.
+static_assert(sizeof(PointerSample) <= 48, "PointerQueue.hpp section 4 states 48-byte samples");
+
 }  // namespace
 
 bool PointerQueue::processed(uint32_t seq) const noexcept {
