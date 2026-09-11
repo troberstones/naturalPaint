@@ -64,7 +64,8 @@ DabRecord inkDab(float x, float y, float r, std::array<float, 4> rgba) {
   d.y = y;
   d.radius = r;
   // A hardness-1 disc -- exactly 1.0 over its flat core, the last `edgePx` of
-  // the rim antialiased (`tipOf()` leaves `BrushTip::edgePx` at its default) --
+  // the rim antialiased (`DabRecord::edgePx` defaults to `BrushTip`'s 1.0 and
+  // `tipOf()` passes the record's value through) --
   // so the assertions below can talk about "the centre texel" and
   // "a texel outside" without depending on the falloff's exact shape --
   // brush/Deposit §2 owns that shape and asserts it there.
@@ -403,9 +404,14 @@ bool runStrokesLayerTest() {
     c.dabs.push_back(b);
 
     const std::string blob = serializeStrokesContent(c);
-    check(blob.rfind("npdabs1:", 0) == 0,
-          "npdabs: the payload carries its version in its prefix, so a future npdabs2: is "
-          "refused by name rather than half-decoded");
+    // **Updated for `npdabs2`.** This pinned `npdabs1:` until the record
+    // gained `edgePx` (io/StrokesSerial.hpp): both records here carry
+    // `DabRecord`'s default edgePx of 1, which only v2 can hold, so the
+    // content-decided version rule writes v2.
+    check(blob.rfind("npdabs2:", 0) == 0,
+          "npdabs: the payload carries its version in its prefix -- npdabs2: for records "
+          "whose edgePx a v1 payload cannot hold -- so a future npdabs3: is refused by name "
+          "rather than half-decoded");
     StrokesContent back;
     std::string why;
     check(deserializeStrokesContent(blob, &back, &why) &&
@@ -419,9 +425,18 @@ bool runStrokesLayerTest() {
 
     StrokesContent untouched;
     untouched.nextDabId = 5;
-    check(!deserializeStrokesContent("npdabs2:00", &untouched, &why) &&
-              untouched.nextDabId == 5 && contains(why, "npdabs1:"),
-          "npdabs: an unrecognised version tag is refused BY NAME and leaves the output "
+    // **Updated for `npdabs2`, and re-pinned one version further out.** This
+    // used "npdabs2:00" until npdabs2 became a version this build reads, at
+    // which point it would have been testing that a KNOWN version with a
+    // two-digit payload is refused as truncated -- true, and green with the
+    // version gate deleted (io/TextSerial's `nptext3` lesson). The future tag
+    // now sits on a payload that is otherwise PERFECTLY VALID, so only the
+    // version gate can refuse it.
+    const std::string futureTagged = "npdabs3:" + blob.substr(std::strlen("npdabs2:"));
+    check(!deserializeStrokesContent(futureTagged, &untouched, &why) &&
+              untouched.nextDabId == 5 && contains(why, "npdabs1:") && contains(why, "npdabs2:"),
+          "npdabs: a FUTURE version tag on an otherwise valid payload is refused BY NAME -- "
+          "the refusal names both versions this build reads -- and leaves the output "
           "untouched (PRD I10 carries it verbatim instead)");
     check(!deserializeStrokesContent("npdabs1:zz", &untouched, &why) && contains(why, "hex"),
           "npdabs: a non-hex character is refused rather than decoded as zero");
@@ -503,6 +518,208 @@ bool runStrokesLayerTest() {
       }
     }
     std::remove(path);
+  }
+
+  // ==========================================================================
+  // F2. npdabs2: a record's `edgePx` is stored, and a pre-edgePx document
+  //     keeps the hard rim it was painted with (review finding 6)
+  // ==========================================================================
+  //
+  // `npdabs1` had no field for `BrushTip::edgePx`, so `tipOf()` replayed every
+  // record at the running build's default -- a hardness-1 r=6 record saved as
+  // 112 texels at exactly 1.0 re-rendered as 80 at 1.0 plus 32 fractional,
+  // nothing in the file changed. io/StrokesSerial.hpp has the wire layout and
+  // the version rule these assertions pin.
+  std::printf("  -- F2. npdabs2: edgePx is stored; npdabs1 keeps its hard rim --\n");
+  {
+    auto bitsOf = [](float v) {
+      uint32_t b = 0;
+      std::memcpy(&b, &v, sizeof b);
+      return b;
+    };
+    // Coverage census of a rasterised store around one dab: texels at exactly
+    // 1.0 alpha, and texels strictly between 0 and 1.
+    auto census = [](const TileStore& t, int cx, int cy, int* full, int* frac) {
+      *full = 0;
+      *frac = 0;
+      for (int y = cy - 16; y < cy + 16; ++y)
+        for (int x = cx - 16; x < cx + 16; ++x) {
+          const float a = texelOf(t, x, y)[3];
+          if (a == 1.0f) ++*full;
+          else if (a > 0.0f && a < 1.0f) ++*frac;
+        }
+    };
+
+    // 1. A HAND-WRITTEN npdabs1 payload -- the bytes a pre-bump build wrote,
+    //    field by field (io/StrokesSerial.hpp's layout, little-endian):
+    //    nextDabId 2, one record: id 1, strokeId 0, x 64, y 64, radius 6,
+    //    hardness 1, roundness 1, angle 0, flow 1, rgba (1,0,0,1), source Ink,
+    //    sourceDx 0, sourceDy 0. 81 bytes, 69 of them the record.
+    const std::string v1Fixture =
+        "npdabs1:"
+        "0200000000000000" "01000000"          // nextDabId, count
+        "0100000000000000" "0000000000000000"  // id, strokeId
+        "00008042" "00008042"                  // x 64.0, y 64.0
+        "0000c040" "0000803f"                  // radius 6.0, hardness 1.0
+        "0000803f" "00000000"                  // roundness 1.0, angle 0.0
+        "0000803f"                             // flow 1.0
+        "0000803f" "00000000" "00000000" "0000803f"  // rgba 1, 0, 0, 1
+        "00"                                   // source Ink
+        "00000000" "00000000";                 // sourceDx, sourceDy
+    StrokesContent old;
+    std::string why;
+    const bool v1Read = deserializeStrokesContent(v1Fixture, &old, &why);
+    if (!v1Read) std::printf("      refusal: %s\n", why.c_str());
+    int v1Full = 0, v1Frac = 0;
+    if (v1Read) census(strokesRasterize(old, 128, 128, {}), 64, 64, &v1Full, &v1Frac);
+    std::printf("  [measured] a hand-written npdabs1 hard r=6 record rasterises to %d texels at "
+                "1.0 and %d fractional (pre-edgePx: 112 and 0)\n", v1Full, v1Frac);
+    check(v1Read && old.dabs.size() == 1 && v1Full == 112 && v1Frac == 0,
+          "npdabs1: a document saved BEFORE edgePx re-renders exactly as it was painted -- a "
+          "hardness-1 r=6 record is 112 texels at exactly 1.0 and none fractional, because "
+          "an npdabs1 record reads back with edgePx 0, not the running build's default");
+    check(v1Read && old.dabs.size() == 1 && bitsOf(old.dabs[0].edgePx) == 0u &&
+              serializeStrokesContent(old) == v1Fixture,
+          "npdabs1: and it is read as edgePx +0.0 exactly, and saved again it writes the "
+          "IDENTICAL npdabs1 bytes -- an old document re-saved untouched stays readable by the "
+          "builds that wrote it (the content-decided version rule)");
+
+    // 2. The npdabs2 round trip, bit-exact, at 0, 1, a non-default 2.5, and
+    //    -0.0 (equal to 0 by value, NOT by bits -- the reason the writer's
+    //    version test compares bit patterns: v1 would bring it back as +0).
+    StrokesContent rt;
+    rt.nextDabId = 9;
+    const float edges[4] = {0.0f, 1.0f, 2.5f, -0.0f};
+    for (int i = 0; i < 4; ++i) {
+      DabRecord d = inkDab(20.0f + 30.0f * static_cast<float>(i), 40.0f, 6.0f, {0.0f, 1.0f, 0.0f, 1.0f});
+      d.id = static_cast<uint64_t>(i + 1);
+      d.edgePx = edges[i];
+      rt.dabs.push_back(d);
+    }
+    const std::string rtBlob = serializeStrokesContent(rt);
+    StrokesContent rtBack;
+    const bool rtRead = deserializeStrokesContent(rtBlob, &rtBack, &why);
+    bool edgesExact = rtRead && rtBack.dabs.size() == 4;
+    for (size_t i = 0; edgesExact && i < 4; ++i)
+      edgesExact = bitsOf(rtBack.dabs[i].edgePx) == bitsOf(edges[i]);
+    check(rtBlob.rfind("npdabs2:", 0) == 0 && edgesExact &&
+              strokesContentHash(rtBack) == strokesContentHash(rt),
+          "npdabs2: edgePx survives the round trip BIT-EXACTLY at 0, 1, 2.5 and -0.0, and the "
+          "content hash with it -- the stored rim is the one the record was made with");
+    StrokesContent onlyNegZero;
+    onlyNegZero.dabs.push_back(rt.dabs[3]);
+    StrokesContent negBack;
+    check(serializeStrokesContent(onlyNegZero).rfind("npdabs2:", 0) == 0 &&
+              deserializeStrokesContent(serializeStrokesContent(onlyNegZero), &negBack, &why) &&
+              negBack.dabs.size() == 1 && bitsOf(negBack.dabs[0].edgePx) == bitsOf(-0.0f),
+          "npdabs2: a lone -0.0 edgePx still forces v2 -- v1 is written only when it is "
+          "LOSSLESS, compared by bit pattern");
+
+    // And the stored value is what is rasterised, in both directions: the
+    // SAME r=6 record at a stored edgePx of 1 is antialiased. Together with
+    // assertion 1 (edgePx 0 -> hard) this is what stops `tipOf()` from
+    // hard-coding either constant.
+    StrokesContent aa = old;
+    if (!aa.dabs.empty()) aa.dabs[0].edgePx = 1.0f;
+    StrokesContent aaBack;
+    int aaFull = 0, aaFrac = 0;
+    if (v1Read && deserializeStrokesContent(serializeStrokesContent(aa), &aaBack, &why))
+      census(strokesRasterize(aaBack, 128, 128, {}), 64, 64, &aaFull, &aaFrac);
+    std::printf("  [measured] the same record stored at edgePx 1: %d at 1.0, %d fractional\n",
+                aaFull, aaFrac);
+    check(v1Read && aaFrac > 0 && aaFull < 112 && aaFull + aaFrac == 112,
+          "npdabs2: the same record stored at edgePx 1 rasterises WITH an antialiased rim over "
+          "the same 112-texel footprint -- the record's own value, not a constant");
+
+    // 3. The live route stores the dab tip's OWN edgePx. 2.5 rather than the
+    //    default 1, because `DabRecord::edgePx` also defaults to 1: a route
+    //    that forgot to copy the field would pass a default-tip check.
+    {
+      OpenDocument od;
+      od.document = baseDocument({0.1f, 0.1f, 0.1f, 1.0f});
+      AppState::CloneSourceState clone{};
+      setCloneAnchor(clone, Vec2{32.0f, 32.0f});
+      latchCloneOffset(clone, Vec2{150.0f, 150.0f});
+      StrokeSession s;
+      BrushTip tip;
+      tip.radius = 8.0f;
+      tip.hardness = 1.0f;
+      tip.flow = 1.0f;
+      tip.edgePx = 2.5f;
+      std::string err;
+      const bool began =
+          s.begin(od, 1, tip, Tool::CloneStamp, &err, nullptr, DynamicInputs{}, &clone);
+      if (!began) std::printf("      refusal: %s\n", err.c_str());
+      if (began) {
+        s.addPoint(150.0f, 150.0f);
+        s.addPoint(158.0f, 150.0f);
+        s.end();
+      }
+      const StrokesContent& c = od.document.layers[1].strokes;
+      bool allCarry = !c.dabs.empty();
+      for (const DabRecord& d : c.dabs) allCarry &= d.edgePx == 2.5f;
+      std::printf("  [measured] a live clone stroke on a Strokes layer recorded %zu dabs, "
+                  "first edgePx %.2f (tip's 2.50)\n",
+                  c.dabs.size(), c.dabs.empty() ? -1.0 : static_cast<double>(c.dabs[0].edgePx));
+      check(began && allCarry,
+            "record: a live StrokesRecord stroke's records carry the dab TIP's own edgePx "
+            "(2.5 here, not the default) -- the rim the stroke was painted with is the rim "
+            "it will replay with");
+    }
+
+    // 4. A future version through a real FILE: refused by name, opened empty,
+    //    and carried verbatim through a save by this build. The file is made
+    //    by saving a v2 document and patching its one-byte version digit in
+    //    the EXR header (same length, and an EXR header is not compressed) --
+    //    the only way to put a payload this build cannot write into a file.
+    {
+      const char* pathA = "selftest_strokes_future_a.npaint";
+      const char* pathB = "selftest_strokes_future_b.npaint";
+      const char* pathC = "selftest_strokes_future_c.npaint";
+      Document doc = baseDocument({0.25f, 0.5f, 0.75f, 1.0f});
+      doc.layers[1].strokes = rt;
+      const std::string futureValue = "npdabs3:" + rtBlob.substr(std::strlen("npdabs2:"));
+      bool patched = false;
+      if (saveNpaint(doc, pathA, NpaintSaveOptions{}).ok) {
+        std::ifstream in(pathA, std::ios::binary);
+        std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        const size_t at = bytes.find("npdabs2:");
+        if (at != std::string::npos && bytes.find("npdabs2:", at + 1) == std::string::npos) {
+          bytes[at + 6] = '3';
+          std::ofstream out(pathB, std::ios::binary | std::ios::trunc);
+          out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+          patched = out.good();
+        }
+      }
+      check(patched, "future: premise -- a v2 file was written and its one version tag patched "
+                     "to npdabs3:");
+      const NpaintLoadResult future = patched ? loadNpaint(pathB) : NpaintLoadResult{};
+      bool namedBoth = false;
+      for (const std::string& w : future.warnings)
+        if (contains(w, "npdabs1:") && contains(w, "npdabs2:")) namedBoth = true;
+      auto carriedDabs = [](const NpaintLoadResult& r) -> std::string {
+        if (r.carry.layerAttributes.size() < 2) return {};
+        for (const NpaintAttribute& a : r.carry.layerAttributes[1])
+          if (a.name == "np:dabs") return a.stringValue;
+        return {};
+      };
+      check(future.ok && future.document.layers.size() == 2 &&
+                future.document.layers[1].kind == LayerKind::Strokes &&
+                future.document.layers[1].strokes.dabs.empty() && namedBoth &&
+                carriedDabs(future) == futureValue,
+            "future: an npdabs3: Strokes layer opens EMPTY with a warning naming the versions "
+            "this build reads, and its payload is held in the carry byte for byte");
+      std::string afterSave;
+      if (future.ok && saveNpaint(future.document, pathC, NpaintSaveOptions{}, &future.carry).ok) {
+        const NpaintLoadResult again = loadNpaint(pathC);
+        if (again.ok) afterSave = carriedDabs(again);
+      }
+      check(afterSave == futureValue,
+            "future: and SAVED AGAIN by this build the npdabs3: payload is written back "
+            "verbatim, not replaced by an empty dab list -- the layer does not render here, "
+            "but it is not destroyed (PRD I10)");
+      for (const char* p : {pathA, pathB, pathC}) std::remove(p);
+    }
   }
 
   std::printf("  -- G. PRD C11: a Strokes layer rasterises --\n");
