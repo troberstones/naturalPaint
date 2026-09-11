@@ -43,15 +43,19 @@ DepositCount PencilStroke::drawDab(TileStore& store, const BrushTip& tip, Vec2 c
   // one must not silently switch the tool off.
   if (!(opacity_ > 0.0f)) return count;
 
-  // Track B / B1: a LOCAL copy with `edgePx` zeroed, not `tip` itself. §0/§1
-  // of this file's own header is the whole argument for why a pencil is
-  // aliased on purpose -- `BrushTip::edgePx`'s entire job is to un-alias a
-  // hard tip's rim (brush/Deposit.hpp §2), which is exactly the softening
-  // this route exists to refuse. Zeroing it here, once, keeps every read of
-  // the tip below -- `dabPixelBounds()`, `dabCoverage()`, `grain` -- seeing
-  // the identical footprint and coverage this route computed before
-  // `edgePx` existed, while every OTHER dab consumer (`brush/Deposit.cpp`,
-  // `brush/RgbDeposit`, ...) still gets the antialiased edge.
+  // Track B / B1: a LOCAL copy with `edgePx` zeroed, not `tip` itself.
+  // **Not because a pencil is aliased -- §1's threshold would re-alias an
+  // antialiased rim on its own -- but because of WHERE it would cut it.**
+  // `BrushTip::edgePx` lays a smoothstep skirt over the last `edgePx` of the
+  // radius (brush/Deposit.hpp §2), and §1 thresholds coverage at 0.5, which on
+  // that skirt falls at `radius - edgePx/2`. Left on, every hard-tip pencil
+  // mark would silently shrink by half a pixel in radius, still perfectly
+  // binary, so nothing would look wrong (header §0's edgePx paragraph).
+  // Zeroing it here, once, keeps every read of the tip below --
+  // `dabPixelBounds()`, `dabCoverage()`, `grain` -- seeing the identical
+  // footprint and coverage this route computed before `edgePx` existed, while
+  // every OTHER dab consumer (`brush/Deposit.cpp`, `brush/RgbDeposit`,
+  // `brush/CloneStamp`, ...) still gets the antialiased edge.
   // `app/selftest/PencilDeposit.cpp`'s existing assertions pass unchanged,
   // which is the property this copy exists to preserve.
   BrushTip aliasedTip = tip;

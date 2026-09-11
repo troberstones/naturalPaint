@@ -20,7 +20,11 @@ namespace np {
 //   * **The design question this tool had to answer.** "A pencil is aliased"
 //     is not, on its own, a difference from `brush/RgbDeposit` in THIS
 //     codebase: `singleTipCoverage()` at `hardness == 1` already returns only
-//     1 or 0. Section 3 below is the assertion that finds the real difference
+//     1 or 0 -- at `edgePx == 0`, which the pencil forces on its own copy of
+//     the tip and section 3 sets for both engines; since BrushTip::edgePx a
+//     default brush's hard tip has a 1 px antialiased rim instead
+//     (brush/PencilDeposit.hpp §0 says why the pencil opts out). Section 3
+//     below is the assertion that finds the real difference
 //     -- a hard *dab* is not a hard *mark*, because at `flow < 1` a texel near
 //     a stroke's rim is covered by fewer dabs than one on its spine and
 //     therefore ends the stroke at a lower alpha. It runs a hardness-1
@@ -237,6 +241,15 @@ bool runPencilDepositTest() {
       BrushTip t;
       t.radius = 6.0f;
       t.hardness = 1.0f;  // a HARD tip for both -- section 2's difference, disabled
+      // ...and `edgePx` 0 for both, which since BrushTip::edgePx is the other
+      // half of "disabled": at the default 1 px the BRUSH's hard dab has an
+      // antialiased last pixel (brush/Deposit.hpp §2), so its distinct alphas
+      // below would count the rim's coverage as well as the flow grading this
+      // section is about. The pencil zeroes it itself, so this changes nothing
+      // on that side; on the brush side it keeps the dab two-valued, which is
+      // the premise this file's header states ("at hardness == 1 ... only 1 or
+      // 0" -- true at edgePx == 0, which this line makes the case here).
+      t.edgePx = 0.0f;
       t.flow = 0.25f;     // the whole of section 3: a rate the pencil must not have
       t.spacing = 0.25f;
       // 40 dabs along a straight horizontal line, generated here rather than

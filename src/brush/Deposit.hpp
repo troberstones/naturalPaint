@@ -764,7 +764,10 @@ struct BrushTip {
   float radius = 24.0f;
 
   // The fraction of the radius that is the flat, fully-covered core, in
-  // [0,1]. 0 is a pure smoothstep from the centre; 1 is a hard disc.
+  // [0,1]. 0 is a pure smoothstep from the centre; 1 is a hard disc only at
+  // `edgePx == 0` -- at the default `edgePx` below it is a flat core out to
+  // `radius - edgePx` with an antialiased last pixel (§2; this line used to
+  // say "1 is a hard disc" unqualified, which `edgePx` made false).
   float hardness = 0.35f;
 
   // **The minimum width, in DOCUMENT PIXELS, of the smoothstep skirt** --

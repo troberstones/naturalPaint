@@ -4091,7 +4091,10 @@ bool runRgbDepositTest();
 // answers it.** "A pencil is aliased" is not, on its own, a difference from
 // `brush/RgbDeposit` in this codebase -- `singleTipCoverage()` at
 // `hardness == 1` already returns only 1 or 0, so a hard brush's *dab* is
-// already two-valued. The real difference is one step out: a hard dab is not a
+// already two-valued (at `edgePx == 0`: since BrushTip::edgePx a default hard
+// tip has a 1 px antialiased rim, which the pencil zeroes on its own copy and
+// section 3 zeroes for both engines -- brush/PencilDeposit.hpp §0 says why).
+// The real difference is one step out: a hard dab is not a
 // hard *mark*, because `RgbDeposit` accumulates `flow * coverage` per dab and a
 // texel on a stroke's rim is covered by fewer dabs than one on its spine, so at
 // any `flow < 1` the mark has graded shoulders however hard the tip. So the
