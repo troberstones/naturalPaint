@@ -17237,51 +17237,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // section 2 has the argument.
     if (documentOpen) dl->AddQuad(q00, q10, q11, q01, ImGui::GetColorU32(ImGuiCol_Border));
 
-    // --- navigator (docs/ui.md section 2) --------------------------------
-    //
-    // The same composite texture the canvas just drew, at thumbnail size in
-    // the bottom-right corner, with the visible region marked in the accent.
-    // Free: `DocumentTexture::viewFor()` is revision-cached, so the second
-    // call in a frame is a map lookup and no second composite happens.
-    //
-    // Drawn into the canvas window rather than as its own floating window,
-    // because it floats over the *surround* -- a window would take focus and
-    // would have to be excluded from the canvas hit test.
-    //
-    // The viewport rectangle is derived from `origin`/`drawSize`/`avail`, the
-    // same three the canvas block computed for itself, rather than from a
-    // second reconstruction of the same arithmetic. It is axis-aligned, so
-    // under a rotated view it marks the *bounding box* of what is visible
-    // rather than the rotated quad -- honest at a glance and wrong only in the
-    // corners, which is the same compromise drawRulers() makes for the same
-    // reason.
-    const AtelierRect navBox =
-        st.showNavigator && documentView != nullptr
-            ? atelierNavigatorRect(focusedRect, texW, texH)
-            : AtelierRect{};
-    if (!navBox.empty()) {
-      const ImVec2 navMin(navBox.x, navBox.y);
-      const ImVec2 navMax(navBox.right(), navBox.bottom());
-      dl->AddRectFilled(ImVec2(navMin.x + 4, navMin.y + 4), ImVec2(navMax.x + 4, navMax.y + 4),
-                        IM_COL32(0, 0, 0, 110));
-      // Paper, not chrome: the document composites with straight alpha, so an
-      // unpainted region is transparent and takes whatever is behind it. On
-      // the canvas that is the paper quad, and a navigator backed by chrome
-      // deep would show black where the canvas shows white -- a thumbnail that
-      // does not match the picture it is a thumbnail of.
-      dl->AddRectFilled(navMin, navMax, atelierToken(kCanvasPaper));
-      addCanvasImage(dl, documentView, navMin, navMax);
+    // The navigator is drawn at the END of this block, after every overlay --
+    // see the note there.
 
-      const float visX0 = (paintOrigin.x - origin.x) / st.view.zoom;
-      const float visY0 = (paintOrigin.y - origin.y) / st.view.zoom;
-      const AtelierRect vis = atelierNavigatorMap(navBox, texW, texH, visX0, visY0,
-                                                  visX0 + avail.x / st.view.zoom,
-                                                  visY0 + avail.y / st.view.zoom);
-      if (!vis.empty())
-        dl->AddRect(ImVec2(vis.x, vis.y), ImVec2(vis.right(), vis.bottom()),
-                    atelierToken(kAccent), 0.0f, 0, kRuleThickness);
-      dl->AddRect(navMin, navMax, atelierToken(kRule), 0.0f, 0, kRuleThickness);
-    }
 
     ImGui::SetCursorScreenPos(paintOrigin);
     ImGui::InvisibleButton("##canvasHit", avail,
@@ -22287,6 +22245,61 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (st.pendingGuide)
         drawGuideLine(dl, xform, st.pendingGuide->orientation, st.pendingGuide->position, texW,
                       texH, kPendingGuideCol);
+    }
+
+    // --- navigator (docs/ui.md section 2) --------------------------------
+    //
+    // The same composite texture the canvas just drew, at thumbnail size in
+    // the bottom-right corner, with the visible region marked in the accent.
+    // Free: `DocumentTexture::viewFor()` is revision-cached, so the second
+    // call in a frame is a map lookup and no second composite happens.
+    //
+    // Drawn into the canvas window rather than as its own floating window,
+    // because it floats over the *surround* -- a window would take focus and
+    // would have to be excluded from the canvas hit test.
+    //
+    // **Drawn here, after every tool overlay, and not beside the canvas quad
+    // where it used to be.** It shares the canvas's draw list, so draw order
+    // is z-order: drawn first, it sat UNDER the marquee, the crop shield, the
+    // transform gizmo, the Frame/Slice outlines and the guides, each of which
+    // painted straight across the thumbnail whenever it reached the corner.
+    // It reads only view state, never anything an overlay computes, so moving
+    // it costs nothing but this paragraph. The brush ring still draws over it,
+    // because that is the pointer.
+    //
+    // The viewport rectangle is derived from `origin`/`drawSize`/`avail`, the
+    // same three the canvas block computed for itself, rather than from a
+    // second reconstruction of the same arithmetic. It is axis-aligned, so
+    // under a rotated view it marks the *bounding box* of what is visible
+    // rather than the rotated quad -- honest at a glance and wrong only in the
+    // corners, which is the same compromise drawRulers() makes for the same
+    // reason.
+    const AtelierRect navBox =
+        st.showNavigator && documentView != nullptr
+            ? atelierNavigatorRect(focusedRect, texW, texH)
+            : AtelierRect{};
+    if (!navBox.empty()) {
+      const ImVec2 navMin(navBox.x, navBox.y);
+      const ImVec2 navMax(navBox.right(), navBox.bottom());
+      dl->AddRectFilled(ImVec2(navMin.x + 4, navMin.y + 4), ImVec2(navMax.x + 4, navMax.y + 4),
+                        IM_COL32(0, 0, 0, 110));
+      // Paper, not chrome: the document composites with straight alpha, so an
+      // unpainted region is transparent and takes whatever is behind it. On
+      // the canvas that is the paper quad, and a navigator backed by chrome
+      // deep would show black where the canvas shows white -- a thumbnail that
+      // does not match the picture it is a thumbnail of.
+      dl->AddRectFilled(navMin, navMax, atelierToken(kCanvasPaper));
+      addCanvasImage(dl, documentView, navMin, navMax);
+
+      const float visX0 = (paintOrigin.x - origin.x) / st.view.zoom;
+      const float visY0 = (paintOrigin.y - origin.y) / st.view.zoom;
+      const AtelierRect vis = atelierNavigatorMap(navBox, texW, texH, visX0, visY0,
+                                                  visX0 + avail.x / st.view.zoom,
+                                                  visY0 + avail.y / st.view.zoom);
+      if (!vis.empty())
+        dl->AddRect(ImVec2(vis.x, vis.y), ImVec2(vis.right(), vis.bottom()),
+                    atelierToken(kAccent), 0.0f, 0, kRuleThickness);
+      dl->AddRect(navMin, navMax, atelierToken(kRule), 0.0f, 0, kRuleThickness);
     }
 
     // --- brush cursor ring ---
