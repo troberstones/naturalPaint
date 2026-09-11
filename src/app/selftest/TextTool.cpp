@@ -1,5 +1,8 @@
 #include "app/selftest/Support.hpp"
 
+// Support.hpp no longer drags app/AppState.hpp in; this section names Tool.
+#include "app/AppState.hpp"
+
 #include "app/TextTool.hpp"
 
 namespace np {

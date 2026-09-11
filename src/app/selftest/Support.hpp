@@ -102,7 +102,13 @@
 #include "ops/PointOps.hpp"
 #include "ops/Resample.hpp"
 #include "ui/DocumentTexture.hpp"
-#include "ui/NaturalPaintUI.hpp"
+// The types this header's own declarations name. They used to arrive via
+// app/SelfTest.hpp and then via ui/NaturalPaintUI.hpp; both of those dragged in
+// far more than these three.
+#include "gfx/Context.hpp"
+#include "paint/Palette.hpp"
+#include "sim/PaintSim.hpp"
+#include "ui/TileScreenRect.hpp"
 
 // NOTE on STB_IMAGE_WRITE_IMPLEMENTATION: io/Export.cpp is the one
 // translation unit that defines it -- that macro may only be defined once
