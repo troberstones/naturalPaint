@@ -1,5 +1,7 @@
 #include "ui/MacPaintUI.hpp"
 
+#include <SDL3/SDL.h>
+
 #include "flats/FlatsLayer.hpp"
 #include "flats/Tool.hpp"
 
@@ -16,6 +18,7 @@
 #include "ui/PanelGrip.hpp"
 #include "ui/AtelierTheme.hpp"
 #include "ui/NewDocumentDialog.hpp"
+#include "ui/StabiliserPanel.hpp"
 
 #include <filesystem>
 #include <algorithm>
@@ -6035,6 +6038,18 @@ void drawBrushNativeGroup(AppState& st) {
   ImGui::EndDisabled();
   if (!wetHonoured) ImGui::TextDisabled("Reaches the wet canvas only.");
   ctlSlider("Opacity", &st.brush.opacity, 0.0f, 1.0f);
+
+  ImGui::Spacing();
+  ImGui::TextUnformatted("ENTRY TAPER");
+  ctlSlider("Taper in (px)", &st.brush.native.taperInPx, 0.0f, 500.0f, "%.0f");
+  ImGui::BeginDisabled(st.brush.native.taperInPx <= 0.0f);
+  ctlSlider("Taper min size", &st.brush.native.taperMinSize, 0.0f, 100.0f, "%.0f");
+  ImGui::Checkbox("Taper flow too", &st.brush.native.taperFlow);
+  ImGui::EndDisabled();
+
+  ImGui::Spacing();
+  ImGui::TextUnformatted("STABILISER");
+  drawPerBrushStabiliserControls(st);
 }
 
 // **The two draws below are gated behind `st.showAdvancedDynamics`.** The
@@ -6187,6 +6202,12 @@ void drawBrushToolOptionsGroup(AppState& st) {
   drawBrushModelField(st, "wetEdges");
   drawBrushModelField(st, "airbrush");
   drawBrushModelField(st, "brushPose");
+
+  // Wave 2: naturalPaint's own stabiliser, next to the imported Smoothing
+  // bool just above it (which, as the note there says, has no engine target
+  // of its own -- this is what actually smooths a stroke).
+  ImGui::Separator();
+  drawStabiliserPopover(st);
 }
 
 // The docked BRUSH column: every group, in the order it has always drawn
@@ -19354,8 +19375,16 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // `&st.clone` is read only on the clone route (app/StrokeSession
         // §1b); on every other one it is ignored, so this is one argument
         // rather than a branch.
+        //
+        // Wave 2: the global/per-brush stabiliser resolved to one effective
+        // setting here, once, at pen-down -- `resolveStabiliser()`'s own
+        // comment on why the rule lives in one pure function -- and the
+        // view's own zoom, for `scaleWithZoom`'s screen-px reading.
+        const StabiliserParams effStabiliser =
+            resolveStabiliser(st.stabiliserPrefs, st.brush.native.stabiliser);
         if (!g_stroke.begin(*strokeDoc, strokeDoc->activeLayer, tip, st.brush.tool,
-                            &g_strokeRefusal, &st.brush.model, live, &st.clone)) {
+                            &g_strokeRefusal, &st.brush.model, live, &st.clone, effStabiliser,
+                            st.view.zoom, &st.brush.native)) {
           st.paintingThisFrame = false;
         } else {
           // Which gesture this stroke is: the one ImGui is inside right now
@@ -19406,6 +19435,26 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // stationary-click dab from the click's own sample (app/PointerQueue
         // queues the button-/pen-down event itself for exactly that reason).
         feedQueuedSamplesToStroke();
+
+        // Wave 2 "catch up while paused": once per frame regardless of
+        // whether the queue offered a new sample -- `StrokeSession::tick()`
+        // is a no-op unless the resolved stabiliser is weighted average with
+        // that option on (its own comment).
+        g_stroke.tick(SDL_GetTicksNS());
+
+        // Wave 2 "show string": the nib-to-pointer line, and the pulled-
+        // string circle, drawn while painting only.
+        const Stabiliser& sb = g_stroke.stabiliser();
+        if (sb.params().showString && sb.params().mode != StabiliserMode::Off && sb.active()) {
+          const Vec2 nibScreen = xform.toScreen(sb.nibPos());
+          const Vec2 rawScreen = xform.toScreen(sb.rawPos());
+          dl->AddLine(ImVec2(nibScreen.x, nibScreen.y), ImVec2(rawScreen.x, rawScreen.y),
+                      IM_COL32(255, 255, 255, 160), 1.0f);
+          if (sb.params().mode == StabiliserMode::PulledString) {
+            dl->AddCircle(ImVec2(rawScreen.x, rawScreen.y), sb.effectiveStringPx() * st.view.zoom,
+                          IM_COL32(255, 255, 255, 110), 32, 1.0f);
+          }
+        }
       }
     } else if (strokeTool && down && hovered && inside && !panning && !rotating && !sizingHeld &&
                !st.pendingGuide.has_value() && route == StrokeRoute::None &&

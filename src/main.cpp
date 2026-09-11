@@ -4174,6 +4174,10 @@ int main(int argc, char** argv) {
     // reading. Headless and GPU-free (app/SelfTest.hpp's own comment on it).
     const bool strokeInputOk = !wanted("runStrokeInputTest") || np::runStrokeInputTest();
     const bool pointerQueueOk = !wanted("runPointerQueueTest") || np::runPointerQueueTest();
+    // Wave 2: the stabiliser and entry taper/origin dab. Headless and
+    // GPU-free (app/SelfTest.hpp's own comment on each).
+    const bool stabiliserOk = !wanted("runStabiliserTest") || np::runStabiliserTest();
+    const bool brushTaperOk = !wanted("runBrushTaperTest") || np::runBrushTaperTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4243,7 +4247,8 @@ int main(int argc, char** argv) {
                     penToolOk && pathOpsOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && tipEdgeOk &&
                     brushBlendModeOk && nativeBrushOk &&
-                    strokeInputOk && pointerQueueOk;
+                    strokeInputOk && pointerQueueOk &&
+                    stabiliserOk && brushTaperOk;
     if (!selfTestOnly.empty()) {
       std::printf("[selftest] --selftest-only \"%s\": %d section(s) run\n", selfTestOnly.c_str(),
                   selfTestSelected);

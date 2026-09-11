@@ -79,28 +79,33 @@ bool runStrokeInputTest() {
     }
     check(increasing, "two-sample rising segment: dab pressure is strictly increasing, dab to dab");
 
-    // The span is the HALF-OPEN (0, 1], and the asymmetry is real rather
-    // than sloppiness about the endpoints:
+    // The span is CLOSED at both ends now, and each end has its own reason:
     //
-    //  * strictly above 0: `StrokePath`'s walk emits its first dab ONE FULL
-    //    SPACING in, never at the first sample itself (`app/selftest/
-    //    StrokePath.cpp` section 5 asserts the identical thing for position),
-    //    so no dab can carry the 0.0 the first sample held;
-    //  * up to and INCLUDING 1: the far endpoint IS reachable, and this
-    //    fixture reaches it exactly. The walk emits whenever the accumulated
-    //    arc length crosses a spacing boundary, and `leftover_` starts at 0
-    //    on a fresh path -- so a segment whose length is an exact integer
-    //    multiple of the spacing puts its last dab exactly on its far
-    //    endpoint. 200 px at 5 px spacing is 40 spacings exactly, which is
-    //    why the measurement below reports the last dab at the last sample's
-    //    own 1.0. A fixture with a non-multiple length would report just
-    //    under it; neither is a defect, so the assertion admits both.
+    //  * exactly 0 at the first dab: Wave 2's origin-dab fix (`app/selftest/
+    //    StrokePath.cpp` section 5 asserts the identical thing for position)
+    //    stamps the stroke's own first sample, pressure and all, before the
+    //    arc-length walk's first dab (one full spacing in, strictly inside
+    //    (0, 1) -- checked on `dabs[1]` below) ever runs;
+    //  * up to and INCLUDING 1 at the last: the far endpoint IS reachable,
+    //    and this fixture reaches it exactly. The walk emits whenever the
+    //    accumulated arc length crosses a spacing boundary, and `leftover_`
+    //    starts at 0 on a fresh path -- so a segment whose length is an
+    //    exact integer multiple of the spacing puts its last dab exactly on
+    //    its far endpoint. 200 px at 5 px spacing is 40 spacings exactly,
+    //    which is why the measurement below reports the last dab at the
+    //    last sample's own 1.0. A fixture with a non-multiple length would
+    //    report just under it; neither is a defect, so the assertion admits
+    //    both.
     std::printf("  [measured] two-sample 0->1 ramp over 200 px at 5 px spacing: %zu dabs, "
                 "first pressure %.6f, last %.6f\n",
                 dabs.size(), static_cast<double>(dabs.empty() ? 0.0f : dabs.front().pressure),
                 static_cast<double>(dabs.empty() ? 0.0f : dabs.back().pressure));
-    check(!dabs.empty() && dabs.front().pressure > 0.0f && dabs.front().pressure < 1.0f,
-          "two-sample rising segment: first dab's pressure is strictly inside (0, 1)");
+    check(!dabs.empty() && dabs.front().pressure == 0.0f,
+          "two-sample rising segment: the origin dab's pressure is exactly 0.0, the first "
+          "sample's own");
+    check(dabs.size() > 1 && dabs[1].pressure > 0.0f && dabs[1].pressure < 1.0f,
+          "two-sample rising segment: the walk's own first dab (one spacing in) is strictly "
+          "inside (0, 1)");
     check(!dabs.empty() && dabs.back().pressure <= 1.0f && dabs.back().pressure > 0.9f,
           "two-sample rising segment: last dab's pressure is in (0.9, 1] -- the ramp really is "
           "spanned, and the far endpoint is reachable but never exceeded");

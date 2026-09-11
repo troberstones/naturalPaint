@@ -29,6 +29,7 @@
 #include "app/QuitSequence.hpp"
 #include "app/SelectionDrag.hpp"
 #include "app/StrokeBake.hpp"
+#include "app/StrokePreferences.hpp"
 #include "app/TransformSession.hpp"
 #include "app/UserBrushLibrary.hpp"
 #include "app/VectorStyle.hpp"
@@ -1945,6 +1946,12 @@ struct AppState {
   // same idle-RSS promise (PRD A2, ADR-0001).
   UserBrushLibraryStore userBrushLibrary;
   bool userBrushLibraryLoaded = false;
+
+  // Wave 2: the global stabiliser setting (app/StrokePreferences.hpp), the
+  // same lazy-load-on-first-need shape as `userBrushLibrary` above.
+  StabiliserParams stabiliserPrefs;
+  StrokePreferencesStore strokePreferences;
+  bool strokePreferencesLoaded = false;
 
   // The dab library: a folder of brush tips, where dropping a file in IS the
   // import (app/DabLibrary.hpp). A sibling of the two stores above, for their

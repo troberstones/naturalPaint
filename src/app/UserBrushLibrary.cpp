@@ -370,6 +370,41 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
       continue;
     }
 
+    if (key == "taper") {
+      // Wave 2: entry taper (brush/NativeBrush.hpp). A separate keyword for
+      // `scalars`'s own reason: growing that line's required count would
+      // fail `takeFloats(rest, 7, ...)` for a file written before this
+      // field existed.
+      float n[3];
+      if (takeFloats(rest, 3, n)) {
+        pending.native.taperInPx = n[0];
+        pending.native.taperMinSize = n[1];
+        pending.native.taperFlow = n[2] != 0.0f;
+      }
+      pointMode = PointMode::None;
+      continue;
+    }
+
+    if (key == "stabiliser") {
+      // Wave 2: this brush's own stabiliser choice (brush/Stabiliser.hpp).
+      // `<brushMode> <amountPct> <ownMode> <ownStringPx> <ownStrength>
+      // <ownResponsiveness>` -- the ordinals are `StabiliserBrushMode`'s and
+      // `StabiliserMode`'s own, the same "write the enum's ordinal" `link`'s
+      // format above uses. A build that does not know this key preserves it
+      // verbatim (the fallthrough at the end of this loop).
+      float n[6];
+      if (takeFloats(rest, 6, n) && n[0] >= 0.0f && n[0] <= 2.0f && n[2] >= 0.0f && n[2] <= 2.0f) {
+        pending.native.stabiliser.mode = static_cast<StabiliserBrushMode>(static_cast<int>(n[0]));
+        pending.native.stabiliser.amountPct = n[1];
+        pending.native.stabiliser.own.mode = static_cast<StabiliserMode>(static_cast<int>(n[2]));
+        pending.native.stabiliser.own.stringPx = n[3];
+        pending.native.stabiliser.own.strength = n[4];
+        pending.native.stabiliser.own.responsiveness = n[5];
+      }
+      pointMode = PointMode::None;
+      continue;
+    }
+
     if (key == "opacity") {
       // **Accepted and DROPPED, never applied.** An interim build of the
       // `NativeBrush` migration briefly put `opacity` in `native` and wrote
@@ -571,6 +606,19 @@ std::string UserBrushLibraryStore::serialize(const BrushLibrary& lib) const {
       // comment on `BrushLink::enabled`), and a save that dropped a toggled-
       // off link's shape would make the toggle destructive.
       for (const CurvePoint& pt : link.curve) out += "point " + f9(pt.x) + " " + f9(pt.y) + "\n";
+    }
+    // Wave 2's two new keys, written only when non-default -- so a preset
+    // nobody has touched taper or the stabiliser on round-trips byte-
+    // identical to a file written before either key existed.
+    if (p.native.taperInPx != 0.0f || p.native.taperMinSize != 0.0f || p.native.taperFlow) {
+      out += "taper " + f9(p.native.taperInPx) + " " + f9(p.native.taperMinSize) + " " +
+             (p.native.taperFlow ? "1" : "0") + "\n";
+    }
+    const BrushStabiliserSetting& s = p.native.stabiliser;
+    if (s.mode != StabiliserBrushMode::FollowGlobal || s.amountPct != 100.0f) {
+      out += "stabiliser " + std::to_string(static_cast<int>(s.mode)) + " " + f9(s.amountPct) +
+             " " + std::to_string(static_cast<int>(s.own.mode)) + " " + f9(s.own.stringPx) +
+             " " + f9(s.own.strength) + " " + f9(s.own.responsiveness) + "\n";
     }
     const auto it = presetUnknownLines_.find(p.name);
     if (it != presetUnknownLines_.end())

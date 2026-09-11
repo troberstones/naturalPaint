@@ -308,6 +308,8 @@ add_executable(naturalPaint
   app/selftest/NativeBrush.cpp
   app/selftest/StrokeInput.cpp
   app/selftest/PointerQueue.cpp
+  app/selftest/Stabiliser.cpp
+  app/selftest/BrushTaper.cpp
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
   app/LayerThumbnail.cpp
@@ -353,6 +355,9 @@ add_executable(naturalPaint
   brush/TonalBrush.cpp
   brush/ToolOptionsBlend.cpp
   brush/Variance.cpp
+  brush/Stabiliser.cpp
+  brush/EntryTaper.cpp
+  app/StrokePreferences.cpp
   color/LutBake.cpp
   color/Shaper.cpp
   color/Space.cpp
@@ -457,6 +462,7 @@ add_executable(naturalPaint
   ui/DabPicker.cpp
   ui/BrushSettingsWindow.cpp
   ui/BrushFieldPresentation.cpp
+  ui/StabiliserPanel.cpp
   ui/FileDialog.cpp
   ui/AtelierLayout.cpp
   ui/DockLayout.cpp

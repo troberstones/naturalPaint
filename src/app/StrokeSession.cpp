@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "app/PenAxes.hpp"
+#include "brush/EntryTaper.hpp"
 #include "brush/ToolOptionsBlend.hpp"
 #include "color/Space.hpp"
 #include "core/StrokesContent.hpp"
@@ -1325,6 +1326,9 @@ DynamicInputs dynamicInputsFor(const AppState& st) noexcept {
 StrokeSample strokeSampleFromPointer(const PointerSample& sample, Vec2 canvasPos) noexcept {
   StrokeSample out;
   out.pos = canvasPos;
+  // Wave 2: `brush/Stabiliser`'s weighted-average mode is the one reader --
+  // see `app/PointerQueue.hpp` section 2's updated header.
+  out.timestamp = sample.timestamp;
   // A mouse sample carries no axes to convert -- `StrokeSample`'s own
   // defaults (brush/StrokePath.hpp) already ARE a mouse's neutral reading,
   // so there is nothing left to compute. Written as an early return rather
@@ -1422,7 +1426,9 @@ bool brushIsEdited(const BrushState& brush) {
 bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& tip, Tool tool,
                           std::string* errorOut, const BrushModel* model,
                           const DynamicInputs& hardwareInputs,
-                          const AppState::CloneSourceState* clone) {
+                          const AppState::CloneSourceState* clone,
+                          const StabiliserParams& stabiliser, float viewZoom,
+                          const NativeBrush* native) {
   if (errorOut != nullptr) errorOut->clear();
   const auto refuse = [&](std::string why) {
     if (errorOut != nullptr) *errorOut = std::move(why);
@@ -1769,6 +1775,14 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // before must not bleed into this one -- brush/StrokePath::reset()'s own
   // contract, and the same call ui/MacPaintUI already makes at pen-down.
   path_.reset();
+  // Wave 2: the resolved stabiliser and entry taper, latched with everything
+  // else at `begin()` -- see this method's own header comment on `stabiliser`/
+  // `viewZoom`/`native`.
+  stabiliserParams_ = stabiliser;
+  stabiliser_.begin(stabiliser, viewZoom);
+  taperInPx_ = native != nullptr ? native->taperInPx : 0.0f;
+  taperMinSize_ = native != nullptr ? native->taperMinSize : 0.0f;
+  taperFlow_ = native != nullptr && native->taperFlow;
   pending_.clear();
   frameTiles_.clear();
   strokeTiles_.clear();
@@ -2089,6 +2103,15 @@ void StrokeSession::depositPending() {
       resolvedCount =
           std::clamp(static_cast<int32_t>(std::lround(baseCount_ * countMul)), 1, 16);
     }
+
+    // Wave 2 entry taper: `distanceTravelled_` (just above) is this dab's own
+    // arc length from the stroke's origin. `entryTaperMultiplier()` returns
+    // 1.0f unmodified whenever `taperInPx_ <= 0` (off, the default), which is
+    // what keeps a non-tapering brush bit-identical.
+    const float taperMul = entryTaperMultiplier(distanceTravelled_, taperInPx_, taperMinSize_);
+    dabTip.radius *= taperMul;
+    if (taperFlow_) dabTip.flow *= taperMul;
+
     dabTip.count = resolvedCount;
     // No further flooring here: `brush/Variance.hpp`'s `minimum` is already
     // the floor, applied inside `varianceScale()`'s own formula above. There
@@ -2235,7 +2258,13 @@ const std::vector<TileCoord>& StrokeSession::addSample(const StrokeSample& sampl
   frameTiles_.clear();
   if (doc_ == nullptr) return frameTiles_;
 
-  path_.addPoint(sample, tip_.spacingPx(), pending_);
+  // Wave 2: the stabiliser sits here, between the raw sample and the path it
+  // walks. Off mode is an exact passthrough (`Stabiliser::addSample()`'s own
+  // comment), so this is bit-identical to feeding `sample` straight to
+  // `path_` whenever the resolved setting is Off -- assertion 10's own claim.
+  StrokeSample smoothed;
+  stabiliser_.addSample(sample, smoothed);
+  path_.addPoint(smoothed, tip_.spacingPx(), pending_);
   depositPending();
 
   // Live feedback, header §3: the revision is what invalidates
@@ -2245,8 +2274,29 @@ const std::vector<TileCoord>& StrokeSession::addSample(const StrokeSample& sampl
   return frameTiles_;
 }
 
+const std::vector<TileCoord>& StrokeSession::tick(uint64_t nowNs) {
+  frameTiles_.clear();
+  if (doc_ == nullptr) return frameTiles_;
+  StrokeSample smoothed;
+  if (!stabiliser_.tick(nowNs, smoothed)) return frameTiles_;
+  path_.addPoint(smoothed, tip_.spacingPx(), pending_);
+  depositPending();
+  if (!frameTiles_.empty()) ++doc_->revision;
+  return frameTiles_;
+}
+
 const std::vector<TileCoord>& StrokeSession::end() {
   if (doc_ == nullptr) return strokeTiles_;
+
+  // Wave 2 "catch up at end": one last sample, snapped straight to the last
+  // raw position, so the final dab reaches the lift point even though the
+  // nib itself may still be lagging behind it. Off mode never lags in the
+  // first place (`stabiliser_.forceCatchUp()` would just repeat the last
+  // sample, and this call is skipped for it) -- assertion 10 again.
+  if (stabiliserParams_.mode != StabiliserMode::Off && stabiliserParams_.catchUpAtEnd) {
+    StrokeSample snapped;
+    if (stabiliser_.forceCatchUp(snapped)) path_.addPoint(snapped, tip_.spacingPx(), pending_);
+  }
 
   path_.flush(tip_.spacingPx(), pending_);
   depositPending();

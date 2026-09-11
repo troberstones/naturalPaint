@@ -128,34 +128,35 @@ bool runStrokePathTest() {
   }
 
   // ======================================================================
-  // 5. THE MOVING STROKE, UNCHANGED. Five samples 20 px apart along y = 100,
-  //    spacing 12 px. Collinear input keeps the extrapolated control points
+  // 5. THE MOVING STROKE. Five samples 20 px apart along y = 100, spacing
+  //    12 px. Collinear input keeps the extrapolated control points
   //    collinear (StrokePath.cpp's own `mirror()` comment), and the samples
   //    are evenly spaced, so the centripetal knots are uniform and the curve
   //    degenerates to the straight line with a linear parameterisation. The
   //    dab positions are therefore derivable by hand rather than recorded
   //    from the code's own output:
   //
-  //      leftover_ starts at 0, so the first dab lands one FULL spacing in,
-  //      at x = 12 -- x = 0, the stroke's origin texel, is never stamped --
-  //      and every subsequent dab follows 12 px later: 12, 24, 36, 48, 60,
-  //      72. The seventh would be at 84, past the path's 80 px, so flush()
-  //      ends the stroke with 6 dabs and 8 px of unspent leftover.
+  //      Wave 2's origin-dab fix stamps x = 0 -- the stroke's own first
+  //      sample -- the moment `movedPx_` proves this is a real drag; the
+  //      arc-length walk is UNCHANGED and still starts its own count from
+  //      `leftover_ == 0`, so it still lands its first dab a full spacing
+  //      in at x = 12, then every 12 px after: 12, 24, 36, 48, 60, 72. The
+  //      seventh would be at 84, past the path's 80 px, so flush() ends the
+  //      stroke with 1 (origin) + 6 (walked) = 7 dabs: 0, 12, 24, 36, 48,
+  //      60, 72.
   //
-  //    Asserting those six numbers is what makes this section able to fail if
-  //    the click fix reaches a drag. A count alone could not: seeding
-  //    `leftover_ = spacingPx` (the "make every stroke stamp its origin"
-  //    variant that was deliberately NOT implemented) yields 7 dabs starting
-  //    at x = 0, and a stray click dab appended at flush() yields 7 ending at
-  //    x = 80 -- both of which move these coordinates.
+  //    Asserting those seven numbers is what makes this section able to
+  //    fail if the origin fix ever also shifts the walked dabs (it must
+  //    not: it only ADDS the one at 0) or fails to double-stamp-guard
+  //    against the click branch.
   // ======================================================================
   {
     const std::vector<Vec2> dabs = walkLine(0.0f, 80.0f, 100.0f, 5, 12.0f);
-    check(dabs.size() == 6, "drag: 5 samples over 80 px at spacing 12 emit exactly 6 dabs");
+    check(dabs.size() == 7, "drag: 5 samples over 80 px at spacing 12 emit exactly 7 dabs");
 
-    const float expectX[6] = {12.0f, 24.0f, 36.0f, 48.0f, 60.0f, 72.0f};
-    bool positionsOk = dabs.size() == 6;
-    for (size_t i = 0; i < dabs.size() && i < 6; ++i) {
+    const float expectX[7] = {0.0f, 12.0f, 24.0f, 36.0f, 48.0f, 60.0f, 72.0f};
+    bool positionsOk = dabs.size() == 7;
+    for (size_t i = 0; i < dabs.size() && i < 7; ++i) {
       // 0.01 px: the walk is a 24-segment piecewise-linear approximation with
       // float accumulation, so the answer is not bit-exact, but it is two
       // orders of magnitude tighter than the 12 px spacing an off-by-one
@@ -164,13 +165,12 @@ bool runStrokePathTest() {
         positionsOk = false;
       }
     }
-    check(positionsOk, "drag: every dab is at its derived position: 12,24,36,48,60,72");
+    check(positionsOk, "drag: every dab is at its derived position: 0,12,24,36,48,60,72");
 
     // Stated separately from the sweep above so the failure line names the
-    // specific over-reach rather than "some coordinate moved". This is the
-    // assertion that a leftover_ = spacingPx seed has to trip.
-    check(!dabs.empty() && closeTo(dabs[0].x, 12.0f, 0.01f),
-          "drag: the FIRST dab is one full spacing in, not at the origin");
+    // specific over-reach rather than "some coordinate moved".
+    check(!dabs.empty() && closeTo(dabs[0].x, 0.0f, 0.01f),
+          "drag: the FIRST dab is at the origin, exactly");
     check(!dabs.empty() && closeTo(dabs.back().x, 72.0f, 0.01f),
           "drag: the LAST dab is 72, i.e. no click dab was appended at the end");
   }
@@ -222,7 +222,7 @@ bool runStrokePathTest() {
     drag.flush(12.0f, dragDabs);
     const size_t dragCount = dragDabs.size();
     drag.flush(12.0f, dragDabs);
-    check(dragCount == 6 && dragDabs.size() == dragCount,
+    check(dragCount == 7 && dragDabs.size() == dragCount,
           "drag: a second flush() is a no-op too");
 
     // reset() then flush(): a stroke abandoned rather than ended (the router
@@ -239,11 +239,13 @@ bool runStrokePathTest() {
 
   // ======================================================================
   // 8. The boundary between the two. A stroke that moved by any real amount
-  //    is a drag and takes the drag path, even when the drag is shorter than
-  //    one spacing and therefore still deposits nothing -- that is today's
-  //    behaviour for a short drag and this change does not alter it. Stated
-  //    as an assertion rather than left implicit because it is the exact
-  //    edge a "slop budget" version of this fix would have moved, and a
+  //    is a drag and takes the drag path, even when the drag is far shorter
+  //    than one spacing -- so short the arc-length walk itself still emits
+  //    nothing. Wave 2's origin dab reaches this case too: a real drag,
+  //    however small, now leaves its own origin dab, where before this
+  //    exact short-drag gap deposited nothing at all. Stated as an
+  //    assertion rather than left implicit because it is the exact edge a
+  //    "slop budget" version of the click fix would have moved, and a
   //    reader deciding to add one later should see it fail.
   // ======================================================================
   {
@@ -254,8 +256,9 @@ bool runStrokePathTest() {
       path.addPoint(50.0f + 0.5f * static_cast<float>(i), 50.0f, 40.0f, dabs);
     }
     path.flush(40.0f, dabs);
-    check(dabs.empty(),
-          "boundary: a 1.5 px drag at spacing 40 is a DRAG and still emits nothing");
+    check(dabs.size() == 1 && closeTo(dabs[0].x, 50.0f, 0.01f) && closeTo(dabs[0].y, 50.0f, 0.01f),
+          "boundary: a 1.5 px drag at spacing 40 is a DRAG, and now emits exactly its own "
+          "origin dab (the walk itself still emits nothing)");
   }
 
   std::printf("[selftest] stroke-path %s\n", ok ? "PASS" : "FAIL");

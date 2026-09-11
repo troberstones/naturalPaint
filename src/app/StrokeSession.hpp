@@ -12,12 +12,14 @@
 #include "brush/Deposit.hpp"
 #include "brush/Heal.hpp"
 #include "brush/MaskPaint.hpp"
+#include "brush/NativeBrush.hpp"
 #include "brush/PencilDeposit.hpp"
 #include "brush/PigmentErase.hpp"
 #include "brush/PigmentSmudge.hpp"
 #include "brush/RgbDeposit.hpp"
 #include "brush/RgbErase.hpp"
 #include "brush/Smudge.hpp"
+#include "brush/Stabiliser.hpp"
 #include "brush/StrokePath.hpp"
 #include "brush/TonalBrush.hpp"
 #include "brush/Variance.hpp"
@@ -1712,10 +1714,22 @@ class StrokeSession {
   // paint, and say so. Borrowed for the duration of `begin()` only: the offset
   // is copied into `brush/CloneStamp`'s own stroke object, so nothing here
   // holds a pointer into `AppState` past this call.
+  // `stabiliser`/`viewZoom`/`native`, Wave 2, all defaulted so no existing
+  // caller changes: `stabiliser` is the RESOLVED effective setting
+  // (`resolveStabiliser()`, app/StrokeSession.cpp's own canvas-block caller
+  // resolves it before calling this, from the global and the brush's own
+  // choice -- this class does not read `NativeBrush::stabiliser` itself).
+  // `viewZoom` is `stabiliser.scaleWithZoom`'s own unit conversion. `native`
+  // supplies entry taper (`taperInPx`/`taperMinSize`/`taperFlow`) -- a
+  // pointer, not a copy, but only ever read here at `begin()`, the same
+  // "borrowed for the duration of this call only" contract `clone` above
+  // already has.
   bool begin(OpenDocument& doc, size_t layerIndex, const BrushTip& tip, Tool tool,
              std::string* errorOut, const BrushModel* model = nullptr,
              const DynamicInputs& hardwareInputs = DynamicInputs{},
-             const AppState::CloneSourceState* clone = nullptr);
+             const AppState::CloneSourceState* clone = nullptr,
+             const StabiliserParams& stabiliser = StabiliserParams{}, float viewZoom = 1.0f,
+             const NativeBrush* native = nullptr);
 
   // Which of §1's five layer-writing routes this stroke took. Meaningless before
   // `begin()` succeeds.
@@ -1929,6 +1943,13 @@ class StrokeSession {
   // this sample's own.
   const std::vector<TileCoord>& addSample(const StrokeSample& sample);
 
+  // Wave 2: once per frame, no new sample, from the canvas block. A no-op
+  // (empty return, no deposit) unless the resolved stabiliser is weighted
+  // average with "catch up while paused" on -- `brush/Stabiliser::tick()`'s
+  // own gate. Otherwise identical contract to `addSample()`: the frame's own
+  // tile set, distance-spaced dabs as usual.
+  const std::vector<TileCoord>& tick(uint64_t nowNs);
+
   // Pen-up. Walks the final segment `addPoint()` always holds back (see
   // `StrokePath::flush()`), deposits it, records **exactly one** history entry
   // when the stroke deposited anything, and ends the session. Returns the
@@ -1966,6 +1987,12 @@ class StrokeSession {
   // internals a caller has no other way to see. 0.0f before any dab has
   // ever been deposited by this session.
   float lastDabRadius() const noexcept { return lastDabRadius_; }
+
+  // Wave 2: the "show string" overlay's own read of the resolved setting and
+  // the live nib -- `ui/StabiliserPanel.cpp` draws from this, not from
+  // `NativeBrush`/the global prefs directly, so what it draws is what this
+  // stroke is actually doing.
+  const Stabiliser& stabiliser() const noexcept { return stabiliser_; }
 
  private:
   void depositPending();
@@ -2113,6 +2140,19 @@ class StrokeSession {
   LayerEditTarget editTarget_ = LayerEditTarget::Content;
 
   StrokePath path_;
+  // Wave 2: the resolved effective setting `begin()` was called with (not
+  // `NativeBrush::stabiliser` or the global prefs -- those were already
+  // folded into this by `resolveStabiliser()` before `begin()` saw them),
+  // and the filter itself. `stabiliserParams_` is read again at `end()` to
+  // decide whether "catch up at end" applies.
+  StabiliserParams stabiliserParams_;
+  Stabiliser stabiliser_;
+  // Wave 2: entry taper, copied out of `NativeBrush` at `begin()` rather
+  // than kept as a pointer -- `begin()`'s own comment on why `model`'s
+  // fields are copied out applies here too.
+  float taperInPx_ = 0.0f;
+  float taperMinSize_ = 0.0f;
+  bool taperFlow_ = false;
   // Dabs `path_` emitted since the last `depositPending()` call, each
   // carrying its OWN interpolated axes -- `StrokeDab` rather than `Vec2`
   // since Track A, so `depositPending()`'s per-dab loop can resolve

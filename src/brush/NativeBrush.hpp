@@ -1,6 +1,7 @@
 #pragma once
 
 #include "brush/Grain.hpp"
+#include "brush/Stabiliser.hpp"
 
 namespace np {
 
@@ -70,6 +71,19 @@ struct NativeBrush {
   // default; `brushTipFor()` copies it straight into the tip it builds,
   // unscaled by any DYNAMICS target, the same as `BrushState::opacity`.
   GrainParams grain;
+
+  // Wave 2: this brush's own stabiliser choice (brush/Stabiliser.hpp),
+  // resolved against the global setting by `resolveStabiliser()`.
+  BrushStabiliserSetting stabiliser;
+
+  // Wave 2: entry taper. `taperInPx` is the arc length over which radius (and
+  // flow, if `taperFlow`) ramps up from the stroke's origin; 0 is off.
+  // `taperMinSize` is the fraction (0-100%) of full size the very first dab
+  // starts at -- 0 is a point. Applied per dab in
+  // `StrokeSession::depositPending()`; exit taper is a later wave.
+  float taperInPx = 0.0f;
+  float taperMinSize = 0.0f;
+  bool taperFlow = false;
 };
 
 // Bit equality on `load`/`wetness`, `grainParamsEqual()` on `grain` -- the

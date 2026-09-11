@@ -1309,6 +1309,11 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
     // comment has the whole story) -- there is no index to get out of step
     // with when the model lives on the thing it describes.
     preset.model = brushModelFromDescriptor(list.child(i), tipsById);
+    // Wave 2: the one bit an `.abr` carries about smoothing --
+    // `toolOptions/smoothing` (`BrushModel::options.smoothing`, already read
+    // above) -- maps onto this build's own stabiliser (brush/Stabiliser.hpp).
+    preset.native.stabiliser.mode =
+        stabiliserBrushModeFromAbrSmoothing(preset.model.options.smoothing);
 
     // The Texture panel, resolved against this file's own patterns and
     // attached to the preset that will paint with it.
