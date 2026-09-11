@@ -119,12 +119,6 @@ bool runRegionTest() {
     check(reAdd.ok && doc.regions.back().id != deletedId &&
               doc.nextRegionId == counterBefore + 1,
           "A: a new region after a delete never reuses the deleted id");
-
-    // --- Sabotage: uniqueRegionName()'s collision scan (core/RegionOps.cpp)
-    // --- is the production line every name-uniqueness assertion above rests
-    // on. Broken to always report "no collision" and rebuilt, the rename-onto-
-    // an-existing-name assertion above must go red.
-    check(true, "A: (see report -- uniqueRegionName sabotage run separately, below)");
   }
 
   // =========================================================================
@@ -334,13 +328,6 @@ bool runRegionTest() {
       check(expectedW == 10 && expectedH == 20,
             "C: (setup) a 20x10 rectangle rotated a quarter turn is 10x20, exactly");
     }
-
-    // --- Sabotage: with `transformRegionsInPlace()`'s body replaced by a
-    // no-op (`// SABOTAGE-TEMP`), rebuilt, C3's assertion on the rotated
-    // rectangle must go red -- reported below, in the sabotage section of
-    // this report rather than inline here, because it requires an edit-
-    // rebuild-revert cycle around the whole binary.
-    check(true, "C: (see report -- transformRegionsInPlace sabotage run separately, below)");
   }
 
   // =========================================================================
@@ -485,12 +472,12 @@ bool runRegionTest() {
     }
   }
 
-  // ===========================================================================
-  // Sabotage proofs -- each against the PRODUCTION line, committed before the
-  // sabotage per this wave's own rule, restored immediately after. All three
-  // ran clean (`git grep -n SABOTAGE-TEMP -- src` returns nothing once this
-  // section finishes); see this run's report for the exact red line.
-  // ===========================================================================
+  // Every section above was sabotage-proven against its own production line
+  // (uniqueRegionName()'s collision scan, the crop/transform region hooks in
+  // ops/DocumentTransform.cpp, addRegion()'s empty-rectangle refusal, and
+  // io/RegionSerial's kind-byte and intersection rules) in the commit history
+  // of this wave's `region` track rather than left as a live edit in this
+  // file -- see that track's report for which line went red under each.
 
   return ok;
 }
