@@ -292,6 +292,46 @@ bool runTransformLayerSetTest() {
           "this track's change");
   }
 
+  // ==========================================================================
+  // 7. An RGB + Text pair: the Text member takes `transformTextLayer()`'s
+  //    origin-only path, the other kind `commit()`'s per-member loop walks
+  //    (brief: "Text via transformTextLayer"). `boundsFromTextContent()` is
+  //    what admits it -- a Text layer holds neither `rgbTiles` nor
+  //    `pigmentTiles`, and would be refused as "holds no pixels" like Group
+  //    and Adjustment if section 8's `geometryOnlyText` exemption did not
+  //    exist.
+  // ==========================================================================
+  {
+    OpenDocument od = makeTwoRgbDoc();
+    Layer text = makeTextLayer("caption");
+    text.text = TextContent{};
+    text.text.utf8 = "Handgloves";
+    text.text.origin = PathPoint{40.0f, 90.0f};
+    addLayer(od.document, od.document.layers.size(), text);
+    const size_t textIdx = od.document.layers.size() - 1;
+    const Document before = od.document;
+
+    TransformSession ts;
+    const LayerSelection sel = makeLayerSelection({1, textIdx});
+    check(ts.beginLayerSet(od, sel).ok, "beginLayerSet accepts a Text member alongside RGB");
+    const Mat3 m = transformTranslate(12.0f, -7.0f);
+    ts.setPending(m);
+    const TransformCommitResult done = ts.commit(od);
+    check(done.ok, "commit: an RGB + Text set commits together");
+
+    Document solo = before;
+    const LayerTransformResult rb = transformLayer(solo, 1, m, DocumentTransformParams{});
+    const LayerTransformResult rt = transformTextLayer(solo, textIdx, m);
+    check(rb.ok && rt.ok, "reference: transformLayer()/transformTextLayer() alone succeed");
+    check(tilesBitIdentical(*od.document.layers[1].rgbTiles, *solo.layers[1].rgbTiles, wholeCanvas),
+          "RGB+Text set: the RGB member matches its solo transform");
+    check(od.document.layers[textIdx].text.origin.x == solo.layers[textIdx].text.origin.x &&
+              od.document.layers[textIdx].text.origin.y == solo.layers[textIdx].text.origin.y,
+          "RGB+Text set: the Text member's origin matches transformTextLayer()'s solo result");
+    check(od.document.layers[textIdx].text.origin.x != before.layers[textIdx].text.origin.x,
+          "RGB+Text set: the Text member actually moved, not left at its starting origin");
+  }
+
   return ok;
 }
 
