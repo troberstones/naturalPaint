@@ -296,6 +296,7 @@ add_executable(naturalPaint
   app/selftest/TextKeyCapture.cpp
   app/selftest/Tileable.cpp
   app/selftest/TipEdge.cpp
+  app/selftest/BrushBlendMode.cpp
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
   app/LayerThumbnail.cpp

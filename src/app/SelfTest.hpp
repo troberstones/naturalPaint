@@ -6337,4 +6337,49 @@ bool runCommandCallsitesTest();
 // six sections and what each proves.
 bool runTipEdgeTest();
 
+// The brush's own blend mode (Photoshop's `Md `) reaching a plain RGB layer
+// -- brush/RgbDeposit.hpp §2a, and the routing edge that feeds it
+// (`app/StrokeSession.cpp`'s `RgbStroke::begin(..., tip.blend)`, on the RGB
+// deposit route only; `brush/ToolOptionsBlend.hpp` still refuses `linearBurn`
+// and `Dslv` by name, and no other route reads `BrushTip::blend` at all).
+//
+// **What it proves**, distinct from app/selftest/RgbDeposit.cpp's own §§1-15
+// (which already cover the unblended composite at length and are not
+// repeated here):
+//
+//  - **Normal is bit-identical to the pre-existing path**, at zero tolerance,
+//    reached by DISPATCH (`blend_ != Normal`) rather than by coincidence of
+//    shared arithmetic -- and the latched-`dst0` colour plane holds zero
+//    tiles and zero bytes for the whole life of a Normal stroke, checked
+//    while the stroke is still active rather than only after cleanup.
+//  - **Multiply and Darken (Min) match hand-checkable cases**: white ink
+//    over an opaque mid grey is the identity; black ink over it is exact
+//    black; Darken keeps whichever of a texel and the ink is darker,
+//    channel-wise, and leaves the darker one UNCHANGED.
+//  - **No compounding, the headline claim**: two dabs at flow 0.4 and one
+//    dab built to the SAME final accumulator value (read back from the real
+//    two-dab run, not hand-derived) write the BIT-IDENTICAL texel over a
+//    non-trivial opaque background, for both Multiply and Darken -- the
+//    property that fails first and most visibly if a blended dab reads the
+//    live (already-blended) tile instead of the texel latched at the
+//    stroke's first touch.
+//  - **A transparent destination** yields the ink exactly, for both modes,
+//    as a consequence of `core::blendPixel()`'s own three-term split rather
+//    than a separate branch for it.
+//  - **Alpha lock's freeze re-derived for a blend**: alpha exactly frozen at
+//    its pre-stroke value, colour moving to the value the re-derived
+//    `dst0*(1-A') + target*A'*dst0.a` rule predicts, checked against that
+//    formula computed by hand and cross-checked against `blendPixel()`.
+//  - **The selection is still a BOUND, not a speed limit, under a blend
+//    mode**: 40 scrubbing dabs through a partially selected texel reach
+//    exactly `opacity * sel`, at zero tolerance -- the blend mode changes
+//    what gets written at the bound, never the bound itself.
+//  - **The latched-`dst0` store's lifetime**, measured on both sides of
+//    pen-up: one 128 KiB `core::Tile` per touched tile while a BLENDED
+//    stroke is painting, zero afterwards.
+//
+// Driven through `RgbStroke` directly on a bare `TileStore`. Headless,
+// GPU-free, writes no files. See app/selftest/BrushBlendMode.cpp.
+bool runBrushBlendModeTest();
+
 }  // namespace np

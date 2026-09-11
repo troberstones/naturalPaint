@@ -3562,6 +3562,12 @@ int main(int argc, char** argv) {
     // independence at zero tolerance, the selection as a bound rather than a
     // speed limit, and paint landing on the active layer and on no other.
     const bool rgbDepositOk = np::runRgbDepositTest();
+    // brush/RgbDeposit.hpp §2a -- the brush's own blend mode (Photoshop's
+    // `Md `) reaching an RGB layer, STROKE-level against the texel latched
+    // before the stroke began, never per-dab against the live layer. Normal
+    // bit-identical to the pre-existing path, Multiply/Darken hand-checked,
+    // no compounding across overlapping dabs, alpha lock's freeze re-derived.
+    const bool brushBlendModeOk = np::runBrushBlendModeTest();
     // PRD F9/F10 (both P0), ADR-0007 -- the eraser on a plain RGB layer, which
     // until this step did NOTHING: Tool::Eraser sat in the not-built routing
     // list, so a drag with it reached no layer and said nothing about why.
@@ -3958,7 +3964,8 @@ int main(int argc, char** argv) {
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk && dialogModuleOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
                     penToolOk && pathOpsOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
-                    textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && tipEdgeOk;
+                    textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && tipEdgeOk &&
+                    brushBlendModeOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

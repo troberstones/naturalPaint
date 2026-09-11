@@ -33,8 +33,10 @@
 // tile is `depositDab()`'s, line for line, including the reason (its §3: a
 // tile is reported at the moment its first changed texel is written, so
 // reporting and writing are the same branch and cannot disagree). Those pieces
-// were already kind-agnostic. Exactly two things are genuinely different: what
-// one dab does to one texel, and the per-stroke accumulator that decides it.
+// were already kind-agnostic. Three things are genuinely different: what one
+// dab does to one texel, the per-stroke accumulator that decides it, and --
+// since the brush's own `Md ` blend mode landed (§2a) -- which pre-stroke
+// texel that composite reads.
 //
 // ==========================================================================
 // 1. Premultiplied, and linear. Both, and neither is optional
@@ -143,6 +145,85 @@
 //     not a meaning this or any other compositor has.
 //
 // ==========================================================================
+// 2a. The brush's OWN blend mode (`Md `) -- STROKE-level, never per dab
+// ==========================================================================
+//
+// `BrushTip::blend` (brush/Deposit.hpp), set by `blendModeFromPsToolOptions()`
+// (brush/ToolOptionsBlend.hpp) from a `.abr`'s tool-options `Md ` id, is read
+// here and nowhere else -- see that header and `BrushTip::blend`'s own
+// comment for why the pigment and erase routes refuse it by name.
+//
+// **Photoshop applies a brush's blend mode to the STROKE as a unit, against
+// the layer as it stood before the stroke began -- not per dab against
+// whatever the layer already holds.** Reusing the per-dab source-over loop
+// §2 already has, unmodified, gets this wrong: dab 2 would multiply the
+// ALREADY-multiplied result dab 1 left, so an overlapping stroke at 50 % flow
+// would come out darker than a single stroke-level Multiply at flow 1 -- the
+// exact "flow and opacity become the same slider" defect §2 spends five
+// paragraphs refusing, wearing a different hat.
+//
+// So the composite is written directly against the texel latched at the
+// stroke's first touch (`dst0`, §3) and the stroke's own running ceiling
+// (`A'`, §2's `a1`), never against an intermediate write:
+//
+//     target = blend(straight(dst0), ink)          -- core/Blend.hpp's
+//                                                       blendPixel(), §2a's
+//                                                       own note below
+//     out.rgb = target * A'  +  dst0.rgb * (1 - A')
+//     out.a   =        A'  +  dst0.a   * (1 - A')
+//
+// `A'` here is `depositRgbTexel()`'s own `a1` -- the CUMULATIVE stroke alpha
+// after this dab, not the per-dab increment `a` -- because the claim is
+// about the whole stroke's composite against `dst0`, recomputed fresh every
+// dab from the two quantities that do not change dab to dab (`dst0`) or that
+// already carry the whole stroke's history (`A'`). Recomputing from `A'`
+// rather than composing `a` onto a live value is also what makes the result
+// **order-independent within the stroke**: two dabs at flow 0.5 that both
+// reach `A' = 1` and one dab at flow 1 that reaches it directly write the
+// IDENTICAL texel, because the formula above only ever looks at the pair
+// `(dst0, A')`, never at how many dabs it took to get there.
+//
+// **`blendPixel()` already carries the "blend over a transparent destination
+// is the source colour" rule, so this file does not re-derive it.** Calling
+// it with an OPAQUE source (`ink` at alpha 1) collapses its three-term
+// Porter-Duff split (core/Blend.hpp's own derivation) to exactly
+// `lerp(ink, blend(straight(dst0), ink), dst0.a)` -- verified algebraically
+// here for `Multiply` and `Min` (both commutative in the two arguments the
+// split passes them) and asserted by `--selftest` at `dst0.a == 0`, where it
+// must equal `ink` exactly.
+//
+// For `BlendMode::Normal`, `target == ink` and the formula above is
+// algebraically `depositRgbTexel()`'s own §2 composite -- but **Normal never
+// reaches this formula**: `RgbStroke::depositDab()` calls this composite
+// only when the stroke's blend is not Normal, so the Normal path is the
+// exact code and the exact floating-point sequence it always was, not a
+// specialisation of this one that happens to agree. `--selftest` asserts
+// that by construction (dispatch, not arithmetic) as well as by comparing a
+// Normal stroke's stored bytes against the pre-existing path's.
+//
+// **Alpha lock re-derived** (§4.5 is the unblended case; this is the same
+// argument with the blend's `target` standing in for `ink`). §4.5's per-dab
+// rule is a straight-colour lerp toward a CONSTANT target at the per-dab
+// rate; iterated, it is the identical "repeated composite of a constant"
+// identity §2 already uses for alpha, just at the straight-colour level, so
+// it closes the same way -- cumulative `A'` in place of the per-dab
+// increment, `dst0` in place of the live value:
+//
+//     out.rgb = dst0.rgb * (1 - A')  +  target * A' * dst0.a
+//     out.a   = dst0.a                                          (frozen)
+//
+// which is §4.5's own `dst.rgb*(1-a) + ink*a*dst.a` / `dst.a` with exactly
+// those two substitutions, and reduces to it when `target == ink`, `dst0 ==
+// dst` and `A' == a` -- the unblended, single-dab case.
+//
+// **Only `Normal`, `Multiply` and `Min` (Darken) are reachable here.**
+// `blendModeFromPsToolOptions()` refuses `linearBurn` and `Dslv` by name
+// (brush/ToolOptionsBlend.hpp), so `BrushTip::blend` never holds anything
+// this composite has not been checked against; `RgbStroke` does not switch
+// on the mode at all, it hands whatever `core::BlendMode` it was given
+// straight to `blendPixel()`, which is defined for every mode in the enum.
+//
+// ==========================================================================
 // 3. Where the accumulator lives, and what it costs
 // ==========================================================================
 //
@@ -171,6 +252,31 @@
 // holds 1.9 MiB for the duration of one drag and nothing afterwards. It is
 // never copied out of the stroke that owns it, which is what makes the
 // `getOrCreate()` in the deposit loop free of the copy-on-write barrier's copy.
+//
+// **§2a's second store, and why it costs half of this one rather than the
+// same amount again.** A blended stroke needs `dst0` -- the texel as it
+// stood before the stroke touched it -- and `dst` alone cannot recover that
+// (`dst = dst0*(1-A') + target*A'` is not invertible once `target != dst0`),
+// so it is latched into a second sparse tile store, `RgbStroke::dst0_`, the
+// moment a texel is first written this stroke (the same instant `alpha_`
+// gains its first non-zero entry there -- §2a's dispatch reads that as the
+// latch signal rather than adding a second one). It reuses `core::Tile`
+// itself as the element type rather than a bespoke struct: `dst0` is read
+// out of the LAYER, which already rounds every channel to half on write
+// (core/TileStore.hpp), so storing it at float would spend 64 KiB claiming a
+// precision the source value never had, and `core::Tile` is already exactly
+// the "128x128 texels, four half channels, premultiplied" shape this needs
+// -- its own `static_assert(sizeof(Tile) == 128 * 1024)` is what keeps this
+// half-plane choice honest, with no second assertion to duplicate it.
+// Contrast `StrokeAlphaTile`'s choice of float over half (above): `A` is
+// accumulated into, hundreds of times, so its rounding error compounds and
+// float is what damps that; `dst0` is written ONCE per texel per stroke and
+// only ever read after, so there is no accumulation to damp and half is the
+// honest cost. **Allocated only when `blend_ != BlendMode::Normal`** -- a
+// Normal stroke's `dst0_` stays completely empty (0 tiles, 0 bytes), which
+// is what keeps the Normal path's memory shape, and `--selftest`'s
+// tile-byte-count assertion for it, exactly what they were before §2a.
+// Freed at `end()` alongside `alpha_`, for the identical reason.
 //
 // ==========================================================================
 // 4. The selection bounds the deposit (PRD E1, P0)
@@ -278,10 +384,15 @@
 // belongs to `app/StrokeSession`, which owns the record and the history that
 // `app/` owns.
 //
-// **No blend mode, no smudge, no texture.** A dab is source-over of one colour.
-// `Layer::blend` still applies to the layer as a whole at composite time and is
-// untouched; a brush that could pick its own blend mode per dab is a different
-// feature with its own UI.
+// **No PER-DAB blend mode, no smudge, no texture.** §2a's blend mode is a
+// STROKE-level composite against the texel latched before the stroke began,
+// never a per-dab operation against the live layer -- a brush that picked its
+// own blend mode per dab is the feature this section used to say did not
+// exist, and it still does not: the per-dab loop composites `weight`/`A'`
+// exactly as §2 always did, and only the final write is where §2a's formula
+// stands in for §2's. `Layer::blend` still applies to the layer as a whole at
+// composite time and is untouched, and is a different mode vocabulary
+// entirely (`core::BlendMode` is shared machinery, not a shared setting).
 //
 // **No eraser -- it is `brush/RgbErase`, a sibling.** That module borrows this
 // one's dab stream, falloff, footprint, tile loop and accumulator *type*, and
@@ -327,6 +438,16 @@ static_assert(sizeof(StrokeAlphaTile) == 64 * 1024,
 
 using StrokeAlphaStore = TileStoreOf<StrokeAlphaTile>;
 
+// §2a/§3's second store: one sparse `core::Tile` per touched tile, holding
+// `dst0` -- the texel latched at this stroke's first touch, before any
+// blended composite wrote to it. Reusing `core::Tile` rather than a bespoke
+// struct is what keeps its own `static_assert(sizeof(Tile) == 128 * 1024)`
+// (core/TileStore.hpp) the one honest size check this needs; see §3's "half,
+// not float" note for why that size, not `StrokeAlphaTile`'s 64 KiB float
+// one, is the right cost here. Only populated for a stroke whose `blend !=
+// BlendMode::Normal` -- a Normal stroke's store stays at 0 tiles, 0 bytes.
+using StrokeDst0Store = TileStoreOf<Tile>;
+
 // §2's rule, as a pure function of one texel, for the one reason a pure
 // function earns its keep here: the invariants are about *this arithmetic*, so
 // `--selftest` asserts them on this and not on a tile of it.
@@ -353,6 +474,32 @@ RgbDepositStep depositRgbTexel(const std::array<float, 4>& dst,
                                const std::array<float, 3>& straightLinearRgb, float strokeAlpha,
                                float weight, float opacity, bool alphaLocked = false) noexcept;
 
+// §2a's composite: the brush's own STROKE-level blend mode. `dst0` is the
+// texel LATCHED at this stroke's first touch -- never a live/intermediate
+// value, which is what makes this exact rather than compounding -- `blend`
+// selects `Normal`/`Multiply`/`Min` (the three `blendModeFromPsToolOptions()`
+// can ever hand `RgbStroke`, though this function does not itself check
+// that: it hands `blend` straight to `blendPixel()`, which is total over the
+// whole enum). `strokeAlpha`, `weight`, `opacity` and `alphaLocked` are
+// `depositRgbTexel()`'s own, with the identical meaning -- the accumulator
+// arithmetic (`a`, `a1`, all four refusals) is bit-for-bit duplicated from
+// that function rather than shared through a helper, deliberately: it is the
+// one piece of arithmetic `--selftest` asserts is byte-identical to the
+// unblended path when `blend == Normal` (which never calls this function,
+// so that identity is a dispatch guarantee, not a coincidence of shared
+// code), and a shared helper is a place a future change to one could
+// silently perturb the other.
+//
+// Unlike `depositRgbTexel()`, `dst0`'s ALPHA is the frozen value alpha lock
+// reads (`dst0[3]`, not a live `dst.a`) and its RGB is what §2a's
+// `target = blend(straight(dst0), ink)` is computed from -- this function
+// never reads a "live" texel at all, which is the property that makes the
+// result order-independent within the stroke (§2a).
+RgbDepositStep depositRgbTexelBlended(const std::array<float, 4>& dst0,
+                                      const std::array<float, 3>& straightLinearRgb,
+                                      BlendMode blend, float strokeAlpha, float weight,
+                                      float opacity, bool alphaLocked = false) noexcept;
+
 // One RGB stroke in flight: the latched ink, and the accumulator that makes
 // `opacity` a per-stroke ceiling rather than a per-dab multiplier.
 //
@@ -377,13 +524,23 @@ class RgbStroke {
   // set mid-drag must not change which composite the dabs already spent are
   // read back through. Defaulted to `false` so every existing caller that
   // painted an unlocked layer keeps compiling and keeps its behaviour.
+  //
+  // `blend` is latched with them, for the same reason again (§2a): the
+  // stroke-level composite is only correct against the mode it started with,
+  // and a mode that changed mid-drag has no well-defined `dst0`/`target`
+  // pairing. Defaulted to `BlendMode::Normal` so every existing caller keeps
+  // compiling and keeps painting the unblended path; `app/StrokeSession.cpp`
+  // is the only caller that ever passes anything else, and only on the RGB
+  // deposit route (`BrushTip::blend`'s own comment names it as the one
+  // reader).
   void begin(const std::array<float, 3>& straightLinearRgb, float opacity,
-            bool alphaLocked = false) noexcept;
+            bool alphaLocked = false, BlendMode blend = BlendMode::Normal) noexcept;
 
   bool active() const noexcept { return active_; }
 
-  // Pen-up. Frees the accumulator (§3) and leaves the ink alone, so the counts
-  // below still read correctly after a stroke ends.
+  // Pen-up. Frees the accumulator AND §2a's latched-`dst0` store (§3) and
+  // leaves the ink alone, so the counts below still read correctly after a
+  // stroke ends.
   void end() noexcept;
 
   // Deposits one dab into `store`, clipped to the canvas and gated by
@@ -399,6 +556,13 @@ class RgbStroke {
   // observable rather than merely arithmetic: a stroke scrubbed back and forth
   // stops dirtying tiles once it is done, so live feedback stops re-uploading
   // them too.
+  //
+  // §2a: when `blend_ != BlendMode::Normal`, each texel this dab actually
+  // changes is composited through `depositRgbTexelBlended()` against `dst0_`
+  // (latching it first if this is the texel's first touch this stroke)
+  // instead of through `depositRgbTexel()` against the live tile -- the only
+  // difference the blend mode makes to this loop. `blend_ == Normal` takes
+  // the exact branch and exact code this function always ran.
   DepositCount depositDab(TileStore& store, const BrushTip& tip, Vec2 centre, int32_t canvasW,
                           int32_t canvasH, const Selection* selection,
                           std::vector<TileCoord>* touchedOut);
@@ -418,6 +582,7 @@ class RgbStroke {
 
   const std::array<float, 3>& ink() const noexcept { return ink_; }
   float opacity() const noexcept { return opacity_; }
+  BlendMode blend() const noexcept { return blend_; }
 
   // What the accumulator currently holds. `--selftest` prints both, because §3
   // makes a memory claim ("freed at pen-up") that is worth checking rather than
@@ -425,12 +590,23 @@ class RgbStroke {
   size_t accumulatorTiles() const noexcept { return alpha_.occupiedTileCount(); }
   size_t accumulatorBytes() const noexcept { return alpha_.tileBytes(); }
 
+  // §2a/§3's second store: what `dst0_` currently holds. Zero for the whole
+  // life of a Normal stroke -- never allocated, not merely emptied -- which
+  // is exactly what `--selftest` checks to tell "the Normal path was left
+  // alone" from "the Normal path happens to read as empty".
+  size_t dst0Tiles() const noexcept { return dst0_.occupiedTileCount(); }
+  size_t dst0Bytes() const noexcept { return dst0_.tileBytes(); }
+
  private:
   std::array<float, 3> ink_{0.0f, 0.0f, 0.0f};
   float opacity_ = 1.0f;
   bool active_ = false;
   bool alphaLocked_ = false;
+  BlendMode blend_ = BlendMode::Normal;
   StrokeAlphaStore alpha_;
+  // §2a/§3: `dst0`, latched at each touched texel's first dab this stroke.
+  // Stays empty for the whole stroke when `blend_ == BlendMode::Normal`.
+  StrokeDst0Store dst0_;
 };
 
 }  // namespace np
