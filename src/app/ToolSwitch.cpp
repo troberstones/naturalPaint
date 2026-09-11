@@ -3,6 +3,7 @@
 #include "app/CropTool.hpp"
 #include "app/DocumentLifecycle.hpp"  // activeLayerOf()
 #include "app/MeasureLine.hpp"
+#include "app/RegionTool.hpp"
 
 namespace np {
 
@@ -73,6 +74,15 @@ void installTool(AppState& st, Tool next) noexcept {
   // at it, and arriving with a stale shape from before is the same defect
   // wearing the other hat.
   cropCancel(st.crop);
+
+  // **A pending Frame/Slice gesture does not survive a tool change either**,
+  // `cropCancel()`'s own reason -- a live drag left in flight would resume
+  // (or worse, silently commit on a stray pointer-up) against a document the
+  // user has moved on from. The *selection* is not cleared here: unlike a
+  // pending crop, a selected region is not a destructive act waiting on an
+  // Enter key, so there is nothing unsafe about leaving one selected across a
+  // tool switch (app/RegionTool.hpp's own note on `regionCancelGesture()`).
+  regionCancelGesture(st.region);
 }
 
 }  // namespace

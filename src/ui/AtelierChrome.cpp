@@ -236,8 +236,8 @@ constexpr ToolMeta kToolMeta[] = {
     // `commitDrawnSelection()`. Two modes, chosen in this band's own row
     // below -- a rectangle through `cropDocument()` and a four-corner
     // perspective through `transformFromQuad()` + `transformDocument()`.
-    // `Tool::Slice`, which shares its palette group and its cursor, is still
-    // one of the not-built cells and stays false.
+    // `Tool::Slice`, which shares its palette group and its cursor, is now
+    // built too -- see its own row below, app/RegionTool.
     {"Crop", "crop", 57515u, "C", "crop", true},
     // **Built**: app/MeasureLine, gated by `toolMeasuresCanvas()` -- the one
     // tool in this palette whose gesture writes no texel at all. Same
@@ -245,7 +245,12 @@ constexpr ToolMeta kToolMeta[] = {
     // order, so a built tool stays where the enum puts it and the divider
     // above marks the enum's not-built run, not a second sorted half.
     {"Measure", "ruler", 57675u, "", "measure", true},
-    {"Frame", "frame", 58001u, "", "frame", false},
+    // **Built**: app/RegionTool, gated by `toolCreatesRegions()` -- the
+    // eleventh canvas gate, shared with `Tool::Slice` below. Both tools draw
+    // a named rectangle into `Document::regions` (core/Region.hpp,
+    // PLAN.md gap-closing wave); the only difference between the two rows is
+    // which `RegionKind` `regionKindForTool()` hands the gesture.
+    {"Frame", "frame", 58001u, "", "frame", true},
     // **Built**, as of the clone route: brush/CloneStamp, and
     // app/StrokeSession §1b for the table it routes through. It stays in this
     // half of the table for the same reason the Eraser row just below does --
@@ -312,7 +317,9 @@ constexpr ToolMeta kToolMeta[] = {
     {"Curve", "spline", 58251u, "Shift+P", "curve", true},
     {"Text", "type", 57752u, "T", "text", true},
     {"Shape", "shapes", 58547u, "", "shape", false},
-    {"Slice", "slice", 58096u, "", "slice", false},
+    // **Built**: app/RegionTool, `Tool::Frame`'s own row above -- one gesture
+    // module for both, gated by the shared `toolCreatesRegions()` predicate.
+    {"Slice", "slice", 58096u, "", "slice", true},
     // **Built**: app/PenTool, gated by `toolEditsPath()` alongside Pen and
     // Curve. Photoshop's black arrow, and the tool that lets the Pen stop
     // being one: before this, Pen presses on existing geometry ran the
@@ -415,10 +422,16 @@ bool toolHasCanvasHandler(Tool t) noexcept {
   // way to make this go true for Crop -- would hand every crop drag to
   // `commitDrawnSelection()`. Placed before the allocating `toolBeginsStroke()`
   // for the ordering reason stated above: it is cheap and `noexcept`.
+  //
+  // `toolCreatesRegions()` is the eleventh, `app/CropTool`'s own reason again:
+  // it lives in `app/RegionTool` because it is that module's own answer about
+  // its own two tools, and widening `toolCropsCanvas()` to cover `Slice` (the
+  // one-line way to make this go true) would hand every Frame/Slice drag to
+  // `applyCropSession()`.
   return toolWritesRgbPixels(t) || toolDrawsSelection(t) || toolSamplesCanvas(t) ||
          toolMeasuresCanvas(t) || toolPansView(t) || toolMovesPixels(t) ||
          toolCropsCanvas(t) || toolBeginsStroke(t) || toolZoomsView(t) ||
-         toolEditsPath(t) || toolEditsText(t);
+         toolEditsPath(t) || toolEditsText(t) || toolCreatesRegions(t);
 }
 
 const char* toolNoHandlerException(Tool) noexcept {

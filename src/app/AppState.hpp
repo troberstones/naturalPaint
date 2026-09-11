@@ -13,6 +13,7 @@
 #include "app/BrushLibraryFile.hpp"
 #include "app/CloseDecision.hpp"
 #include "app/CropTool.hpp"
+#include "app/RegionTool.hpp"
 #include "app/ActionsPanel.hpp"
 #include "app/BatchDialog.hpp"
 #include "app/PanelLayout.hpp"
@@ -1186,6 +1187,13 @@ struct AppState {
   // picture to plausible numbers.
   CropSession crop;
 
+  // `Tool::Frame` and `Tool::Slice`'s shared gesture (app/RegionTool.hpp).
+  // Here rather than on `OpenDocument` for `crop`'s own reason: an on-canvas
+  // gesture in document texel space, and it carries its own `DocumentId`
+  // for `CropSession`'s reason -- a selected region's id means nothing in
+  // another document.
+  RegionSession region;
+
   // What the last eyedropper click did, in one sentence, or empty when there
   // has not been one. Shown in the options bar.
   //
@@ -1988,6 +1996,11 @@ struct AppState {
   int brushSettingsDemoTab = -1;
   bool showGuides = true;
   bool showGrid = false;
+  // View > Show Frames and Slices (brief item 2). Drawn whenever true, in
+  // addition to whenever `Tool::Frame` or `Tool::Slice` is the active tool --
+  // `showGuides`'s own shape: a view toggle beside the tool-active condition
+  // that already draws the same overlay, not a replacement for it.
+  bool showRegions = false;
   // PRD Q6: global toggle. When true, dragging a new guide off a ruler
   // snaps to existing guides, grid lines and canvas edges (app/Snapping.hpp
   // resolveSnap()) -- never freehand brush painting, which has no code path

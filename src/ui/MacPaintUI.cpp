@@ -42,6 +42,8 @@
 #include "app/CommandsLayers.hpp"
 #include "app/CompPanel.hpp"
 #include "app/CropTool.hpp"  // Tool::Crop, both modes
+#include "app/RegionTool.hpp"  // Tool::Frame, Tool::Slice
+#include "io/ExportRegions.hpp"
 #include "app/ActionsPanel.hpp"
 #include "app/Recorder.hpp"
 #include "app/Replay.hpp"
@@ -17519,6 +17521,87 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
     // ===== Tool::Crop -- END ==============================================
+
+    // ===== Tool::Frame / Tool::Slice -- BEGIN: the gesture (app/RegionTool.hpp)
+    //
+    // One gesture module for both palette cells (`regionKindForTool()` picks
+    // which `RegionKind` a drag creates); everything else -- select, move,
+    // resize, delete -- is identical between the two. Gated on
+    // `toolCreatesRegions()`, the eleventh canvas gate, for
+    // `toolCropsCanvas()`'s own reason above: it is this module's own answer
+    // about its own two tools.
+    //
+    // Unlike Crop, a region gesture commits **on pen-up**, with no separate
+    // Enter/Escape confirmation step -- there is nothing destructive here to
+    // hold open for review, only a document edit no different in kind from a
+    // Move drag.
+    if (toolCreatesRegions(st.brush.tool) && !panning && !rotating && !sizingHeld &&
+        !st.pendingGuide.has_value()) {
+      RegionSession& region = st.region;
+      OpenDocument* regionDoc = st.documents.active();
+      const DocumentId regionDocId = regionDoc != nullptr ? regionDoc->id : 0u;
+      const RegionKind kind = regionKindForTool(st.brush.tool);
+
+      // A gesture begun on another tab means nothing here -- `CropSession`'s
+      // own rule for its own reason.
+      if (region.gesture != RegionGesture::Idle && region.doc != regionDocId)
+        regionCancelGesture(region);
+
+      if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && region.gesture != RegionGesture::Idle)
+        regionCancelGesture(region);
+
+      // Delete/Backspace removes the selected region -- brief's own words.
+      // Guarded on `!WantTextInput` so renaming a region in the options row
+      // (a text field) does not also delete the row being renamed.
+      if (region.gesture == RegionGesture::Idle && region.selectedId != 0 && regionDoc != nullptr &&
+          !ImGui::GetIO().WantTextInput &&
+          (ImGui::IsKeyPressed(ImGuiKey_Delete, false) ||
+           ImGui::IsKeyPressed(ImGuiKey_Backspace, false))) {
+        const LayerOpResult r = regionDeleteSelected(region, regionDoc->document);
+        if (r.ok) recordLayerEdit(*regionDoc, r);
+      }
+
+      // `--region-demo`'s pin, `CropSession::demoHeld`'s exact twin.
+      if (!region.demoHeld && regionDoc != nullptr) {
+        const float grabTexels = std::max(4.0f, 9.0f / std::max(0.05f, st.view.zoom));
+        const ImGuiIO& regionMods = ImGui::GetIO();
+
+        if (hovered && !transformActive && region.gesture == RegionGesture::Idle &&
+            ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+          const Region* selected = findRegionById(regionDoc->document, region.selectedId);
+          const int handle = (selected != nullptr && selected->kind == kind)
+                                 ? regionHandleAt(*selected, tx, ty, grabTexels)
+                                 : -1;
+          if (handle >= 0) {
+            regionBeginResize(region, regionDoc->document, handle);
+          } else if (const Region* hit = regionAt(regionDoc->document, kind, tx, ty)) {
+            region.selectedId = hit->id;
+            regionBeginMove(region, regionDoc->document, tx, ty);
+          } else {
+            // A click on empty canvas of this kind starts a new rectangle and
+            // deselects whatever was selected -- `regionBeginDefine()`'s own
+            // contract.
+            regionBeginDefine(region, regionDocId, kind, tx, ty);
+          }
+        }
+
+        if (region.gesture == RegionGesture::Defining &&
+            ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+          const LayerOpResult r = regionCommitDefine(region, regionDoc->document, kind, tx, ty,
+                                                     regionMods.KeyShift, regionMods.KeyAlt);
+          if (r.ok) recordLayerEdit(*regionDoc, r);
+        } else if (region.gesture == RegionGesture::Moving &&
+                   ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+          const LayerOpResult r = regionCommitMove(region, regionDoc->document, tx, ty);
+          if (r.ok) recordLayerEdit(*regionDoc, r);
+        } else if (region.gesture == RegionGesture::Resizing &&
+                   ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+          const LayerOpResult r = regionCommitResize(region, regionDoc->document, tx, ty);
+          if (r.ok) recordLayerEdit(*regionDoc, r);
+        }
+      }
+    }
+    // ===== Tool::Frame / Tool::Slice -- END ================================
 
     // ===== Tool::Move -- BEGIN: the drag (app/MoveTool.hpp) ===============
     //

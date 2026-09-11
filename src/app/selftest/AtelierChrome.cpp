@@ -444,23 +444,27 @@ bool runAtelierChromeTest() {
     // selection tools' canvas block, so a Crop widened into it would have had
     // every crop drag handed to `commitDrawnSelection()`.
     //
-    // `Tool::Slice`, which shares Crop's palette group and its cursor, is
-    // deliberately still false: the group pairing is a layout fact, not a
-    // capability, and a group whose second cell went live by association would
-    // be exactly the half-wiring this check exists to catch.
+    // `Tool::Slice`, which shares Crop's palette group and its cursor, is now
+    // built too, as of app/RegionTool -- the same module `Tool::Frame` shares
+    // with `Move`'s group, gated by its own `toolCreatesRegions()` predicate
+    // rather than by widening `toolCropsCanvas()`. (`shape` is a sibling
+    // track in this same scatter-gather wave and also flips a palette tool
+    // on in this table -- a textual conflict here at gather time, not a
+    // defect in either branch.)
     const Tool kImplementedTools[] = {Tool::Brush,       Tool::Water,
                                       Tool::DryBrush,    Tool::Eyedropper,
                                       Tool::Marquee,     Tool::EllipseMarquee,
                                       Tool::Lasso,       Tool::PolygonLasso,
                                       Tool::MagicWand,   Tool::Measure,
-                                      Tool::Eraser,      Tool::PaintBucket,
-                                      Tool::Gradient,    Tool::Pencil,
-                                      Tool::Dodge,       Tool::Burn,
-                                      Tool::CloneStamp,  Tool::Heal,
-                                      Tool::Smudge,      Tool::Hand,
-                                      Tool::Zoom,        Tool::Move,
-                                      Tool::Crop,        Tool::Pen,
-                                      Tool::Curve,       Tool::Text,
+                                      Tool::Frame,       Tool::Eraser,
+                                      Tool::PaintBucket, Tool::Gradient,
+                                      Tool::Pencil,      Tool::Dodge,
+                                      Tool::Burn,        Tool::CloneStamp,
+                                      Tool::Heal,        Tool::Smudge,
+                                      Tool::Hand,        Tool::Zoom,
+                                      Tool::Move,        Tool::Crop,
+                                      Tool::Pen,         Tool::Curve,
+                                      Tool::Text,        Tool::Slice,
                                       Tool::PathSelect};
     bool implementedOk = true;
     for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
@@ -471,7 +475,7 @@ bool runAtelierChromeTest() {
       if (toolImplemented(t) != shouldBe) implementedOk = false;
     }
     check(implementedOk,
-          "toolImplemented() is true for exactly the twenty-seven tools with real behaviour");
+          "toolImplemented() is true for exactly the twenty-nine tools with real behaviour");
 
     // Every tool has an icon, and toolIconCodepoints() is the deduplicated,
     // sorted union of all of them plus the "More" cell's own ellipsis --

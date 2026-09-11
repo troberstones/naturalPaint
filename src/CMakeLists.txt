@@ -308,6 +308,7 @@ add_executable(naturalPaint
   app/MeasureLine.cpp
   app/GradientTool.cpp
   app/CropTool.cpp
+  app/RegionTool.cpp
   app/OpenAnyFile.cpp
   app/QuitSequence.cpp
   app/Snapping.cpp
@@ -368,6 +369,8 @@ add_executable(naturalPaint
   core/PathFlatten.cpp
   core/PathRaster.cpp
   core/PathStroke.cpp
+  core/Region.cpp
+  core/RegionOps.cpp
   core/VectorRaster.cpp
   core/VectorShape.cpp
   core/TextContent.cpp
@@ -408,6 +411,8 @@ add_executable(naturalPaint
   io/PsdLayerSection.cpp
   io/PsdLayerExtras.cpp
   io/PathSerial.cpp
+  io/RegionSerial.cpp
+  io/ExportRegions.cpp
   io/PsPatterns.cpp
   io/PsdImport.cpp
   io/SvgImport.cpp

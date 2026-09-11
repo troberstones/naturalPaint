@@ -26,6 +26,7 @@
 #include "io/OpSerial.hpp"
 #include "io/PathSerial.hpp"
 #include "io/FlatsSerial.hpp"
+#include "io/RegionSerial.hpp"
 #include "io/StrokesSerial.hpp"
 #include "io/TextSerial.hpp"
 
@@ -52,6 +53,13 @@ constexpr const char* kAttrTileSize = "np:tileSize";
 // comps**, so a document with none produces exactly the bytes it produced
 // before this attribute existed.
 constexpr const char* kAttrComps = "np:comps";
+
+// The document's named regions (PLAN.md gap-closing wave, track `region`;
+// docs/ui.md §4a's Frame and Slice tools). io/RegionSerial owns the encoding
+// -- a hex `string`, `np:comps`'s own reason: this OpenImageIO drops
+// array-typed header attributes on write. Written on part 0 and **only when
+// the document has regions**, `np:comps`'s own regression boundary.
+constexpr const char* kAttrRegions = "np:regions";
 
 constexpr const char* kAttrKind = "np:kind";
 constexpr const char* kAttrName = "np:name";
@@ -293,7 +301,7 @@ std::vector<std::string> pigmentChannelNames(bool withMask) {
 
 bool isDocumentAttributeRecognised(const std::string& name) {
   return name == kAttrVersion || name == kAttrBasis || name == kAttrTileSize ||
-         name == kAttrComps;
+         name == kAttrComps || name == kAttrRegions;
 }
 
 bool isLayerAttributeRecognised(const std::string& name) {
@@ -1937,6 +1945,20 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
         stringAttr(kAttrComps, serializeLayerComps(comps)));
   }
 
+  // --- `np:regions` (PLAN.md gap-closing wave) -----------------------------
+  //
+  // No layer join needed -- a region names document pixels, not a layer -- so
+  // this is a plain carrier of `Document::regions` and `nextRegionId`,
+  // written **only when the document has regions**, matching every other
+  // optional attribute in this file.
+  if (!doc.regions.empty()) {
+    RegionCarrier regions;
+    regions.nextRegionId = doc.nextRegionId;
+    regions.regions = doc.regions;
+    request.parts[0].attributes.push_back(
+        stringAttr(kAttrRegions, serializeRegions(regions)));
+  }
+
   auto appendLayerPart = [&](size_t i) {
     const Layer& layer = doc.layers[i];
     NpaintRawPart part;
@@ -2384,6 +2406,34 @@ NpaintLoadResult loadNpaint(const std::string& path) {
         result.warnings.push_back("'" + path + "': " + why);
       }
       if (!compsCarried) continue;
+    }
+    // The document's regions. Unlike comps, applied straight onto
+    // `result.document` here -- there is no layer-part join to wait for, a
+    // region names document pixels directly.
+    if (a.name == kAttrRegions) {
+      std::string why;
+      bool regionsCarried = false;
+      if (a.type != NpaintAttribute::Type::String) {
+        regionsCarried = true;
+        result.warnings.push_back(
+            "'" + path +
+            "' has an np:regions attribute that is not a string; this build's region carrier "
+            "is a hex `string` (io/RegionSerial), so the value could not be decoded. The "
+            "document opened with no regions and the attribute is written back unchanged "
+            "(PRD I10).");
+      } else {
+        RegionCarrier regions;
+        if (deserializeRegions(a.stringValue, &regions, &why)) {
+          result.document.regions = std::move(regions.regions);
+          result.document.nextRegionId = regions.nextRegionId;
+        } else {
+          regionsCarried = true;
+          result.warnings.push_back("'" + path + "': " + why);
+        }
+      }
+      if (!regionsCarried) continue;
+      result.carry.documentAttributes.push_back(a);
+      continue;
     }
     if (isDocumentAttributeRecognised(a.name) && !(compsCarried && a.name == kAttrComps))
       continue;  // recognised name, unexpected type
