@@ -278,6 +278,7 @@ dependency is required, and [Requirements](#requirements) above for building it.
 | Option | Default | What it does |
 |---|---|---|
 | `NP_USE_MIXBOX` | `ON` | Use the Mixbox pigment LUT. **CC BY-NC — non-commercial only.** ⚠️ The `OFF` path is **not implemented** — see below. |
+| `NP_MACOS_APP_BUNDLE` | `OFF` | macOS: build `build/src/naturalPaint.app` (Finder icon, `Info.plist`) instead of the bare `build/src/naturalPaint`. `OFF` because the golden harness and every doc run the bare path. See [App icon](#app-icon). |
 
 **OpenImageIO is a required dependency**, not a build option. It used to be
 `NP_USE_OIIO`, defaulting `OFF`, on the reasoning that format support is a
@@ -324,6 +325,22 @@ read from the source tree at runtime via absolute paths baked in at compile time
 what lets you edit any `.wgsl` and hit **⌘R** to recompile the solver without
 restarting, and hand-edit `keymaps/default.json`. It also means moving the
 executable away from the checkout breaks it.
+
+### App icon
+
+The icon's artwork is `icons/np_icon.kra` (Krita), exported to the 1024 px
+master `icons/np_icon.png`. Every platform's icon is generated from the master
+by `icons/make_icons.sh` and committed, so a build needs no ImageMagick or
+`iconutil`. After editing the artwork, re-export the master, rerun the script,
+and commit what it writes.
+
+| Platform | How the icon reaches it |
+|---|---|
+| all | At startup `ui/AppIcon` hands the 512 px PNG, compiled into the binary, to `SDL_SetWindowIcon`. That is the **Dock** icon on macOS, `_NET_WM_ICON` on X11, `xdg-toplevel-icon` on Wayland, and the title bar/taskbar on Windows. `--selftest` checks the embedded bytes match the committed PNG. |
+| macOS | The Finder icon needs a bundle: configure with `-DNP_MACOS_APP_BUNDLE=ON`. |
+| Linux | For the launcher and Wayland compositors without `xdg-toplevel-icon`, run `icons/linux/install-desktop-entry.sh` (per user; `--uninstall` to remove). |
+| Windows | `icons/windows/naturalPaint.rc.in` embeds the `.ico` as the `.exe`'s Explorer icon. **Untested:** this tree does not build on Windows. |
+| iOS | `icons/ios/AppIcon.appiconset` is generated but not wired to anything; there is no iOS target yet ([docs/ios-spike-plan.md](docs/ios-spike-plan.md)). |
 
 ### Command-line modes
 
@@ -589,6 +606,8 @@ src/
 shaders/     WGSL — read from the source tree at runtime, ⌘R to reload
 keymaps/     default.json — hand-editable
 docs/        format, operations, UI, shortcuts, ADRs, solver log
+icons/      the app icon: Krita source, master, make_icons.sh, and per-OS
+             outputs (.icns, hicolor PNGs + .desktop, .ico + .rc, iOS set)
 third_party/ mixbox (submodule), wgpu (vendored binary), stb
 ```
 

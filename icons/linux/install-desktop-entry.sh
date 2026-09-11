@@ -48,11 +48,24 @@ for size in 16 24 32 48 64 128 256 512; do
 done
 
 mkdir -p "$DATA/applications"
-# Quoted for the Exec key's own rules (the Desktop Entry spec's quoting), so a
-# checkout under a path with spaces still launches.
+# The Exec key's own rules (Desktop Entry spec, "The Exec key"), so a checkout
+# under any path still launches: inside the quotes, " ` $ and \ are
+# backslash-escaped and % doubled; then the value's string escaping doubles
+# every backslash once more. Written line by line, not with sed, whose
+# replacement text would itself reinterpret & | and \.
 EXEC_PATH="${BIN//\\/\\\\}"
 EXEC_PATH="${EXEC_PATH//\"/\\\"}"
-sed "s|^Exec=.*|Exec=\"$EXEC_PATH\" %F|" "$HERE/$NAME.desktop" > "$DATA/applications/$NAME.desktop"
+EXEC_PATH="${EXEC_PATH//\`/\\\`}"
+EXEC_PATH="${EXEC_PATH//\$/\\\$}"
+EXEC_PATH="${EXEC_PATH//%/%%}"
+EXEC_PATH="${EXEC_PATH//\\/\\\\}"
+while IFS= read -r line || [[ -n "$line" ]]; do
+  if [[ "$line" == Exec=* ]]; then
+    printf 'Exec="%s" %%F\n' "$EXEC_PATH"
+  else
+    printf '%s\n' "$line"
+  fi
+done < "$HERE/$NAME.desktop" > "$DATA/applications/$NAME.desktop"
 
 # Both refreshes are optional conveniences; most desktops notice on their own.
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DATA/applications" || true

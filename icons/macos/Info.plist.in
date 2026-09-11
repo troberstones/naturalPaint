@@ -2,8 +2,9 @@
 <!-- icons/macos/Info.plist.in: the .app's Info.plist when NP_MACOS_APP_BUNDLE=ON
      (src/CMakeLists.txt). Replaces CMake's default template for one reason:
      that template omits NSHighResolutionCapable, and a bundle without it can be
-     drawn at 1x and upscaled on a Retina display. The ${MACOSX_BUNDLE_*} values
-     are filled in by CMake from the target's properties. -->
+     drawn at 1x and upscaled on a Retina display. The MACOSX_BUNDLE_ variables
+     below are filled in by CMake from the target's properties. (Not spelled
+     with a wildcard here: CMake expands this comment too, and rejects it.) -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
