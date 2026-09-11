@@ -277,6 +277,7 @@ add_executable(naturalPaint
   app/selftest/TransformCompositeSplit.cpp
   app/selftest/TransformPreviewTexture.cpp
   app/selftest/TransformSession.cpp
+  app/selftest/TransformLayerSet.cpp
   app/selftest/FramePacing.cpp
   app/selftest/GradientTool.cpp
   app/selftest/MaskTarget.cpp

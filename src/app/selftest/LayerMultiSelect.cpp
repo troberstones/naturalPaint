@@ -23,19 +23,23 @@ bool runLayerMultiSelectTest() {
       "and no GPU; part J is the `.npaint` round trip\n");
 
   // ======================================================================
-  // The two verbs PRD C12 names that this step REFUSES, printed rather than
-  // left in a header, because a P0 row three-fifths met is what a reader most
-  // needs told outright.
+  // PRD C12's five verbs, printed rather than left in a header, because a
+  // reader of this suite's own past output should not have to go find out
+  // separately that a line here went stale. It has, once already -- see the
+  // **transform** paragraph below, which used to print REFUSED.
   // ======================================================================
   std::printf("  C12 asks for \"move, transform, group, delete and set properties as a set\". "
               "BUILT: move (reorder AND translate), delete, group/ungroup, set properties "
               "(visible, locked, clipped, opacity, blend, colour label, link).\n");
-  std::printf("  REFUSED -- **transform**: there is no geometric transform of a layer anywhere "
-              "in this codebase and this step did not add one. What it added is an "
-              "integer-pixel translate, the one case that needs no resampling. Rotate, scale, "
-              "skew and sub-pixel offset each need a filter-kernel choice, a premultiplied-alpha "
-              "rule and -- on a Pigment layer -- a decision about whether a latent triple may be "
-              "interpolated at all (DESIGN-imaging.md 3). That is phase 6.\n");
+  std::printf("  **transform** is BUILT too, as of track `xform`: this section used to print "
+              "REFUSED here, and that claim is now stale rather than true -- "
+              "app/TransformSession.hpp's `TransformTarget::LayerSet` (its own header section 8) "
+              "widens a session from one `layerIndex_` to a `LayerSelection`, one gizmo around "
+              "the union of every admitted member's content bounds, one shared matrix, one "
+              "atomic multi-layer commit and ONE `recordEdit()`. See "
+              "app/selftest/TransformLayerSet.cpp for the tests. A Group or Adjustment member "
+              "refuses the whole set by name rather than being silently expanded or silently "
+              "skipped.\n");
   std::printf("  **group**: the MODEL is built (app/selftest/LayerGroup.cpp: LayerKind::Group, "
               "the compositor's pass-through fold, the honoured parent link, the channel-less "
               "part writer) and it IS REACHABLE. This section used to print that nothing "

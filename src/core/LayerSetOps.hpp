@@ -20,9 +20,8 @@
 // (1) WHAT C12 ASKS FOR, VERB BY VERB, AND WHICH TWO ARE REFUSED
 // ==========================================================================
 //
-// C12 names five verbs. Four are built here (as of this step) and one is
-// refused by name, in core/LayerComp.hpp's style -- stated where a reader
-// will look for them rather than left to be discovered as an absence:
+// C12 names five verbs. All five are built. Stated where a reader will look
+// for each one rather than left to be discovered as present or absent:
 //
 //   **move**       BUILT, in both senses the word has here. Reorder (Move Up /
 //                  Move Down over a set) and translate (align/distribute, via
@@ -32,21 +31,42 @@
 //   **set properties as a set**  BUILT: visibility, lock, clip, blend, opacity,
 //                  colour label, link.
 //
-//   **transform**  **REFUSED, as a set.** This step added only an
-//                  *integer-pixel translate*, the degenerate case that needs
-//                  no resampling. When it was written there was no geometric
-//                  transform of a layer anywhere in this codebase, and
-//                  core/LayerGeometry.hpp section 1 listed what would have to
-//                  exist first: a filter kernel choice, a premultiplied-alpha
-//                  argument, and -- on a Pigment layer -- a decision about
-//                  whether a latent triple may be interpolated at all.
-//                  PLAN.md phase 6 has since built all three for ONE layer:
-//                  `transformLayer()` in ops/DocumentTransform (with
-//                  `LatentKernel` answering the Pigment question), driven by
-//                  app/TransformSession. What is still missing is the set:
-//                  a session holds a single `layerIndex_`, so a multi-layer
-//                  selection cannot be rotated or scaled together. That is
-//                  the whole of what stands between C12 and this verb now.
+//   **transform**  **BUILT, as a set** (track `xform`). This section used to
+//                  say REFUSED: this step had added only an *integer-pixel
+//                  translate*, the degenerate case that needs no resampling,
+//                  because there was no geometric transform of a layer
+//                  anywhere in this codebase and core/LayerGeometry.hpp
+//                  section 1 listed what would have to exist first -- a
+//                  filter kernel choice, a premultiplied-alpha argument, and
+//                  on a Pigment layer, a decision about whether a latent
+//                  triple may be interpolated at all. PLAN.md phase 6 then
+//                  built all three for ONE layer: `transformLayer()` in
+//                  ops/DocumentTransform (with `LatentKernel` answering the
+//                  Pigment question), driven by app/TransformSession. That
+//                  left one thing missing: a session held a single
+//                  `layerIndex_`, so a multi-layer selection could not be
+//                  rotated or scaled together. `app/TransformSession.hpp`
+//                  section 8 is that gap closed: `TransformTarget::LayerSet`
+//                  widens a session from one index to a `LayerSelection`, one
+//                  gizmo around the union of every admitted member's content
+//                  bounds, one shared matrix, one atomic multi-layer commit
+//                  (this file's section 3 discipline, applied one level up)
+//                  and ONE `recordEdit()`. **Not** a `LayerSetCommand` below:
+//                  a transform is a live, interactive gizmo session, not an
+//                  instant document mutation `applyLayerSetOp()` performs in
+//                  one call, which is the identical reason a single-layer
+//                  Free Transform was never a `LayerCommand` either -- it is
+//                  reached through `MenuAction::FreeTransform` (Cmd+T), and
+//                  `app::CommandCoverage.cpp` marks it `NotRecordable`
+//                  (interactive) for the same reason a brush stroke is.
+//                  A Group member is refused, by name -- transforming a
+//                  Group as one block would mean expanding the selection to
+//                  its contiguous member span and recursing into any nesting
+//                  inside it, real machinery this step does not build; select
+//                  the members directly instead. An Adjustment member is
+//                  refused for the plainer reason a Group is, seen without a
+//                  special case: neither holds a pixel for a matrix to
+//                  resample.
 //
 //   **group**      **BUILT** (PLAN.md Phase 5's C7/C12 follow-on). This
 //                  section used to say "REFUSED", and the argument for the
@@ -69,8 +89,9 @@
 //                  implementation for the span-splice that keeps nesting
 //                  correct and the order-preservation `--selftest` proves.
 //
-// The one refusal that remains (`transform`, above) is printed by
-// `--selftest` on every run rather than living only here.
+// No refusal remains among the five verbs; the two per-member exceptions
+// (Group, Adjustment) `transform`'s own entry above names are that verb's own
+// business, not a fifth verb this file still owes.
 //
 // ==========================================================================
 // (2) THE SELECTION IS A SET OF **INDICES**, and why not ids

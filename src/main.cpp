@@ -4055,6 +4055,10 @@ int main(int argc, char** argv) {
     // app/ShapeTool. Appended at the end of the chain per this wave's own
     // convention for a new section.
     const bool shapeToolOk = np::runShapeToolTest();
+    // Track `xform` (PRD C12): a multi-layer selection transformed together
+    // as one set, through app/TransformSession's `TransformTarget::LayerSet`.
+    // Appended at the end of the chain, per this wave's own convention.
+    const bool transformLayerSetOk = np::runTransformLayerSetTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4122,7 +4126,8 @@ int main(int argc, char** argv) {
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk && dialogModuleOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
                     penToolOk && pathOpsOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
-                    textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk;
+                    textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
+                    transformLayerSetOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
