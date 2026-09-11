@@ -1375,12 +1375,14 @@ BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
 bool brushIsEdited(const BrushState& brush) {
   if (brush.brushLibrary.active >= brush.brushLibrary.presets.size()) return false;
   const BrushPreset& p = brush.brushLibrary.presets[brush.brushLibrary.active];
-  // The five scalars `presetMatches()` still takes as parameters (its own
-  // signature is unchanged -- only where a caller reads them from moved) now
-  // come from `brush.model` rather than from five deleted `BrushState`
-  // fields. `native` replaces the four loose load/wetness/opacity/grain
-  // arguments this call used to pass, compared in `presetMatches()` via one
-  // `nativeBrushEqual()` call now instead of four loose comparisons.
+  // The five scalars `presetMatches()` still takes as parameters now come
+  // from `brush.model` rather than from five deleted `BrushState` fields.
+  // `native` replaces the three loose load/wetness/grain arguments this call
+  // used to pass (the one change to `presetMatches()`'s signature), and
+  // brings `opacity` into the comparison for the first time -- one
+  // `nativeBrushEqual()` call inside `presetMatches()` instead of loose
+  // comparisons (brush/Library.hpp's `presetMatches()` comment on why
+  // `opacity` joining is deliberate).
   return !presetMatches(p, brush.model.tip.diameterPx / 2.0f, brush.model.tip.hardness,
                         brush.model.tip.spacingPercent / 100.0f, brush.model.tip.roundness,
                         brush.model.tip.angleDeg, brush.native, brush.links);

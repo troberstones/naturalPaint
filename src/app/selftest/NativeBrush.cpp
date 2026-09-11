@@ -111,6 +111,22 @@ bool runNativeBrushTest() {
     check(roundTripped.native.load == 0.05f && roundTripped.native.opacity == 0.11f &&
               roundTripped.native.grain.strength == 0.02f,
           "presetFromBrush: the perturbed fields specifically came back exactly");
+
+    // The EDITED badge, end to end through `brushIsEdited()`, for the one
+    // field that is NEW to it: `opacity` had nowhere on `BrushPreset` to be
+    // compared against before `native` existed (brush/Library.hpp's
+    // `presetMatches()` comment calls this a deliberate, stated behaviour
+    // change). Section A proves `nativeBrushEqual()` sees opacity; this
+    // proves the badge a painter actually sees does too.
+    BrushState picked;
+    picked.brushLibrary.presets = {preset};
+    picked.brushLibrary.active = 0;
+    applyPresetToBrush(preset, picked);
+    check(!brushIsEdited(picked), "brushIsEdited: a freshly picked preset is not EDITED");
+    picked.native.opacity = preset.native.opacity * 0.5f;
+    check(brushIsEdited(picked),
+          "brushIsEdited: moving OPACITY alone raises EDITED -- new with native, never compared "
+          "before");
   }
 
   // ========================================================================
