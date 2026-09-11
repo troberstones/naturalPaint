@@ -9902,13 +9902,20 @@ void drawInpaintDialog(AppState& st) {
   f.commit = "Inpaint";
   const DialogAction act = dialogFooter(f);
   if (act == DialogAction::Commit && od != nullptr) {
-    const FilterOpResult r = applyInpaint(*od, radius);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "inpaint");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed -- the fill matched what was already there.";
-      ImGui::CloseCurrentPopup();
+    // Through `inpaintCommand()`/`runPixelCommand()`, not `applyInpaint()`
+    // directly -- `pixelOpFooter()`'s own comment argues this for every
+    // filter dialog above: the recorder taps `applyCommand()`, and a dialog
+    // that called its applier straight would run correctly and record
+    // nothing. Kept as this dialog's own footer (button labelled "Inpaint",
+    // not "Apply") rather than switched to `pixelOpFooter()`, so the label
+    // stays what it was.
+    const PixelCommandOutcome out =
+        runPixelCommand(*od, inpaintCommand(radius),
+                       "Nothing changed -- the fill matched what was already there.");
+    if (!out.closeDialog) {
+      status = out.status;
     } else {
+      if (!out.status.empty()) g_docStatus = out.status;
       status.clear();
       ImGui::CloseCurrentPopup();
     }
@@ -9984,13 +9991,16 @@ void drawRemoveLightingGradientDialog(AppState& st) {
   f.commit = "Remove";
   const DialogAction act = dialogFooter(f);
   if (act == DialogAction::Commit && od != nullptr) {
-    const FilterOpResult r = applyRemoveLightingGradient(*od, sigma);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "lighting-gradient removal");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (no selected texels, or an empty layer).";
-      ImGui::CloseCurrentPopup();
+    // Through `removeLightingGradientCommand()`/`runPixelCommand()` -- see
+    // `drawInpaintDialog()`'s identical comment just above for why a direct
+    // `applyRemoveLightingGradient()` call here would run and record nothing.
+    const PixelCommandOutcome out =
+        runPixelCommand(*od, removeLightingGradientCommand(sigma),
+                       "Nothing changed (no selected texels, or an empty layer).");
+    if (!out.closeDialog) {
+      status = out.status;
     } else {
+      if (!out.status.empty()) g_docStatus = out.status;
       status.clear();
       ImGui::CloseCurrentPopup();
     }
@@ -10068,13 +10078,25 @@ void drawOffsetDialog(AppState& st) {
   f.commit = "Offset";
   const DialogAction act = dialogFooter(f);
   if (act == DialogAction::Commit && od != nullptr) {
-    const FilterOpResult r = applyOffset(*od, request);
-    if (r.refusal != PixelOpRefusal::None) {
-      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "offset");
-    } else if (r.texelsChanged == 0) {
-      status = "Nothing changed (an offset of zero, or an empty layer).";
-      ImGui::CloseCurrentPopup();
+    // Through `offsetCommand()`/`runPixelCommand()`, not `applyOffset()`
+    // directly -- see `drawInpaintDialog()`'s comment above for why. The one
+    // extra step this call site owns and `offsetCommand()`'s header says an
+    // encoder may not (app/CommandsImage.hpp): this dialog holds `dx`/`dy` in
+    // whole texels, and `filter_offset`'s own parameters are a FRACTION of
+    // the canvas (`doOffset()`'s reasoning), so the division happens here,
+    // against THIS document's current size, before the command is built.
+    const double width = static_cast<double>(od->document.width);
+    const double height = static_cast<double>(od->document.height);
+    const float dxFraction = width > 0.0 ? static_cast<float>(static_cast<double>(dx) / width) : 0.0f;
+    const float dyFraction =
+        height > 0.0 ? static_cast<float>(static_cast<double>(dy) / height) : 0.0f;
+    const PixelCommandOutcome out = runPixelCommand(
+        *od, offsetCommand(dxFraction, dyFraction, request.edge),
+        "Nothing changed (an offset of zero, or an empty layer).");
+    if (!out.closeDialog) {
+      status = out.status;
     } else {
+      if (!out.status.empty()) g_docStatus = out.status;
       status.clear();
       ImGui::CloseCurrentPopup();
     }
@@ -11252,6 +11274,36 @@ void drawNumericTransformDialog(AppState& st, GpuContext& gpu) {
   footer.commitEnabled = od != nullptr;
   switch (dialogFooter(footer)) {
     case DialogAction::Commit: {
+      // The whole-layer case goes through `numericTransformCommand()`/
+      // `applyCommand()` instead of `TransformSession::commit()` -- the same
+      // reroute every filter dialog above makes, for the same reason
+      // (docs/automation.md §7): a commit that wrote the pixels itself would
+      // run correctly and the recorder would never see it. This is safe to
+      // switch at exactly this line and nowhere upstream of it (the brief for
+      // this change is explicit that app/TransformSession itself is not to be
+      // touched): the session's own header states that nothing is written to
+      // the document before `commit()` runs (`pending_` lives only in the
+      // session, and the on-screen preview is a separate GPU texture,
+      // `g_transformPreview`) -- so cancelling an uncommitted session and
+      // issuing the identical rotate/scale/translate through the command is
+      // not a second code path beside the interactive one, it is the same
+      // numbers reaching `ops/DocumentTransform` a different way.
+      // `TransformTarget::SelectionPixels` is untouched below: that case has
+      // no registered command (`numericTransformRefusal()` refuses a live
+      // selection by name), so it keeps committing through the session
+      // exactly as it always has.
+      if (st.transform.target() == TransformTarget::Layer) {
+        st.transform.cancel();
+        const CommandResult r = applyCommand(
+            *od, numericTransformCommand(rotateDeg, scaleXPercent, scaleYPercent, translateX,
+                                         translateY));
+        status = r.ok ? std::string() : r.status;
+        if (r.ok) {
+          ImGui::CloseCurrentPopup();
+          g_transformPreview.reset();
+        }
+        break;
+      }
       const TransformCommitResult done = st.transform.commit(*od);
       status = done.ok ? std::string() : done.error;
       if (done.ok) {
@@ -17088,13 +17140,16 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           od->recordEdit("paste", EditKind::Structural);
         }
       }
-      if (st.requestDeleteSelection && target != nullptr && !target->locked) {
-        size_t changed = 0;
-        if (target->rgbTiles.has_value())
-          changed += clearThroughSelection(*target->rgbTiles, sel);
-        if (target->pigmentTiles.has_value())
-          changed += clearThroughSelection(*target->pigmentTiles, sel);
-        if (changed > 0) od->recordEdit("clear selection", EditKind::Content);
+      // Through `deleteSelectionCommand()`/`applyCommand()`, not a direct
+      // `clearThroughSelection()` -- the same reroute the crop/trim pair just
+      // above already makes, for the same reason (docs/automation.md §7): a
+      // gesture that mutated the tiles itself would run correctly and the
+      // recorder would never see it. `deleteSelectionUnavailable()` (app/
+      // CommandsImage.cpp) restates the `target != nullptr && !target->locked`
+      // guard this line used to make inline, so nothing here duplicates it.
+      if (st.requestDeleteSelection && od != nullptr) {
+        const CommandResult r = applyCommand(*od, deleteSelectionCommand());
+        if (!r.ok) g_strokeRefusal = r.status;
       }
 
       st.requestSelectAll = false;
