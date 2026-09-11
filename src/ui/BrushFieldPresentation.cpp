@@ -249,7 +249,7 @@ const std::vector<BrushFieldOmission>& brushFieldOmissionTable() {
       // They are gone from this table because they are gone from
       // `BrushModel` entirely -- `brush/NativeBrush.hpp`'s `NativeBrush`, not
       // a shadowed `BrushModel` leaf, is where `load`/`wetness` (and
-      // `opacity`/`grain`, never on `BrushModel` at all) live now, and this
+      // `grain`, never on `BrushModel` at all) live now, and this
       // table only accounts for leaves `brushModelFieldPaths()` still
       // produces.
   };

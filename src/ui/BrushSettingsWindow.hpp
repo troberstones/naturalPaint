@@ -166,10 +166,11 @@ enum class BrushSettingsTab : uint8_t {
   //
   // **naturalPaint's own, and the one tab this file's own header above does
   // not describe as mirroring a Photoshop panel.** It now also opens with a
-  // small NATURALPAINT group (`drawBrushNativeGroup()`) -- LOAD/WATER/OPACITY
-  // bound to `st.brush.native`, the same three the docked column's Paint
-  // group already shows, given a home in the window too since this tab is
-  // where naturalPaint's own settings, as opposed to Photoshop's, belong.
+  // small NATURALPAINT group (`drawBrushNativeGroup()`) -- LOAD/WATER bound
+  // to `st.brush.native` and OPACITY bound to `st.brush.opacity`, the same
+  // three the docked column's Paint group already shows, given a home in the
+  // window too since this tab is where naturalPaint's own settings, as
+  // opposed to Photoshop's, belong.
   Dynamics,
 
   Count,
@@ -249,10 +250,12 @@ void drawBrushPaintGroup(AppState& st);
 // below.
 void drawBrushTextureGroup(AppState& st, bool ownPage);
 void drawBrushDynamicsGroup(AppState& st);
-// The NATURALPAINT group: LOAD/WATER/OPACITY sliders bound to `st.brush.
-// native`, drawn only at the top of the Dynamics tab's own page (window-
-// only, never the docked column -- `drawBrushPaintGroup()` above already
-// shows these three there, and this group would duplicate them). See
+// The NATURALPAINT group: LOAD/WATER sliders bound to `st.brush.native` and
+// OPACITY bound to `st.brush.opacity` (deliberately not in `native` --
+// brush/NativeBrush.hpp's header), drawn only at the top of the Dynamics
+// tab's own page (window-only, never the docked column --
+// `drawBrushPaintGroup()` above already shows these three there, and this
+// group would duplicate them). See
 // `ui/BrushSettingsWindow.cpp`'s `BrushSettingsTab::Dynamics` case.
 void drawBrushNativeGroup(AppState& st);
 

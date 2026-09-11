@@ -236,7 +236,7 @@
 // The finger does reload from the canvas on every dab and the smear does decay
 // geometrically -- *at every strength below 1*. `strength` was
 // `BrushTip::opacity`, which `brushTipFor()` copies from
-// `BrushState::native.opacity` (`app/AppState.hpp`), and that field's default is
+// `BrushState::opacity` (`app/AppState.hpp`), and that field's default is
 // **1.0**. So the value this tool shipped with was exactly the one value at
 // which §5's mechanism is the identity: `lerp(pick, finger, 1)` returns
 // `finger`, the finger is loaded once at pen-down and never again, and the
@@ -261,7 +261,7 @@
 //
 // **This changes what existing strokes do, and that is the point of the
 // change rather than a cost of it.** A drag that used to carry one colour
-// forever now fades over roughly a dozen dabs. `BrushState::native.opacity` is
+// forever now fades over roughly a dozen dabs. `BrushState::opacity` is
 // untouched and still means what it means on the other five routes; it is
 // simply no longer read here, and the OPACITY slider is drawn disabled while
 // the smudge is selected for the same reason it is disabled for the pigment

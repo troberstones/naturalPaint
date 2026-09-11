@@ -1080,14 +1080,17 @@ bool runInpaintTest();
 bool runTileableTest();
 
 // brush/NativeBrush -- naturalPaint's own brush section (load, wetness,
-// opacity, grain), the seam beside `BrushModel` where Photoshop's shape ends
+// grain), the seam beside `BrushModel` where Photoshop's shape ends
 // and naturalPaint's own begins. `nativeBrushEqual()`'s per-field
 // discrimination, the two-leaf drop out of `BrushModel`
 // (`brushModelFieldPaths()` no longer names `load`/`wetness`), the
 // `applyPresetToBrush()`/`presetFromBrush()` round trip, a legacy
 // (pre-`NativeBrush`) `user-presets.txt` fixture loading with the expected
-// `native` values, and `brushTipFor()` building `tip.flow`/`tip.opacity`/
-// `tip.grain` exactly from `native`. Headless and GPU-free.
+// `native` values (and an interim build's `opacity` line dropped), and
+// `brushTipFor()` building `tip.flow`/`tip.grain` exactly from `native`
+// while `BrushState::opacity` stays out of it: picking a preset leaves a
+// lowered opacity alone and moving OPACITY does not raise EDITED. Headless
+// and GPU-free.
 bool runNativeBrushTest();
 
 // core/SelectionMask (PLAN.md "Phase 7 -- Select and paste"; PRD E1, E2, M1).

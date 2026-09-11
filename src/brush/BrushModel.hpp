@@ -236,9 +236,9 @@ struct BrushModel {
   // selftest; the live copies were always `BrushPreset::load`/`wetness` and
   // `BrushState::load`/`wetness`, loose beside this model rather than inside
   // it. They now live in `brush/NativeBrush.hpp`'s `NativeBrush` struct,
-  // alongside `opacity` and `grain` (which were never on this struct at all)
-  // -- one named home for everything naturalPaint adds that this file must
-  // keep refusing, rather than a second apology every time the list grows.
+  // alongside `grain` (which was never on this struct at all) -- one named
+  // home for what naturalPaint adds to a brush that this file must keep
+  // refusing, rather than a second apology every time the list grows.
 };
 
 }  // namespace np

@@ -79,7 +79,7 @@ namespace np {
 //     gone --
 //     `load`/`wetness` are no longer `BrushModel` fields at all, having
 //     moved to `brush/NativeBrush.hpp`'s `NativeBrush` (which also holds
-//     `opacity`/`grain`, never `BrushModel` fields either) -- so there is no
+//     `grain`, never a `BrushModel` field either) -- so there is no
 //     longer a leaf here to omit.
 //
 // Total: 20 + 10 + 11 + 2 = 43 omitted, 149 - 43 = 106 shown.

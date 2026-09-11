@@ -3888,7 +3888,7 @@ int main(int argc, char** argv) {
     // autoFlats, bit-exact against its reference on the shared fixtures.
     const bool flatsOk = np::runFlatsTest();
     // brush/NativeBrush: naturalPaint's own brush section (load, wetness,
-    // opacity, grain), beside BrushModel. nativeBrushEqual()'s
+    // grain), beside BrushModel. nativeBrushEqual()'s
     // discrimination, BrushModel's leaf count dropping to 149,
     // applyPresetToBrush()/presetFromBrush()'s round trip, a legacy
     // user-presets.txt fixture, and brushTipFor()'s exact reads. Headless and
