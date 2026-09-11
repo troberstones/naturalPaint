@@ -977,6 +977,38 @@ target_compile_options(naturalPaint PRIVATE
   -fstack-protector-strong
 )
 
+# ---- precompiled headers ----------------------------------------------------
+#
+# 90% of a typical TU's compile is parsing headers, not generating code: with
+# -ftime-trace, app/selftest/Half.cpp spends 0.75 s in the frontend and 0.02 s
+# in the backend. 474 translation units re-parse the same <vector>/<string>/
+# <filesystem> every time. Precompiling them cuts a full rebuild of this target
+# from 81 s to 48 s (-j16, LTO off).
+#
+# Deliberately stdlib-only. A project header in here would make every edit to
+# it rebuild all 474 TUs instead of only its includers -- the PCH must hold
+# things that do not change. The cost of the trade is that a TU which forgets
+# an #include still compiles, so the include hygiene of any file is only
+# checked by a NP_PCH=OFF build.
+option(NP_PCH "Precompile the stdlib headers (much faster builds)" ON)
+if(NP_PCH)
+  # .mm sources are OBJCXX and cannot consume a CXX PCH: clang refuses with
+  # "Objective-C automated reference counting was disabled in PCH file but is
+  # currently enabled".
+  get_target_property(_np_pch_srcs naturalPaint SOURCES)
+  foreach(_np_pch_src IN LISTS _np_pch_srcs)
+    if(_np_pch_src MATCHES "\\.mm$")
+      set_source_files_properties(${_np_pch_src} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+    endif()
+  endforeach()
+  target_precompile_headers(naturalPaint PRIVATE
+    <algorithm> <array> <chrono> <cmath> <cstddef> <cstdint> <cstdio> <cstdlib>
+    <cstring> <filesystem> <fstream> <functional> <limits> <map> <memory>
+    <optional> <sstream> <stdexcept> <string> <string_view> <type_traits>
+    <unordered_map> <utility> <vector>
+  )
+endif()
+
 # ---- link-time optimisation (docs/architecture-review.md P0-2) --------------
 #
 # The per-pixel inner loop of `core/Composite.cpp` calls `blendPixel()` (in
@@ -998,9 +1030,31 @@ target_compile_options(naturalPaint PRIVATE
 # The RESULT/OUTPUT pair means a refusal is reported with the compiler's own
 # reason instead of silently producing an un-optimised build -- the same
 # "make the degradation loud" rule ui/Fonts.cpp's missing-font path exists for.
+#
+# **Off outside Release builds**, because the cost lands on every edit rather
+# than on the occasional full build. -flto=thin defers codegen to the link, so
+# the link redoes whole-program optimisation whatever changed: a one-line edit
+# to one .cpp costs 29 s wall / 183 s CPU with it and 5 s / 4 s without. A full
+# rebuild is barely affected (72 s vs 81 s -- the work moves, it does not
+# vanish), so this is purely about the incremental loop.
+#
+# The default build type here is RelWithDebInfo, so the default build is a
+# development build and gets the fast link. Ship and benchmark with
+# -DCMAKE_BUILD_TYPE=Release, or force it back on with -DNP_LTO=ON. --selftest
+# passes either way, CompositeCost included, so the suite will not catch a
+# composite regression that only LTO hides.
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+  set(_np_lto_default ON)
+else()
+  set(_np_lto_default OFF)
+endif()
+option(NP_LTO "Link-time optimisation: faster binary, much slower link" ${_np_lto_default})
+
 include(CheckIPOSupported)
 check_ipo_supported(RESULT np_ipo_ok OUTPUT np_ipo_why)
-if(np_ipo_ok)
+if(NOT NP_LTO)
+  message(STATUS "naturalPaint: link-time optimisation off (NP_LTO=OFF) -- fast links; use -DNP_LTO=ON to benchmark")
+elseif(np_ipo_ok)
   set_property(TARGET naturalPaint PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
   message(STATUS "naturalPaint: link-time optimisation enabled (P0-2)")
 else()

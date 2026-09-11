@@ -18,10 +18,20 @@
 // every section TU sees exactly the declarations it saw before the split. It
 // costs ~0.6 s per TU to parse, against ~8.9 s to compile the old file's body
 // in one piece, which is the whole point of the exercise.
+//
+// **app/SelfTest.hpp is deliberately NOT among them.** A section TU defines its
+// own entry point and calls nobody else's, so it never needed the index -- but
+// including it here put all 234 section TUs downstream of the single
+// most-edited header in the repository (275 commits in three months, nearly all
+// of them appending one prototype for a new section). Touching it rebuilt 236
+// TUs in 60 s; it now rebuilds 2 in 8 s. main.cpp and DialogModule.cpp include
+// the index directly, which is the whole set of TUs that genuinely read it.
+//
+// The cost: a section whose definition drifts from its declaration in
+// app/SelfTest.hpp is now an undefined symbol at link rather than a mismatch at
+// compile. Still caught by the build, just one step later.
 
 #pragma once
-
-#include "app/SelfTest.hpp"
 
 #include <SDL3/SDL_keyboard.h>
 
