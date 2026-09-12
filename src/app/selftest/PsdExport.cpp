@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "core/LayerOps.hpp"
+#include "io/Export.hpp"
 #include "io/PackBits.hpp"
 #include "io/PsdExport.hpp"
 #include "io/PsdImport.hpp"
@@ -309,6 +311,75 @@ bool runPsdExportTest() {
     const PsdImportResult back = importPsd(psd.bytes);
     check(!back.ok && back.noLayerData,
           "psd export: importPsd() reports noLayerData -- a flat PSD, by design");
+  }
+
+  // --- H. A Vector layer exports EMPTY, and the composite does not --------
+  //
+  // `writePsd()` hands the RAW document to `writePsdLayerAndMaskInfo()` while
+  // taking its composite from `flattenDocumentToLinear()`, which materialises
+  // vector layers on the way through. So one file carries both answers: a
+  // layer record with nothing in it, and a merged image that shows the shape.
+  //
+  // That asymmetry is the design (PSD has no field for a Bezier shape layer
+  // this writer could fill), but until io/PsdVectorPath lands nothing in this
+  // build could even PRODUCE a Vector layer from a PSD, and no assertion
+  // anywhere watched this branch. It is asserted here rather than after the
+  // importer lands, so a round trip that starts losing shapes fails in the
+  // export section that owns the loss.
+  {
+    Document vec = Document::createBlank(16, 16, WorkingSpace{});
+    vec.layers.clear();  // createBlank() seeds an RGB layer; this fixture is Vector ONLY
+    Layer v = makeVectorLayer("a filled square");
+    VectorShape sq;
+    SubPath sub;
+    sub.closed = true;
+    const PathPoint pts[4] = {{2, 2}, {14, 2}, {14, 14}, {2, 14}};
+    for (const PathPoint& pt : pts) {
+      Anchor an;
+      an.pt = pt;
+      an.in = pt;
+      an.out = pt;
+      sub.anchors.push_back(an);
+    }
+    sq.path.subpaths.push_back(sub);
+    sq.fill.on = true;
+    sq.fill.rgba = {1.0f, 0.0f, 0.0f, 1.0f};
+    sq.id = 1;
+    v.shapes.push_back(std::move(sq));
+    vec.layers.push_back(std::move(v));
+
+    check(vec.layers.size() == 1 && vec.layers[0].kind == LayerKind::Vector &&
+              !vec.layers[0].rgbTiles.has_value(),
+          "psd export: the fixture IS a Vector layer with no raster of its own");
+
+    // The composite half: the exporter's own flattener draws the square.
+    const DecodedImage flat = flattenDocumentToLinear(vec);
+    size_t litTexels = 0;
+    for (size_t i = 3; i < flat.pixels.size(); i += 4)
+      if (flat.pixels[i] > 0.5f) ++litTexels;
+    check(flat.valid() && litTexels > 100,
+          "psd export: flattenDocumentToLinear() rasterises the shape -- 144 texels of square");
+
+    const PsdExportResult layered = writeLayeredPsd(vec);
+    check(layered.ok, "psd export: a document whose only layer is Vector still writes");
+    check(anyWarningContains(layered.warnings, "a filled square") &&
+              anyWarningContains(layered.warnings, "Bezier geometry"),
+          "psd export: the warning names the layer and what it lost, rather than dropping it "
+          "silently");
+    check(anyWarningContains(layered.warnings, "exports EMPTY"),
+          "psd export: and it says the layer is EMPTY -- there is no raster to fall back on");
+
+    // The layer half, read back through our own importer: the record is there
+    // and carries nothing. A reader that only counted layers would see 1 and
+    // call the round trip good.
+    const PsdImportResult back = importPsd(layered.bytes);
+    check(back.ok, "psd export: the layered file re-imports");
+    size_t backTiles = 0;
+    for (const Layer& l : back.document.layers)
+      if (l.rgbTiles.has_value()) backTiles += l.rgbTiles->occupiedTileCount();
+    check(back.ok && back.document.layers.size() == 1 && backTiles == 0,
+          "psd export: the re-imported layer exists and holds ZERO tiles -- the shape is gone "
+          "from the layer section while the same file's composite still shows it");
   }
 
   return ok;
