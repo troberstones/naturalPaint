@@ -319,15 +319,22 @@ bool runPsdVectorPathTest() {
       }
       check(allCorners, "A4: every knot's in/pt/out coincide -- corner points, no curvature");
       check(!anySmooth, "A4: every knot is selector 2 (unlinked) -> Anchor::smooth false");
-      // The extreme knot: x=60.0977, y=-15.5352, matching vogk's own
-      // Hrzn=60.09375 / Vrtc=-15.5351621 to within fixed-point rounding.
-      bool sawExtreme = false;
+      // Two DIFFERENT knots (a 10-point star, not one corner): the
+      // leftmost knot's x and the topmost knot's y, each matching vogk's
+      // own doubles (Hrzn=60.09375, Vrtc=-15.5351621) to within
+      // fixed-point rounding -- independent arithmetic, not this decoder's.
+      bool sawLeftmostX = false;
+      bool sawTopmostY = false;
       for (const Anchor& a : s.anchors) {
-        if (nearf(a.pt.x, 60.0977f, 0.02f) && nearf(a.pt.y, -15.5352f, 0.02f)) sawExtreme = true;
+        if (nearf(a.pt.x, 60.0977f, 0.02f)) sawLeftmostX = true;
+        if (nearf(a.pt.y, -15.5352f, 0.02f)) sawTopmostY = true;
       }
-      check(sawExtreme,
-            "A4: one knot lands at (60.0977,-15.5352), matching vogk's own doubles "
-            "(Hrzn=60.09375, Vrtc=-15.5351621) from independent arithmetic");
+      check(sawLeftmostX,
+            "A4: the leftmost knot's x is 60.0977, matching vogk's own Hrzn=60.09375 "
+            "from independent arithmetic");
+      check(sawTopmostY,
+            "A4: the topmost knot's y is -15.5352, matching vogk's own Vrtc=-15.5351621 "
+            "from independent arithmetic");
     }
   }
   {
