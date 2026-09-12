@@ -4263,6 +4263,8 @@ int main(int argc, char** argv) {
     // (app/SelfTest.hpp's own comment on each).
     const bool stabiliserOk = !wanted("runStabiliserTest") || np::runStabiliserTest();
     const bool brushTaperOk = !wanted("runBrushTaperTest") || np::runBrushTaperTest();
+    const bool pigmentBuildupOk =
+        !wanted("runPigmentBuildupTest") || np::runPigmentBuildupTest();
     const bool appIconOk = !wanted("runAppIconTest") || np::runAppIconTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
@@ -4334,7 +4336,7 @@ int main(int argc, char** argv) {
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
                     nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
-                    stabiliserOk && brushTaperOk;
+                    stabiliserOk && brushTaperOk && pigmentBuildupOk;
     if (!selfTestOnly.empty()) {
       std::printf("[selftest] --selftest-only \"%s\": %d section(s) run\n", selfTestOnly.c_str(),
                   selfTestSelected);

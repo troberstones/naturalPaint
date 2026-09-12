@@ -256,6 +256,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/PointerQueue.cpp
   app/selftest/Stabiliser.cpp
   app/selftest/BrushTaper.cpp
+  app/selftest/PigmentBuildup.cpp
   app/selftest/AppIcon.cpp
 )
 

@@ -1730,7 +1730,7 @@ class StrokeSession {
              const DynamicInputs& hardwareInputs = DynamicInputs{},
              const AppState::CloneSourceState* clone = nullptr,
              const StabiliserParams& stabiliser = StabiliserParams{}, float viewZoom = 1.0f,
-             const NativeBrush* native = nullptr);
+             const NativeBrush* native = nullptr, PigmentBuildup pigmentBuildup = {});
 
   // Which of §1's five layer-writing routes this stroke took. Meaningless before
   // `begin()` succeeds.
@@ -2186,6 +2186,11 @@ class StrokeSession {
   // clone/heal source offset (the only thing those two read from the
   // `AppState::CloneSourceState` this class deliberately does not keep).
   float resolvedOpacity_ = 1.0f;
+  // brush/Deposit.hpp §1a: the two buildup rules, latched at pen-down, and the
+  // per-texel memory the stroke ceiling needs. A sibling of `rgb_`'s own
+  // accumulator, cleared in `beginRoutes()` for that one's reason.
+  PigmentBuildup pigmentBuildup_;
+  StrokeMassStore pigmentLaid_;
   Vec2 cloneOffset_{};
   // --- the exit taper's repaint ------------------------------------------
   //

@@ -1481,6 +1481,15 @@ void StrokeSession::beginRoutes(Layer& layer) {
   // whichever route this stroke took, the other three must be left holding no
   // tiles, and an interrupted drag is exactly the case that reaches here with
   // one of them still live.
+  // The Pigment DEPOSIT route's per-stroke mass memory (brush/Deposit.hpp
+  // §1a), dropped here for the reason every accumulator in this function is
+  // reset: mass carried across strokes would let the last stroke's ceiling cap
+  // the first dab of the next. Unconditional, because unlike the four pairs
+  // around it this store holds no latched scalars to begin -- and because the
+  // exit taper's repaint comes back through here, which is what stops a
+  // replayed stroke finding its own ceiling already spent.
+  pigmentLaid_ = StrokeMassStore{};
+
   if (route_ == StrokeRoute::PigmentErase)
     pigErase_.begin(resolvedOpacity_);
   else
@@ -1642,7 +1651,7 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
                           const DynamicInputs& hardwareInputs,
                           const AppState::CloneSourceState* clone,
                           const StabiliserParams& stabiliser, float viewZoom,
-                          const NativeBrush* native) {
+                          const NativeBrush* native, PigmentBuildup pigmentBuildup) {
   if (errorOut != nullptr) errorOut->clear();
   const auto refuse = [&](std::string why) {
     if (errorOut != nullptr) *errorOut = std::move(why);
@@ -1783,6 +1792,11 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
                          : 1.0f;
 
   resolvedOpacity_ = resolvedOpacity;
+  // brush/Deposit.hpp §1a. The rules come from the caller (a global setting);
+  // the ceiling they use is this stroke's own resolved opacity, latched here
+  // with everything else rather than read off a dab.
+  pigmentBuildup_ = pigmentBuildup;
+  pigmentBuildup_.opacity = resolvedOpacity;
   cloneOffset_ = clone != nullptr ? clone->offset : Vec2{0.0f, 0.0f};
   beginRoutes(layer);
 
@@ -2374,7 +2388,7 @@ void StrokeSession::depositPending(bool isEndFlush) {
               ? rgb_.depositDab(*layer.rgbTiles, dabTip, centre, doc.width, doc.height, selection,
                                 &frameTiles_)
               : depositDab(*layer.pigmentTiles, dabTip, centre, doc.width, doc.height, selection,
-                          &frameTiles_);
+                          &frameTiles_, pigmentBuildup_, &pigmentLaid_);
       frameTexels += c.texels;
     }
     ++dabs_;
