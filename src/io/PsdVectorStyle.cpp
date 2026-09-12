@@ -65,7 +65,10 @@ LineJoin mapLineJoin(const std::string& valueId, std::vector<std::string>& warni
 float readPixelUnitFloat(const std::optional<DescriptorUnitFloat>& uf, std::string_view fieldName,
                         std::vector<std::string>& warnings) {
   if (!uf) return 0.0f;
-  if (uf->unit != "#Pxl") {
+  // Zero is zero in every unit, and `strokeStyleLineDashOffset` is `#Pnt` on
+  // every shape in every sample file while being exactly 0 -- warning on it
+  // would put a line in the report for each shape that says nothing.
+  if (uf->unit != "#Pxl" && uf->value != 0.0) {
     warnings.push_back("vstk: " + std::string(fieldName) + " unit '" + uf->unit +
                        "' is not #Pxl; its numeric value is used unconverted as canvas pixels");
   }

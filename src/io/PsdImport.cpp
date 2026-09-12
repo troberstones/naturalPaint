@@ -16,6 +16,8 @@
 #include "io/AbrBrushes.hpp"  // checkedAdd() -- shared overflow-safe addition
 #include "io/PsdBlendKeys.hpp"  // mapBlendKey() -- the blend-key table, shared with
                                // the PSD writer since PLAN.md phase 15
+#include "io/PsdVectorPath.hpp"   // shape geometry: decode, then compose
+#include "io/PsdVectorStyle.hpp"  // shape paint: the SoCo/vscg/vstk descriptors
 
 // io/PsdImport implementation. Every design decision is argued in
 // io/PsdImport.hpp; this file holds the mechanics.
@@ -291,6 +293,18 @@ struct ParsedLayer {
   int32_t maskTop = 0, maskLeft = 0, maskBottom = 0, maskRight = 0;
   uint8_t maskDefaultColor = 255;  // 255 = reveal outside the mask rect, 0 = hide
   uint8_t maskFlags = 0;           // bit 0 = relative to layer, bit 1 = disabled
+
+  // A shape layer's geometry and paint, copied out of the tagged blocks
+  // rather than pointed at: the spans they arrive in are into the caller's
+  // buffer, and these outlive this parse step. Small -- the largest in any
+  // sample file is a 1,360-byte `vmsk`.
+  //
+  // Empty means the block was absent, which is the common case: only a shape
+  // layer carries them, and most layers are not shapes.
+  std::vector<uint8_t> vectorPath;   // `vsms` or `vmsk`
+  std::vector<uint8_t> socoBlock;    // `SoCo`
+  std::vector<uint8_t> vscgBlock;    // `vscg`
+  std::vector<uint8_t> vstkBlock;    // `vstk`
 };
 
 // Photoshop's own thirteen Additional-Layer-Information keys that widen to
@@ -673,6 +687,22 @@ bool readLayerRecord(Cursor& c, ParsedLayer& layer, std::string& error) {
           layer.alphaLocked = (flags & 0x1u) != 0;
         }
       }
+    } else if (fourccEquals(key, "vsms") || fourccEquals(key, "vmsk")) {
+      // A shape layer's outline. `vsms` ("vector shape mask") and `vmsk`
+      // ("vector mask") carry byte-identical payloads; io/PsdVectorPath
+      // decodes either. Kept raw here -- decoding needs the document size,
+      // which this per-record parse does not have.
+      //
+      // A record may carry both (no sample file does); the first wins, since
+      // the second would be the same outline by a second name.
+      if (layer.vectorPath.empty())
+        layer.vectorPath.assign(blockData.begin(), blockData.end());
+    } else if (fourccEquals(key, "SoCo")) {
+      layer.socoBlock.assign(blockData.begin(), blockData.end());
+    } else if (fourccEquals(key, "vscg")) {
+      layer.vscgBlock.assign(blockData.begin(), blockData.end());
+    } else if (fourccEquals(key, "vstk")) {
+      layer.vstkBlock.assign(blockData.begin(), blockData.end());
     } else if (fourccEquals(key, "lsct")) {
       // Section divider setting -- docs/psd-import-gaps.md section 3's wire
       // layout, verified against `Testforautoflats 2.psd` and `Peter_...
@@ -950,6 +980,75 @@ const std::array<float, 256>& srgb8DecodeTable() {
     return t;
   }();
   return table;
+}
+
+// Decodes one shape layer's blocks into `layer.shapes`.
+//
+// The three io/PsdVector* modules in the order they were built: geometry out
+// of the `vsms`/`vmsk` record stream, that stream's boolean operations folded
+// into one compound path, then the paint out of the descriptors. Each has its
+// own `--selftest` section; app/selftest/PsdVectorChain.cpp runs the three on
+// one real layer's bytes against psd-tools' render of it.
+//
+// **Nothing here refuses the file.** A shape whose geometry will not decode,
+// or whose operations no single fill rule can express, is a warning naming
+// the layer -- the layer still imports, with whatever it did yield. A PSD is
+// not worth refusing over one unrepresentable shape, and the alternative to a
+// named warning is a silently missing shape.
+//
+// **Shape ids are assigned HERE, not at the app/OpenAnyFile.cpp call site the
+// way io/SvgImport's are.** That call site owns SVG's ids for a reason that
+// does not apply here -- io/SvgImport cannot know which layer its shapes will
+// land in, and one import can produce several. This module builds the Layer
+// itself, so it knows; and `importPsd()` has callers that are not
+// app/OpenAnyFile (--psd-report, the selftests), every one of which would
+// otherwise receive shapes that all answer to id 0.
+void appendPsdShape(const ParsedLayer& pl, int32_t docWidth, int32_t docHeight, Layer& layer,
+                    std::vector<std::string>& warnings) {
+  const std::string named = "layer '" + (pl.name.empty() ? std::string("(unnamed)") : pl.name) + "'";
+  if (docWidth <= 0 || docHeight <= 0) return;
+
+  PsdPathStream stream;
+  std::string error;
+  if (!decodePsdPathRecords(pl.vectorPath, static_cast<uint32_t>(docWidth),
+                            static_cast<uint32_t>(docHeight), stream, error)) {
+    warnings.push_back(named + ": its vector outline could not be read (" + error +
+                       "); the layer imports with no shape.");
+    return;
+  }
+  for (const std::string& w : stream.warnings) warnings.push_back(named + ": " + w);
+
+  const PsdComposedPath composed = composePsdSubPaths(stream);
+  if (!composed.ok) {
+    warnings.push_back(named + ": " + composed.refusal + "; the layer imports with no shape.");
+    return;
+  }
+  for (const std::string& w : composed.warnings) warnings.push_back(named + ": " + w);
+  if (pathIsEmpty(composed.path)) return;
+
+  PsdVectorStyleBlocks blocks;
+  blocks.soco = pl.socoBlock;
+  blocks.vscg = pl.vscgBlock;
+  blocks.vstk = pl.vstkBlock;
+  PsdVectorStyle style;
+  std::string styleError;
+  if (!decodePsdVectorStyle(blocks, style, styleError)) {
+    // The geometry survives a style this module cannot read: an outline with
+    // no paint is a real thing to import, and is what `Paint::on == false`
+    // means. Losing the shape too would be strictly worse.
+    warnings.push_back(named + ": its fill/stroke could not be read (" + styleError +
+                       "); the shape imports unpainted.");
+    style = PsdVectorStyle{};
+  }
+  for (const std::string& w : style.warnings) warnings.push_back(named + ": " + w);
+
+  VectorShape shape;
+  shape.path = composed.path;
+  shape.fill = style.fill;
+  shape.stroke = style.stroke;
+  shape.strokeStyle = style.strokeStyle;
+  shape.id = layer.nextShapeId++;
+  layer.shapes.push_back(std::move(shape));
 }
 
 }  // namespace
@@ -1487,10 +1586,51 @@ PsdImportResult importPsd(std::span<const uint8_t> bytes) {
       continue;
     }
 
+    // A SHAPE layer -- a vector outline plus a fill block -- imports as
+    // `LayerKind::Vector` rather than as the raster it used to.
+    //
+    // **The fill block, not the raster, is what makes it a shape layer.**
+    // Whether Photoshop also stored a rasterised copy is the Maximize
+    // Compatibility setting, not a fact about the artwork: Apple's `App Icon
+    // Template.psd` writes its nine shape layers with 0x0 rects, and
+    // `testNonSquareWithShapesOffPage.psd` writes its three with full
+    // rasters. Keying off the raster would let a save checkbox decide whether
+    // the same layer arrived editable.
+    //
+    // What the fill block DOES separate out is a raster layer wearing a
+    // VECTOR MASK: outline, real pixels, and no fill. That is `Layer::mask`
+    // work, deliberately not done here, and such a layer keeps importing as
+    // RGB exactly as before.
+    const bool hasFillBlock = !pl.socoBlock.empty() || !pl.vscgBlock.empty();
+    const bool looksLikeShape = !pl.vectorPath.empty() && (hasFillBlock || pixels.empty());
+
     Layer layer;
-    layer.kind = LayerKind::RGB;
-    layer.rgbTiles.emplace();
-    writeLayerPixelsAt(pixels, layerWidth, layerHeight, pl.left, pl.top, layer);
+    bool importedAsShape = false;
+    if (looksLikeShape) {
+      Layer shape = makeVectorLayer(pl.name);
+      appendPsdShape(pl, doc.width, doc.height, shape, result.warnings);
+      // A fill this build cannot express -- a gradient or a pattern -- leaves
+      // the shape unpainted. When Photoshop cached a raster of it, that
+      // raster is the better import: it is what the artwork looks like, and
+      // an invisible shape is not. When there is no raster, the shape is all
+      // there is and goes in unpainted.
+      const bool paintable = !shape.shapes.empty() &&
+                             (shape.shapes.front().fill.on || shape.shapes.front().stroke.on);
+      if (!shape.shapes.empty() && (paintable || pixels.empty())) {
+        layer = std::move(shape);
+        importedAsShape = true;
+      } else if (!shape.shapes.empty()) {
+        result.warnings.push_back(
+            "layer '" + (pl.name.empty() ? std::string("(unnamed)") : pl.name) +
+            "': its shape has no fill or stroke this build can paint, so the layer imports as "
+            "the rasterised copy Photoshop stored beside it rather than as an invisible shape.");
+      }
+    }
+    if (!importedAsShape) {
+      layer.kind = LayerKind::RGB;
+      layer.rgbTiles.emplace();
+      writeLayerPixelsAt(pixels, layerWidth, layerHeight, pl.left, pl.top, layer);
+    }
     // flags bit 1 (mask disabled) imports as no mask at all -- `maskTiles`
     // was never engaged for a disabled mask (guarded above), so this is
     // simply "move it across when there was one to move".

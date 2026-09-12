@@ -15,6 +15,7 @@
 #include "core/Layer.hpp"
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
+#include "core/VectorShape.hpp"
 #include "io/PsdImport.hpp"
 
 namespace np {
@@ -152,9 +153,57 @@ int runPsdReport(const char* path) {
 
     PixelExtent e;
     if (l.rgbTiles.has_value()) e = measure(*l.rgbTiles);
-    if (!e.any) ++empty;
+
+    // A Vector layer's content is its shapes; it has no tiles at all, and
+    // measuring only tiles would report every imported shape layer as EMPTY
+    // -- the exact opposite of the truth, and the reason this branch exists
+    // rather than the column simply being blank for it.
+    const bool isVector = l.kind == LayerKind::Vector;
+    if (!e.any && !isVector) ++empty;
 
     char extent[48];
+    char coverage[128];
+    if (isVector) {
+      // The DRAWN extent, so this column is comparable with the raster rows
+      // above it and with an external renderer. Deliberately not
+      // `vectorShapesBounds()`, which outsets by the worst case a mitre join
+      // could reach -- Photoshop writes miterLimit 100, so that is half the
+      // stroke width times 100, and every shape here would report 50 px of
+      // margin no join in it actually uses.
+      PathBounds b;
+      for (const VectorShape& sh : l.shapes) {
+        const PathBounds t = pathTightBounds(sh.path);
+        if (!t.valid) continue;
+        b = b.valid ? PathBounds{true, std::min(b.minX, t.minX), std::min(b.minY, t.minY),
+                                 std::max(b.maxX, t.maxX), std::max(b.maxY, t.maxY)}
+                    : t;
+      }
+      if (b.valid) {
+        std::snprintf(extent, sizeof(extent), "(%.0f,%.0f,%.0f,%.0f)",
+                      static_cast<double>(b.minX), static_cast<double>(b.minY),
+                      static_cast<double>(b.maxX), static_cast<double>(b.maxY));
+      } else {
+        std::snprintf(extent, sizeof(extent), "-- NO SHAPES --");
+      }
+      size_t filled = 0, stroked = 0;
+      for (const VectorShape& sh : l.shapes) {
+        if (sh.fill.on) ++filled;
+        if (sh.stroke.on) ++stroked;
+      }
+      const std::array<float, 4>& c =
+          l.shapes.empty() ? std::array<float, 4>{0, 0, 0, 0} : l.shapes.front().fill.rgba;
+      std::snprintf(coverage, sizeof(coverage),
+                    "%zu shape(s), %zu filled, %zu stroked, first fill linear rgba "
+                    "%.5f %.5f %.5f %.5f",
+                    l.shapes.size(), filled, stroked, static_cast<double>(c[0]),
+                    static_cast<double>(c[1]), static_cast<double>(c[2]),
+                    static_cast<double>(c[3]));
+      std::printf("%-4zu %-34.34s %-10.10s %6.3f %4s %4s %5s  %-22s %s\n", i, l.name.c_str(),
+                  l.blend.c_str(), static_cast<double>(l.opacity), l.visible ? "Y" : "n",
+                  l.clipped ? "Y" : "n", "vec", extent, coverage);
+      continue;
+    }
+
     if (e.any) {
       std::snprintf(extent, sizeof(extent), "(%d,%d,%d,%d)", e.minX, e.minY, e.maxX + 1,
                     e.maxY + 1);
@@ -162,7 +211,6 @@ int runPsdReport(const char* path) {
       std::snprintf(extent, sizeof(extent), "-- EMPTY --");
     }
 
-    char coverage[128];
     if (e.nonZeroAlpha == 0) {
       std::snprintf(coverage, sizeof(coverage), "no alpha > 0");
     } else {
