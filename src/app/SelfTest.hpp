@@ -6348,6 +6348,32 @@ bool runTextToolTest();
 // for a miter join. See app/selftest/VectorLayer.cpp.
 bool runVectorLayerTest();
 
+// docs/psd-vector-shapes.md S2 -- a gradient fill on a vector shape, from the
+// document-level table down to both halves of the on-disk form.
+//
+// The load-bearing sections are the three whose failure is SILENT. (1) A
+// gradient's appearance lives in `Document::gradients`, which a shape only
+// POINTS at, so `vectorContentHash()` over the shapes alone cannot see a ramp
+// edit: the stops change, the hash does not, and the cached raster comes
+// back -- an edit that never appears. Asserted at the hash, through
+// `MaterializedDocument`, and through `documentDirtyTiles()`. (2) A
+// `Paint::gradient` past the end of the table must paint NOTHING; the shape
+// under test carries an opaque RED `rgba` and the table a visible ramp, so a
+// fallback to either would show rather than pass. (3) `np:vector` stays at
+// `npvec1:` unless a gradient is present, asserted by the exact 20-hex-digit
+// length difference rather than by eye, so the version bump cannot quietly
+// rewrite every existing document's geometry attribute.
+//
+// Also proves: the vector path and ops/Gradient's `renderGradient()` produce
+// BIT-IDENTICAL texels over the same span (one evaluator, two loops); a
+// gradient STROKE, not only a fill; the no-colour-stops / no-opacity-stops
+// asymmetry through the vector path; io/GradientSerial's round trip including
+// midpoints and opacity stops, its hostile-count and trailing-byte refusals,
+// and its whole-table refusal of an unknown kind byte; and that a document
+// with no gradients writes no `np:gradients` attribute at all, checked against
+// the file's own bytes. See app/selftest/VectorGradient.cpp.
+bool runVectorGradientTest();
+
 // text/Shaper: PRD K2's platform-independent shaping interface, and its
 // CoreText implementation. Point and paragraph text (K3), the y-up-to-y-down
 // flip CoreText and this application's document space disagree on, quadratic

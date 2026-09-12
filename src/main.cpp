@@ -3268,6 +3268,12 @@ int main(int argc, char** argv) {
     // core/DirtyTiles' pass 1 could not see one before this phase.
     // Headless and GPU-free; writes no files.
     const bool vectorLayerOk = np::runVectorLayerTest();
+    // docs/psd-vector-shapes.md S2: a gradient fill on a vector shape -- the
+    // document-level table, the raster that reads it, the hash that guards
+    // the raster against a ramp edit nobody would otherwise see, and both
+    // halves of the on-disk form. Headless and GPU-free; writes and removes
+    // real .npaint files.
+    const bool vectorGradientOk = np::runVectorGradientTest();
     // core/TextContent (PLAN.md phase 14): what a `LayerKind::Text` layer
     // holds -- makeTextContent(), textContentToShapes() (shaping a block
     // into per-glyph VectorShapes, translated by origin plus each glyph's
@@ -4275,7 +4281,7 @@ int main(int argc, char** argv) {
                     documentTransformOk && transformSessionOk && moveToolOk && cropToolOk && maskTargetOk &&
                     framePacingOk &&
                     gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
-                    textShaperOk && vectorLayerOk && textContentOk &&
+                    textShaperOk && vectorLayerOk && vectorGradientOk && textContentOk &&
                     transformPreviewTextureOk &&
                     transformCompositeSplitOk && packBitsOk && psdWriteOk && psdBlendKeysOk && psdExportOk && psdLayerSectionOk && psdLayerExtrasOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && inpaintOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&

@@ -243,6 +243,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/SvgPath.cpp
   app/selftest/SvgStyle.cpp
   app/selftest/VectorLayer.cpp
+  app/selftest/VectorGradient.cpp
   app/selftest/TextContent.cpp
   app/selftest/UserBrushLibrary.cpp
   app/selftest/ViewTransform.cpp
@@ -437,6 +438,7 @@ add_executable(naturalPaint
   io/ImageIO.cpp
   io/ActionFile.cpp
   io/GradientPresetFile.cpp
+  io/GradientSerial.cpp
   io/Json.cpp
   io/NpaintFile.cpp
   io/OpSerial.cpp

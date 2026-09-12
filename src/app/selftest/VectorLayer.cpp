@@ -560,11 +560,15 @@ bool runVectorLayerTest() {
     // the version is inspected -- its two hex digits are truncated anyway --
     // so it passed with the version gate deleted. Sabotage found that; the
     // payload below can only be refused BY the version gate.
-    const std::string futureTagged = "npvec2:" + encoded.substr(std::strlen(kVectorShapeSerialPrefix));
+    //
+    // `npvec3:` and not `npvec2:` since S2: v2 is a version this build READS,
+    // so the old tag would now test nothing at all. The shape of the check is
+    // unchanged, and so is the property it defends.
+    const std::string futureTagged = "npvec3:" + encoded.substr(std::strlen(kVectorShapeSerialPrefix));
     check(!deserializeVectorShapes(futureTagged, &dummy, nullptr, &why),
           "serial: a FUTURE version is refused even when its payload is otherwise valid");
-    check(why.find("npvec1:") != std::string::npos,
-          "serial: and the refusal names the version this build speaks");
+    check(why.find("npvec1:") != std::string::npos && why.find("npvec2:") != std::string::npos,
+          "serial: and the refusal names BOTH versions this build speaks");
     check(!deserializeVectorShapes("npvec1:abc", &dummy, nullptr, &why),
           "serial: an odd hex length is refused as truncated");
     check(!deserializeVectorShapes("npvec1:zz", &dummy, nullptr, &why),
