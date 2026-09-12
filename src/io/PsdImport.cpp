@@ -1232,7 +1232,13 @@ void parseGuidesResource(std::span<const uint8_t> data, std::vector<PsdGuide>& g
     return;
   }
   std::vector<PsdGuide> parsed;
-  parsed.reserve(count);
+  // A hint, not an allocation from the file's own number: `count` is an
+  // attacker-controlled uint32, and five bytes is the smallest a guide record
+  // can be, so the bytes left in this resource bound how many can exist. The
+  // loop below still stops on the first truncated record -- this only keeps a
+  // claim of four billion guides from asking for 32 GB before reading one.
+  // Same rule, same reason, as decodePsdPathRecords()' own reserve.
+  parsed.reserve(std::min<size_t>(count, c.remaining() / 5));
   for (uint32_t i = 0; i < count; ++i) {
     uint32_t location = 0;
     uint8_t direction = 0;
