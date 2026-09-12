@@ -5452,6 +5452,12 @@ bool runPsdVectorComposeTest();
 // Headless, GPU-free.
 bool runPsdVectorStyleTest();
 
+// The three PSD vector modules run IN ORDER on one real layer's own bytes.
+// Each has its own section proving its own function; none of them can see a
+// seam between the three. Expected values are psd-tools' render of that
+// layer, so a bug shared by our decoder and our composer cannot pass it.
+bool runPsdVectorChainTest();
+
 // **The Filter and Image menus, and app/FilterOps -- the bridge that makes
 // docs/reachability-audit.md's C1 stop being true for six of the ~93 entries
 // it names.** `runBlurTest()` and `runFiltersTest()` already prove the

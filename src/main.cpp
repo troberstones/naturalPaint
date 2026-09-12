@@ -4068,6 +4068,9 @@ int main(int argc, char** argv) {
     // io/PsdVectorStyle: step 3 -- the fill and stroke descriptors, and the
     // first real Photoshop bytes this tree has fed to io/Descriptor.
     const bool psdVectorStyleOk = np::runPsdVectorStyleTest();
+    // The three of them in order on one real layer -- the seam no per-module
+    // section can see.
+    const bool psdVectorChainOk = np::runPsdVectorChainTest();
     // app/FilterOps, ui/MenuModel's Filter and Image menus (docs/
     // reachability-audit.md C1): six of ops/Blur's, ops/Filters' and ops/
     // DocumentTransform's ~93 tested-but-unreachable entry points, wired to
@@ -4311,7 +4314,8 @@ int main(int argc, char** argv) {
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk && pigmentPanelOk &&
                     openAnyFileOk && psdImportOk && psdVectorPathOk && psdVectorComposeOk &&
-                    psdVectorStyleOk && filterMenuOk && adjustmentMenuOk && tileableOk &&
+                    psdVectorStyleOk && psdVectorChainOk && filterMenuOk &&
+                    adjustmentMenuOk && tileableOk &&
                     selectMenuOk &&
                     chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk && tilePreviewOk &&
                     canvasDimensionsOk &&

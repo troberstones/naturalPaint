@@ -169,6 +169,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/PsdLayerSection.cpp
   app/selftest/PsdLayerExtras.cpp
   app/selftest/PsdImport.cpp
+  app/selftest/PsdVectorChain.cpp
   app/selftest/PsdVectorCompose.cpp
   app/selftest/PsdVectorPath.cpp
   app/selftest/PsdVectorStyle.cpp
