@@ -36,8 +36,8 @@ compared is invisible until something else forces a recomposite — is already
 paid for `Vector` by `vectorContentHash()`. A PSD importer that produces
 `LayerKind::Vector` inherits that. (See [[dirtytiles-parametric-whitelist]].)
 
-What is **missing** and cannot be papered over: `Paint` has no gradient and no
-pattern (argued at `core/VectorShape.hpp:33-49`), and there are no boolean
+What was **missing** and could not be papered over: `Paint` had no gradient and
+no pattern (argued at `core/VectorShape.hpp:33-49`), and there are no boolean
 path operations anywhere in the tree — `app/PathOps.hpp:149`'s eleven verbs
 are `Close … MakeCompound`, and none of them is union or subtract.
 
@@ -253,10 +253,10 @@ then `vscg` — gated on `vstk.fillEnabled`. Colour arrives as `RGBC` doubles in
 0..255, sRGB-encoded; `Paint::rgba` is linear straight alpha, so it goes
 through `color::srgbDecode()` exactly as `io/SvgImport` does.
 
-`GdFl` and `PtFl` do not occur in this file. They have no receiving field, so
-they are a named refusal (the layer imports with `fill.on = false` and a
-warning naming the layer and the fill kind) rather than a flat colour guessed
-from a gradient stop.
+`GdFl` and `PtFl` do not occur in this file. `GdFl` has a receiving field as of
+S2 below and is decoded; `PtFl` still has none, so it stays a named refusal
+(the layer imports with `fill.on = false` and a warning naming the layer and
+the fill kind) rather than a flat colour guessed from a pattern.
 
 ### 4. Emit a Vector layer
 
@@ -376,19 +376,106 @@ about by name rather than silent:
   on a raster layer is stored (S4), and a reader taking it that way would clip
   the outer half of a centred stroke out of the raster written next to it.
 
-### S2. Gradient and pattern fills have nowhere to land. STILL OPEN
+### S2. Gradients have a receiving field now. CLOSED for `GdFl`, open for `PtFl`
 
-`GdFl` and `PtFl` are now recognised wherever they occur -- standalone as well
-as embedded in `vscg`'s fill-type tag -- and are a named warning with
-`fill.on = false`. Recognising them is all that can be done from here: where
-Photoshop cached a raster the importer falls back to it, so the picture
-survives and the editability does not.
+`core/VectorShape.hpp`'s argued design is built: a `PaintKind` on `Paint` plus
+an index into `Document::gradients`, reusing `ops/Gradient.hpp`'s ramp model
+rather than duplicating it.
 
-`core/VectorShape.hpp:33-49` argues the receiving field: a paint kind plus an
-index into a **document-level gradient table**, reusing `ops/Gradient.hpp`
-rather than duplicating it, so the heavy type sits at the table and not in
-every layer. That is a `core/` change, not an importer one, and `io/SvgImport`
-wants exactly the same field.
+Reusing it took a move first. `ops/Gradient.hpp` includes `core/TileStore.hpp`
+and `core/SelectionMask.hpp`, and a `VectorShape` is reachable from
+`core::Layer`, so those would have landed in nearly every translation unit --
+which is exactly the cost `core/VectorShape.hpp:33-49` said it would not pay.
+So the ramp model (`GradientKind`, `GradientSpread`, `GradientGeometry`,
+`ColorStop`, `OpacityStop`, `GradientStops`, the four pure evaluators) moved to
+a new `core/Gradient.hpp` that includes `<array>`, `<string>` and `<vector>`;
+`GradientRegion` and `renderGradient()` stayed in `ops/`. `ops/Gradient.hpp`
+includes the new header, so every existing name and every existing include
+still works. **There is one gradient ramp type in the build**, which is what
+keeps a gradient drawn with the Gradient tool and a gradient filling a shape
+from interpolating differently -- asserted as BIT-IDENTICAL texels over the
+same span, not as "similar".
+
+What landed:
+
+- `Paint::kind` (`Solid`/`Gradient`) and `Paint::gradient`, an index into
+  `Document::gradients`. **An index past the end paints NOTHING** -- not
+  `rgba`, not the last entry. `core/VectorRaster` enforces it; the assertion
+  gives the shape an opaque RED `rgba` and the table a visible ramp, so either
+  fallback would show rather than pass.
+- `vectorContentHash(shapes, gradients)` and
+  `rasterizeVectorLayer(shapes, gradients, w, h)` both grew a REQUIRED table
+  parameter. The hash one is not bookkeeping: a gradient's appearance lives in
+  the table, so a hash over the shapes alone is blind to a ramp edit, and the
+  cached raster comes back -- the invisible-edit failure the content hash
+  exists to prevent, one level out. `core/DirtyTiles` hashes each side against
+  its OWN document's table.
+- Two on-disk carriers. `np:gradients` (io/GradientSerial, `npgrads1:`) on part
+  0, written only when the table is non-empty -- asserted against the saved
+  file's own bytes, since EXR stores attribute names as plain ASCII.
+  `np:vector` gained `npvec2:` for the two new paint fields, and **still writes
+  `npvec1:` whenever no shape uses a gradient**, so no existing document's
+  geometry attribute is rewritten by a save; asserted by the exact
+  20-hex-digit length difference rather than by eye.
+- `io/PsdVectorStyle` decodes `GdFl`, standalone and inside `vscg`'s
+  fill-type tag alike. `io/PsdVectorWrite` writes one back, and
+  `io/PsdLayerSection` emits it in place of `SoCo`.
+- `reverseGradientStops()` in `core/Gradient` is what `Rvrs` becomes.
+
+**What is NOT verified, and it is the important paragraph.** No `.psd` on the
+machine this was written on contains a `GdFl` block at all -- both samples
+grepped, zero occurrences -- so unlike `SoCo`/`vscg`/`vstk`, whose every
+fixture is a hex dump of real Photoshop bytes, the fixtures here are this
+tree's own encoder's output. Two things are done about it: the encoded
+descriptor's whole TREE is asserted against a literal with every Adobe key name
+spelled out, and the round trip runs through the DECODER, so a one-sided error
+(a unit read as a fraction, `Lctn` scaled by 100 instead of 4096, the y-down
+negation applied once) fails even though a shared misunderstanding would not.
+
+`io/PsdVectorStyle.hpp` names the three placement rules to re-derive against
+the first real file that turns up: **the angle's sign convention**, **the
+projected-length rule** (`|w cos a| + |h sin a|`), and **the radial's use of
+half the bounding-box diagonal**. The ramp half fails loudly if it is wrong (an
+empty `Clrs` paints nothing and warns); the placement half fails plausibly --
+right colours, wrong place -- which is why it is one pure function,
+`psdGradientGeometryFor()`, rather than spread through the decoder.
+
+Two findings from writing the reversal, recorded rather than only fixed:
+
+- A midpoint belongs to the **segment after** its stop, so reversing moves each
+  one back by one index AND flips it (0.8 -> 0.2). Reversing twice is exactly
+  the identity.
+- **The skew family `t^(ln 0.5 / ln m)` is not symmetric**: `skew(1-x, 1-m)` is
+  0.0354 where `1 - skew(x, m)` is 0.134, at m = 0.25, x = 0.75. A reversed
+  ramp therefore mirrors the original at every stop and every 50 %-blend
+  position and drifts in between. The first draft of the test asserted
+  "everywhere" and was asserting something false about a correct reversal.
+
+**Still open after this:**
+
+- **`PtFl`, pattern fills.** Unchanged: a named warning with `fill.on = false`.
+  `PaintKind` deliberately has NO `Pattern` member -- an enum value with no
+  producer and no renderer is reachable the moment anyone writes one.
+- **Gradient STROKES.** `vstk.strokeStyleContent` can carry a `GdFl` and
+  `Paint` can now receive it, but the placement would have to be resolved
+  against the stroke's outline rather than the fill's, and no sample file has
+  one. Warned by name; the stroke is left off. (A gradient stroke authored
+  inside naturalPaint renders correctly -- it is only the PSD decode that is
+  cut.)
+- **`Dmnd` (diamond) and `ClNs` (noise) gradients**, each refused by name
+  rather than approximated.
+- **Foreground/background colour stops** (`Clry` = `FrgC`/`BckC`) import as
+  the fixed colour the file last stored and stop tracking a swatch, warned by
+  name. `GradientStops` has no such field; `app/GradientTool.hpp`'s
+  `GradientPresetStops` does, which is where a fix would start.
+- **No UI for editing a shape's gradient.** The FILL swatch now turns a
+  gradient paint SOLID when a colour is picked (it would otherwise have been a
+  control with no visible effect), but there is no gradient picker on the paths
+  style bar and no indication in it that a fill IS a gradient.
+- **Table entries are never erased.** `Paint::gradient` is a position, so
+  erasing one would renumber every index after it. A "compact unreferenced
+  gradients" pass would have to be an explicit edit rewriting every index in
+  the document at once.
 
 ### S3. Intersect is refused by name. STILL OPEN
 
