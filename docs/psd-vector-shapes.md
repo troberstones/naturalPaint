@@ -80,14 +80,37 @@ The whole shape is a circle, centre (512, 357), r = 256.
 The handles are absolute positions, which is what `core/Path.hpp`'s `Anchor`
 already stores — no conversion, only a scale.
 
-**Two things this file cannot prove, and a reader must not assume from it:**
+**Two things Apple's file could not prove — both now settled by a second
+file.** It is square (1024x1024), so the divisor split was psd-tools'
+convention rather than a measurement, and all 480 of its coordinates lie in
+`[0, 2^24]`, so the field's signedness was never exercised.
 
-1. It is square (1024x1024), so "vertical divided by height, horizontal
-   divided by width" is psd-tools' convention here, not a measurement. A
-   non-square PSD settles it in one dump; get one before shipping.
-2. Every one of its 480 coordinates lies in `[0, 2^24]` exactly, so the
-   **signedness** of the field is never exercised. A shape dragged off-canvas
-   is the fixture that proves it.
+`testNonSquareWithShapesOffPage.psd` (768x512, 8-bit, RGB) settles both at
+once, and is the fixture to keep for them:
+
+- **Vertical divides by height, horizontal by width.** `Ellipse 1` decodes
+  under that split to x 493..666, y -189..-16, against psd-tools' bbox of
+  (491, -191, 668, -14) — the 2 px inflation is the render's stroke and
+  antialiasing. Swap the divisors and the same knots give x 328..444,
+  y -283..-24: not near the bbox, and wrong in a way no render could hide.
+- **The field is signed.** `Ellipse 1` sits entirely ABOVE the canvas; its
+  knot y values are genuinely negative (`-6193152`, `-4924133`, `-524288`,
+  `-1793307`). Read as unsigned, each is about 4.29e9, which is ~130,900 px
+  down the page. `Star 1` crosses the top edge at y = -15.54, and its own
+  `vogk` descriptor independently says `Vrtc = -15.5352` — a second witness
+  in doubles rather than in fixed point.
+
+That file adds three cases Apple's does not have: `strokeEnabled` is **true**
+on all three shapes (1 px black, butt cap, miter join, centre aligned), so the
+stroke path is exercised rather than assumed; `Star 1`'s ten knots are all
+selector 2 with `in == pt == out`, a corner-only polygon; and its subpath
+record's "unknown" field at offset 6 is **2**, not the 1 seen everywhere in
+Apple's file, so nothing may key off that field's value.
+
+One more colour warning from it: `Star 1`'s descriptor fill is
+(14.45, 0.59, 104.53) and psd-tools renders it (25, 0, 108) — a drift of 10
+units, not the 4 seen on Apple's file. The file carries an Apple *monitor*
+profile rather than sRGB. Compare colour against the descriptor doubles.
 
 ### Which way the picture is made: the path operation
 
