@@ -4056,6 +4056,10 @@ int main(int argc, char** argv) {
     // this section's own doc comment states exactly what that leaves
     // unverified.
     const bool psdImportOk = np::runPsdImportTest();
+    // io/PsdVectorPath: step 1 of docs/psd-vector-shapes.md -- decoding a
+    // `vsms`/`vmsk` path-record block into `core::Path` geometry, checked
+    // against known-answer fixtures dumped from real Photoshop files.
+    const bool psdVectorPathOk = np::runPsdVectorPathTest();
     // app/FilterOps, ui/MenuModel's Filter and Image menus (docs/
     // reachability-audit.md C1): six of ops/Blur's, ops/Filters' and ops/
     // DocumentTransform's ~93 tested-but-unreachable entry points, wired to
@@ -4298,7 +4302,7 @@ int main(int argc, char** argv) {
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk && pigmentPanelOk &&
-                    openAnyFileOk && psdImportOk && filterMenuOk && adjustmentMenuOk && tileableOk &&
+                    openAnyFileOk && psdImportOk && psdVectorPathOk && filterMenuOk && adjustmentMenuOk && tileableOk &&
                     selectMenuOk &&
                     chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk && tilePreviewOk &&
                     canvasDimensionsOk &&
