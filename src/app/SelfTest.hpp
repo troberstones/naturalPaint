@@ -5434,6 +5434,24 @@ bool runOpenAnyFileTest();
 // file, never read from a checked-in binary.
 bool runPsdImportTest();
 
+// io/PsdVectorCompose -- step 2 of docs/psd-vector-shapes.md: folds a
+// decoded PSD path stream's per-subpath boolean operations (Union, Subtract,
+// Exclude, Intersect, merge-with-previous) into the single compound `Path`
+// and single `FillRule` this codebase can actually draw, refusing by name
+// (Intersect; Exclude mixed with the others) rather than guessing. Headless,
+// GPU-free; every fixture is hand-built `PsdPathStream` data, not read from
+// a decoder.
+bool runPsdVectorComposeTest();
+
+// io/PsdVectorStyle -- step 3 of docs/psd-vector-shapes.md: the fill and
+// stroke descriptors of a PSD shape layer, and the FIRST real Photoshop bytes
+// this tree has handed to io/Descriptor. Every fixture is a hex dump of an
+// actual `SoCo`/`vscg`/`vstk` payload, checked against psd-tools' independent
+// reading of the same bytes -- including the layer whose colour is readable
+// and whose `fillEnabled` is false, which must import as no fill at all.
+// Headless, GPU-free.
+bool runPsdVectorStyleTest();
+
 // **The Filter and Image menus, and app/FilterOps -- the bridge that makes
 // docs/reachability-audit.md's C1 stop being true for six of the ~93 entries
 // it names.** `runBlurTest()` and `runFiltersTest()` already prove the

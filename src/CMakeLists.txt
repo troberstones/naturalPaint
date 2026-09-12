@@ -169,7 +169,9 @@ set(NP_SELFTEST_SOURCES
   app/selftest/PsdLayerSection.cpp
   app/selftest/PsdLayerExtras.cpp
   app/selftest/PsdImport.cpp
+  app/selftest/PsdVectorCompose.cpp
   app/selftest/PsdVectorPath.cpp
+  app/selftest/PsdVectorStyle.cpp
   app/selftest/QuitGuard.cpp
   app/selftest/RecoveryJournal.cpp
   app/selftest/ResamplePerf.cpp
@@ -447,7 +449,9 @@ add_executable(naturalPaint
   io/ExportRegions.cpp
   io/PsPatterns.cpp
   io/PsdImport.cpp
+  io/PsdVectorCompose.cpp
   io/PsdVectorPath.cpp
+  io/PsdVectorStyle.cpp
   io/SvgImport.cpp
   io/SvgPath.cpp
   io/SvgStyle.cpp

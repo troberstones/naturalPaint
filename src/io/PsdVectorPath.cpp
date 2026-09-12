@@ -55,12 +55,9 @@ enum PsdPathSelector : uint16_t {
 };
 
 // Maps a subpath-length record's raw int16 operation to `PsdPathOp`.
-// **Deliberately a named switch, not `static_cast<PsdPathOp>(raw)`.** The
-// enum's comments document PSD's own numbering (0 Exclude .. 3 Intersect,
-// -1 MergeWithPrevious), but the C++ enumerators are NOT declared with
-// those values -- `MergeWithPrevious` is the 5th enumerator, value 4, not
-// -1. A cast would silently misfile -1 (and everything else) instead of
-// recognising it.
+// **A named switch, not `static_cast<PsdPathOp>(raw)`**, even though the
+// enumerators now carry PSD's own values: a cast cannot tell a recognised
+// operation from an unknown one, and `opKnown` is the whole point.
 PsdPathOp mapPathOp(int16_t raw, bool& known) noexcept {
   switch (raw) {
     case 0: known = true; return PsdPathOp::Exclude;

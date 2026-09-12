@@ -39,12 +39,17 @@ inline constexpr size_t kPsdPathRecordBytes = 26;
 // a render here. `kPsdPathOpMergeWithPrevious` (-1) means "no operation of its
 // own"; Photoshop writes it for the second and later subpaths of one drawn
 // figure, such as a letter and its counter.
-enum class PsdPathOp {
-  Exclude,             // 0
-  Union,               // 1
-  Subtract,            // 2
-  Intersect,           // 3
-  MergeWithPrevious,   // -1
+// The enumerators carry PSD's OWN numbering, so the values in this enum and
+// the values in the file are the same numbers. They were sequential 0..4 when
+// this header was first written, which made `MergeWithPrevious` 4 while the
+// comment beside it said -1 -- true of the format and false of the code, in
+// the one place a reader would check.
+enum class PsdPathOp : int16_t {
+  Exclude = 0,
+  Union = 1,
+  Subtract = 2,
+  Intersect = 3,
+  MergeWithPrevious = -1,
 };
 
 // One decoded subpath: the geometry, and what the file said to do with it.

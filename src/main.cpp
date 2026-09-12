@@ -4060,6 +4060,14 @@ int main(int argc, char** argv) {
     // `vsms`/`vmsk` path-record block into `core::Path` geometry, checked
     // against known-answer fixtures dumped from real Photoshop files.
     const bool psdVectorPathOk = np::runPsdVectorPathTest();
+    // io/PsdVectorCompose: step 2 of docs/psd-vector-shapes.md, folding a
+    // decoded shape layer's boolean path operations into one compound Path
+    // and fill rule -- refusing Intersect and mixed-Exclude layers by name
+    // rather than guessing.
+    const bool psdVectorComposeOk = np::runPsdVectorComposeTest();
+    // io/PsdVectorStyle: step 3 -- the fill and stroke descriptors, and the
+    // first real Photoshop bytes this tree has fed to io/Descriptor.
+    const bool psdVectorStyleOk = np::runPsdVectorStyleTest();
     // app/FilterOps, ui/MenuModel's Filter and Image menus (docs/
     // reachability-audit.md C1): six of ops/Blur's, ops/Filters' and ops/
     // DocumentTransform's ~93 tested-but-unreachable entry points, wired to
@@ -4302,7 +4310,8 @@ int main(int argc, char** argv) {
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk && pigmentPanelOk &&
-                    openAnyFileOk && psdImportOk && psdVectorPathOk && filterMenuOk && adjustmentMenuOk && tileableOk &&
+                    openAnyFileOk && psdImportOk && psdVectorPathOk && psdVectorComposeOk &&
+                    psdVectorStyleOk && filterMenuOk && adjustmentMenuOk && tileableOk &&
                     selectMenuOk &&
                     chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk && tilePreviewOk &&
                     canvasDimensionsOk &&
