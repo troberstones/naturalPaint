@@ -1,0 +1,302 @@
+# Importing Photoshop shape layers as vector layers
+
+A plan, in the shape `docs/psd-import-gaps.md` is in: every wire layout below
+was dumped from a real file and cross-checked against psd-tools' parse, and
+the claims that could **not** be verified that way are named as such rather
+than left to look verified.
+
+The file is Apple's `App Icon Template.psd` (1024x1024, 16-bit, RGB, PSD
+version 1). It is the motivating case as well as the fixture: it opens today
+and **twelve of its thirteen layers are empty**, because every one of them is
+a shape layer whose raster is deliberately 0x0. The one layer with pixels is
+a smart object.
+
+This is the "opens without error and is confidently wrong" failure mode
+`io/SvgImport.hpp` argues against, reached from the other direction.
+
+## What already exists, and what that buys
+
+`LayerKind::Vector` layers hold `std::vector<VectorShape>` (`core/Layer.hpp`),
+rasterise through `rasterizeVectorLayer()` (`core/VectorRaster.cpp:94`) and
+composite by being rewritten into RGB layers by `MaterializedDocument`. The
+receiving model is finished and shipping:
+
+| PSD shape layer carries | receives it | already works? |
+|---|---|---|
+| closed cubic subpaths | `Path` / `SubPath` / `Anchor`, `core/Path.hpp:107` | yes, and handles are absolute there too |
+| a fill colour | `VectorShape::fill`, a linear straight-alpha `Paint` | yes |
+| fill **disabled** (a guide shape) | `Paint::on == false` — "none" is distinct from alpha 0 | yes, exactly |
+| a stroke with width/cap/join/miter/dash | `StrokeStyle`, `core/PathStroke.hpp:59` | yes, all of it |
+| even-odd or nonzero coverage | `Path::rule`, both first class in `PathRaster.cpp:146` | yes |
+| layer name, opacity, blend, visibility, clipping | generic `Layer` fields | unchanged from the raster path |
+
+**No new layer kind, so no new dirty-tile whitelist entry.** The trap in
+`core/DirtyTiles.cpp:254` — a parametric layer kind whose content is never
+compared is invisible until something else forces a recomposite — is already
+paid for `Vector` by `vectorContentHash()`. A PSD importer that produces
+`LayerKind::Vector` inherits that. (See [[dirtytiles-parametric-whitelist]].)
+
+What is **missing** and cannot be papered over: `Paint` has no gradient and no
+pattern (argued at `core/VectorShape.hpp:33-49`), and there are no boolean
+path operations anywhere in the tree — `app/PathOps.hpp:149`'s eleven verbs
+are `Close … MakeCompound`, and none of them is union or subtract.
+
+## The wire format, as dumped from the file
+
+### Where the geometry is
+
+Per-layer tagged blocks, `vsms` ("vector shape mask", 8 layers here) and
+`vmsk` ("vector mask", 1 layer). Identical payloads:
+
+```
+uint32 version   (3 in every block in this file)
+uint32 flags     (0 in every block in this file)
+N x 26-byte path records
+```
+
+The block length is padded to a multiple of 4, so `192 = 8 + 7*26 + 2` — **the
+record count must be derived from the payload length by division, and the
+remainder discarded**, not assumed to divide evenly.
+
+Record types seen: `6` path fill rule, `8` initial fill rule, `0` closed
+subpath length, `1` closed knot linked, `2` closed knot unlinked. The
+fill-rule records come first, before any subpath. Types 3/4/5 (open subpath)
+and 7 (clipboard) do not occur in this file — an importer still has to decide
+what to do with them, because any file with an open path has them.
+
+### Coordinates
+
+A knot record is `uint16 selector` then six `int32`, in the order
+**(preceding.y, preceding.x, anchor.y, anchor.x, leaving.y, leaving.x)** —
+vertical first, which is the field order most likely to be transposed by
+someone working from memory.
+
+Each `int32` is **signed 8.24 fixed point**: value / 2^24 is a fraction of the
+document dimension. Worked example, verified byte for byte — `PNG/1 - Layer.png`
+knot 0 reads `0x00194000 0x005CA75E 0x00194000 0x00800000 …`, and
+`0x00800000 / 2^24 = 0.5 -> x = 512.0`, `0x00194000 / 2^24 = 0.0986 -> y = 101.0`.
+The whole shape is a circle, centre (512, 357), r = 256.
+
+The handles are absolute positions, which is what `core/Path.hpp`'s `Anchor`
+already stores — no conversion, only a scale.
+
+**Two things this file cannot prove, and a reader must not assume from it:**
+
+1. It is square (1024x1024), so "vertical divided by height, horizontal
+   divided by width" is psd-tools' convention here, not a measurement. A
+   non-square PSD settles it in one dump; get one before shipping.
+2. Every one of its 480 coordinates lies in `[0, 2^24]` exactly, so the
+   **signedness** of the field is never exercised. A shape dragged off-canvas
+   is the fixture that proves it.
+
+### Which way the picture is made: the path operation
+
+**It is not in a descriptor.** Grepping the whole 6.5 MB file for
+`pathOperation` finds nothing. The operation is an `int16` inside the
+26-byte *subpath length* record:
+
+```
+off 0   uint16 selector      (0 = closed, 3 = open)
+off 2   uint16 knot count
+off 4   int16  PATH OPERATION
+off 6   uint16 unknown (1 here)
+off 8   uint32 unknown (0 here)
+off 12  uint32 origination index  (ties to vogk)
+off 16  10 bytes zero
+```
+
+`App Icon Shape`'s two subpath records are `knots=4, op=1, index=0` and
+`knots=44, op=2, index=1` — a full-canvas rectangle **minus** a squircle. Its
+render is 57,136 opaque pixels, the four corners only.
+
+Operation numbering (0 Exclude, 1 Union, 2 Subtract, 3 Intersect, -1 merge
+with previous) is psd-tools' reading. What was actually verified here is that
+op 2 renders as a subtraction; the rest is taken on psd-tools' authority and
+should be treated as such.
+
+### Where the colour is, and the trap in it
+
+Two carriers, and **the common one is not the obvious one**:
+
+- `SoCo` — a solid-colour fill block. One layer in this file has it.
+- `vscg` — "vector stroke content". Eight layers have it and **no `SoCo` at
+  all**. Its payload is a 4-character fill-type tag (`SoCo` here) followed by
+  a byte-identical version word + descriptor.
+
+So an importer that reads only `SoCo` imports one shape out of nine.
+
+`vstk` (vector stroke, 832 bytes on those same eight layers) holds the stroke
+style, and two booleans that decide whether any of this is drawn at all:
+
+```
+strokeEnabled  false   (on every layer in this file)
+fillEnabled    true    -- and FALSE on `PNG/4 - Layer.png`
+strokeStyleLineWidth 1.0 #Pxl, miterLimit 100.0,
+strokeStyleLineCapType strokeStyleButtCap, ...LineJoinType strokeStyleMiterJoin,
+strokeStyleLineAlignment strokeStyleAlignCenter, LineDashSet []
+```
+
+**`PNG/4 - Layer.png` carries an orange `vscg` colour and is invisible**: both
+`fillEnabled` and `strokeEnabled` are false. An importer that reads the colour
+without reading those flags paints a solid orange circle Photoshop does not
+show — a wrong document that looks deliberate. `Paint::on = false` is the
+exact receiving field, so this costs nothing to get right and is silent to get
+wrong.
+
+`strokeStyleLineAlignment` has no receiving field: `PathStroke` centres every
+stroke. Inside/outside alignment is a refusal line, not a guess.
+
+### What must NOT be applied: `vogk`
+
+`vogk` carries a `Trnf` matrix, and applying it is wrong. `App Icon Shape`'s
+`vogk` says `xx=1.032258, tx=-6.193548 …`, while its `keyOriginShapeBBox` and
+its decoded path both say exactly 0..1024. Applying the matrix moves the shape
+off the canvas. `vogk` is **origination history** — how the live parametric
+rectangle was scaled since it was created — and six of the nine path-bearing
+layers have no `vogk` at all yet decode correctly. The path stream is
+self-sufficient; the paths are already in document space.
+
+## The steps
+
+Each step is independently verifiable, and the order puts the two things that
+can be quietly wrong — geometry and fill selection — first.
+
+### 1. Decode the path record stream into `core::Path`
+
+New `io/PsdVectorPath.{hpp,cpp}`: bytes + document size in, `std::vector<Path>`
+(one per subpath group) + the per-subpath operation out. No dependency on the
+rest of the importer, so it can be tested on its own.
+
+- Derive the record count by division; discard the pad remainder.
+- Knots: `(in.y, in.x, pt.y, pt.x, out.y, out.x)`, each `int32 / 2^24`, scaled
+  by document height/width respectively.
+- A closed `SubPath` is `closed = true` with **no repeated final anchor**
+  (`core/Path.hpp:124` — the closing segment is implied). PSD's knot list has
+  the same convention, so this is a straight copy, not a fix-up.
+- Selector 2 (unlinked) versus 1 (linked) maps to `Anchor::smooth`, which is
+  an editor hint and affects nothing geometric.
+- Guard with `pathIsFinite()` (`core/Path.hpp:193`) before anything downstream
+  touches it — the rasteriser's documented precondition, and this is untrusted
+  input.
+
+Fixtures: hand-built record streams in `app/selftest/`, plus the circle above
+as a known-answer test (centre 512,357, r 256, four knots).
+
+### 2. Turn the operations into one `Path` with a fill rule
+
+This is the step with a real limit in it, and it should be sized before it is
+started rather than discovered halfway.
+
+naturalPaint has **one fill rule per `Path` and no boolean ops**. That is
+enough for three of PSD's four operations and not for the fourth:
+
+| PSD ops on a layer | expressible as | sound? |
+|---|---|---|
+| all Union | one compound `Path`, `NonZero` | yes — same-winding overlap unions under nonzero |
+| Union + Subtract | compound `Path`, `NonZero`, subtracted subpaths **reversed** | yes for nested/disjoint holes (the font and SVG convention); **not** where the subtracted region is covered twice |
+| all Exclude | compound `Path`, `EvenOdd` | yes — exclude *is* XOR |
+| any Intersect | nothing here expresses it | **no** |
+
+So: implement the first three, and refuse Intersect (and a layer mixing
+Exclude with the others) by name in `PsdImportResult::warnings`, naming the
+layer. The alternative — a real path booleans pass — is a much larger piece of
+work that belongs to `app/PathOps` and the PATHS panel, not to an importer.
+
+`App Icon Shape` is the Union+Subtract case and is the acceptance test: a
+1024x1024 rectangle minus a squircle must rasterise to ~57,136 opaque pixels
+in the four corners, with the centre transparent.
+
+### 3. Read the fill and stroke descriptors
+
+`io/Descriptor.hpp`'s `parseVersionedActionDescriptor()` takes exactly the
+framing these blocks use, at a fixed offset per key:
+
+| block | skip before the descriptor |
+|---|---|
+| `SoCo` | 0 |
+| `vscg` | 4 (the fill-type tag) |
+| `vstk` | 0 |
+| `vogk` | 4 (a block version word) |
+
+Every osType in these blocks (`Objc doub VlLs long bool UntF enum TEXT`) is in
+the parser's set, and **none of the four it refuses by name** (`obj `, `ObAr`,
+`UnFl`, `Pth `) occurs. That is a check of the grammar, not a run: nobody has
+fed these bytes to that parser yet, and `io/Descriptor.hpp:210-220` is still
+honest that the module is unproven against a real PSD. **Step 3 is where that
+claim gets tested, so do it early and loudly.**
+
+Precedence, matching psd-tools' compositor: `SoCo`, then `PtFl`, then `GdFl`,
+then `vscg` — gated on `vstk.fillEnabled`. Colour arrives as `RGBC` doubles in
+0..255, sRGB-encoded; `Paint::rgba` is linear straight alpha, so it goes
+through `color::srgbDecode()` exactly as `io/SvgImport` does.
+
+`GdFl` and `PtFl` do not occur in this file. They have no receiving field, so
+they are a named refusal (the layer imports with `fill.on = false` and a
+warning naming the layer and the fill kind) rather than a flat colour guessed
+from a gradient stop.
+
+### 4. Emit a Vector layer
+
+In `io/PsdImport.cpp`, where a layer is built today (`layer.kind =
+LayerKind::RGB; layer.rgbTiles.emplace();`), a record carrying vector geometry
+**and** a fill becomes `makeVectorLayer()` with `shapes` instead. Everything
+else — name, opacity, visibility, `clipped`, `alphaLocked`, blend — is
+unchanged, because none of it is per-kind.
+
+Two shapes of input, and they are different features:
+
+- fill block + `vsms`/`vmsk`, raster empty → **a shape layer**. Vector layer.
+- real pixels + `vmsk` → **a raster layer with a vector mask**. That is
+  `Layer::mask` (rasterise the path into it), not a Vector layer, and it is a
+  separate piece of work. `channel -3` is already walked past deliberately at
+  `PsdImport.cpp:1322`.
+
+Shape ids are assigned at the `app/OpenAnyFile.cpp` call site, the way SVG's
+are (`:262`) — the importer leaves `id = 0`.
+
+### 5. The things that will look wrong if step 4 lands alone
+
+- `app/PsdReport.cpp` measures tiles, and a Vector layer has none. Its "EMPTY"
+  column would then be reporting the opposite of the truth. It needs a vector
+  branch — shape count, and the bounds from `vectorShapesBounds()`.
+- `io/PsdExport` round-trips documents back to PSD. What it does with
+  `LayerKind::Vector` today needs checking before this lands, not after: a
+  silent rasterise-on-export is defensible, a silent drop is not.
+- `.npaint` round-trip is already handled — `io/PathSerial`'s `npvec1:` writes
+  these structures today.
+
+### 6. Verification
+
+The oracle is the same one `docs/psd-import-gaps.md` used, plus one addition:
+psd-tools renders vector shapes only with **aggdraw** installed (`pip install
+aggdraw` — it is not a psd-tools dependency and the import error is the only
+hint). With it, every shape layer in this file rasterises, and those renders
+are the per-layer comparison target.
+
+Known-answer renders from this file, all measured:
+
+| layer | expected |
+|---|---|
+| `Background (Do not export)` | 1,048,576 opaque px, (245,245,245) |
+| `PNG/1`, `SVG/1` | circle centre (512,357) r 256, (192,204,216) |
+| `PNG/4` | **nothing drawn** — fill disabled |
+| `App Icon Shape` | 57,136 opaque px, black, four corners only |
+| `SVG/4 - Layer.svg` | **nothing** — it is a plain empty pixel layer with no vector data at all, unlike its three siblings |
+
+That last row is worth keeping: an importer that produced four shapes for the
+SVG group would be wrong in a way that looks right.
+
+Note the fill colours above are the descriptor's own doubles. psd-tools'
+*render* of `PNG/1` comes back (188,203,216) rather than (192,204,216); the
+4-unit drift is somewhere in its compositing and was not chased. **Compare
+geometry and coverage against the render, but compare colour against the
+descriptor.**
+
+## What this does not cover
+
+`lfx2` (layer effects) does not occur in this file at all — zero occurrences
+in 6.5 MB — so nothing here is evidence about it, and `Layer` has no field for
+it either way. Smart objects (`PlLd`/`SoLd`/`lnk2`, the `Grid` layer) import
+as raster today and are out of scope; the embedded file is a 1024x1024 8-bit
+**PSB**, which this build refuses by name, but its flattened raster is in the
+layer data and reads correctly now that ZIP does.

@@ -135,10 +135,38 @@ struct OpenAnyResult {
   // folder, an unreadable file).
   FileKind kind = FileKind::Unknown;
 
+  // Set only on a refusal, and only for a PSD: this file has real layer data
+  // that io/PsdImport declined, and calling again with
+  // `PsdLayerPolicy::Flattened` is a question worth putting to the user.
+  //
+  // A flag rather than a fallback, for the reason the flattened-PSD section
+  // below argues: opening the composite loses every layer in the file, and a
+  // module with no user in front of it must not make that trade on its own.
+  // It is also not a promise that the retry succeeds -- the file may carry no
+  // composite at all, and the fallback reader may decline it too.
+  bool flattenRetryAvailable = false;
+
   // The opened record, when `ok`. Move it into the session; it is not added to
   // one here, because this module has no session to add it to and the caller
   // may want to place it deliberately.
   OpenDocument document;
+};
+
+// What to do about a PSD's layers.
+//
+// `Layered` is the default and the only policy any caller should reach for
+// first: io/PsdImport reads the layers, and on a refusal the open fails with
+// `flattenRetryAvailable` set rather than quietly producing one flat layer.
+//
+// `Flattened` is that refusal's answer, and it exists so the flatten is
+// something a user chose after being told what it costs. It skips
+// io/PsdImport entirely and opens the composite Photoshop stored alongside
+// the layers -- a single-layer document, with every layer, mask, group and
+// blend mode in the file gone. A `noLayerData` PSD takes this path under
+// either policy, because for that file the composite IS the file.
+enum class PsdLayerPolicy {
+  Layered,
+  Flattened,
 };
 
 // Reads `path`, decides from its **bytes** whether it is one of this
@@ -175,7 +203,8 @@ struct OpenAnyResult {
 //
 // `recent`, when non-null, records `path` **on a `.npaint` open only** -- see
 // this header's recent-list section.
-OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* recent = nullptr);
+OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* recent = nullptr,
+                                    PsdLayerPolicy psdLayers = PsdLayerPolicy::Layered);
 
 // --- The command line -------------------------------------------------------
 

@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -144,18 +145,53 @@ std::vector<uint8_t> packBitsEncodeRow(const std::vector<uint8_t>& row) {
   return out;
 }
 
+// A zlib stream carrying `raw` in DEFLATE "stored" blocks.
+//
+// A fixture needs to produce a stream stb_image's inflater accepts, and the
+// one DEFLATE encoding that can be written in a dozen lines is the one that
+// compresses nothing: BTYPE 00, a length, its complement, the bytes. The
+// decoder cannot tell it from a squeezed stream, which is the point --
+// these fixtures test io/PsdImport's plumbing, not stb's Huffman decoder.
+// 0x78 0x01 is the standard header (and 0x7801 % 31 == 0, as the format
+// requires).
+std::vector<uint8_t> zlibStored(const std::vector<uint8_t>& raw) {
+  std::vector<uint8_t> out{0x78, 0x01};
+  size_t i = 0;
+  do {
+    const size_t n = std::min<size_t>(raw.size() - i, 65535);
+    out.push_back(i + n == raw.size() ? 1 : 0);
+    out.push_back(static_cast<uint8_t>(n & 0xFF));
+    out.push_back(static_cast<uint8_t>(n >> 8));
+    out.push_back(static_cast<uint8_t>(~n & 0xFF));
+    out.push_back(static_cast<uint8_t>((~n >> 8) & 0xFF));
+    out.insert(out.end(), raw.begin() + static_cast<long>(i),
+               raw.begin() + static_cast<long>(i + n));
+    i += n;
+  } while (i < raw.size());
+  uint32_t a = 1, b = 0;
+  for (uint8_t byte : raw) {
+    a = (a + byte) % 65521;
+    b = (b + a) % 65521;
+  }
+  const uint32_t adler = (b << 16) | a;
+  for (int shift = 24; shift >= 0; shift -= 8) out.push_back(static_cast<uint8_t>(adler >> shift));
+  return out;
+}
+
 // One channel's worth of raw samples (one uint32 per pixel, row-major, in
 // the sample's own [0, 2^depth) range), encoded exactly as PSD's "Channel
 // image data" table describes: a 2-byte compression code, then the bytes.
-// `compression` 2 writes a compression code of 2 (ZIP) with a few
-// deliberately-arbitrary payload bytes after it -- io/PsdImport.cpp refuses
-// on the compression code alone, so what follows it is never read and its
-// content does not matter.
+//
+// `compression` 3 (ZIP with prediction) encodes the deltas io/PsdImport.cpp
+// has to accumulate back: per row, over SAMPLES rather than bytes, wrapping.
+// Any code this function is handed other than 0, 1, 2 or 3 is written
+// through verbatim with arbitrary payload bytes -- the importer refuses on
+// the code alone, so what follows it is never read.
 std::vector<uint8_t> encodeChannel(const std::vector<uint32_t>& samples, uint32_t width,
                                    uint32_t height, int bytesPerSample, int compression) {
   ByteWriter w;
   w.u16(static_cast<uint32_t>(compression));
-  if (compression == 2) {
+  if (compression < 0 || compression > 3) {
     for (int i = 0; i < 8; ++i) w.u8(0xAB);
     return w.b;
   }
@@ -167,6 +203,28 @@ std::vector<uint8_t> encodeChannel(const std::vector<uint32_t>& samples, uint32_
   }
   if (compression == 0) {
     w.bytes(raw);
+    return w.b;
+  }
+  if (compression == 2 || compression == 3) {
+    if (compression == 3 && width >= 2) {
+      const size_t rowBytes = static_cast<size_t>(width) * static_cast<size_t>(bytesPerSample);
+      for (uint32_t y = 0; y < height; ++y) {
+        uint8_t* row = raw.data() + static_cast<size_t>(y) * rowBytes;
+        for (uint32_t x = width - 1; x >= 1; --x) {
+          if (bytesPerSample == 2) {
+            uint8_t* s = row + static_cast<size_t>(x) * 2;
+            const uint16_t here = static_cast<uint16_t>((s[0] << 8) | s[1]);
+            const uint16_t prev = static_cast<uint16_t>((s[-2] << 8) | s[-1]);
+            const uint16_t d = static_cast<uint16_t>(here - prev);
+            s[0] = static_cast<uint8_t>(d >> 8);
+            s[1] = static_cast<uint8_t>(d & 0xFF);
+          } else {
+            row[x] = static_cast<uint8_t>(row[x] - row[x - 1]);
+          }
+        }
+      }
+    }
+    w.bytes(zlibStored(raw));
     return w.b;
   }
   // RLE: `height` big-endian u16 row-lengths, then the concatenated
@@ -844,14 +902,101 @@ bool runPsdImportTest() {
             "C4: an inverted layer rectangle (bottom < top) refuses cleanly, named as such");
     }
 
-    // C5: ZIP compression -- refused by name, never decoded into garbage.
+    // C5: ZIP (2) and ZIP-with-prediction (3) decode to the same pixels raw
+    // would have. Prediction is the one that can be wrong quietly, so every
+    // fixture here varies ALONG THE ROW: a constant row's deltas are all
+    // zero after the first sample, which a broken accumulator reproduces by
+    // accident. Row 1 repeats row 0 deliberately -- the running sum restarts
+    // at every row, and an accumulator that ran on past the row boundary
+    // would turn the second row into double the first.
     {
-      LayerSpec zip = good;
-      zip.compression = 2;
-      const std::vector<uint8_t> bytes = buildPsd(4, 4, 8, {zip});
+      const std::vector<uint32_t> ramp8 = {10, 40, 90, 160, 10, 40, 90, 160,
+                                           7,  200, 3, 255, 7, 200, 3, 255};
+      for (int compression : {2, 3}) {
+        LayerSpec zip = good;
+        zip.compression = compression;
+        zip.channels = {{0, ramp8}, {-1, std::vector<uint32_t>(16, 255)}};
+        const std::vector<uint8_t> bytes = buildPsd(4, 4, 8, {zip});
+        const PsdImportResult r = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
+        bool exact = r.ok && r.document.layers.size() == 1;
+        for (int32_t y = 0; exact && y < 4; ++y)
+          for (int32_t x = 0; exact && x < 4; ++x) {
+            const std::array<float, 4> px = pixelAt(r.document.layers[0], x, y);
+            exact = nearf(px[0], srgbDecode(static_cast<float>(ramp8[static_cast<size_t>(y) * 4 +
+                                                                     static_cast<size_t>(x)]) /
+                                            255.0f),
+                          kTol);
+          }
+        check(exact, compression == 2
+                         ? "C5: an 8-bit ZIP-compressed channel decodes to the raw values"
+                         : "C5: an 8-bit ZIP-with-prediction channel decodes to the raw values");
+      }
+    }
+
+    // C5-16: the case that actually occurs in the wild. Photoshop writes
+    // ZIP-with-prediction for 16-bit layer data as a matter of course, and
+    // 16-bit prediction accumulates over SAMPLES, not bytes -- a decoder
+    // that ran the delta over the two halves of each uint16 separately
+    // would still produce plausible-looking values, so these samples are
+    // chosen to cross a byte boundary (0x00FF -> 0x0100) where that
+    // mistake diverges.
+    {
+      const std::vector<uint32_t> ramp16 = {0x00FF, 0x0100, 0x8000, 0xFFFF,
+                                            0x0001, 0x7FFF, 0x8001, 0x0002,
+                                            0xFFFF, 0x0000, 0xFFFF, 0x0000,
+                                            0x1234, 0x5678, 0x9ABC, 0xDEF0};
+      LayerSpec zip;
+      zip.top = 0; zip.left = 0; zip.bottom = 4; zip.right = 4;
+      zip.pascalName = "L16";
+      zip.compression = 3;
+      zip.channels = {{0, ramp16}, {-1, std::vector<uint32_t>(16, 0xFFFF)}};
+      const std::vector<uint8_t> bytes = buildPsd(4, 4, 16, {zip});
       const PsdImportResult r = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
-      check(!r.ok && !r.noLayerData && contains(r.error, "ZIP") && contains(r.error, "zlib"),
-            "C5: ZIP-compressed channel data is refused by name, not silently decoded");
+      bool exact = r.ok && r.document.layers.size() == 1;
+      for (int32_t y = 0; exact && y < 4; ++y)
+        for (int32_t x = 0; exact && x < 4; ++x) {
+          const std::array<float, 4> px = pixelAt(r.document.layers[0], x, y);
+          exact = nearf(px[0],
+                        srgbDecode(static_cast<float>(
+                                       ramp16[static_cast<size_t>(y) * 4 + static_cast<size_t>(x)]) /
+                                   65535.0f),
+                        kTol);
+        }
+      check(exact, "C5-16: a 16-bit ZIP-with-prediction channel -- what Photoshop actually "
+                   "writes -- decodes to the raw values, accumulating over samples not bytes");
+    }
+
+    // C5-bad: a compression code this module does not know, and a ZIP
+    // stream that inflates short of the rectangle it claims to fill.
+    // Neither may become pixels.
+    {
+      LayerSpec unknown = good;
+      unknown.compression = 7;
+      const std::vector<uint8_t> bytes = buildPsd(4, 4, 8, {unknown});
+      const PsdImportResult r = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
+      check(!r.ok && !r.noLayerData && contains(r.error, "compression mode 7"),
+            "C5-bad: an unknown compression code is refused by name, not guessed at");
+
+      LayerSpec truncated = good;
+      truncated.compression = 2;
+      std::vector<uint8_t> shortBytes = buildPsd(4, 4, 8, {truncated});
+      // Flip the length of the stored DEFLATE block (and its complement) so
+      // the stream inflates to one byte instead of sixteen. The layer's
+      // channel is the only ZIP stream in the file, so the pattern below is
+      // unambiguous: 0x78 0x01 0x01 <len16le> <~len16le>.
+      const std::array<uint8_t, 5> want = {0x78, 0x01, 0x01, 0x10, 0x00};
+      auto at = std::search(shortBytes.begin(), shortBytes.end(), want.begin(), want.end());
+      check(at != shortBytes.end(), "C5-bad setup: the fixture's stored-block header is where "
+                                    "this assertion expects it");
+      if (at != shortBytes.end()) {
+        at[3] = 0x01; at[4] = 0x00;   // LEN  = 1
+        at[5] = 0xFE; at[6] = 0xFF;   // NLEN = ~1
+        const PsdImportResult rs =
+            importPsd(std::span<const uint8_t>(shortBytes.data(), shortBytes.size()));
+        check(!rs.ok && !rs.noLayerData && contains(rs.error, "ZIP"),
+              "C5-bad: a ZIP stream that inflates short of its rectangle refuses by name, "
+              "rather than leaving the rest of the layer at whatever the buffer held");
+      }
     }
 
     // C6: PSB (version 2) -- refused by name, never misparsed as PSD.
@@ -947,73 +1092,46 @@ bool runPsdImportTest() {
     }
 
     // D3: a PSD that DOES carry real layer data, in a shape this build
-    // cannot read (ZIP) -- refused outright, NOT silently opened flattened.
-    // This is the one behavioural distinction that matters most: D2's
-    // success and this refusal must not be confusable from the caller's
-    // side.
+    // cannot read -- refused outright, NOT silently opened flattened. This
+    // is the one behavioural distinction that matters most: D2's success and
+    // this refusal must not be confusable from the caller's side.
+    //
+    // The fixture used to be a ZIP-compressed layer. ZIP is read now, so the
+    // unreadable shape here is an unknown compression code instead -- which
+    // is the better fixture anyway, because it stands for every future
+    // compression Adobe adds rather than for one this build happened not to
+    // have caught up with.
     {
-      LayerSpec zip;
-      zip.top = 0; zip.left = 0; zip.bottom = 2; zip.right = 2;
-      zip.compression = 2;
-      zip.channels = {{0, {1, 2, 3, 4}}};
-      const std::string path = writeFile("unreadable.psd", buildPsd(2, 2, 8, {zip}));
+      LayerSpec unreadable;
+      unreadable.top = 0; unreadable.left = 0; unreadable.bottom = 2; unreadable.right = 2;
+      unreadable.compression = 7;
+      unreadable.channels = {{0, {1, 2, 3, 4}}};
+      const std::string path = writeFile("unreadable.psd", buildPsd(2, 2, 8, {unreadable}));
       const OpenAnyResult r = openAnyFileAsDocument(path);
-      check(!r.ok, "D3: a PSD with real but unreadable (ZIP) layer data is refused outright");
-      check(!r.ok && contains(r.status, "ZIP"),
+      check(!r.ok, "D3: a PSD with real but unreadable layer data is refused outright");
+      check(!r.ok && contains(r.status, "compression mode 7"),
             "D3: the refusal names the reason, not a generic 'damaged file' sentence");
+      check(!r.ok && r.flattenRetryAvailable,
+            "D3: and it offers the flattened retry -- the refusal stands, but the caller is "
+            "told there is a second thing it could ask for");
     }
 
-    // D3-control: is D3's `!r.ok` assertion actually sensitive to
-    // app/OpenAnyFile.cpp's "refuse outright, don't fall back" branch, or
-    // would it stay green even if that branch were deleted? A sabotage run
-    // (forcing that branch to fall through to the flattened path instead of
-    // refusing) answered this, and the answer has a real nuance worth
-    // recording rather than silently accepting or silently "fixing" with a
-    // fixture that turned out not to fix anything -- see below.
+    // D4: the flattened retry, and the proof that the policy actually
+    // reaches a different decoder.
     //
-    // First attempt: give D3's fixture a VALID trailing composite (raw RGB,
-    // buildFlatPsd's own proven shape) after its ZIP layer, on the theory
-    // that a real Photoshop "Maximize Compatibility" file has exactly this
-    // shape, so THAT is the fixture that would expose a silent-flatten
-    // regression. Rebuilding with the sabotage in place and this richer
-    // fixture, `!r.ok` **still stayed green** -- the sabotage bypasses
-    // io/PsdImport's refusal fine, but the flattened fallback (this build's
-    // stb_image is compiled STBI_ONLY_PNG/JPEG/BMP/TGA -- paint/Palette.cpp's
-    // own comment says why -- so PSD never reaches stb at all; every PSD
-    // flatten in this build is OpenImageIO's PSD reader or nothing) ALSO
-    // declined the file, independently of the sabotage, for an unrelated
-    // reason: confirmed directly below, OpenImageIO's own linked PSD reader
-    // refuses a non-empty layer section containing a ZIP-compressed channel
-    // outright, even though only the composite subimage was ever requested
-    // -- almost certainly the same "no zlib" limitation io/PsdImport.cpp
-    // itself has, since OIIO's PSD reader evidently walks the full layer
-    // list structurally before any subimage can be read. A RAW-compressed
-    // control variant of the identical shape, run through the same
-    // fallback call, succeeds -- ruling out "OIIO can't flatten ANY
-    // non-empty layer section" as the explanation, and pinning it on ZIP
-    // specifically.
-    //
-    // So: in *this* build, there is no fixture where "io/PsdImport refuses
-    // for ZIP" and "the fallback would have silently succeeded" are both
-    // true at once -- both readers agree ZIP is unreadable, which is a
-    // genuine (if narrow) mitigation, not a gap this file should paper over
-    // with a fixture engineered to look like it proves something it does
-    // not. D3's `!r.ok` therefore is NOT sabotage-discriminating on its own
-    // for this specific refusal reason in this specific build (only the
-    // message-content assertion is); it still has real value as a basic
-    // "the branch exists at all" check, and as the one place a REGRESSION
-    // in OIIO's own ZIP handling (should this project's OpenImageIO ever
-    // gain zlib) would surface as a behaviour change worth re-examining.
-    // The two checks below make that reasoning falsifiable by running it,
-    // rather than trusting this comment: D3-control 1 is the same claim
-    // this comment makes about ZIP; D3-control 2 is the RAW-compression
-    // control that rules out the alternative explanation.
+    // One file, two policies, two DIFFERENT pictures: the layer section says
+    // one colour and the trailing composite says another, so an assertion on
+    // the pixels can tell which reader produced the document. A test that
+    // only counted layers would pass on an implementation that ignored the
+    // policy entirely, since both readers produce exactly one layer here.
     {
-      LayerSpec zip;
-      zip.top = 0; zip.left = 0; zip.bottom = 2; zip.right = 2;
-      zip.compression = 2;
-      zip.channels = {{0, {1, 2, 3, 4}}};
-      std::vector<uint8_t> bytes = buildPsd(2, 2, 8, {zip});
+      LayerSpec fromLayers;
+      fromLayers.top = 0; fromLayers.left = 0; fromLayers.bottom = 2; fromLayers.right = 2;
+      fromLayers.compression = 0;
+      fromLayers.channels = {{0, std::vector<uint32_t>(4, 200)},
+                             {1, std::vector<uint32_t>(4, 200)},
+                             {2, std::vector<uint32_t>(4, 200)}};
+      std::vector<uint8_t> bytes = buildPsd(2, 2, 8, {fromLayers});
       // Header channel count sits at a fixed offset -- 4 ("8BPS") + 2
       // (version) + 6 (reserved) = byte 12, big-endian u16 -- patched from
       // buildPsd's own hardcoded 4 down to 3 to match the RGB-only (no
@@ -1023,42 +1141,88 @@ bool runPsdImportTest() {
       bytes[kHeaderChannelCountOffset + 1] = 3;
       ByteWriter composite;
       composite.u16(0);  // Image Data Section compression: raw
-      const std::array<std::array<uint8_t, 3>, 4> compositePx = {
-          {{9, 8, 7}, {6, 5, 4}, {3, 2, 1}, {0, 1, 2}}};
       for (int c = 0; c < 3; ++c)
-        for (const auto& px : compositePx) composite.u8(px[static_cast<size_t>(c)]);
+        for (int px = 0; px < 4; ++px) composite.u8(40);
       bytes.insert(bytes.end(), composite.b.begin(), composite.b.end());
-      std::string err;
-      const std::optional<Document> viaFallback =
-          openImageAsDocument(bytes.data(), bytes.size(), &err);
-      check(!viaFallback.has_value(),
-            "D3-control 1: OpenImageIO's OWN linked PSD reader, asked directly to flatten a "
-            "PSD with a non-empty ZIP-compressed layer section, ALSO declines it -- confirming "
-            "there is no reachable 'silently succeeds if the refusal is skipped' outcome for "
-            "THIS refusal reason in THIS build");
+      const std::string path = writeFile("two-readers.psd", bytes);
+
+      const OpenAnyResult layered = openAnyFileAsDocument(path);
+      const bool layersWon = layered.ok && layered.document.document.layers.size() == 1 &&
+                             nearf(pixelAt(layered.document.document.layers[0], 0, 0)[0],
+                                   srgbDecode(200.0f / 255.0f), kTol);
+      check(layersWon, "D4 setup: the default policy reads the LAYER section (its own colour)");
+      check(layered.ok && !layered.flattenRetryAvailable,
+            "D4: a PSD that opened layered does not offer a flatten retry -- the flag is set "
+            "by the refusal, not by the format");
+
+      const OpenAnyResult flat =
+          openAnyFileAsDocument(path, nullptr, PsdLayerPolicy::Flattened);
+      check(flat.ok && flat.document.document.layers.size() == 1 &&
+                nearf(pixelAt(flat.document.document.layers[0], 0, 0)[0],
+                      srgbDecode(40.0f / 255.0f), kTol),
+            "D4: PsdLayerPolicy::Flattened reads the COMPOSITE instead -- a different decoder, "
+            "provable from the pixels rather than from the layer count, which is 1 either way");
+      check(flat.ok && contains(flat.status, "Flattened"),
+            "D4: and the status line says so, on the one open where the document is not what "
+            "the file contains");
+      bool saidWhatWasLost = false;
+      for (const std::string& w : flat.warnings)
+        if (contains(w, "layer")) saidWhatWasLost = true;
+      check(saidWhatWasLost,
+            "D4: a warning names what a flatten costs, rather than letting a one-layer "
+            "document look like the whole file");
     }
+
+    // D5: the refusal that cannot see a layer at all, because it happens at
+    // the file header -- a colour mode this build does not read. The
+    // flattened retry is the ONLY thing this file can be offered, and
+    // OpenImageIO reads it happily, so refusing without offering would have
+    // been refusing a file this build can in fact show.
     {
-      LayerSpec raw;
-      raw.top = 0; raw.left = 0; raw.bottom = 2; raw.right = 2;
-      raw.compression = 0;
-      raw.channels = {{0, {10, 20, 30, 40}}, {1, {10, 20, 30, 40}}, {2, {10, 20, 30, 40}}};
-      std::vector<uint8_t> bytes = buildPsd(2, 2, 8, {raw});
-      bytes[12] = 0; bytes[13] = 3;  // same header-channel-count patch as above
-      ByteWriter composite;
-      composite.u16(0);
-      const std::array<std::array<uint8_t, 3>, 4> compositePx = {
-          {{9, 8, 7}, {6, 5, 4}, {3, 2, 1}, {0, 1, 2}}};
-      for (int c = 0; c < 3; ++c)
-        for (const auto& px : compositePx) composite.u8(px[static_cast<size_t>(c)]);
-      bytes.insert(bytes.end(), composite.b.begin(), composite.b.end());
-      std::string err;
-      const std::optional<Document> viaFallback =
-          openImageAsDocument(bytes.data(), bytes.size(), &err);
-      check(viaFallback.has_value() && viaFallback->layers.size() == 1,
-            "D3-control 2: the identical shape with a RAW-compressed (not ZIP) layer section "
-            "DOES flatten successfully through the same fallback call -- so control 1's refusal "
-            "is specific to ZIP, not a general 'OIIO can't flatten any non-empty layer section' "
-            "limitation that would have made control 1 vacuous");
+      ByteWriter gray;
+      gray.str4("8BPS");
+      gray.u16(1);
+      for (int i = 0; i < 6; ++i) gray.u8(0);
+      gray.u16(1);  // one channel
+      gray.u32(2);  // height
+      gray.u32(2);  // width
+      gray.u16(8);
+      gray.u16(1);  // colour mode: Grayscale
+      gray.u32(0);  // Color Mode Data
+      gray.u32(0);  // Image Resources
+      gray.u32(0);  // Layer and Mask Information: none
+      gray.u16(0);  // Image Data Section compression: raw
+      for (uint8_t v : {uint8_t{10}, uint8_t{60}, uint8_t{120}, uint8_t{250}}) gray.u8(v);
+      const std::string path = writeFile("grayscale.psd", gray.b);
+
+      const OpenAnyResult layered = openAnyFileAsDocument(path);
+      check(!layered.ok && contains(layered.status, "Grayscale"),
+            "D5: a Grayscale PSD is refused by the layered reader, by name");
+      check(!layered.ok && layered.flattenRetryAvailable,
+            "D5: and it offers the flattened retry, because a refusal at the header is still "
+            "a refusal with something left to try");
+
+      const OpenAnyResult flat =
+          openAnyFileAsDocument(path, nullptr, PsdLayerPolicy::Flattened);
+      check(flat.ok && flat.document.document.layers.size() == 1,
+            "D5: and the retry opens it -- so the offer was not an empty one");
+    }
+
+    // D6: the other side of D4's and D5's offer -- a refusal that is not a
+    // PSD at all must not carry it. Flattening means "read this PSD's
+    // composite instead", and a dialog offering that for a truncated PNG
+    // would be offering something no code path can do.
+    //
+    // Written after a sabotage of the flag's initial value turned out to
+    // change nothing that any assertion could see: D4's negative check is
+    // about the SUCCESS path, and nothing was watching the refusal path for
+    // formats that have no second reader.
+    {
+      const std::string path = writeFile("not-an-image.bin",
+                                         std::vector<uint8_t>{0x00, 0x01, 0x02, 0x03, 0x04});
+      const OpenAnyResult r = openAnyFileAsDocument(path);
+      check(!r.ok && !r.flattenRetryAvailable,
+            "D6: a refusal that is not a PSD does not offer the flattened retry");
     }
 
     std::filesystem::remove_all(scratch, ec);

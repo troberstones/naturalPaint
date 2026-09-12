@@ -113,20 +113,28 @@
 // else in the file is trusted, so a PSB is refused **by name, immediately**
 // -- "this build reads PSD (version 1) only" -- never partially parsed.
 //
-// **Compression.** Raw (0) and RLE/PackBits (1) are read. **ZIP (2) and
-// ZIP-with-prediction (3) are refused by name, for the whole file, rather
-// than attempted.** This project has no zlib dependency anywhere in its
-// tree (`grep -r zlib` finds nothing), and the brief for this module says
-// explicitly to keep it dependency-free -- vendoring zlib (or a from-scratch
-// DEFLATE decoder, a much larger and much easier to get subtly wrong
-// undertaking than PackBits) to read a compression mode most real-world PSD
-// exporters do not even default to was judged not worth the weight for a
-// first landing. Refused **for the whole file**, not silently skipped for
-// just the ZIP-compressed layer: a document that opened missing one layer
-// with no indication would look like it worked, and this codebase's
-// existing refusal discipline (io/Descriptor.hpp: "a refusal is total";
-// io/NpaintFile: "no half-built document") is followed here rather than
-// invented fresh.
+// **Compression.** All four layer-channel compressions are read: raw (0),
+// RLE/PackBits (1), ZIP (2) and ZIP-with-prediction (3).
+//
+// ZIP was refused by name until the premise behind that refusal was
+// re-checked and found false. The argument had been "this project has no
+// zlib dependency anywhere in its tree", and vendoring one to read a mode
+// most exporters do not default to was not worth the weight. But
+// paint/Palette.cpp compiles stb_image with PNG support, PNG *is* DEFLATE,
+// and so `stbi_zlib_decode_buffer()` has been linked into this binary all
+// along. The cost was an include, not a dependency.
+//
+// The mode is also not as rare as that first landing assumed. Photoshop
+// writes ZIP-with-prediction for **16-bit** layer data as a matter of
+// course, so every 16-bit layered PSD hit the refusal -- which is how this
+// was found: Apple's 16-bit "App Icon Template.psd" refused to open at all,
+// on one mask channel.
+//
+// Prediction is undone over samples, not bytes -- see `undoPrediction()` in
+// the .cpp, verified against psd-tools on that file's eight predicted
+// channels. 32-bit's prediction is a different (byte-planar) scheme and is
+// not implemented; it cannot be reached, because 32-bit depth is refused at
+// the file header.
 //
 // **Colour mode.** RGB (mode 3) only. Bitmap, Grayscale, Indexed, CMYK,
 // Multichannel, Duotone and Lab are refused by name, naming the mode

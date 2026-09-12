@@ -23,9 +23,12 @@ Photoshop's own composite. Two causes, and one layer carries most of it:
 
 ## The sample files, and what they can and cannot test
 
-All three are **8-bit, RGB (mode 3), version 1 (PSD not PSB), RLE**. 16-bit,
-32-bit, ZIP, PSB and non-RGB modes stay fixture-only and are refused by name;
-nothing below changes that.
+All three are **8-bit, RGB (mode 3), version 1 (PSD not PSB), RLE**. 32-bit,
+PSB and non-RGB modes stay fixture-only and are refused by name; nothing below
+changes that. ZIP and ZIP-with-prediction are read as of the change that
+landed alongside this note — verified against a real 16-bit file (Apple's
+`App Icon Template.psd`, eight predicted channels) with psd-tools as the
+oracle, not against any of the three files in this table.
 
 | feature | `Lineart4_crop` | `Testforautoflats 2` | `Peter_…fire` |
 |---|---|---|---|

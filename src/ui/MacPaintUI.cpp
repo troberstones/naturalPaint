@@ -8785,6 +8785,11 @@ DocPathAction g_docPathInFlight = DocPathAction::None;
 DocPathAction g_docPathProblemAction = DocPathAction::None;
 constexpr const char* kDocPathProblemPopup = "File problem";
 
+// Set when that popup has to be raised from inside a frame that is already
+// drawing it -- the flattened-PSD retry failing, which needs to put the
+// dialog back up with the retry's own reason in it.
+bool g_docPathProblemRequested = false;
+
 // The word for an action, in the user's terms. One place, because it is now
 // read by three: the panel's title and accept button (through
 // ui/FileDialog's plan), the failure popup's heading, and the status line.
@@ -8827,10 +8832,45 @@ void requestBrushLibraryImport() {
   g_docPathRequested = true;
 }
 
+// The PSD whose layers were refused and whose composite the "File problem"
+// popup is therefore offering to open instead, or empty when the last
+// failure was an ordinary one.
+//
+// The path is kept rather than a bool because the retry has to re-open the
+// same file, and by then ui/FileDialog's picked-path is long gone.
+std::string g_flattenRetryPath;
+
+// One open, whichever of the two places asked for it: File > Open's own
+// path, and the "Open Flattened" answer to a refusal.
+void openFileIntoSession(AppState& st, const std::string& path, PsdLayerPolicy psdLayers) {
+  OpenAnyResult opened = openAnyFileAsDocument(path, &st.recentDocuments, psdLayers);
+  g_docStatus = opened.status;
+  for (const std::string& w : opened.warnings) g_docStatus += "\n! " + w;
+  g_docPathActionOk = opened.ok;
+  // Offered only when app/OpenAnyFile says the file has layers it could not
+  // read -- never inferred here from "a PSD failed", which would put the
+  // button up for a corrupt file whose composite is just as unreadable.
+  g_flattenRetryPath = opened.flattenRetryAvailable ? path : std::string();
+  if (opened.ok) {
+    st.documents.add(std::move(opened.document));
+    // app/OpenAnyFile has already decided *whether* to add a recent entry
+    // (its header says why a picture cannot go in that list yet); this is
+    // only the write-through to disk, kept on the one success path so it
+    // stays beside the save-as and save-a-copy ones below.
+    std::string saveErr;
+    st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
+  }
+}
+
 void applyDocumentPathAction(AppState& st, DocPathAction action, const std::string& path) {
   OpenDocument* doc = st.documents.active();
   DocumentOpResult r;
   g_docPathActionOk = false;
+  // Beside `g_docPathActionOk` and for the same reason: the failure popup is
+  // shared with Save As and Save a Copy, and a flatten offer left over from
+  // an earlier refused Open would otherwise appear on a failed *save*, where
+  // pressing it would open a file the user was trying to write.
+  g_flattenRetryPath.clear();
   switch (action) {
     case DocPathAction::Open: {
       // **Any file this build can read, dispatched on its contents.**
@@ -8851,19 +8891,7 @@ void applyDocumentPathAction(AppState& st, DocPathAction action, const std::stri
       // nothing, and app/OpenAnyFile's own sentence already names the file,
       // what kind of thing it turned out to be, and -- for a picture -- that
       // the new document is bound to no file yet.
-      OpenAnyResult opened = openAnyFileAsDocument(path, &st.recentDocuments);
-      g_docStatus = opened.status;
-      for (const std::string& w : opened.warnings) g_docStatus += "\n! " + w;
-      g_docPathActionOk = opened.ok;
-      if (opened.ok) {
-        st.documents.add(std::move(opened.document));
-        // app/OpenAnyFile has already decided *whether* to add a recent entry
-        // (its header says why a picture cannot go in that list yet); this is
-        // only the write-through to disk, kept on the one success path so it
-        // stays beside the save-as and save-a-copy ones below.
-        std::string saveErr;
-        st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
-      }
+      openFileIntoSession(st, path, PsdLayerPolicy::Layered);
       return;
     }
     case DocPathAction::SaveAs:
@@ -9175,27 +9203,50 @@ void drawDocumentDialogs(AppState& st) {
       }
     }
   }
+  if (g_docPathProblemRequested) {
+    g_docPathProblemRequested = false;
+    ImGui::OpenPopup(kDocPathProblemPopup);
+  }
   if (beginDialog(kDocPathProblemPopup)) {
+    // The two shapes of this dialog. An ordinary failure has one thing to
+    // offer -- another file -- so that is the commit button. A PSD whose
+    // layers were refused has a better one, and it takes the commit slot
+    // because it is the answer the user almost always wants and the only
+    // one Return should reach.
+    const bool offerFlatten = !g_flattenRetryPath.empty();
     dialogText("Could not %s that file.", docPathActionVerb(g_docPathProblemAction));
     dialogStatusLine(DialogStatus::Error, g_docStatus);
+    if (offerFlatten) {
+      dialogHint("Photoshop also stores a flattened picture of the whole document. That can "
+                 "be opened instead -- as a single layer, with the layers, masks, groups and "
+                 "blend modes left behind. The file itself is not changed either way.");
+    }
     DialogFooter footer;
-    footer.commit = "Choose Another File\xe2\x80\xa6";
-    switch (dialogFooter(footer)) {
-      case DialogAction::Commit: {
-        // Read before the popup closes; `g_docPathProblemAction` is not
-        // cleared by closing, but the request below overwrites
-        // `g_docPathAction` and the two are easy to confuse from a distance.
-        const DocPathAction retry = g_docPathProblemAction;
-        ImGui::CloseCurrentPopup();
-        g_docPathAction = retry;
-        g_docPathRequested = true;
-        break;
-      }
-      case DialogAction::Cancel:
-        ImGui::CloseCurrentPopup();
-        break;
-      default:
-        break;
+    footer.commit = offerFlatten ? "Open Flattened" : "Choose Another File\xe2\x80\xa6";
+    footer.alternate = offerFlatten ? "Choose Another File\xe2\x80\xa6" : nullptr;
+    const DialogAction chose = dialogFooter(footer);
+    // Read before the popup closes; `g_docPathProblemAction` is not cleared
+    // by closing, but the request below overwrites `g_docPathAction` and the
+    // two are easy to confuse from a distance.
+    const DocPathAction retry = g_docPathProblemAction;
+    const std::string flattenPath = g_flattenRetryPath;
+    if (chose == DialogAction::Commit && offerFlatten) {
+      ImGui::CloseCurrentPopup();
+      // Clears `g_flattenRetryPath` on its way through, so a second refusal
+      // -- the composite is missing, or unreadable too -- cannot offer the
+      // same button again and loop.
+      openFileIntoSession(st, flattenPath, PsdLayerPolicy::Flattened);
+      // Next frame, not this one: re-opening a popup on the frame it is
+      // being closed is a fight with ImGui's own popup stack, and this is
+      // the same defer-by-a-flag route every other opener here takes.
+      g_docPathProblemRequested = !g_docPathActionOk;
+      if (g_docPathProblemRequested) g_docPathProblemAction = retry;
+    } else if (chose == DialogAction::Commit || chose == DialogAction::Alternate) {
+      ImGui::CloseCurrentPopup();
+      g_docPathAction = retry;
+      g_docPathRequested = true;
+    } else if (chose == DialogAction::Cancel) {
+      ImGui::CloseCurrentPopup();
     }
     endDialog();
   }
