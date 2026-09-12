@@ -359,6 +359,50 @@ std::vector<uint8_t> hexBlock(const char* hex) {
   return out;
 }
 
+// --- Image Resources fixtures (section J: guides) --------------------------
+
+// One Image Resources block: `8BIM` + id + an empty Pascal name (every real
+// file this module reads also writes an empty one) padded to an even total
+// length, then a u32 data length and `data`, itself padded to even --
+// io/PsdImport.cpp's own `parseImageResources()` reads exactly this shape.
+std::vector<uint8_t> imageResourceBlock(uint16_t id, const std::vector<uint8_t>& data) {
+  ByteWriter w;
+  w.str4("8BIM");
+  w.u16(id);
+  w.u8(0);  // empty Pascal name: 1 length byte, 0 name bytes -- odd, so
+  w.u8(0);  // one pad byte follows, making "two bytes of 0" per the spec
+  w.u32(static_cast<uint32_t>(data.size()));
+  w.bytes(data);
+  if (data.size() % 2 != 0) w.u8(0);
+  return w.b;
+}
+
+// Resource 1032's own payload. `guides` is (position in document pixels,
+// vertical?) -- converted here to the file's 32nds-of-a-pixel integer and
+// direction byte, the inverse of io/PsdImport.cpp's `parseGuidesResource()`.
+std::vector<uint8_t> guidesResourcePayload(const std::vector<std::pair<float, bool>>& guides) {
+  ByteWriter w;
+  w.u32(1);    // version
+  w.u32(576);  // horizontal grid cycle -- Photoshop's default 18px * 32
+  w.u32(576);  // vertical grid cycle, same default
+  w.u32(static_cast<uint32_t>(guides.size()));
+  for (const auto& [posPx, vertical] : guides) {
+    w.u32(static_cast<uint32_t>(posPx * 32.0f + 0.5f));
+    w.u8(vertical ? 0 : 1);  // 0 = vertical, 1 = horizontal (io/PsdImport.hpp)
+  }
+  return w.b;
+}
+
+// An `lclr` (sheet colour label) block: a u16 index, then six reserved zero
+// bytes -- io/PsdImport.cpp's own comment on the shape names the five real
+// files this was measured against.
+std::vector<uint8_t> lclrBlock(uint16_t index) {
+  ByteWriter w;
+  w.u16(index);
+  for (int i = 0; i < 6; ++i) w.u8(0);
+  return w.b;
+}
+
 // Builds a whole PSD file's bytes from a list of `LayerSpec`s, following
 // Adobe's published layout exactly (io/PsdImport.hpp's header cites the
 // source): header, empty Color Mode Data, empty Image Resources, then the
@@ -375,7 +419,8 @@ std::vector<uint8_t> buildPsd(uint32_t width, uint32_t height, uint16_t depth,
                               const std::vector<LayerSpec>& layers, uint16_t version = 1,
                               uint16_t colorMode = 3, bool omitLayerSection = false,
                               std::optional<int16_t> layerCountOverride = std::nullopt,
-                              bool inLr16Block = false, bool blockBeforeLr16 = false) {
+                              bool inLr16Block = false, bool blockBeforeLr16 = false,
+                              const std::vector<uint8_t>& imageResources = {}) {
   ByteWriter w;
   w.str4("8BPS");
   w.u16(version);
@@ -386,7 +431,8 @@ std::vector<uint8_t> buildPsd(uint32_t width, uint32_t height, uint16_t depth,
   w.u16(depth);
   w.u16(colorMode);
   w.u32(0);  // Color Mode Data length
-  w.u32(0);  // Image Resources length
+  w.u32(static_cast<uint32_t>(imageResources.size()));  // Image Resources length
+  w.bytes(imageResources);
 
   if (omitLayerSection) {
     w.u32(0);  // Layer and Mask Information length: none
@@ -2139,6 +2185,315 @@ bool runPsdImportTest() {
     check(flat.valid() && alphaAt(16, 16) < 0.1f,
           "E6: and the middle is a real HOLE -- a build that dropped the subtraction, or "
           "failed to reverse its winding, fills this pixel and reports the same bounds");
+  }
+
+  // ==========================================================================
+  std::printf("  -- J. 'lclr' -> Layer::colorLabel (sheet colour labels) --\n");
+  // ==========================================================================
+  {
+    LayerSpec labelled;
+    labelled.top = 0; labelled.left = 0; labelled.bottom = 2; labelled.right = 2;
+    labelled.pascalName = "yellow layer";
+    labelled.channels = {{0, {1, 1, 1, 1}}, {1, {1, 1, 1, 1}}, {2, {1, 1, 1, 1}},
+                         {-1, {255, 255, 255, 255}}};
+    labelled.extraBlocks = {{"lclr", lclrBlock(3)}};  // 3 = yellow
+
+    LayerSpec unlabelled;
+    unlabelled.top = 0; unlabelled.left = 0; unlabelled.bottom = 2; unlabelled.right = 2;
+    unlabelled.pascalName = "plain layer";
+    unlabelled.channels = labelled.channels;
+    // No extraBlocks at all -- the common case, and every layer this build
+    // has ever created.
+
+    LayerSpec zeroLabel;
+    zeroLabel.top = 0; zeroLabel.left = 0; zeroLabel.bottom = 2; zeroLabel.right = 2;
+    zeroLabel.pascalName = "explicit zero";
+    zeroLabel.channels = labelled.channels;
+    zeroLabel.extraBlocks = {{"lclr", lclrBlock(0)}};
+
+    LayerSpec unknownLabel;
+    unknownLabel.top = 0; unknownLabel.left = 0; unknownLabel.bottom = 2; unknownLabel.right = 2;
+    unknownLabel.pascalName = "future colour";
+    unknownLabel.channels = labelled.channels;
+    unknownLabel.extraBlocks = {{"lclr", lclrBlock(9)}};  // past Photoshop's own seven
+
+    const PsdImportResult r =
+        importPsd(buildPsd(2, 2, 8, {labelled, unlabelled, zeroLabel, unknownLabel}));
+    check(r.ok && r.document.layers.size() == 4,
+          "J0: a 4-layer PSD with mixed lclr blocks parses");
+    if (r.ok && r.document.layers.size() == 4) {
+      check(r.document.layers[0].colorLabel == "yellow",
+            "J1: lclr index 3 -> colorLabel 'yellow' -- Photoshop's own menu order, per "
+            "core/Layer.hpp's kLayerColorLabelNames");
+      check(r.document.layers[1].colorLabel == kNoLayerColorLabel,
+            "J2: no lclr block at all -> unlabelled (the common case)");
+      check(r.document.layers[2].colorLabel == kNoLayerColorLabel,
+            "J3: an explicit lclr index 0 -> unlabelled too, same as absent");
+      check(r.document.layers[3].colorLabel == kNoLayerColorLabel,
+            "J4: lclr index 9 (past Photoshop's own seven) -> unlabelled rather than guessed");
+    }
+    bool warnedUnknown = false;
+    for (const std::string& w : r.warnings)
+      if (contains(w, "future colour") && contains(w, "9")) warnedUnknown = true;
+    check(warnedUnknown, "J5: and a warning names the layer AND the index -- silence there "
+                         "would read as this build simply not noticing a colour it invented");
+  }
+  {
+    // The group's OWN `lclr` lives on its HEADER record, not its divider --
+    // Photoshop writes the identical label on both, but the divider never
+    // survives to a `Layer` at all (dropped by the group-stack walk), so
+    // only the header's own copy matters here.
+    LayerSpec divider;
+    divider.pascalName = "</Layer group>";
+    divider.lsct = LsctSpec{3, false, "pass", false, 0};
+    divider.extraBlocks = {{"lclr", lclrBlock(4)}};  // matches the header's own label below
+
+    LayerSpec member;
+    member.top = 0; member.left = 0; member.bottom = 2; member.right = 2;
+    member.pascalName = "member";
+    member.channels = {{0, {1, 1, 1, 1}}, {1, {1, 1, 1, 1}}, {2, {1, 1, 1, 1}},
+                       {-1, {255, 255, 255, 255}}};
+
+    LayerSpec header;
+    header.pascalName = "labelled group";
+    header.lsct = LsctSpec{2, true, "pass", false, 0};
+    header.extraBlocks = {{"lclr", lclrBlock(4)}};  // 4 = green
+
+    const PsdImportResult r = importPsd(buildPsd(2, 2, 8, {divider, member, header}));
+    check(r.ok && r.document.layers.size() == 2,
+          "J6: divider + member + header -> one member, one group");
+    if (r.ok && r.document.layers.size() == 2) {
+      check(r.document.layers[1].kind == LayerKind::Group &&
+                r.document.layers[1].colorLabel == "green",
+            "J7: the group's OWN lclr (on its header record) lands on the Group layer");
+    }
+  }
+
+  // ==========================================================================
+  std::printf("  -- K. Image Resources: guide positions (resource 1032) --\n");
+  // ==========================================================================
+  {
+    // A synthetic set of guides, not the real file's fourteen (this is a
+    // hand-built fixture; the real file is verified by hand through
+    // --psd-report, per this track's own brief) -- enough to exercise both
+    // orientations and that file order, not sorted order, survives.
+    const std::vector<std::pair<float, bool>> guides = {
+        {128.0f, false},  // horizontal @ y=128
+        {256.0f, false},  // horizontal @ y=256
+        {128.0f, true},   // vertical   @ x=128
+        {384.0f, true},   // vertical   @ x=384
+    };
+    const std::vector<uint8_t> res = imageResourceBlock(1032, guidesResourcePayload(guides));
+    LayerSpec bg;
+    bg.top = 0; bg.left = 0; bg.bottom = 2; bg.right = 2;
+    bg.pascalName = "bg";
+    bg.channels = {{0, {1, 1, 1, 1}}, {1, {1, 1, 1, 1}}, {2, {1, 1, 1, 1}},
+                   {-1, {255, 255, 255, 255}}};
+    const PsdImportResult r =
+        importPsd(buildPsd(512, 512, 8, {bg}, 1, 3, false, std::nullopt, false, false, res));
+    check(r.ok, "K1: a PSD carrying a resource 1032 block parses");
+    check(r.ok && r.guides.size() == guides.size(),
+          "K2: exactly as many PsdGuide entries as the file declared");
+    if (r.ok && r.guides.size() == guides.size()) {
+      bool orderAndValuesMatch = true;
+      for (size_t i = 0; i < guides.size(); ++i) {
+        if (!nearf(r.guides[i].position, guides[i].first, 0.01f) ||
+            r.guides[i].vertical != guides[i].second)
+          orderAndValuesMatch = false;
+      }
+      check(orderAndValuesMatch,
+            "K3: every guide's own orientation and position (32nds-of-a-pixel, divided back "
+            "down) survives, IN FILE ORDER");
+    }
+  }
+  {
+    // Resource 1032 present with a guide count of ZERO -- the shape three of
+    // the five real files this module was checked against actually carry,
+    // distinct from no resource section at all.
+    const std::vector<uint8_t> res = imageResourceBlock(1032, guidesResourcePayload({}));
+    LayerSpec bg;
+    bg.top = 0; bg.left = 0; bg.bottom = 2; bg.right = 2;
+    bg.pascalName = "bg";
+    bg.channels = {{0, {1, 1, 1, 1}}, {1, {1, 1, 1, 1}}, {2, {1, 1, 1, 1}},
+                   {-1, {255, 255, 255, 255}}};
+    const PsdImportResult r =
+        importPsd(buildPsd(4, 4, 8, {bg}, 1, 3, false, std::nullopt, false, false, res));
+    check(r.ok && r.guides.empty(),
+          "K4: resource 1032 with a declared count of 0 -> no guides, and this is a SUCCESS, "
+          "not a malformed-section warning");
+  }
+  {
+    // No Image Resources section at all -- the shape every OTHER fixture in
+    // this file uses.
+    LayerSpec bg;
+    bg.top = 0; bg.left = 0; bg.bottom = 2; bg.right = 2;
+    bg.pascalName = "bg";
+    bg.channels = {{0, {1, 1, 1, 1}}, {1, {1, 1, 1, 1}}, {2, {1, 1, 1, 1}},
+                   {-1, {255, 255, 255, 255}}};
+    const PsdImportResult r = importPsd(buildPsd(4, 4, 8, {bg}));
+    check(r.ok && r.guides.empty(),
+          "K5: an absent Image Resources section also imports with no guides, not a refusal");
+  }
+  {
+    // A malformed resource section (a bad signature after a first, valid
+    // resource) must never fail the WHOLE import -- guides are decoration.
+    // The resource read before the desync point must still survive.
+    std::vector<uint8_t> res = imageResourceBlock(1032, guidesResourcePayload({{100.0f, true}}));
+    res.push_back('X');  // a bogus signature -- not '8BIM'
+    res.push_back('X');
+    res.push_back('X');
+    res.push_back('X');
+    LayerSpec bg;
+    bg.top = 0; bg.left = 0; bg.bottom = 2; bg.right = 2;
+    bg.pascalName = "bg";
+    bg.channels = {{0, {1, 1, 1, 1}}, {1, {1, 1, 1, 1}}, {2, {1, 1, 1, 1}},
+                   {-1, {255, 255, 255, 255}}};
+    const PsdImportResult r =
+        importPsd(buildPsd(4, 4, 8, {bg}, 1, 3, false, std::nullopt, false, false, res));
+    check(r.ok, "K6: a malformed Image Resources section (a bad signature after a valid "
+                "resource) never fails the whole import");
+    check(r.ok && r.guides.size() == 1 && nearf(r.guides[0].position, 100.0f, 0.01f),
+          "K7: and the resource that WAS readable before the desync point is still kept");
+    bool warnedMalformed = false;
+    for (const std::string& w : r.warnings)
+      if (contains(w, "Image Resources") && contains(w, "8BIM")) warnedMalformed = true;
+    check(warnedMalformed, "K8: and a warning names what went wrong");
+  }
+
+  // ==========================================================================
+  std::printf("  -- L. S4: a vector mask on a raster layer "
+              "(docs/psd-vector-shapes.md) --\n");
+  // ==========================================================================
+  {
+    // A 32x32 canvas, one layer the FULL canvas, uniformly filled, no fill
+    // block, wearing a `vmsk` outline of an axis-aligned 16x16 square whose
+    // corners sit on exact pixel boundaries -- so the rasterised coverage is
+    // exact and predictable: 256 texels at 1.0 inside, 0.0 everywhere else,
+    // no partial-coverage edge pixels to fuzz the count.
+    const std::vector<std::pair<double, double>> square = {{8, 8}, {24, 8}, {24, 24}, {8, 24}};
+    LayerSpec raster;
+    raster.top = 0; raster.left = 0; raster.bottom = 32; raster.right = 32;
+    raster.pascalName = "vector-masked raster";
+    const uint32_t n = 32u * 32u;
+    raster.channels = {{0, std::vector<uint32_t>(n, 200)}, {1, std::vector<uint32_t>(n, 100)},
+                       {2, std::vector<uint32_t>(n, 50)}, {-1, std::vector<uint32_t>(n, 255)}};
+    raster.extraBlocks = {{"vmsk", vsmsBlock(square, 32, 32)}};
+    const PsdImportResult r = importPsd(buildPsd(32, 32, 8, {raster}));
+    check(r.ok && r.document.layers.size() == 1, "L1: a full-canvas raster with a vmsk parses");
+    check(r.ok && !r.document.layers.empty() &&
+              r.document.layers[0].kind == LayerKind::RGB &&
+              r.document.layers[0].rgbTiles.has_value(),
+          "L2: and stays an RGB layer -- the vector mask does not turn it into a shape");
+    check(r.ok && !r.document.layers.empty() && r.document.layers[0].mask.has_value(),
+          "L3: it now carries an ENGAGED Layer::mask -- before S4 this outline was silently "
+          "dropped");
+    if (r.ok && !r.document.layers.empty() && r.document.layers[0].mask.has_value()) {
+      const Layer& layer = r.document.layers[0];
+      check(nearf(maskCoverageAtDoc(layer, 16, 16), 1.0f, 0.02f),
+            "L4: a point INSIDE the square reveals (coverage ~1.0)");
+      check(nearf(maskCoverageAtDoc(layer, 2, 2), 0.0f, 0.02f),
+            "L5: a point OUTSIDE the square, but still inside this layer's own extent, hides "
+            "(coverage ~0.0) -- an absent tile there would read as 1.0 (reveal), which is "
+            "backwards for a vector mask");
+      // The exactly-predictable count this track's own brief asks for: the
+      // square's corners sit on integer pixel boundaries, so coverage is
+      // crisp, and exactly 16*16 = 256 texels read back at ~1.0.
+      size_t covered = 0;
+      for (int32_t y = 0; y < 32; ++y)
+        for (int32_t x = 0; x < 32; ++x)
+          if (maskCoverageAtDoc(layer, x, y) > 0.99f) ++covered;
+      check(covered == 256,
+            "L6: exactly 256 texels (the 16x16 square) are fully revealed -- the "
+            "exactly-predictable coverage count a hand-built fixture gives");
+    }
+  }
+  {
+    // The case no sample file exercises: a layer with BOTH a raster mask
+    // (channel -2) and a vector mask (`vmsk`). This module's own decision
+    // (appendPsdVectorMask()'s header in io/PsdImport.cpp): MULTIPLY the
+    // two, matching what Photoshop's compositor shows for a layer with both
+    // mask kinds at once. A full-canvas vector mask (reveals everywhere)
+    // makes the multiply observable: the combined result must equal the
+    // raster mask ALONE, which a build that let the vector mask simply
+    // overwrite would get wrong (it would show 1.0, its own coverage,
+    // rather than the raster mask's 128/255).
+    const std::vector<std::pair<double, double>> fullCanvas = {{0, 0}, {4, 0}, {4, 4}, {0, 4}};
+    LayerSpec raster;
+    raster.top = 0; raster.left = 0; raster.bottom = 4; raster.right = 4;
+    raster.pascalName = "both mask kinds";
+    raster.channels = {{0, std::vector<uint32_t>(16, 200)}, {1, std::vector<uint32_t>(16, 100)},
+                       {2, std::vector<uint32_t>(16, 50)}, {-1, std::vector<uint32_t>(16, 255)},
+                       {-2, std::vector<uint32_t>(16, 128)}};  // raster mask, coverage 128/255
+    raster.mask = MaskSpec{0, 0, 4, 4, /*defaultColor=*/255, /*flags=*/0x00};
+    raster.extraBlocks = {{"vmsk", vsmsBlock(fullCanvas, 4, 4)}};
+    const PsdImportResult r = importPsd(buildPsd(4, 4, 8, {raster}));
+    check(r.ok && !r.document.layers.empty() && r.document.layers[0].mask.has_value(),
+          "L7: a layer with BOTH a raster mask (channel -2) and a vmsk parses with an engaged "
+          "mask");
+    if (r.ok && !r.document.layers.empty() && r.document.layers[0].mask.has_value()) {
+      check(nearf(maskCoverageAtDoc(r.document.layers[0], 2, 2), 128.0f / 255.0f, kTol),
+            "L8: a full-coverage vector mask MULTIPLIED onto the raster mask leaves the raster "
+            "mask's own value -- confirming the combination actually multiplies rather than "
+            "one silently replacing the other");
+    }
+  }
+  {
+    // A `vmsk` too short to even carry its own 8-byte header --
+    // decodePsdPathRecords() must refuse cleanly, and this module's own
+    // "nothing here refuses the file" discipline (appendPsdShape()'s own
+    // comment) applies identically to a vector mask: the layer still
+    // imports, just with no mask from it.
+    LayerSpec raster;
+    raster.top = 0; raster.left = 0; raster.bottom = 2; raster.right = 2;
+    raster.pascalName = "truncated vmsk";
+    raster.channels = {{0, {9, 9, 9, 9}}, {1, {9, 9, 9, 9}}, {2, {9, 9, 9, 9}},
+                       {-1, {255, 255, 255, 255}}};
+    raster.extraBlocks = {{"vmsk", {0x00, 0x01, 0x02}}};  // 3 bytes -- short of the 8-byte header
+    const PsdImportResult r = importPsd(buildPsd(32, 32, 8, {raster}));
+    check(r.ok && !r.document.layers.empty() &&
+              r.document.layers[0].kind == LayerKind::RGB &&
+              r.document.layers[0].rgbTiles.has_value() && !r.document.layers[0].mask.has_value(),
+          "L9: a truncated vmsk still imports the layer's pixels, with no mask from it");
+    bool namedTruncation = false;
+    for (const std::string& w : r.warnings)
+      if (contains(w, "truncated vmsk") && contains(w, "mask")) namedTruncation = true;
+    check(namedTruncation, "L10: and a warning names the layer");
+  }
+
+  // ==========================================================================
+  std::printf("  -- M. standalone 'PtFl'/'GdFl' count as a fill block, not as 'no fill' --\n");
+  // ==========================================================================
+  {
+    // A layer with a real (cached) raster AND a standalone `GdFl` block, no
+    // `SoCo`/`vscg`: a shape whose fill this build cannot paint, so it falls
+    // back to the cached raster (`appendPsdShape()`'s own "no fill or
+    // stroke this build can paint" path) -- a DIFFERENT feature from S4's
+    // "raster wearing a vector mask", even though both start from "an
+    // outline, real pixels, no SoCo/vscg". Counting `GdFl` in `hasFillBlock`
+    // is what keeps the two apart: without it, this layer's own outline
+    // would be mistaken for a mask and used to hide most of the fallback
+    // raster Photoshop meant to show whole.
+    const std::vector<std::pair<double, double>> square = {{4, 4}, {24, 4}, {24, 24}, {4, 24}};
+    LayerSpec shape;
+    shape.left = 0; shape.top = 0; shape.right = 2; shape.bottom = 2;
+    shape.pascalName = "gradient shape";
+    shape.channels = {{0, {9, 9, 9, 9}}, {1, {9, 9, 9, 9}}, {2, {9, 9, 9, 9}},
+                      {-1, {255, 255, 255, 255}}};
+    shape.extraBlocks = {{"vsms", vsmsBlock(square, 32, 32)}, {"GdFl", {0x00, 0x01}}};
+    const PsdImportResult r = importPsd(buildPsd(32, 32, 8, {shape}));
+    check(r.ok && r.document.layers.size() == 1 &&
+              r.document.layers[0].kind == LayerKind::RGB &&
+              r.document.layers[0].rgbTiles.has_value(),
+          "M1: a standalone GdFl block (no SoCo/vscg, no paintable fill) falls back to the "
+          "cached raster, exactly as an unpaintable SoCo/vscg shape already does");
+    check(r.ok && !r.document.layers.empty() && !r.document.layers[0].mask.has_value(),
+          "M2: and counting GdFl as a fill block keeps its outline OUT of Layer::mask -- "
+          "mistaking it for a vector mask would hide most of this fallback raster");
+    bool warnedFallback = false;
+    for (const std::string& w : r.warnings)
+      if (contains(w, "gradient shape") && contains(w, "rasterised copy")) warnedFallback = true;
+    check(warnedFallback,
+          "M3: and the existing 'falls back to the rasterised copy' warning still names it");
   }
 
   std::printf("[selftest] psd import %s\n", ok ? "PASS" : "FAIL");

@@ -131,11 +131,11 @@ int runPsdReport(const char* path) {
   const Document& doc = r.document;
   std::printf("\ndocument %dx%d, %zu layers\n\n", doc.width, doc.height, doc.layers.size());
 
-  std::printf("%-4s %-34s %-10s %6s %4s %4s %5s  %-22s %s\n", "#", "name", "blend", "opac", "vis",
-              "clip", "tiles", "pixel extent (l,t,r,b)", "coverage");
-  std::printf("%-4s %-34s %-10s %6s %4s %4s %5s  %-22s %s\n", "----",
+  std::printf("%-4s %-34s %-10s %6s %4s %4s %-6s %5s  %-22s %s\n", "#", "name", "blend", "opac",
+              "vis", "clip", "label", "tiles", "pixel extent (l,t,r,b)", "coverage");
+  std::printf("%-4s %-34s %-10s %6s %4s %4s %-6s %5s  %-22s %s\n", "----",
               "----------------------------------", "----------", "------", "---", "----",
-              "-----", "----------------------", "--------");
+              "------", "-----", "----------------------", "--------");
 
   // Folded rather than listed: a real document repeats the same handful of
   // blend keys across dozens of layers, and "45 x norm" is the finding where
@@ -160,6 +160,11 @@ int runPsdReport(const char* path) {
     // rather than the column simply being blank for it.
     const bool isVector = l.kind == LayerKind::Vector;
     if (!e.any && !isVector) ++empty;
+
+    // `--` for unlabelled ('lclr' absent or index 0), which is the
+    // overwhelmingly common case -- an empty column would be easy to misread
+    // as a missing measurement rather than "no colour".
+    const char* label = l.colorLabel.empty() ? "--" : l.colorLabel.c_str();
 
     char extent[48];
     char coverage[128];
@@ -198,9 +203,9 @@ int runPsdReport(const char* path) {
                     l.shapes.size(), filled, stroked, static_cast<double>(c[0]),
                     static_cast<double>(c[1]), static_cast<double>(c[2]),
                     static_cast<double>(c[3]));
-      std::printf("%-4zu %-34.34s %-10.10s %6.3f %4s %4s %5s  %-22s %s\n", i, l.name.c_str(),
+      std::printf("%-4zu %-34.34s %-10.10s %6.3f %4s %4s %-6s %5s  %-22s %s\n", i, l.name.c_str(),
                   l.blend.c_str(), static_cast<double>(l.opacity), l.visible ? "Y" : "n",
-                  l.clipped ? "Y" : "n", "vec", extent, coverage);
+                  l.clipped ? "Y" : "n", label, "vec", extent, coverage);
       continue;
     }
 
@@ -219,9 +224,9 @@ int runPsdReport(const char* path) {
                     e.opaque, e.meanR, e.meanG, e.meanB, e.meanA);
     }
 
-    std::printf("%-4zu %-34.34s %-10.10s %6.3f %4s %4s %5zu  %-22s %s\n", i, l.name.c_str(),
+    std::printf("%-4zu %-34.34s %-10.10s %6.3f %4s %4s %-6s %5zu  %-22s %s\n", i, l.name.c_str(),
                 l.blend.c_str(), static_cast<double>(l.opacity), l.visible ? "Y" : "n",
-                l.clipped ? "Y" : "n", e.tiles, extent, coverage);
+                l.clipped ? "Y" : "n", label, e.tiles, extent, coverage);
   }
 
   std::printf("\n-- blend keys as imported --\n");
@@ -229,6 +234,16 @@ int runPsdReport(const char* path) {
     std::printf("  %-20s %zu layer(s)\n", name.c_str(), n);
   std::printf("  hidden: %zu   clipped: %zu   with no pixels at all: %zu   of %zu\n", hidden,
               clipped, empty, doc.layers.size());
+
+  // Guides (Image Resources 1032), in FILE order -- the order the user
+  // created them, not sorted. Empty is the common case, not a failure: see
+  // io/PsdImport.hpp's own header on `PsdImportResult::guides`.
+  std::printf("\n-- guides: %zu --\n", r.guides.size());
+  for (size_t i = 0; i < r.guides.size(); ++i) {
+    const PsdGuide& g = r.guides[i];
+    std::printf("  %-4zu %-10s %.1f px\n", i, g.vertical ? "vertical" : "horizontal",
+               static_cast<double>(g.position));
+  }
 
   // The warnings are per-layer and, like the blend keys, repetitive by nature
   // -- one Photoshop document tends to reach for the same unmapped mode many
