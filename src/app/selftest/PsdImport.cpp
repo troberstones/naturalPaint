@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -289,7 +290,73 @@ struct LayerSpec {
   std::vector<ChannelSpec> channels;
   std::optional<LsctSpec> lsct;
   std::optional<MaskSpec> mask;
+  // Any further additional-layer-info blocks, as (4-char key, payload). The
+  // shape-layer fixtures in section E need `vsms`/`SoCo`/`vscg`/`vstk`, and
+  // a generic list beats four more optional members.
+  std::vector<std::pair<std::string, std::vector<uint8_t>>> extraBlocks;
 };
+
+
+// --- Shape-layer fixtures (section E) -------------------------------------
+
+// A `vsms` payload: the 8-byte version/flags header, the two fill-rule
+// records Photoshop always writes first, one closed subpath-length record,
+// then `n` corner knots. Coordinates go in as 8.24 fractions of the document
+// dimension -- vertical by height, horizontal by width -- which is the
+// encoding io/PsdVectorPath decodes and app/selftest/PsdVectorPath.cpp
+// proves against real files.
+std::vector<uint8_t> vsmsBlock(const std::vector<std::pair<double, double>>& ptsXY, uint32_t docW,
+                               uint32_t docH, int16_t op = 1) {
+  ByteWriter w;
+  w.u32(3);  // version
+  w.u32(0);  // flags
+  auto pad = [&w](size_t n) {
+    for (size_t i = 0; i < n; ++i) w.u8(0);
+  };
+  w.u16(6);  pad(24);                       // path fill rule
+  w.u16(8);  pad(24);                       // initial fill rule
+  w.u16(0);                                 // closed subpath length record
+  w.u16(static_cast<uint32_t>(ptsXY.size()));
+  w.u16(static_cast<uint16_t>(op));         // the operation, as an int16
+  pad(20);
+  auto fixed = [](double frac) {
+    return static_cast<uint32_t>(static_cast<int32_t>(frac * 16777216.0));
+  };
+  for (const auto& [x, y] : ptsXY) {
+    w.u16(2);  // closed knot, unlinked
+    const uint32_t fy = fixed(y / static_cast<double>(docH));
+    const uint32_t fx = fixed(x / static_cast<double>(docW));
+    for (int i = 0; i < 3; ++i) {  // in, pt, out -- all coincident
+      w.u32(fy);
+      w.u32(fx);
+    }
+  }
+  return w.b;
+}
+
+// A real `SoCo` block, lifted byte for byte from `App Icon Shape` in Apple's
+// `App Icon Template.psd`: black, solid. Hand-writing an Action Descriptor
+// here would only prove this file agrees with itself.
+const char* const kRealSocoHex =
+    "00000010000000010000000000006e756c6c0000000100000000436c72204f626a630000"
+    "000100000000000052474243000000030000000052642020646f75620000000000000000"
+    "0000000047726e20646f7562000000000000000000000000426c2020646f756200000000"
+    "00000000";
+
+std::vector<uint8_t> hexBlock(const char* hex) {
+  auto v = [](char c) -> int {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return 0;
+  };
+  const std::string t(hex);
+  std::vector<uint8_t> out;
+  out.reserve(t.size() / 2);
+  for (size_t i = 0; i + 1 < t.size(); i += 2)
+    out.push_back(static_cast<uint8_t>((v(t[i]) << 4) | v(t[i + 1])));
+  return out;
+}
 
 // Builds a whole PSD file's bytes from a list of `LayerSpec`s, following
 // Adobe's published layout exactly (io/PsdImport.hpp's header cites the
@@ -404,6 +471,14 @@ std::vector<uint8_t> buildPsd(uint32_t width, uint32_t height, uint16_t depth,
       tagged.str4("lsct");
       tagged.u32(static_cast<uint32_t>(payload.b.size()));
       tagged.bytes(payload.b);
+      ew.bytes(tagged.b);
+    }
+    for (const auto& [key, payload] : L.extraBlocks) {
+      ByteWriter tagged;
+      tagged.str4("8BIM");
+      tagged.str4(key.c_str());
+      tagged.u32(static_cast<uint32_t>(payload.size()));
+      tagged.bytes(payload);
       ew.bytes(tagged.b);
     }
     bl.extraData = ew.b;
@@ -1891,6 +1966,127 @@ bool runPsdImportTest() {
   // footer is unfindable in 6300 lines of output -- a reader scanning for
   // "did the PSD reader run, and did it pass" has nothing to search for.
   // Two earlier tracks in this project shipped exactly this gap.
+  // --- E. Shape layers become Vector layers (docs/psd-vector-shapes.md 4) --
+  //
+  // The ROUTING only. What the three io/PsdVector* modules decode is their
+  // own sections' business; this one proves which layers reach them, which is
+  // the decision io/PsdImport.cpp actually owns.
+  std::printf("  -- E. a shape layer imports as a Vector layer, and what decides that --\n");
+  {
+    // A 20x20 square, given as a shape layer the way Photoshop writes one
+    // with Maximize Compatibility OFF: a vsms outline, a fill block, and a
+    // 0x0 raster rect.
+    const std::vector<std::pair<double, double>> square = {{4, 4}, {24, 4}, {24, 24}, {4, 24}};
+    LayerSpec shape;
+    shape.top = shape.left = shape.bottom = shape.right = 0;
+    shape.pascalName = "square";
+    shape.channels = {{0, {}}, {1, {}}, {2, {}}, {-1, {}}};
+    shape.extraBlocks = {{"vsms", vsmsBlock(square, 32, 32)},
+                         {"SoCo", hexBlock(kRealSocoHex)}};
+    const PsdImportResult r = importPsd(buildPsd(32, 32, 8, {shape}));
+    check(r.ok && r.document.layers.size() == 1, "E1: a vsms + SoCo layer imports");
+    const bool isVec = r.ok && r.document.layers[0].kind == LayerKind::Vector;
+    check(isVec, "E1: as a VECTOR layer -- before step 4 this same record produced an empty "
+                 "RGB layer, which is why Apple's template opened with 12 blank layers");
+    check(isVec && !r.document.layers[0].rgbTiles.has_value(),
+          "E1: with no tile storage at all, which is what makes it not a raster layer");
+    check(isVec && r.document.layers[0].shapes.size() == 1,
+          "E1: carrying exactly one shape");
+    check(isVec && !r.document.layers[0].shapes.empty() &&
+              r.document.layers[0].shapes[0].id != 0,
+          "E1: whose id is assigned -- id 0 means 'unassigned', and app/PenTool keys its "
+          "selection on it, so a zero here is a shape nobody can select");
+    check(isVec && r.document.layers[0].nextShapeId > 1,
+          "E1: and the layer's own allocator moved past it");
+    // The geometry really came from the block, not from a default.
+    if (isVec && !r.document.layers[0].shapes.empty()) {
+      const PathBounds b = pathControlBounds(r.document.layers[0].shapes[0].path);
+      check(b.valid && std::fabs(b.minX - 4.0f) < 0.05f && std::fabs(b.maxX - 24.0f) < 0.05f &&
+                std::fabs(b.minY - 4.0f) < 0.05f && std::fabs(b.maxY - 24.0f) < 0.05f,
+            "E1: and its bounds are the square the block described, in document pixels");
+    }
+  }
+  {
+    // The SAME shape layer, saved with Maximize Compatibility ON: identical
+    // blocks, plus the rasterised copy Photoshop caches beside them. It must
+    // still import as a Vector layer -- a save checkbox is not allowed to
+    // decide whether artwork arrives editable.
+    const std::vector<std::pair<double, double>> square = {{4, 4}, {24, 4}, {24, 24}, {4, 24}};
+    LayerSpec shape;
+    shape.left = 0; shape.top = 0; shape.right = 2; shape.bottom = 2;
+    shape.pascalName = "square";
+    shape.channels = {{0, {9, 9, 9, 9}}, {1, {9, 9, 9, 9}}, {2, {9, 9, 9, 9}},
+                      {-1, {255, 255, 255, 255}}};
+    shape.extraBlocks = {{"vsms", vsmsBlock(square, 32, 32)},
+                         {"SoCo", hexBlock(kRealSocoHex)}};
+    const PsdImportResult r = importPsd(buildPsd(32, 32, 8, {shape}));
+    check(r.ok && r.document.layers.size() == 1 &&
+              r.document.layers[0].kind == LayerKind::Vector,
+          "E2: a shape layer that ALSO carries a cached raster is still a Vector layer -- "
+          "Maximize Compatibility must not decide this");
+  }
+  {
+    // A raster layer wearing a VECTOR MASK: the same outline block, real
+    // pixels, and NO fill block. That is `Layer::mask` work nobody has done,
+    // so it must keep importing as RGB rather than being mistaken for a shape.
+    const std::vector<std::pair<double, double>> square = {{4, 4}, {24, 4}, {24, 24}, {4, 24}};
+    LayerSpec raster;
+    raster.left = 0; raster.top = 0; raster.right = 2; raster.bottom = 2;
+    raster.pascalName = "masked raster";
+    raster.channels = {{0, {200, 200, 200, 200}}, {1, {0, 0, 0, 0}}, {2, {0, 0, 0, 0}},
+                       {-1, {255, 255, 255, 255}}};
+    raster.extraBlocks = {{"vmsk", vsmsBlock(square, 32, 32)}};
+    const PsdImportResult r = importPsd(buildPsd(32, 32, 8, {raster}));
+    check(r.ok && r.document.layers.size() == 1 &&
+              r.document.layers[0].kind == LayerKind::RGB &&
+              r.document.layers[0].rgbTiles.has_value(),
+          "E3: an outline with real pixels and NO fill block stays an RGB layer -- a vector "
+          "MASK is not a shape layer, and its pixels are the artwork");
+  }
+  {
+    // An outline with no fill block AND no raster is not a vector mask on
+    // anything -- there is no picture to keep. The path is all there is, so
+    // it imports rather than being dropped.
+    const std::vector<std::pair<double, double>> square = {{4, 4}, {24, 4}, {24, 24}, {4, 24}};
+    LayerSpec bare;
+    bare.pascalName = "bare outline";
+    bare.channels = {{0, {}}, {1, {}}, {2, {}}, {-1, {}}};
+    bare.extraBlocks = {{"vsms", vsmsBlock(square, 32, 32)}};
+    const PsdImportResult r = importPsd(buildPsd(32, 32, 8, {bare}));
+    check(r.ok && r.document.layers.size() == 1 &&
+              r.document.layers[0].kind == LayerKind::Vector &&
+              r.document.layers[0].shapes.size() == 1 &&
+              !r.document.layers[0].shapes[0].fill.on,
+          "E4: an outline with neither fill block nor raster imports as an UNPAINTED shape -- "
+          "'no fill' is a state Paint models, and dropping the path would lose everything");
+  }
+  {
+    // Intersect: geometry this codebase cannot express. The layer must still
+    // import, and must say why it is empty rather than silently omitting it.
+    const std::vector<std::pair<double, double>> square = {{4, 4}, {24, 4}, {24, 24}, {4, 24}};
+    LayerSpec bad;
+    bad.pascalName = "intersected";
+    bad.channels = {{0, {}}, {1, {}}, {2, {}}, {-1, {}}};
+    ByteWriter two;
+    const std::vector<uint8_t> a = vsmsBlock(square, 32, 32, /*op=*/1);
+    const std::vector<uint8_t> b = vsmsBlock(square, 32, 32, /*op=*/3);
+    two.bytes(a);
+    // Append the second block's records (skipping its 8-byte header and its
+    // two fill-rule records) so one block holds two subpaths.
+    for (size_t i = 8 + 52; i < b.size(); ++i) two.u8(b[i]);
+    bad.extraBlocks = {{"vsms", two.b}, {"SoCo", hexBlock(kRealSocoHex)}};
+    const PsdImportResult r = importPsd(buildPsd(32, 32, 8, {bad}));
+    check(r.ok && r.document.layers.size() == 1,
+          "E5: a layer whose operations cannot be expressed still imports, rather than "
+          "refusing the whole file");
+    bool named = false;
+    for (const std::string& w : r.warnings)
+      if (w.find("intersected") != std::string::npos && w.find("Intersect") != std::string::npos)
+        named = true;
+    check(named, "E5: and a warning names the layer AND the operation -- a shape that quietly "
+                 "vanished would look like artwork the file never had");
+  }
+
   std::printf("[selftest] psd import %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }
