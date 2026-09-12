@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 #include <vector>
 
 #include "app/DocumentLifecycle.hpp"
@@ -356,57 +357,146 @@ bool runBrushTaperTest() {
   }
 
   // ==========================================================================
-  // Exit taper wired into a real stroke, and the hold-back it needs: the last
-  // dab of the stroke is the smallest, and while the pen is down the ink
-  // trails the pointer by the taper's length (those dabs cannot be painted
-  // until it is known whether the stroke ends there).
+  // Exit taper wired into a real stroke, and the repaint it needs. An exit
+  // ramp cannot be resolved until the stroke has an end, so the live stroke
+  // is the UNTAPERED one -- no lag, nothing held back -- and `end()` puts the
+  // tiles it wrote back to their pen-down content and lays the whole stroke
+  // down again with the ramp applied. Three things have to be true at once:
+  // the ramp reaches the last dab, the live stroke was never delayed, and the
+  // repaint REPLACED the untapered ink rather than painting over it.
   // ==========================================================================
   {
-    const auto runStroke = [&](const BrushTaper& exit, size_t& dabsBeforeEnd,
-                               size_t& dabsAfterEnd, float& lastRadius, float& tipRadius) {
+    // Texels this layer actually holds ink at -- what proves the repaint put
+    // the picture back. A repaint that added to the live stroke instead of
+    // replacing it would leave the untapered tail's footprint behind, and
+    // this number would not move at all.
+    const auto coveredTexels = [](const OpenDocument& d, size_t layerIndex) {
+      size_t covered = 0;
+      const Layer& l = d.document.layers[layerIndex];
+      if (!l.rgbTiles.has_value()) return covered;
+      for (const auto& [coord, tile] : *l.rgbTiles) {
+        (void)coord;
+        for (int32_t y = 0; y < kTileSize; ++y)
+          for (int32_t x = 0; x < kTileSize; ++x)
+            if (tile.readPixel(PixelCoord{x, y})[3] > 0.0f) ++covered;
+      }
+      return covered;
+    };
+
+    struct Run {
+      size_t dabsBeforeEnd = 0;
+      size_t dabsAfterEnd = 0;
+      float lastRadius = 0.0f;
+      float tipRadius = 0.0f;
+      size_t covered = 0;
+    };
+    const auto runStroke = [&](const BrushTaper& exit) {
+      Run r;
       BrushState brush;
       brush.model.tip.diameterPx = 20.0f;  // radius 10
+      // A ceiling the accumulator can actually reach: at full opacity the
+      // per-stroke ceiling never binds, and a repaint that wrongly inherited
+      // a spent accumulator would be indistinguishable from a correct one.
+      brush.opacity = 0.5f;
       brush.native.taperOut = exit;
       MixboxLut noLut;
+      // An RGB layer, not the pigment one the entry-taper fixtures use: this
+      // section needs to READ the ink back, and `Tile::readPixel()` is the
+      // one store with an alpha to count.
       OpenDocument d = makeBlankOpenDocument(512, 256, WorkingSpace{}, "T");
-      applyLayerCommand(d, LayerCommand::NewPigmentLayer, d.activeLayer);
-      setActiveLayer(d, 1);
       StrokeSession session;
       std::string error;
       const BrushTip tip = brushTipFor(brush, noLut, 1.0f);
-      tipRadius = tip.radius;
+      r.tipRadius = tip.radius;
       session.begin(d, d.activeLayer, tip, Tool::Brush, &error, /*model=*/nullptr,
                     DynamicInputs{}, /*clone=*/nullptr, StabiliserParams{}, 1.0f, &brush.native);
       for (int i = 0; i <= 20; ++i) session.addPoint(20.0f + static_cast<float>(i) * 20.0f, 128.0f);
-      dabsBeforeEnd = session.dabCount();
+      r.dabsBeforeEnd = session.dabCount();
       session.end();
-      dabsAfterEnd = session.dabCount();
-      lastRadius = session.lastDabRadius();
+      r.dabsAfterEnd = session.dabCount();
+      r.lastRadius = session.lastDabRadius();
+      r.covered = coveredTexels(d, d.activeLayer);
+      return r;
     };
 
     constexpr float kTaperOutPx = 80.0f;
     constexpr float kMinPct = 15.0f;
-    size_t offBefore = 0, offAfter = 0, onBefore = 0, onAfter = 0;
-    float offLast = 0.0f, onLast = 0.0f, tipRadius = 0.0f, unused = 0.0f;
-    runStroke(BrushTaper{}, offBefore, offAfter, offLast, tipRadius);
-    runStroke(BrushTaper{true, kTaperOutPx, kMinPct, false}, onBefore, onAfter, onLast, unused);
+    const Run off = runStroke(BrushTaper{});
+    const Run on = runStroke(BrushTaper{true, kTaperOutPx, kMinPct, false});
 
-    std::printf("  [measured] exit taper: dabs before end() %zu (taper off) vs %zu (on, the "
-                "hold-back); after end() %zu vs %zu; final dab radius %.3f px vs %.3f px "
-                "(tip %.3f px, min %.0f%% = %.3f px)\n",
-                offBefore, onBefore, offAfter, onAfter, offLast, onLast, tipRadius, kMinPct,
-                tipRadius * kMinPct / 100.0f);
+    std::printf("  [measured] exit taper: dabs before end() %zu (taper off) vs %zu (on); after "
+                "end() %zu vs %zu; final dab radius %.3f px vs %.3f px (tip %.3f px, min %.0f%% = "
+                "%.3f px); texels holding ink %zu vs %zu\n",
+                off.dabsBeforeEnd, on.dabsBeforeEnd, off.dabsAfterEnd, on.dabsAfterEnd,
+                off.lastRadius, on.lastRadius, on.tipRadius, kMinPct,
+                on.tipRadius * kMinPct / 100.0f, off.covered, on.covered);
 
-    check(std::fabs(onLast - tipRadius * kMinPct / 100.0f) < 0.05f,
+    check(std::fabs(on.lastRadius - on.tipRadius * kMinPct / 100.0f) < 0.05f,
           "exit taper wired in: the stroke's last dab is exactly the ramp's minimum size");
-    check(std::fabs(offLast - tipRadius) < 1e-3f,
+    check(std::fabs(off.lastRadius - off.tipRadius) < 1e-3f,
           "exit taper off: the same stroke's last dab is full size -- the fixture discriminates");
-    check(onBefore < offBefore,
-          "hold-back: while the pen is down, the tail within a taper length of the tip has NOT "
-          "been painted yet");
-    check(onAfter >= offAfter,
-          "hold-back: end() releases all of it -- a tapered stroke paints no fewer dabs than an "
-          "untapered one, so nothing is silently dropped");
+    check(on.dabsBeforeEnd == off.dabsBeforeEnd,
+          "no lag: the live stroke is the untapered one -- with the pen still down, an exit "
+          "taper has cost exactly nothing");
+    check(on.covered < off.covered,
+          "the repaint REPLACES the live stroke: a tapered stroke holds ink at fewer texels than "
+          "an untapered one, which it could not if the untapered tail were still underneath");
+    // The other side of the same coin, and the one that catches a repaint
+    // that restored the tiles and then deposited nothing (a route whose
+    // accumulator was not put back to pen-down would do exactly that): the
+    // ramp thins the last 80 px of a 400 px stroke, so most of the mark has
+    // to survive.
+    check(on.covered > off.covered * 7 / 10,
+          "...and it really does lay the stroke back down -- the tapered stroke still covers "
+          "most of the untapered one, rather than the restore having simply erased it");
+    check(on.dabsAfterEnd >= off.dabsAfterEnd,
+          "the repaint lays the whole stroke down again -- no fewer dabs than the untapered "
+          "stroke, so nothing is silently dropped");
+  }
+
+  // ==========================================================================
+  // A SHORT stroke, in each of the four directions. Reported from a tablet as
+  // "it only works when the stroke starts out somewhat going up"; the cause
+  // was length, not heading -- a stroke shorter than the ramp had deposited
+  // nothing by the time `end()` ran, so it was taken for a stationary click
+  // and every taper was skipped by the rule that keeps a click from painting
+  // at radius 0. Four headings because the report named headings, and a
+  // fixture that tests the diagnosis instead of the symptom proves nothing
+  // about the symptom.
+  // ==========================================================================
+  {
+    constexpr float kTaperOutPx = 80.0f;
+    constexpr float kMinPct = 20.0f;
+    const std::pair<float, float> headings[4] = {{1.0f, 0.0f}, {-1.0f, 0.0f},
+                                                 {0.0f, -1.0f}, {0.0f, 1.0f}};
+    const char* names[4] = {"right", "left", "up", "down"};
+    float worstError = 0.0f;
+    float expected = 0.0f;
+    for (int h = 0; h < 4; ++h) {
+      BrushState brush;
+      brush.model.tip.diameterPx = 20.0f;
+      brush.native.taperOut = BrushTaper{true, kTaperOutPx, kMinPct, false};
+      MixboxLut noLut;
+      OpenDocument d = makeBlankOpenDocument(256, 256, WorkingSpace{}, "T");
+      StrokeSession session;
+      std::string error;
+      const BrushTip tip = brushTipFor(brush, noLut, 1.0f);
+      expected = tip.radius * kMinPct / 100.0f;
+      session.begin(d, d.activeLayer, tip, Tool::Brush, &error, /*model=*/nullptr,
+                    DynamicInputs{}, /*clone=*/nullptr, StabiliserParams{}, 1.0f, &brush.native);
+      // 40 px of travel against an 80 px ramp: the whole stroke is inside it.
+      for (int i = 0; i <= 4; ++i)
+        session.addPoint(128.0f + headings[h].first * static_cast<float>(i) * 10.0f,
+                         128.0f + headings[h].second * static_cast<float>(i) * 10.0f);
+      session.end();
+      const float err = std::fabs(session.lastDabRadius() - expected);
+      if (err > worstError) worstError = err;
+      std::printf("  [measured] short stroke %-5s: last dab %.3f px (ramp minimum %.3f px)\n",
+                  names[h], session.lastDabRadius(), expected);
+    }
+    check(worstError < 0.05f,
+          "a stroke shorter than the exit ramp still tapers, and does so identically in all "
+          "four directions -- it is not mistaken for a stationary click");
   }
 
   std::printf("[selftest] brush taper / origin dab %s\n", ok ? "PASS" : "FAIL");

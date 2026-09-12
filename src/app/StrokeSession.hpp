@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -2007,6 +2008,16 @@ class StrokeSession {
   // moving stroke's own first dab" apart and skip entry taper for the former
   // (a click has no arc length to be partway along a ramp with).
   void depositPending(bool isEndFlush = false);
+  // The deposit routes' own per-stroke state, from `begin()` and again from
+  // the exit taper's repaint -- that function's own comment says why a
+  // repaint may not inherit an accumulator.
+  void beginRoutes(Layer& layer);
+  // True when this stroke will be repainted at `end()`: an exit taper with a
+  // length, on a route whose store the repaint can put back (`preStroke_`).
+  bool exitTaperRepaintPending() const noexcept;
+  // Puts every tile this stroke touched back to its pen-down content, then
+  // lays the whole stroke down again with the exit ramp applied.
+  void replayWithExitTaper();
 
   // `tip_.spacingPx()` scaled down by the entry taper's current multiplier
   // (floored so spacing can never collapse to zero), so tapered dabs pack
@@ -2170,15 +2181,36 @@ class StrokeSession {
   // out applies here too.
   BrushTaper taperIn_;
   BrushTaper taperOut_;
-  // The exit taper's hold-back. An exit taper has to know where the stroke
-  // ENDS, and a streaming deposit does not know that until pen-up, so the
-  // last `taperOut_.lengthPx` of arc is kept here instead of deposited: it
-  // goes down either when the stroke moves on past it (at full size, through
-  // the ordinary path) or at `end()` (tapered). The visible cost is that the
-  // ink trails the pointer by the taper length while the pen is down. There
-  // is no way around that which does not paint ink the stroke may have to
-  // take back, and nothing downstream can take a dab back.
-  std::vector<StrokeDab> heldBack_;
+  // Latched at `begin()` for `beginRoutes()`, which the repaint calls again:
+  // the per-stroke opacity ceiling every route's own `begin()` takes, and the
+  // clone/heal source offset (the only thing those two read from the
+  // `AppState::CloneSourceState` this class deliberately does not keep).
+  float resolvedOpacity_ = 1.0f;
+  Vec2 cloneOffset_{};
+  // --- the exit taper's repaint ------------------------------------------
+  //
+  // An exit taper has to know where the stroke ENDS, and a streaming deposit
+  // does not know that until pen-up. Holding the tail back until then works
+  // and is exact, but it means the ink trails the pointer by the taper's
+  // length for the whole stroke, which is not a pleasant way to draw. So the
+  // live stroke is the UNTAPERED one, laid down with no lag at all, and
+  // `end()` puts the tiles it touched back the way they were and lays the
+  // whole stroke down again with the ramp applied. Nothing downstream can
+  // take a dab back; this takes the whole picture back instead, which
+  // core/TileStore's copy-on-write makes cheap.
+  //
+  // Every dab this stroke deposited, in order -- what the repaint replays.
+  // Only filled while a repaint is actually pending.
+  std::vector<StrokeDab> allDabs_;
+  // The document as it was at pen-down, sharing every tile rather than
+  // copying it (`TileStoreOf`'s copy constructor, and `shareTileFrom()` for
+  // the restore). Engaged only when a repaint is pending, so a stroke with no
+  // exit taper holds nothing and pays nothing.
+  std::optional<Document> preStroke_;
+  // Set only for the duration of the repaint's own `depositPending()` call:
+  // what tells it to resolve the exit ramp and NOT to record the dabs it is
+  // replaying as a second stroke to replay.
+  bool replaying_ = false;
   // Dabs `path_` emitted since the last `depositPending()` call, each
   // carrying its OWN interpolated axes -- `StrokeDab` rather than `Vec2`
   // since Track A, so `depositPending()`'s per-dab loop can resolve

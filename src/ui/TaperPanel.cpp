@@ -60,13 +60,12 @@ void drawBrushTaperControls(AppState& st) {
   drawOne("Exit taper", "taperout", st.brush.native.taperOut);
   ImGui::TextDisabled(
       "Applies to the CPU brush routes only -- not the GPU (oil/watercolour) solver route.");
-  // Said where it is set, not only in a commit message: this is the one thing
-  // about the exit taper that looks like a bug until you know it is the
-  // price. `StrokeSession`'s `heldBack_` explains why there is no way around
-  // it.
+  // Said where it is set: the stroke visibly changes at pen-up, which reads
+  // as a glitch until you know it is the taper arriving.
+  // `StrokeSession::allDabs_` explains why it can only arrive then.
   if (live(st.brush.native.taperOut))
-    ImGui::TextDisabled("An exit taper can only be drawn once the stroke ends, so the ink\n"
-                        "trails the pointer by its length while the pen is down.");
+    ImGui::TextDisabled("An exit taper can only be drawn once the stroke ends, so the\n"
+                        "stroke is redrawn with it the moment the pen lifts.");
 }
 
 void drawTaperOptionsBarField(AppState& st) {

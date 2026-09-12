@@ -15,8 +15,9 @@ namespace np {
 // from the near END of the stroke in both directions: the entry taper reads
 // a dab's own `distanceTravelled_` (arc length since the stroke's first dab,
 // 0 at the origin dab), the exit taper reads the arc length from that dab to
-// the LAST one -- which is why the exit taper needs `StrokeSession`'s
-// hold-back (that header's own section on it) and the entry taper does not.
+// the LAST one -- which is why the exit taper is resolved only in the repaint
+// `end()` runs (`StrokeSession::allDabs_`'s own comment) and the entry taper
+// needs nothing of the sort.
 struct BrushTaper {
   // The length is kept when this is off, so a taper switched off and back on
   // comes back the way it was set -- `lengthPx <= 0` is "no ramp", not "off".
@@ -43,7 +44,7 @@ float taperMultiplier(float distanceFromEndPx, const BrushTaper& taper) noexcept
 // to shrink the dabs. Without this a tapering stroke breaks into dots exactly
 // where it is finest: spacing is chosen when a dab is EMITTED, and an exit
 // taper is not resolvable until the stroke ends (`StrokeSession::
-// taperedSpacingPx()`'s own comment, and `heldBack_`'s). A no-op, leaving
+// taperedSpacingPx()`'s own comment, and `allDabs_`'s). A no-op, leaving
 // `tail` untouched, when the taper is off or has no length.
 void subdivideTaperedTail(std::vector<StrokeDab>& tail, const BrushTaper& taper,
                           float spacingPx) noexcept;

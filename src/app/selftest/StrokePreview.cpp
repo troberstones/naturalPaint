@@ -426,7 +426,7 @@ bool runStrokePreviewTest() {
 
   // ======================================================================
   // And the EXIT taper reaches it too -- through `stroke.end()`, the release
-  // of the hold-back, which the entry taper never exercises. Asserted here
+  // of the repaint, which the entry taper never exercises. Asserted here
   // and not only against `StrokeSession` directly because "the module does
   // it" and "it reaches a painted strip" are separate claims, and it was the
   // second one that was false for the entry taper (fix 10 above).

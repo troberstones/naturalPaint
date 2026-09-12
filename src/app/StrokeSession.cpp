@@ -1427,6 +1427,216 @@ bool brushIsEdited(const BrushState& brush) {
                         brush.model.tip.angleDeg, brush.native, brush.links);
 }
 
+// The deposit routes' own per-stroke state -- each `begin()`'s accumulator or
+// snapshot, and the `else` that drops the other routes'. Extracted from
+// `begin()` so `replayWithExitTaper()` can put a stroke back to its pen-down
+// state and lay it down again: an accumulator carried into a repaint would
+// find its own ceiling already spent and deposit nothing.
+void StrokeSession::beginRoutes(Layer& layer) {
+  // The ink, latched for the whole stroke -- brush/RgbDeposit.hpp §2 on why the
+  // colour and the ceiling may not move once the accumulator has started, and
+  // §3 on the accumulator being allocated here and freed at `end()`.
+  //
+  // The `else` is not redundant. A pigment or erase stroke that follows an RGB
+  // deposit must leave nothing of it behind, for exactly `StrokePath::reset()`'s
+  // reason below: alpha carried across strokes would let the ceiling of the last
+  // stroke cap the first dab of the next -- and a session begun without a
+  // matching `end()` (a window blur, an interrupted drag) is the case that
+  // reaches this line holding tiles.
+  // `layer.alphaLocked`, latched with the ink and the ceiling for the identical
+  // reason (brush/RgbDeposit.hpp's `begin()`): a lock cleared or set mid-drag
+  // must not change which composite the dabs already spent are read back
+  // through. Read here rather than inside `rgb_` because `Layer` is what this
+  // file already has in hand and `brush/RgbDeposit` deliberately knows nothing
+  // about one (its header §5, "No Document, no Layer").
+  // `tip.blend`, latched with the ink/ceiling/lock for the identical reason
+  // (brush/RgbDeposit.hpp §2a): the RGB route is the ONLY one that reads it
+  // -- pigment has no RGBA to blend and erase/heal/clone/smudge/tonal/mask/
+  // pencil do not consult a brush's blend mode in Photoshop either
+  // (`BrushTip::blend`'s own comment names this as the one reader).
+  if (route_ == StrokeRoute::RgbDeposit)
+    rgb_.begin(tip_.linearRgb, resolvedOpacity_, layer.alphaLocked, tip_.blend);
+  else
+    rgb_.end();
+
+  // The strength, latched with it and for the identical reason
+  // (brush/RgbErase.hpp §2): a stroke whose floor moved half way through has no
+  // well-defined floor. `tip.opacity` is the same slider the deposit route reads
+  // as its ceiling -- one control, one meaning, "the fraction of the maximum
+  // effect one stroke may reach" -- and `tip.linearRgb` is deliberately NOT
+  // read, because an eraser that had a colour would be a brush painting the
+  // background (ADR-0007's rejected model).
+  //
+  // The `else` carries the same weight as the one above, one direction further:
+  // erasure carried across strokes would let the floor of the last stroke stop
+  // the first dab of the next, so a second pass would refuse to cut deeper.
+  if (route_ == StrokeRoute::RgbErase)
+    erase_.begin(resolvedOpacity_);
+  else
+    erase_.end();
+
+  // The Pigment erase route's own accumulator, latched from the same slider for
+  // the same reason (brush/PigmentErase.hpp §2). Four `begin()`/`end()` pairs
+  // rather than one switch because each one's `else` is the load-bearing half:
+  // whichever route this stroke took, the other three must be left holding no
+  // tiles, and an interrupted drag is exactly the case that reaches here with
+  // one of them still live.
+  if (route_ == StrokeRoute::PigmentErase)
+    pigErase_.begin(resolvedOpacity_);
+  else
+    pigErase_.end();
+
+  // The pencil's ink and ceiling, latched from the same two fields the RGB
+  // deposit reads and for the same reason (brush/PencilDeposit §2): the
+  // accumulator is only correct against the colour and ceiling it was started
+  // with. `layer.alphaLocked` travels with them, exactly as it does for
+  // `rgb_` -- a lock cleared or set mid-drag must not change which composite
+  // the dabs already spent are read back through.
+  //
+  // A fourth `begin()`/`end()` pair rather than a switch, for the reason the
+  // three above give: each one's `else` is the load-bearing half, because
+  // whichever route this stroke took the other three must be left holding no
+  // tiles, and an interrupted drag is exactly the case that reaches here with
+  // one of them still live.
+  if (route_ == StrokeRoute::PencilDeposit)
+    pencil_.begin(tip_.linearRgb, resolvedOpacity_, layer.alphaLocked);
+  else
+    pencil_.end();
+  // The tonal route's accumulator, latched from the same slider for the same
+  // reason again (brush/TonalBrush.hpp §3) -- and with one thing the other
+  // three do not latch: the DIRECTION, read off `tool_` here and nowhere else.
+  // Deciding it once, at pen-down, from the tool the session already validated
+  // its route against is what makes a stroke that changed tool mid-drag
+  // impossible to express: `depositPending()` re-asks `strokeRouteFor(tool_,
+  // ...)` every frame with this same `tool_`, so a Dodge cannot become a Burn
+  // without ending the stroke.
+  // `Tool::Burn` explicitly rather than "not Dodge": this is the one line that
+  // turns a tool into a sign, and a default that swallowed a future third tonal
+  // tool into Dodge is exactly the silent wrong answer §0 argues one engine
+  // must not make easy.
+  if (route_ == StrokeRoute::TonalBrush)
+    tonal_.begin(resolvedOpacity_,
+                 tool_ == Tool::Burn ? TonalDirection::Burn : TonalDirection::Dodge);
+  else
+    tonal_.end();
+  // The clone route's own snapshot, offset and ceiling (brush/CloneStamp §2).
+  // A fourth `begin()`/`end()` pair for the same reason there are three: each
+  // one's `else` is the load-bearing half, and this one's is the most so --
+  // the snapshot shares tiles with the layer, so a clone stroke followed by a
+  // brush stroke that left it live would hold the whole previous target at
+  // twice its size for as long as the application ran.
+  //
+  // **The store is snapshotted here, before any dab**, which is the ordering
+  // core/TileStore.hpp requires of a copy ("take the reference, write, then
+  // copy -- never the other order"). `layer.rgbTiles` is engaged on this route
+  // by construction: `strokeRouteFor()` only answers `CloneStamp` for an RGB
+  // layer whose store exists.
+  //
+  // `layer.alphaLocked` is latched with it, exactly as the RGB deposit latches
+  // it, so a lock toggled mid-drag cannot change which composite the dabs
+  // already spent were read back through.
+  if (route_ == StrokeRoute::CloneStamp)
+    clone_.begin(*layer.rgbTiles, cloneOffset_,
+                 resolvedOpacity_, layer.alphaLocked);
+  else
+    clone_.end();
+  // The heal route's snapshot, offset and ceiling (brush/Heal §2), bound the
+  // same way and for the same reasons -- a *fifth* `begin()`/`else end()` pair,
+  // and the one whose `else` is worth the most: this and `clone_` are the two
+  // members that can hold a whole second `TileStore`, so a stroke that left
+  // either live would keep the previous target alive at twice its size. Same
+  // ordering rule as the clone's: the store is copied here, before any dab, and
+  // `layer.rgbTiles` is engaged on this route by construction because
+  // `strokeRouteFor()` only answers `Heal` for an RGB layer whose store exists.
+  if (route_ == StrokeRoute::Heal)
+    heal_.begin(*layer.rgbTiles, cloneOffset_,
+                resolvedOpacity_, layer.alphaLocked);
+  else
+    heal_.end();
+  // The smudge route's carried colour and its strength, latched for the stroke
+  // (brush/Smudge.hpp §3): strength is how far the finger dominates the canvas,
+  // and a stroke whose dominance moved half way through would have been picking
+  // up under one rule and putting down under another. A fourth
+  // `begin()`/`end()` pair rather than a fifth arm of a switch, for the reason
+  // the three above are pairs: the `else` is the load-bearing half. It matters
+  // more here than anywhere else, because what this engine holds after an
+  // interrupted drag is a COLOUR -- a smudge_ left loaded across a `begin()`
+  // would lay the previous stroke's paint down before the new stroke had picked
+  // anything up, which is invisible until the two strokes are different
+  // colours.
+  //
+  // **`tip.smudgeStrength`, NOT `resolvedOpacity`** -- brush/Smudge.hpp §3b.
+  // This line used to read the same slider as the four `begin()`s above it, on
+  // the argument that a strength and a stroke ceiling are one quantity; they
+  // are not, and the price of pretending so was that the smudge inherited
+  // `BrushState::opacity`'s default of 1, which is the single value at which
+  // the tool provably never fades. The field it reads now has its own default
+  // (0.5) and its own control, and there is deliberately no Transfer variance
+  // applied to it: `opVr` is an opacity dynamic and this is not an opacity.
+  if (route_ == StrokeRoute::Smudge)
+    smudge_.begin(tip_.smudgeStrength);
+  else
+    smudge_.end();
+  // The Pigment smudge's carried paint, from the same field and for every one
+  // of the reasons above: one STRENGTH control whichever storage is under the
+  // tip (brush/PigmentSmudge §3), and an `else` that empties the finger so a
+  // colour cannot survive an interrupted drag into the next stroke.
+  if (route_ == StrokeRoute::PigmentSmudge)
+    pigSmudge_.begin(tip_.smudgeStrength);
+  else
+    pigSmudge_.end();
+
+  // The mask route's target coverage and ceiling, latched together for the
+  // reason every pair above is latched together (brush/MaskPaint §3): the
+  // accumulator counts a fraction of the way to *this* target under *this*
+  // ceiling, so a stroke whose target moved half way through has no
+  // well-defined destination and its accumulator is a fraction of nothing.
+  //
+  // `tip.linearRgb` and `resolvedOpacity` -- the same two fields
+  // `rgb_.begin()` above reads, with the same meanings. The colour becomes a
+  // coverage through `maskTargetForInk()` (brush/MaskPaint §2), which is where
+  // the "50 % grey means 50 % coverage" decision lives; the opacity is the
+  // per-stroke ceiling exactly as it is on every other route, so the OPACITY
+  // slider does the same thing to a mask stroke that it does to a paint stroke,
+  // which is what keeps the BRUSH panel's caption honest.
+  //
+  // The `else` carries the weight the other six do: whichever route this stroke
+  // took, the rest must be left holding no tiles, and an interrupted drag is
+  // exactly the case that reaches here with one of them still live.
+  if (route_ == StrokeRoute::MaskPaint)
+    maskPaint_.begin(maskTargetForInk(tip_.linearRgb), resolvedOpacity_);
+  else
+    maskPaint_.end();
+
+  // The recording route's own latched state (§1d). **Not a `begin()`/`end()`
+  // pair like the seven above it**, because there is no accumulator and no
+  // snapshot to allocate or drop -- so there is nothing an interrupted drag can
+  // leave live, which is what every one of those `else` branches exists to
+  // prevent. What must still be latched is what the stroke MEANS, and these
+  // four are set unconditionally rather than inside the branch for the same
+  // reason: a stroke that took another route must not be able to leave a stale
+  // stroke id behind for the next recording stroke to append into.
+  //
+  // `Tool::Heal` explicitly, never "not CloneStamp": this is the one line that
+  // turns a tool into a source policy, and a default that swallowed a future
+  // third source-reading tool into the clone is exactly the silent wrong answer
+  // one route serving two tools must not make easy -- `TonalStroke`'s latched
+  // sign takes the identical precaution one route up.
+  recordSource_ = tool_ == Tool::Heal ? DabColorSource::BelowHealed : DabColorSource::Below;
+  // Rounded to whole texels here, by the same `std::lround` `CloneStampStroke::
+  // begin()` and `HealStroke::begin()` apply to the same vector, so a repair
+  // recorded with one gesture and a repair painted with it copy from the same
+  // texel (brush/CloneStamp §3 on why integer, and brush/Heal §3 on the extra
+  // reason a solve has).
+  recordDx_ = std::round(cloneOffset_.x);
+  recordDy_ = std::round(cloneOffset_.y);
+  recordOpacity_ = resolvedOpacity_;
+  // Allocated lazily, from the layer's own `nextDabId`, when the first dab is
+  // actually appended -- so a stroke that recorded nothing consumes no id and
+  // leaves `DabRecord::strokeId`'s documented "no stroke" value behind.
+  recordStrokeId_ = 0;
+}
+
 bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& tip, Tool tool,
                           std::string* errorOut, const BrushModel* model,
                           const DynamicInputs& hardwareInputs,
@@ -1572,208 +1782,9 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
                                         VarianceSite::Flow)
                          : 1.0f;
 
-  // The ink, latched for the whole stroke -- brush/RgbDeposit.hpp §2 on why the
-  // colour and the ceiling may not move once the accumulator has started, and
-  // §3 on the accumulator being allocated here and freed at `end()`.
-  //
-  // The `else` is not redundant. A pigment or erase stroke that follows an RGB
-  // deposit must leave nothing of it behind, for exactly `StrokePath::reset()`'s
-  // reason below: alpha carried across strokes would let the ceiling of the last
-  // stroke cap the first dab of the next -- and a session begun without a
-  // matching `end()` (a window blur, an interrupted drag) is the case that
-  // reaches this line holding tiles.
-  // `layer.alphaLocked`, latched with the ink and the ceiling for the identical
-  // reason (brush/RgbDeposit.hpp's `begin()`): a lock cleared or set mid-drag
-  // must not change which composite the dabs already spent are read back
-  // through. Read here rather than inside `rgb_` because `Layer` is what this
-  // file already has in hand and `brush/RgbDeposit` deliberately knows nothing
-  // about one (its header §5, "No Document, no Layer").
-  // `tip.blend`, latched with the ink/ceiling/lock for the identical reason
-  // (brush/RgbDeposit.hpp §2a): the RGB route is the ONLY one that reads it
-  // -- pigment has no RGBA to blend and erase/heal/clone/smudge/tonal/mask/
-  // pencil do not consult a brush's blend mode in Photoshop either
-  // (`BrushTip::blend`'s own comment names this as the one reader).
-  if (route_ == StrokeRoute::RgbDeposit)
-    rgb_.begin(tip.linearRgb, resolvedOpacity, layer.alphaLocked, tip.blend);
-  else
-    rgb_.end();
-
-  // The strength, latched with it and for the identical reason
-  // (brush/RgbErase.hpp §2): a stroke whose floor moved half way through has no
-  // well-defined floor. `tip.opacity` is the same slider the deposit route reads
-  // as its ceiling -- one control, one meaning, "the fraction of the maximum
-  // effect one stroke may reach" -- and `tip.linearRgb` is deliberately NOT
-  // read, because an eraser that had a colour would be a brush painting the
-  // background (ADR-0007's rejected model).
-  //
-  // The `else` carries the same weight as the one above, one direction further:
-  // erasure carried across strokes would let the floor of the last stroke stop
-  // the first dab of the next, so a second pass would refuse to cut deeper.
-  if (route_ == StrokeRoute::RgbErase)
-    erase_.begin(resolvedOpacity);
-  else
-    erase_.end();
-
-  // The Pigment erase route's own accumulator, latched from the same slider for
-  // the same reason (brush/PigmentErase.hpp §2). Four `begin()`/`end()` pairs
-  // rather than one switch because each one's `else` is the load-bearing half:
-  // whichever route this stroke took, the other three must be left holding no
-  // tiles, and an interrupted drag is exactly the case that reaches here with
-  // one of them still live.
-  if (route_ == StrokeRoute::PigmentErase)
-    pigErase_.begin(resolvedOpacity);
-  else
-    pigErase_.end();
-
-  // The pencil's ink and ceiling, latched from the same two fields the RGB
-  // deposit reads and for the same reason (brush/PencilDeposit §2): the
-  // accumulator is only correct against the colour and ceiling it was started
-  // with. `layer.alphaLocked` travels with them, exactly as it does for
-  // `rgb_` -- a lock cleared or set mid-drag must not change which composite
-  // the dabs already spent are read back through.
-  //
-  // A fourth `begin()`/`end()` pair rather than a switch, for the reason the
-  // three above give: each one's `else` is the load-bearing half, because
-  // whichever route this stroke took the other three must be left holding no
-  // tiles, and an interrupted drag is exactly the case that reaches here with
-  // one of them still live.
-  if (route_ == StrokeRoute::PencilDeposit)
-    pencil_.begin(tip.linearRgb, resolvedOpacity, layer.alphaLocked);
-  else
-    pencil_.end();
-  // The tonal route's accumulator, latched from the same slider for the same
-  // reason again (brush/TonalBrush.hpp §3) -- and with one thing the other
-  // three do not latch: the DIRECTION, read off `tool_` here and nowhere else.
-  // Deciding it once, at pen-down, from the tool the session already validated
-  // its route against is what makes a stroke that changed tool mid-drag
-  // impossible to express: `depositPending()` re-asks `strokeRouteFor(tool_,
-  // ...)` every frame with this same `tool_`, so a Dodge cannot become a Burn
-  // without ending the stroke.
-  // `Tool::Burn` explicitly rather than "not Dodge": this is the one line that
-  // turns a tool into a sign, and a default that swallowed a future third tonal
-  // tool into Dodge is exactly the silent wrong answer §0 argues one engine
-  // must not make easy.
-  if (route_ == StrokeRoute::TonalBrush)
-    tonal_.begin(resolvedOpacity,
-                 tool == Tool::Burn ? TonalDirection::Burn : TonalDirection::Dodge);
-  else
-    tonal_.end();
-  // The clone route's own snapshot, offset and ceiling (brush/CloneStamp §2).
-  // A fourth `begin()`/`end()` pair for the same reason there are three: each
-  // one's `else` is the load-bearing half, and this one's is the most so --
-  // the snapshot shares tiles with the layer, so a clone stroke followed by a
-  // brush stroke that left it live would hold the whole previous target at
-  // twice its size for as long as the application ran.
-  //
-  // **The store is snapshotted here, before any dab**, which is the ordering
-  // core/TileStore.hpp requires of a copy ("take the reference, write, then
-  // copy -- never the other order"). `layer.rgbTiles` is engaged on this route
-  // by construction: `strokeRouteFor()` only answers `CloneStamp` for an RGB
-  // layer whose store exists.
-  //
-  // `layer.alphaLocked` is latched with it, exactly as the RGB deposit latches
-  // it, so a lock toggled mid-drag cannot change which composite the dabs
-  // already spent were read back through.
-  if (route_ == StrokeRoute::CloneStamp)
-    clone_.begin(*layer.rgbTiles, clone != nullptr ? clone->offset : Vec2{0.0f, 0.0f},
-                 resolvedOpacity, layer.alphaLocked);
-  else
-    clone_.end();
-  // The heal route's snapshot, offset and ceiling (brush/Heal §2), bound the
-  // same way and for the same reasons -- a *fifth* `begin()`/`else end()` pair,
-  // and the one whose `else` is worth the most: this and `clone_` are the two
-  // members that can hold a whole second `TileStore`, so a stroke that left
-  // either live would keep the previous target alive at twice its size. Same
-  // ordering rule as the clone's: the store is copied here, before any dab, and
-  // `layer.rgbTiles` is engaged on this route by construction because
-  // `strokeRouteFor()` only answers `Heal` for an RGB layer whose store exists.
-  if (route_ == StrokeRoute::Heal)
-    heal_.begin(*layer.rgbTiles, clone != nullptr ? clone->offset : Vec2{0.0f, 0.0f},
-                resolvedOpacity, layer.alphaLocked);
-  else
-    heal_.end();
-  // The smudge route's carried colour and its strength, latched for the stroke
-  // (brush/Smudge.hpp §3): strength is how far the finger dominates the canvas,
-  // and a stroke whose dominance moved half way through would have been picking
-  // up under one rule and putting down under another. A fourth
-  // `begin()`/`end()` pair rather than a fifth arm of a switch, for the reason
-  // the three above are pairs: the `else` is the load-bearing half. It matters
-  // more here than anywhere else, because what this engine holds after an
-  // interrupted drag is a COLOUR -- a smudge_ left loaded across a `begin()`
-  // would lay the previous stroke's paint down before the new stroke had picked
-  // anything up, which is invisible until the two strokes are different
-  // colours.
-  //
-  // **`tip.smudgeStrength`, NOT `resolvedOpacity`** -- brush/Smudge.hpp §3b.
-  // This line used to read the same slider as the four `begin()`s above it, on
-  // the argument that a strength and a stroke ceiling are one quantity; they
-  // are not, and the price of pretending so was that the smudge inherited
-  // `BrushState::opacity`'s default of 1, which is the single value at which
-  // the tool provably never fades. The field it reads now has its own default
-  // (0.5) and its own control, and there is deliberately no Transfer variance
-  // applied to it: `opVr` is an opacity dynamic and this is not an opacity.
-  if (route_ == StrokeRoute::Smudge)
-    smudge_.begin(tip.smudgeStrength);
-  else
-    smudge_.end();
-  // The Pigment smudge's carried paint, from the same field and for every one
-  // of the reasons above: one STRENGTH control whichever storage is under the
-  // tip (brush/PigmentSmudge §3), and an `else` that empties the finger so a
-  // colour cannot survive an interrupted drag into the next stroke.
-  if (route_ == StrokeRoute::PigmentSmudge)
-    pigSmudge_.begin(tip.smudgeStrength);
-  else
-    pigSmudge_.end();
-
-  // The mask route's target coverage and ceiling, latched together for the
-  // reason every pair above is latched together (brush/MaskPaint §3): the
-  // accumulator counts a fraction of the way to *this* target under *this*
-  // ceiling, so a stroke whose target moved half way through has no
-  // well-defined destination and its accumulator is a fraction of nothing.
-  //
-  // `tip.linearRgb` and `resolvedOpacity` -- the same two fields
-  // `rgb_.begin()` above reads, with the same meanings. The colour becomes a
-  // coverage through `maskTargetForInk()` (brush/MaskPaint §2), which is where
-  // the "50 % grey means 50 % coverage" decision lives; the opacity is the
-  // per-stroke ceiling exactly as it is on every other route, so the OPACITY
-  // slider does the same thing to a mask stroke that it does to a paint stroke,
-  // which is what keeps the BRUSH panel's caption honest.
-  //
-  // The `else` carries the weight the other six do: whichever route this stroke
-  // took, the rest must be left holding no tiles, and an interrupted drag is
-  // exactly the case that reaches here with one of them still live.
-  if (route_ == StrokeRoute::MaskPaint)
-    maskPaint_.begin(maskTargetForInk(tip.linearRgb), resolvedOpacity);
-  else
-    maskPaint_.end();
-
-  // The recording route's own latched state (§1d). **Not a `begin()`/`end()`
-  // pair like the seven above it**, because there is no accumulator and no
-  // snapshot to allocate or drop -- so there is nothing an interrupted drag can
-  // leave live, which is what every one of those `else` branches exists to
-  // prevent. What must still be latched is what the stroke MEANS, and these
-  // four are set unconditionally rather than inside the branch for the same
-  // reason: a stroke that took another route must not be able to leave a stale
-  // stroke id behind for the next recording stroke to append into.
-  //
-  // `Tool::Heal` explicitly, never "not CloneStamp": this is the one line that
-  // turns a tool into a source policy, and a default that swallowed a future
-  // third source-reading tool into the clone is exactly the silent wrong answer
-  // one route serving two tools must not make easy -- `TonalStroke`'s latched
-  // sign takes the identical precaution one route up.
-  recordSource_ = tool == Tool::Heal ? DabColorSource::BelowHealed : DabColorSource::Below;
-  // Rounded to whole texels here, by the same `std::lround` `CloneStampStroke::
-  // begin()` and `HealStroke::begin()` apply to the same vector, so a repair
-  // recorded with one gesture and a repair painted with it copy from the same
-  // texel (brush/CloneStamp §3 on why integer, and brush/Heal §3 on the extra
-  // reason a solve has).
-  recordDx_ = clone != nullptr ? std::round(clone->offset.x) : 0.0f;
-  recordDy_ = clone != nullptr ? std::round(clone->offset.y) : 0.0f;
-  recordOpacity_ = resolvedOpacity;
-  // Allocated lazily, from the layer's own `nextDabId`, when the first dab is
-  // actually appended -- so a stroke that recorded nothing consumes no id and
-  // leaves `DabRecord::strokeId`'s documented "no stroke" value behind.
-  recordStrokeId_ = 0;
+  resolvedOpacity_ = resolvedOpacity;
+  cloneOffset_ = clone != nullptr ? clone->offset : Vec2{0.0f, 0.0f};
+  beginRoutes(layer);
 
   // Leftover arc length and point history from whatever stroke happened
   // before must not bleed into this one -- brush/StrokePath::reset()'s own
@@ -1787,7 +1798,24 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   taperIn_ = native != nullptr ? native->taperIn : BrushTaper{};
   taperOut_ = native != nullptr ? native->taperOut : BrushTaper{};
   pending_.clear();
-  heldBack_.clear();
+  allDabs_.clear();
+  replaying_ = false;
+  // The exit taper's repaint (`allDabs_`/`preStroke_`'s own comment): the
+  // picture as it stands before the first dab, so `end()` can put back the
+  // tiles this stroke writes and lay it down again with the ramp. Sharing,
+  // not copying -- `TileStoreOf`'s copy constructor is O(tiles) refcount
+  // increments -- and taken only when there is a taper to repaint for, so
+  // every other stroke holds nothing.
+  //
+  // `StrokesRecord` is excluded by name: it appends to a Strokes layer's own
+  // record rather than writing any of the three tile stores `restore()`
+  // knows how to put back, so a repaint there would replay the stroke on top
+  // of itself. Its exit taper is unimplemented, not silently wrong.
+  if (taperOut_.on && taperOut_.lengthPx > 0.0f && route_ != StrokeRoute::None &&
+      route_ != StrokeRoute::StrokesRecord)
+    preStroke_ = doc.document;
+  else
+    preStroke_.reset();
   frameTiles_.clear();
   strokeTiles_.clear();
   dabs_ = 0;
@@ -1871,10 +1899,80 @@ float StrokeSession::taperedSpacingPx() const noexcept {
   return tip_.spacingPx() * taperMul;
 }
 
+bool StrokeSession::exitTaperRepaintPending() const noexcept {
+  return taperOut_.on && taperOut_.lengthPx > 0.0f && preStroke_.has_value();
+}
+
+void StrokeSession::replayWithExitTaper() {
+  if (!preStroke_.has_value() || doc_ == nullptr || allDabs_.size() < 2) return;
+  Document& doc = doc_->document;
+  if (doc.layers.size() != layerCount_ || layerIndex_ >= doc.layers.size()) return;
+  if (layerIndex_ >= preStroke_->layers.size()) return;
+  Layer& layer = doc.layers[layerIndex_];
+  const Layer& before = preStroke_->layers[layerIndex_];
+
+  // Put back exactly the tiles this stroke wrote, and only those: one
+  // refcount increment each (`TileStoreOf::shareTileFrom()`), no pixels
+  // copied. A tile the stroke CREATED has nothing to share back, so it is
+  // returned to a tile store's own default instead -- zero for colour,
+  // reveal for a mask, which is what "absent" means to every reader.
+  const auto restore = [](auto* liveStore, const auto* beforeStore,
+                          const std::vector<TileCoord>& coords) {
+    if (liveStore == nullptr || beforeStore == nullptr) return;
+    using TileType = typename std::remove_reference_t<decltype(*liveStore)>::TileType;
+    for (const TileCoord& c : coords)
+      if (!liveStore->shareTileFrom(*beforeStore, c)) liveStore->getOrCreate(c) = TileType{};
+  };
+  // `Layer`'s stores are optionals, and which one this stroke wrote is the
+  // route's own answer -- the same three stores the deposit dispatch names.
+  const auto ptr = [](auto& store) { return store.has_value() ? &*store : nullptr; };
+  switch (route_) {
+    case StrokeRoute::CpuDeposit:
+    case StrokeRoute::PigmentErase:
+    case StrokeRoute::PigmentSmudge:
+      restore(ptr(layer.pigmentTiles), ptr(before.pigmentTiles), strokeTiles_);
+      break;
+    case StrokeRoute::MaskPaint:
+      restore(ptr(layer.mask), ptr(before.mask), strokeTiles_);
+      break;
+    default:
+      restore(ptr(layer.rgbTiles), ptr(before.rgbTiles), strokeTiles_);
+      break;
+  }
+
+  // Back to pen-down: the routes' accumulators and snapshots (a spent ceiling
+  // would deposit nothing the second time), and every per-dab signal that
+  // counts along the stroke. `path_` is deliberately NOT reset -- the dab
+  // positions are already walked and held in `allDabs_`; this replays them,
+  // it does not re-walk the curve.
+  beginRoutes(layer);
+  dabs_ = 0;
+  texels_ = 0;
+  seed_ = 0;
+  seedLatched_ = false;
+  prevDabX_ = 0.0f;
+  prevDabY_ = 0.0f;
+  havePrevDab_ = false;
+  distanceTravelled_ = 0.0f;
+  initialDirection_ = 0.0f;
+  initialDirectionLatched_ = false;
+  smoothedPressure_ = 0.0f;
+  pressureSmoothLatched_ = false;
+  strokeTiles_.clear();
+
+  pending_ = allDabs_;
+  replaying_ = true;
+  depositPending(/*isEndFlush=*/true);
+  replaying_ = false;
+}
+
 void StrokeSession::depositPending(bool isEndFlush) {
   frameTiles_.clear();
-  if (pending_.empty() && heldBack_.empty()) return;
-  const bool isClickDab = isEndFlush && !havePrevDab_;
+  if (pending_.empty()) return;
+  // A stationary click: the whole gesture is one dab. Not merely "nothing has
+  // been deposited yet" -- the exit taper's repaint arrives here with
+  // `havePrevDab_` deliberately reset, holding a whole stroke.
+  const bool isClickDab = isEndFlush && !havePrevDab_ && pending_.size() <= 1;
 
   Document& doc = doc_->document;
   // The target is re-validated on **every** frame, not just at pen-down: the
@@ -1887,7 +1985,8 @@ void StrokeSession::depositPending(bool isEndFlush) {
   // and the header says what that does and does not cover.
   if (doc.layers.size() != layerCount_ || layerIndex_ >= doc.layers.size()) {
     pending_.clear();
-    heldBack_.clear();
+    allDabs_.clear();
+    preStroke_.reset();
     return;
   }
   Layer& layer = doc.layers[layerIndex_];
@@ -1915,7 +2014,8 @@ void StrokeSession::depositPending(bool isEndFlush) {
   // removed answers `None`.
   if (strokeRouteFor(tool_, &layer, editTarget_) != route_) {
     pending_.clear();
-    heldBack_.clear();
+    allDabs_.clear();
+    preStroke_.reset();
     return;
   }
 
@@ -1956,42 +2056,20 @@ void StrokeSession::depositPending(bool isEndFlush) {
   // `--pigment-stroke-demo` reference and no existing `--selftest` assertion
   // about a dab's footprint or a stroke's byte-identical undo has anything to
   // notice.
-  // --- the exit taper's hold-back (`heldBack_`'s own comment) --------------
+  // --- the exit taper (`allDabs_`/`preStroke_`'s own comment) --------------
   //
-  // Whatever was held from earlier frames goes back at the FRONT: these dabs
-  // are older than anything `path_` has emitted since, and every per-dab
-  // signal below (`distanceTravelled_`, `dabs_`, the stroke-local sources'
-  // own index) advances in emission order, so deferring a suffix is only
-  // legitimate while that order is preserved exactly.
-  if (!heldBack_.empty()) {
-    pending_.insert(pending_.begin(), heldBack_.begin(), heldBack_.end());
-    heldBack_.clear();
-  }
-  const bool exitTaper = taperOut_.on && taperOut_.lengthPx > 0.0f;
+  // While the pen is down this is an ordinary, untapered deposit; the dabs
+  // are merely remembered, so `end()` can put the stroke back and lay it down
+  // again with the ramp. During that repaint `pending_` is the WHOLE stroke
+  // and the ramp is resolved here, at the one moment the distance from every
+  // dab to the stroke's end is finally a known quantity.
+  if (!replaying_ && exitTaperRepaintPending())
+    allDabs_.insert(allDabs_.end(), pending_.begin(), pending_.end());
   std::vector<float> exitMul;
-  if (exitTaper && !isEndFlush) {
-    // Hold back every dab still within a taper length of the tip: whether it
-    // is tapered at all depends on how the stroke ENDS, which is not known
-    // yet. A stroke shorter than the taper length holds everything, which is
-    // correct -- all of it may yet be inside the ramp.
-    size_t firstHeld = 0;
-    float arc = 0.0f;
-    for (size_t i = pending_.size(); i-- > 0;) {
-      if (i + 1 < pending_.size()) arc += dabDistance(pending_[i], pending_[i + 1]);
-      if (arc >= taperOut_.lengthPx) {
-        firstHeld = i + 1;
-        break;
-      }
-    }
-    heldBack_.assign(pending_.begin() + static_cast<ptrdiff_t>(firstHeld), pending_.end());
-    pending_.erase(pending_.begin() + static_cast<ptrdiff_t>(firstHeld), pending_.end());
-    if (pending_.empty()) return;  // nothing released this frame
-  } else if (exitTaper) {
-    // The stroke ended: the tail's remaining distance is finally known, so
-    // the ramp can be resolved -- and the dabs it thins can be SUBDIVIDED to
-    // match. Spacing was chosen at emission time for a full-size tip
-    // (`taperedSpacingPx()`'s own comment); leaving it there would space the
-    // thin end of the taper for dabs several times the size of the ones
+  if (replaying_) {
+    // Spacing was chosen when each dab was EMITTED, for a full-size tip
+    // (`taperedSpacingPx()`'s own comment). Leaving it there would space the
+    // thin end of the ramp for dabs several times the size of the ones
     // actually landing, and a tapering stroke would break into dots exactly
     // where it should be finest.
     subdivideTaperedTail(pending_, taperOut_, tip_.spacingPx());
@@ -2380,6 +2458,12 @@ const std::vector<TileCoord>& StrokeSession::end() {
 
   path_.flush(tip_.spacingPx(), pending_);
   depositPending(/*isEndFlush=*/true);
+
+  // The exit taper, the only thing here that could not be resolved until the
+  // stroke had an end: put the stroke back and lay it down again, tapered.
+  // After the flush above, so what is replayed is the whole stroke including
+  // its last dab and any release catch-up the stabiliser added.
+  if (exitTaperRepaintPending()) replayWithExitTaper();
 
   OpenDocument* doc = doc_;
   doc_ = nullptr;  // the session is over before the record, so a re-entrant

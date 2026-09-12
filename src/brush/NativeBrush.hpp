@@ -79,8 +79,8 @@ struct NativeBrush {
 
   // The two ends of a stroke, independently switchable and independently set
   // (`brush/Taper.hpp`). Both are applied per dab in
-  // `StrokeSession::depositPending()`, and `taperOut` is the reason that
-  // function holds the tail of a stroke back -- see its own comment.
+  // `StrokeSession::depositPending()`, and `taperOut` is the reason a stroke
+  // is repainted at `end()` -- `StrokeSession::allDabs_`'s own comment.
   BrushTaper taperIn;
   BrushTaper taperOut;
 };
