@@ -1922,6 +1922,12 @@ struct AppState {
   // lazy-load-on-first-need shape as `userBrushLibrary` above --
   // `ensureStrokePreferencesLoaded()` is the gate.
   StabiliserParams stabiliserPrefs;
+  // How a pigment deposit builds up where a stroke overlaps itself
+  // (brush/Deposit.hpp §1a), persisted in the same record as the stabiliser
+  // and loaded by the same gate. Global rather than per-brush: both rules are
+  // being judged by feel against other applications, which a painter settles
+  // once for the tool rather than brush by brush.
+  PigmentBuildup pigmentBuildup;
   StrokePreferencesStore strokePreferences;
   bool strokePreferencesLoaded = false;
 

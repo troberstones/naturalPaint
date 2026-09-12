@@ -29,6 +29,7 @@
 #include "ui/Fonts.hpp"
 #include "ui/MacPaintUI.hpp"
 #include "ui/StabiliserPanel.hpp"
+#include "ui/BuildupPanel.hpp"
 #include "ui/TaperPanel.hpp"
 
 #include "imgui.h"
@@ -2399,6 +2400,11 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     capsLabel("TAPER");
     ImGui::SameLine();
     drawTaperOptionsBarField(st);
+
+    bandSeparator();
+    capsLabel("BUILDUP");
+    ImGui::SameLine();
+    drawBuildupOptionsBarField(st);
   }
 
   // --- the smudge's own controls -------------------------------------------

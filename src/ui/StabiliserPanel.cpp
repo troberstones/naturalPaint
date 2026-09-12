@@ -11,9 +11,10 @@ namespace {
 
 void save(AppState& st) {
   ensureStrokePreferencesLoaded(st.strokePreferences, st.strokePreferencesLoaded,
-                                st.stabiliserPrefs);
+                                st.stabiliserPrefs, st.pigmentBuildup);
   std::string err;
-  st.strokePreferences.saveToFile(defaultStrokePreferencesFilePath(), st.stabiliserPrefs, &err);
+  st.strokePreferences.saveToFile(defaultStrokePreferencesFilePath(), st.stabiliserPrefs,
+                                  st.pigmentBuildup, &err);
 }
 
 const char* modeName(StabiliserMode m) noexcept {
@@ -117,7 +118,7 @@ std::string compactEffectiveLabel(const StabiliserParams& eff) {
 // TRIGGER differs between them).
 void drawStabiliserPopoverContents(AppState& st) {
   ensureStrokePreferencesLoaded(st.strokePreferences, st.strokePreferencesLoaded,
-                                st.stabiliserPrefs);
+                                st.stabiliserPrefs, st.pigmentBuildup);
   ImGui::TextUnformatted("ALL BRUSHES");
   ImGui::Separator();
   if (drawParams("global", st.stabiliserPrefs, /*showOptions=*/true)) save(st);
@@ -138,7 +139,7 @@ void drawStabiliserPopoverContents(AppState& st) {
 
 void drawPerBrushStabiliserControls(AppState& st) {
   ensureStrokePreferencesLoaded(st.strokePreferences, st.strokePreferencesLoaded,
-                                st.stabiliserPrefs);
+                                st.stabiliserPrefs, st.pigmentBuildup);
   BrushStabiliserSetting& s = st.brush.native.stabiliser;
   int mode = static_cast<int>(s.mode);
   if (ImGui::Combo("Stabiliser##brushMode", &mode, "Follow global\0Off\0Own\0"))
@@ -154,7 +155,7 @@ void drawPerBrushStabiliserControls(AppState& st) {
 
 void drawStabiliserPopover(AppState& st) {
   ensureStrokePreferencesLoaded(st.strokePreferences, st.strokePreferencesLoaded,
-                                st.stabiliserPrefs);
+                                st.stabiliserPrefs, st.pigmentBuildup);
   const StabiliserParams eff = resolveStabiliser(st.stabiliserPrefs, st.brush.native.stabiliser);
   char buttonLabel[80];
   std::snprintf(buttonLabel, sizeof(buttonLabel), "Stabiliser: %s",
@@ -168,7 +169,7 @@ void drawStabiliserPopover(AppState& st) {
 
 void drawStabiliserOptionsBarField(AppState& st) {
   ensureStrokePreferencesLoaded(st.strokePreferences, st.strokePreferencesLoaded,
-                                st.stabiliserPrefs);
+                                st.stabiliserPrefs, st.pigmentBuildup);
   const StabiliserParams eff = resolveStabiliser(st.stabiliserPrefs, st.brush.native.stabiliser);
   // Same trigger shape as TIP's dab picker just below this in the band: a
   // `BeginCombo` styled with the band's own mono push/pop and width, so it
@@ -177,13 +178,13 @@ void drawStabiliserOptionsBarField(AppState& st) {
   // `Selectable` rows -- the same freeform content the button's popup drew
   // works unchanged inside it.
   pushAtelierMono();
-  ImGui::SetNextItemWidth(130.0f);
-  // Same eight-item popup cap as `ui/TaperPanel.cpp`'s own field, and the same
-  // reason to lift it: these contents are far taller than eight rows, so the
-  // bottom of them was reachable only by scrolling a popup that does not look
-  // scrollable.
-  ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
-  if (ImGui::BeginCombo("##stabiliserField", compactEffectiveLabel(eff).c_str())) {
+  ImGui::SetNextItemWidth(kBandFieldWidthPx);
+  // Same eight-item popup cap as `ui/TaperPanel.cpp`'s own field, lifted the
+  // same way and for the reason stated there: by the FLAG, never by a
+  // `SetNextWindowSizeConstraints()` of our own, which a closed combo leaves
+  // pending for the next unrelated window to consume.
+  if (ImGui::BeginCombo("##stabiliserField", compactEffectiveLabel(eff).c_str(),
+                        ImGuiComboFlags_HeightLargest)) {
     drawStabiliserPopoverContents(st);
     ImGui::EndCombo();
   }

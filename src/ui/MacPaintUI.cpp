@@ -20437,12 +20437,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // compiled-in defaults for every stroke of a session that never
         // opened it, silently ignoring `stroke-preferences.txt`.
         ensureStrokePreferencesLoaded(st.strokePreferences, st.strokePreferencesLoaded,
-                                      st.stabiliserPrefs);
+                                      st.stabiliserPrefs, st.pigmentBuildup);
         const StabiliserParams effStabiliser =
             resolveStabiliser(st.stabiliserPrefs, st.brush.native.stabiliser);
         if (!g_stroke.begin(*strokeDoc, strokeDoc->activeLayer, tip, st.brush.tool,
                             &g_strokeRefusal, &st.brush.model, live, &st.clone, effStabiliser,
-                            st.view.zoom, &st.brush.native)) {
+                            st.view.zoom, &st.brush.native, st.pigmentBuildup)) {
           st.paintingThisFrame = false;
         } else {
           // Which gesture this stroke is: the one ImGui is inside right now

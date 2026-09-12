@@ -65,7 +65,9 @@ bool runStabiliserTest() {
     StabiliserParams toWrite;
     toWrite.mode = StabiliserMode::WeightedAverage;
     std::string writeErr;
-    check(writer.saveToFile(path, toWrite, &writeErr), "setup: the fixture prefs file writes");
+    PigmentBuildup writeBuildup;
+    check(writer.saveToFile(path, toWrite, writeBuildup, &writeErr),
+          "setup: the fixture prefs file writes");
 
     const char* prevEnv = std::getenv("NP_STROKE_PREFERENCES");
     const std::string prevEnvCopy = prevEnv != nullptr ? prevEnv : std::string();
@@ -77,7 +79,7 @@ bool runStabiliserTest() {
     // No UI call anywhere on this path -- the same app/ loader the pen-down
     // canvas block now calls right before `resolveStabiliser()`.
     ensureStrokePreferencesLoaded(st.strokePreferences, st.strokePreferencesLoaded,
-                                  st.stabiliserPrefs);
+                                  st.stabiliserPrefs, st.pigmentBuildup);
     const StabiliserParams eff = resolveStabiliser(st.stabiliserPrefs, st.brush.native.stabiliser);
     check(eff.mode == StabiliserMode::WeightedAverage,
           "fix 1: a fresh AppState whose prefs file says Weighted average resolves to Weighted "
@@ -535,10 +537,19 @@ bool runStabiliserTest() {
     g.showString = false;
 
     StrokePreferencesStore store;
-    const std::string written = store.serialize(g);
+    // brush/Deposit.hpp §1a's two switches share this record, so they share
+    // its round-trip: both non-default, so a serializer that dropped either
+    // would come back as the default rather than as the value written.
+    PigmentBuildup b;
+    b.saturating = true;
+    b.strokeCeiling = true;
+    const std::string written = store.serialize(g, b);
     StabiliserParams reloaded;
+    PigmentBuildup reloadedBuildup;
     StrokePreferencesStore reader;
-    reader.parse(written, reloaded);
+    reader.parse(written, reloaded, reloadedBuildup);
+    check(reloadedBuildup.saturating && reloadedBuildup.strokeCeiling,
+          "stroke-preferences.txt: both pigment buildup switches round-trip");
     check(reloaded.mode == g.mode && reloaded.stringPx == g.stringPx &&
               reloaded.strength == g.strength && reloaded.responsiveness == g.responsiveness &&
               reloaded.catchUpAtEnd == g.catchUpAtEnd &&
@@ -550,9 +561,10 @@ bool runStabiliserTest() {
     const std::string withUnknown =
         "naturalPaint-stroke-preferences 1\nmode 1\nfutureKey 42\n";
     StabiliserParams parsedUnknown;
+    PigmentBuildup unknownBuildup;
     StrokePreferencesStore unknownReader;
-    unknownReader.parse(withUnknown, parsedUnknown);
-    const std::string resaved = unknownReader.serialize(parsedUnknown);
+    unknownReader.parse(withUnknown, parsedUnknown, unknownBuildup);
+    const std::string resaved = unknownReader.serialize(parsedUnknown, unknownBuildup);
     check(resaved.find("futureKey 42") != std::string::npos,
           "stroke-preferences.txt: an unknown key survives a parse/serialize round trip");
 
@@ -561,11 +573,12 @@ bool runStabiliserTest() {
     // respectively), and a merely out-of-range value is clamped rather than
     // rejected outright.
     StabiliserParams badGlobal;
+    PigmentBuildup badBuildup;
     StrokePreferencesStore badReader;
     badReader.parse(
         "naturalPaint-stroke-preferences 1\nmode 7\nstrength nan\nstringPx -40\n"
         "responsiveness 900\nfoo bar\n",
-        badGlobal);
+        badGlobal, badBuildup);
     std::printf("  [measured] fix 8 fixture: mode %d strength %f stringPx %f responsiveness %f, "
                "%zu unknown line(s)\n",
                static_cast<int>(badGlobal.mode), badGlobal.strength, badGlobal.stringPx,
@@ -947,23 +960,29 @@ bool runStabiliserTest() {
     toWrite.mode = StabiliserMode::PulledString;
     toWrite.catchUpMs = 777.0f;
     std::string writeErr;
-    check(writer.saveToFile(path, toWrite, &writeErr),
+    PigmentBuildup writeBuildup;
+    check(writer.saveToFile(path, toWrite, writeBuildup, &writeErr),
           "setup: catchUpMs stroke-preferences.txt fixture writes");
     StrokePreferencesStore reader;
     StabiliserParams reread;
+    PigmentBuildup rereadBuildup;
     std::string readErr;
-    check(reader.loadFromFile(path, reread, &readErr),
+    check(reader.loadFromFile(path, reread, rereadBuildup, &readErr),
           "setup: catchUpMs stroke-preferences.txt fixture reads back");
     check(reread.catchUpMs == 777.0f,
           "persistence: catchUpMs round-trips through stroke-preferences.txt");
 
     StrokePreferencesStore clampReader;
     StabiliserParams clamped;
-    clampReader.parse("naturalPaint-stroke-preferences 1\ncatchUpMs 9999\n", clamped);
+    PigmentBuildup clampBuildup;
+    clampReader.parse("naturalPaint-stroke-preferences 1\ncatchUpMs 9999\n", clamped,
+                      clampBuildup);
     check(clamped.catchUpMs == 2000.0f, "persistence: catchUpMs above 2000 clamps to 2000");
     StrokePreferencesStore clampReader2;
     StabiliserParams clamped2;
-    clampReader2.parse("naturalPaint-stroke-preferences 1\ncatchUpMs -5\n", clamped2);
+    PigmentBuildup clampBuildup2;
+    clampReader2.parse("naturalPaint-stroke-preferences 1\ncatchUpMs -5\n", clamped2,
+                       clampBuildup2);
     check(clamped2.catchUpMs == 0.0f, "persistence: catchUpMs below 0 clamps to 0");
 
     // user-presets.txt: the brush's own `catchUpMs`, a SEPARATE key

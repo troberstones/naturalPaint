@@ -23,6 +23,19 @@
 // by renaming the file would be the whole point of the sentence lost.
 namespace np {
 
+// The width of a combo FIELD in the brush options band -- the STABILISER,
+// TAPER and BUILDUP fields share it so the band reads as one row of controls
+// rather than three sizes.
+//
+// 110 rather than the 130 the first two were written with: the band is out of
+// room. At the window's own default width the five labelled blocks come to
+// about fifty pixels more than there is, which clipped the last field's
+// dropdown arrow off the right edge -- and a control whose arrow is missing is
+// the start of a control nobody can find. Three fields twenty pixels narrower
+// pays for the fourth. A sixth block will not fit at any of these widths, and
+// the next one belongs somewhere other than this band.
+inline constexpr float kBandFieldWidthPx = 110.0f;
+
 // -------------------------------------------------------------- pure parts
 //
 // Everything above the draw functions is free of ImGui so that `--selftest`

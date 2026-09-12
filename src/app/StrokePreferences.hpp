@@ -3,12 +3,17 @@
 #include <string>
 #include <vector>
 
+#include "brush/Deposit.hpp"
 #include "brush/Stabiliser.hpp"
 
 namespace np {
 
-// app/StrokePreferences -- the global stabiliser setting
-// (`StabiliserParams`), persisted beside `brush-libraries.txt`
+// app/StrokePreferences -- the global stroke settings: the stabiliser
+// (`StabiliserParams`) and how a pigment deposit builds up on overlaps
+// (`PigmentBuildup`, brush/Deposit.hpp §1a). Both are global rather than
+// per-brush because both are being judged by feel against other applications,
+// which is a comparison a painter makes once for the whole tool and not brush
+// by brush. Persisted beside `brush-libraries.txt`
 // (`app/BrushLibraryFile.cpp`'s own path/override pattern, re-derived here
 // for the reason `app/UserBrushLibrary.hpp`'s `defaultUserPresetsFilePath()`
 // gives for its own: a different file, a different durability contract, not
@@ -32,15 +37,16 @@ class StrokePreferencesStore {
   // Parse `text` into `global`. Never fails outright: a missing or malformed
   // key simply leaves `global`'s corresponding field at whatever it already
   // held (its caller's default-constructed `StabiliserParams{}`, normally).
-  void parse(const std::string& text, StabiliserParams& global);
+  void parse(const std::string& text, StabiliserParams& global, PigmentBuildup& buildup);
 
   // A missing file is a fresh install, not an error.
-  bool loadFromFile(const std::string& path, StabiliserParams& global, std::string* errorOut);
+  bool loadFromFile(const std::string& path, StabiliserParams& global, PigmentBuildup& buildup,
+                    std::string* errorOut);
 
-  std::string serialize(const StabiliserParams& global) const;
+  std::string serialize(const StabiliserParams& global, const PigmentBuildup& buildup) const;
 
   bool saveToFile(const std::string& path, const StabiliserParams& global,
-                  std::string* errorOut) const;
+                  const PigmentBuildup& buildup, std::string* errorOut) const;
 
   // Every line this build did not recognise, in file order -- what
   // `serialize()` re-emits so an older build's save, or a hand edit, is not
@@ -60,6 +66,6 @@ class StrokePreferencesStore {
 // setting must be current the first time a stroke resolves it, not only
 // once the Stabiliser popover has happened to be drawn.
 void ensureStrokePreferencesLoaded(StrokePreferencesStore& store, bool& loaded,
-                                   StabiliserParams& global);
+                                   StabiliserParams& global, PigmentBuildup& buildup);
 
 }  // namespace np

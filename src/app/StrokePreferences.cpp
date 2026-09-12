@@ -116,7 +116,8 @@ std::string defaultStrokePreferencesFilePath() {
   return "stroke-preferences.txt";
 }
 
-void StrokePreferencesStore::parse(const std::string& text, StabiliserParams& global) {
+void StrokePreferencesStore::parse(const std::string& text, StabiliserParams& global,
+                                   PigmentBuildup& buildup) {
   unknownLines_.clear();
   std::istringstream in(text);
   std::string raw;
@@ -179,6 +180,15 @@ void StrokePreferencesStore::parse(const std::string& text, StabiliserParams& gl
     } else if (key == "showString" && takeFloat(rest, f)) {
       global.showString = f != 0.0f;
       continue;
+      // brush/Deposit.hpp §1a. Named for the rule rather than for "mode 1"
+      // and "mode 2": these are two independent switches and a file that
+      // numbered them would stop making sense the moment there is a third.
+    } else if (key == "buildupSaturating" && takeFloat(rest, f)) {
+      buildup.saturating = f != 0.0f;
+      continue;
+    } else if (key == "buildupStrokeCeiling" && takeFloat(rest, f)) {
+      buildup.strokeCeiling = f != 0.0f;
+      continue;
     }
     // A key this build does not know, or a value that did not parse:
     // preserved verbatim rather than dropped (§ header comment).
@@ -187,24 +197,25 @@ void StrokePreferencesStore::parse(const std::string& text, StabiliserParams& gl
 }
 
 bool StrokePreferencesStore::loadFromFile(const std::string& path, StabiliserParams& global,
-                                          std::string* errorOut) {
+                                          PigmentBuildup& buildup, std::string* errorOut) {
   if (errorOut) errorOut->clear();
   std::ifstream f(path, std::ios::binary);
   if (!f) {
-    parse(std::string(), global);  // fresh install, not an error
+    parse(std::string(), global, buildup);  // fresh install, not an error
     return true;
   }
   std::ostringstream buf;
   buf << f.rdbuf();
   const bool readOk = !f.bad();
-  parse(buf.str(), global);
+  parse(buf.str(), global, buildup);
   if (!readOk && errorOut)
     *errorOut = "stroke preferences: '" + path +
                "' could not be read to the end; what was readable has been kept.";
   return readOk;
 }
 
-std::string StrokePreferencesStore::serialize(const StabiliserParams& global) const {
+std::string StrokePreferencesStore::serialize(const StabiliserParams& global,
+                                              const PigmentBuildup& buildup) const {
   std::string out;
   out += kStrokePreferencesFileHeader;
   out += " " + std::to_string(kStrokePreferencesFileVersion) + "\n";
@@ -218,25 +229,28 @@ std::string StrokePreferencesStore::serialize(const StabiliserParams& global) co
   out += std::string("stabilisePressure ") + (global.stabilisePressure ? "1" : "0") + "\n";
   out += std::string("scaleWithZoom ") + (global.scaleWithZoom ? "1" : "0") + "\n";
   out += std::string("showString ") + (global.showString ? "1" : "0") + "\n";
+  out += std::string("buildupSaturating ") + (buildup.saturating ? "1" : "0") + "\n";
+  out += std::string("buildupStrokeCeiling ") + (buildup.strokeCeiling ? "1" : "0") + "\n";
   for (const std::string& line : unknownLines_) out += sanitizeOneLine(line) + "\n";
   return out;
 }
 
 bool StrokePreferencesStore::saveToFile(const std::string& path, const StabiliserParams& global,
+                                        const PigmentBuildup& buildup,
                                         std::string* errorOut) const {
   if (errorOut) errorOut->clear();
   std::error_code ec;
   const fs::path parent = fs::path(path).parent_path();
   if (!parent.empty()) fs::create_directories(parent, ec);
-  return writeFileAtomically(path, serialize(global), errorOut);
+  return writeFileAtomically(path, serialize(global, buildup), errorOut);
 }
 
 void ensureStrokePreferencesLoaded(StrokePreferencesStore& store, bool& loaded,
-                                   StabiliserParams& global) {
+                                   StabiliserParams& global, PigmentBuildup& buildup) {
   if (loaded) return;
   loaded = true;
   std::string err;
-  store.loadFromFile(defaultStrokePreferencesFilePath(), global, &err);
+  store.loadFromFile(defaultStrokePreferencesFilePath(), global, buildup, &err);
 }
 
 }  // namespace np

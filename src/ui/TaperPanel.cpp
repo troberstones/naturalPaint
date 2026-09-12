@@ -70,15 +70,18 @@ void drawBrushTaperControls(AppState& st) {
 
 void drawTaperOptionsBarField(AppState& st) {
   pushAtelierMono();
-  ImGui::SetNextItemWidth(130.0f);
-  // Without a constraint of our own, a combo popup is capped at EIGHT items
-  // tall (`ImGuiComboFlags_HeightRegular`, imgui_widgets.cpp's own
-  // `CalcMaxPopupHeightFromItemCount()`) and silently scrolls the rest. These
-  // contents are about a dozen rows, so the whole exit taper sat below the
-  // fold -- which is exactly how it came to look like a control that did
-  // nothing.
-  ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
-  const bool open = ImGui::BeginCombo("##taperField", compactLabel(st.brush.native).c_str());
+  ImGui::SetNextItemWidth(kBandFieldWidthPx);
+  // `ImGuiComboFlags_HeightLargest` rather than a `SetNextWindowSizeConstraints`
+  // of our own. Both uncap the popup, which a combo otherwise clamps to EIGHT
+  // items and silently scrolls -- how the whole exit taper group once came to
+  // sit below the fold. Only the flag is safe: a CLOSED combo returns from
+  // `BeginCombo` before it looks at `NextWindowData` (imgui_widgets.cpp's
+  // "Set popup size" block sits after that early return), so a constraint set
+  // by hand is left pending and is consumed by whatever window is begun next
+  // -- a dialog, a panel, anything -- which quietly resized windows that have
+  // nothing to do with this field.
+  const bool open = ImGui::BeginCombo("##taperField", compactLabel(st.brush.native).c_str(),
+                                      ImGuiComboFlags_HeightLargest);
   popAtelierMono();
   if (open) {
     drawBrushTaperControls(st);
