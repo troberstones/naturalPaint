@@ -84,6 +84,23 @@ std::string unrenderableRefusal(const std::string& path, const Document& doc, co
 
 }  // namespace
 
+// Both types name the guide's OWN orientation -- a vertical guide is a vertical
+// line at a fixed x -- so this is a rename and not a transform. io/PsdImport has
+// already divided PSD's 32nds of a pixel, and a position outside the canvas is
+// carried through: Photoshop keeps a guide dragged past the edge, and
+// `resolveSnap()` simply never reaches it.
+std::vector<Guide> guidesFromPsd(const std::vector<PsdGuide>& psdGuides) {
+  std::vector<Guide> out;
+  out.reserve(psdGuides.size());
+  for (const PsdGuide& g : psdGuides) {
+    Guide guide;
+    guide.orientation = g.vertical ? GuideOrientation::Vertical : GuideOrientation::Horizontal;
+    guide.position = g.position;
+    out.push_back(guide);
+  }
+  return out;
+}
+
 OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* recent,
                                     PsdLayerPolicy psdLayers) {
   if (path.empty()) return refuse("Open refused: no file name was given.");
@@ -356,6 +373,7 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
   // exists to keep out.
   std::string decodeError;
   std::vector<std::string> psdWarnings;
+  std::vector<Guide> psdGuides;
   std::optional<Document> decoded;
   bool psdDecided = false;
   bool flattenRetry = false;
@@ -366,6 +384,7 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
     if (psd.ok) {
       decoded = std::move(psd.document);
       psdWarnings = std::move(psd.warnings);
+      psdGuides = guidesFromPsd(psd.guides);
       psdDecided = true;
     } else if (!psd.noLayerData) {
       decodeError = psd.error;
@@ -498,6 +517,7 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
   // dropped" shape `warnings` already carries for every other non-fatal
   // note this function forwards.
   for (std::string& w : psdWarnings) r.warnings.push_back(std::move(w));
+  r.guides = std::move(psdGuides);
   // Said every time rather than once, because it is the surprising half of the
   // decision and the moment it matters is the moment the user reaches for Cmd-S.
   r.warnings.push_back("'" + fileNameOf(path) +

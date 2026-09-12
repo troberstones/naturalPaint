@@ -8853,6 +8853,17 @@ void openFileIntoSession(AppState& st, const std::string& path, PsdLayerPolicy p
   g_flattenRetryPath = opened.flattenRetryAvailable ? path : std::string();
   if (opened.ok) {
     st.documents.add(std::move(opened.document));
+    // A PSD's own guides, if it carried any (app/OpenAnyFile::guides).
+    //
+    // **Only when non-empty**, which is an asymmetry on purpose: `st.guides` is
+    // one session-wide list rather than per-document, so clearing it for a file
+    // that has no guides would throw away guides the user placed by hand for a
+    // document they are still working in. A file that *does* carry guides is an
+    // explicit statement about where they go, so it wins.
+    if (!opened.guides.empty()) {
+      st.guides = std::move(opened.guides);
+      g_docStatus += "\n" + std::to_string(st.guides.size()) + " guide(s) came from the file.";
+    }
     // app/OpenAnyFile has already decided *whether* to add a recent entry
     // (its header says why a picture cannot go in that list yet); this is
     // only the write-through to disk, kept on the one success path so it

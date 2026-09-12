@@ -1739,11 +1739,22 @@ struct AppState {
   // are conceptually document content (they'd be saved with the file), but
   // this codebase has no document-save path at all yet, and the interactive
   // canvas (this struct, MacPaintUI.cpp) has no core::Document/layer-stack
-  // awareness -- it only knows sim::PaintSim's single dense texture. That
-  // bridge is a real, separately-tracked, deliberately deferred gap; true
-  // guide persistence waits for both a save path and a live-canvas-to-
-  // Document bridge to exist. Until then, guides live here and vanish with
-  // the session, like zoom/pan/mirror/rotation already do.
+  // awareness -- it only knows sim::PaintSim's single dense texture. Until
+  // then, guides live here and vanish with the session, like zoom/pan/mirror/
+  // rotation already do.
+  //
+  // **This comment used to say "this codebase has no document-save path at all
+  // yet", and that stopped being true**: io/NpaintFile's `saveNpaint()` takes a
+  // `Document`. So the remaining obstacle is only the second one -- a guide on
+  // `Document` would be inside every `core::History` snapshot, making each undo
+  // restore a set of guides and each guide drag an undoable edit, which is the
+  // objection app/DocumentLifecycle.hpp already records for the active
+  // selection. That is the decision to make, not a missing mechanism.
+  //
+  // **Seeded on open when a file carries guides**: a PSD stores them in its
+  // image resources, io/PsdImport reads them, and `openFileIntoSession()`
+  // assigns them here. One session-wide list, so the last file with guides
+  // wins -- and a file with none leaves a hand-placed set alone.
   std::vector<Guide> guides;
 
   // PLAN.md Phase 3 step 6 ("Apply pass -- shaper -> 3-D LUT fetch ->

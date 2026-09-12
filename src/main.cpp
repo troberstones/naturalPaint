@@ -5025,6 +5025,14 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[open] ! %s\n", w.c_str());
       if (opened.ok) {
         st.documents.add(std::move(opened.document));
+        // Same rule as ui/MacPaintUI.cpp's `openFileIntoSession()`: a file's own
+        // guides seed the session only if it carried any. With several paths on
+        // one command line the last file with guides wins, which is the same
+        // last-writer-wins `st.guides` already has.
+        if (!opened.guides.empty()) {
+          st.guides = std::move(opened.guides);
+          std::fprintf(stderr, "[open] %zu guide(s) came from the file.\n", st.guides.size());
+        }
         std::string recentSaveError;
         st.recentDocuments.saveToFile(np::defaultRecentDocumentsPath(), &recentSaveError);
       }
