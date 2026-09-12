@@ -547,11 +547,11 @@ bool runPathOpsTest() {
   // build's own answer to "did this change?".
   {
     std::vector<VectorShape> shapes = {lineShape(1, {{0, 0}, {10, 0}, {20, 0}})};
-    const uint64_t before = vectorContentHash(shapes);
+    const uint64_t before = vectorContentHash(shapes, {});
     const PathOpResult r =
         runPathOp(PathOp::Join, &shapes, &nextId, shapeSel({1}));  // WrongSelectMode
     check(!r.changed && r.refusal == PathOpRefusal::WrongSelectMode &&
-              vectorContentHash(shapes) == before,
+              vectorContentHash(shapes, {}) == before,
           "a refused verb leaves the geometry untouched -- checked by content hash, not by "
           "eye");
   }

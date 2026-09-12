@@ -141,8 +141,9 @@ Document vectorOnlyDoc(int32_t w, int32_t h, Path path, std::array<float, 4> rgb
 // compositor reaches -- so "these two paths render the same" is asked of the
 // renderer rather than of a second implementation of it.
 std::vector<float> coverageAt(const std::vector<VectorShape>& shapes, int32_t w, int32_t h,
-                              const std::vector<PixelCoord>& probes) {
-  const TileStore tiles = rasterizeVectorLayer(shapes, w, h);
+                              const std::vector<PixelCoord>& probes,
+                              const GradientTable& gradients = {}) {
+  const TileStore tiles = rasterizeVectorLayer(shapes, gradients, w, h);
   std::vector<float> out;
   out.reserve(probes.size());
   for (const PixelCoord& p : probes) {

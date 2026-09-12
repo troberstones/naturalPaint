@@ -87,8 +87,16 @@ namespace np {
 //
 // `width`/`height` clip the result to the document. Geometry outside is not
 // rasterised at all rather than being allocated and discarded.
-TileStore rasterizeVectorLayer(const std::vector<VectorShape>& shapes, int32_t width,
-                               int32_t height);
+//
+// **`gradients` has no default, deliberately.** It is `core::Document`'s own
+// table, and a `Paint` whose `kind` is `Gradient` indexes into it; defaulting
+// it to an empty table would make every call site that had not been updated
+// silently paint nothing for a gradient-filled shape -- an absence, not a
+// breakage, and therefore the kind this codebase has repeatedly been caught
+// by. Requiring it makes each of the five call sites a compile error until it
+// has said which table it means.
+TileStore rasterizeVectorLayer(const std::vector<VectorShape>& shapes,
+                               const GradientTable& gradients, int32_t width, int32_t height);
 
 // One raster per Vector layer, keyed by that layer's id and content hash.
 //

@@ -391,6 +391,7 @@ add_executable(naturalPaint
   core/Clipboard.cpp
   core/Composite.cpp
   core/DirtyTiles.cpp
+  core/Gradient.cpp
   core/Histogram.cpp
   core/History.cpp
   core/LayerCompOps.cpp

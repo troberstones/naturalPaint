@@ -234,7 +234,7 @@ const char* lostContentFor(LayerKind kind) {
 // disagree about what the shape looks like.
 TileStore rasterizeVectorCache(const Layer& layer, const Document& doc) {
   if (layer.shapes.empty()) return TileStore{};
-  return rasterizeVectorLayer(layer.shapes, doc.width, doc.height);
+  return rasterizeVectorLayer(layer.shapes, doc.gradients, doc.width, doc.height);
 }
 
 // Appends this layer's `lclr` block, or nothing. Section 3 of

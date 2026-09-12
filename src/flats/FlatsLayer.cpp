@@ -32,7 +32,7 @@ void mix(uint64_t& h, uint64_t v) {
   h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
 }
 
-uint64_t layerSignature(const Layer& l) {
+uint64_t layerSignature(const Layer& l, const GradientTable& gradients) {
   uint64_t h = 1469598103934665603ull;
   mix(h, l.id);
   mix(h, static_cast<uint64_t>(l.kind));
@@ -62,7 +62,7 @@ uint64_t layerSignature(const Layer& l) {
     }
   }
   // Parametric kinds beneath: their content hash is their signature.
-  if (l.kind == LayerKind::Vector) mix(h, vectorContentHash(l.shapes));
+  if (l.kind == LayerKind::Vector) mix(h, vectorContentHash(l.shapes, gradients));
   if (l.kind == LayerKind::Text) mix(h, textContentHash(l.text));
   if (l.kind == LayerKind::Flats) mix(h, flatsContentHash(l.flats));
   if (l.kind == LayerKind::Adjustment || l.kind == LayerKind::Group) mix(h, l.ops.size());
@@ -148,7 +148,7 @@ uint64_t flatsSourceSignature(const Document& doc, const std::vector<size_t>& la
       mix(h, l.id);
       continue;
     }
-    mix(h, layerSignature(l));
+    mix(h, layerSignature(l, doc.gradients));
   }
   return h;
 }
