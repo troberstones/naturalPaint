@@ -78,6 +78,23 @@ struct VectorStyle {
 VectorStyle vectorStyleOf(const VectorShape& shape);
 void setVectorStyle(VectorShape* shape, const VectorStyle& style);
 
+// **What a colour swatch does to a paint**: sets the colour, turns the paint
+// on, and makes it SOLID.
+//
+// The third part is the one worth a function. `Paint` gained a `kind` with
+// docs/psd-vector-shapes.md's S2, and a gradient paint IGNORES `rgba`
+// entirely (core/VectorShape.hpp) -- so a swatch that wrote only `rgba` and
+// `on` would leave a gradient-filled shape painting its gradient while the
+// swatch showed the colour the user had just picked. That is precisely the
+// "a control with no visible effect" failure the STROKE swatch's own comment
+// is about, arriving through a field that did not exist when it was written.
+//
+// Dropping the gradient is the right answer rather than a regrettable one: a
+// user who opens the colour picker on a shape and chooses a colour is asking
+// for that colour. The gradient's table entry survives (entries are never
+// erased -- core/Gradient.hpp), so undo restores the fill intact.
+void setPaintSolidColor(Paint& paint, const std::array<float, 4>& linearRgba);
+
 // ==========================================================================
 // 3. SELECTION FIRST, ELSE DEFAULT
 // ==========================================================================

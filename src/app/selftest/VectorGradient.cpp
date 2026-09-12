@@ -11,6 +11,7 @@
 #include "core/VectorShape.hpp"
 #include "io/GradientSerial.hpp"
 #include "io/NpaintFile.hpp"
+#include "app/VectorStyle.hpp"
 #include "io/PathSerial.hpp"
 #include "ops/Gradient.hpp"
 
@@ -531,6 +532,47 @@ bool runVectorGradientTest() {
       check(fileContains(withPath, "np:gradients"),
             "npaint: while a document WITH one does -- so the check above discriminates");
     std::remove(withPath);
+  }
+
+  // ==========================================================================
+  std::printf("  -- G. A colour swatch on a gradient-filled shape --\n");
+  // ==========================================================================
+  //
+  // `Paint` grew a `kind` here, and the FILL and STROKE swatches predate it:
+  // both wrote `rgba` and `on` and nothing else. On a gradient paint `rgba` is
+  // IGNORED, so the swatch would have shown the picked colour while the shape
+  // kept painting its gradient -- "a control with no visible effect", the
+  // exact failure the stroke swatch's own comment is about, arriving through a
+  // field that did not exist when it was written.
+  {
+    GradientTable table;
+    table.push_back(rampDef(8.0f, 56.0f));
+
+    VectorShape s = rectShape(8.0f, 8.0f, 56.0f, 56.0f);
+    s.fill.on = true;
+    s.fill.kind = PaintKind::Gradient;
+    s.fill.gradient = 0;
+
+    setPaintSolidColor(s.fill, {1.0f, 0.0f, 0.0f, 1.0f});
+    check(s.fill.kind == PaintKind::Solid && s.fill.on,
+          "swatch: picking a colour on a gradient fill makes the paint SOLID and on");
+    check(s.fill.gradient == 0,
+          "swatch: the table index is left alone -- undo has nothing to reconstruct");
+
+    // And the pixels, which is the claim: the shape now paints the picked
+    // colour rather than the ramp it was painting a moment ago.
+    const TileStore tiles = rasterizeVectorLayer({s}, table, kW, kH);
+    const std::array<float, 4> got = texel(tiles, 12, 32);
+    check(std::fabs(got[0] - 1.0f) < 1e-3f && got[1] < 1e-3f && got[2] < 1e-3f,
+          "swatch: and the shape actually paints it -- red, not the black end of the ramp");
+
+    // The same on a stroke, since both swatches go through this one call.
+    VectorShape line = rectShape(16.0f, 16.0f, 48.0f, 48.0f);
+    line.stroke.kind = PaintKind::Gradient;
+    line.stroke.gradient = 0;
+    setPaintSolidColor(line.stroke, {0.0f, 1.0f, 0.0f, 1.0f});
+    check(line.stroke.kind == PaintKind::Solid && line.stroke.on,
+          "swatch: a stroke swatch does the same, through the same call");
   }
 
   std::printf("[selftest] vector gradient %s\n", ok ? "PASS" : "FAIL");

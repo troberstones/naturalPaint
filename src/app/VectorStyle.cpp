@@ -19,6 +19,15 @@ void setVectorStyle(VectorShape* shape, const VectorStyle& style) {
   shape->strokeStyle = style.strokeStyle;
 }
 
+void setPaintSolidColor(Paint& paint, const std::array<float, 4>& linearRgba) {
+  paint.rgba = linearRgba;
+  paint.on = true;
+  // The gradient index is left where it is rather than zeroed: it is dead
+  // while `kind` is Solid, and keeping it means an undo of this edit has
+  // nothing to reconstruct.
+  paint.kind = PaintKind::Solid;
+}
+
 std::vector<uint64_t> vectorStyleTargets(const std::vector<VectorShape>& shapes,
                                          const PathSelection& selection) {
   // The selection is a set of ids (Shape mode) or of anchor references

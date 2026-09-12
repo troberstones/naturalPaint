@@ -937,12 +937,12 @@ void drawVectorFillStrokeControls(AppState& st, OpenDocument* pathOd, Layer* pat
                               ImGuiColorEditFlags_AlphaPreviewHalf)) {
       const std::array<float, 4> out = {srgbDecode(enc[0]), srgbDecode(enc[1]),
                                         srgbDecode(enc[2]), enc[3]};
-      editPathStyle("stroke colour", &gStrokeColor, [out](VectorStyle& vs) {
-        vs.stroke.rgba = out;
-        // Setting a colour means wanting to see it. Leaving `on` false would
-        // make the swatch a control with no visible effect.
-        vs.stroke.on = true;
-      });
+      // Setting a colour means wanting to see it: `setPaintSolidColor()` turns
+      // the paint on AND makes it solid, so the swatch is never a control with
+      // no visible effect -- app/VectorStyle.hpp says why the second half
+      // needed a function once `Paint` grew a kind.
+      editPathStyle("stroke colour", &gStrokeColor,
+                    [out](VectorStyle& vs) { setPaintSolidColor(vs.stroke, out); });
     }
   }
   ImGui::SetItemTooltip(
@@ -984,10 +984,8 @@ void drawVectorFillStrokeControls(AppState& st, OpenDocument* pathOd, Layer* pat
                               ImGuiColorEditFlags_AlphaPreviewHalf)) {
       const std::array<float, 4> out = {srgbDecode(enc[0]), srgbDecode(enc[1]),
                                         srgbDecode(enc[2]), enc[3]};
-      editPathStyle("fill colour", &gFillColor, [out](VectorStyle& vs) {
-        vs.fill.rgba = out;
-        vs.fill.on = true;
-      });
+      editPathStyle("fill colour", &gFillColor,
+                    [out](VectorStyle& vs) { setPaintSolidColor(vs.fill, out); });
     }
   }
   ImGui::SetItemTooltip(
