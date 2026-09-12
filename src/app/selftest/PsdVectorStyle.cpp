@@ -174,6 +174,50 @@ const char* kAppIconSocoHex =
     "00000000000000000000000047726e20646f7562000000000000000000000000"
     "426c2020646f75620000000000000000";
 
+// ns:Star 1's real vstk, with exactly ONE change: `strokeStyleLineDashOffset`'s
+// `UntF` VALUE (its unit stays the real `#Pnt` bytes) patched from 0.0 to 5.0.
+// A `UntF` value is a fixed 8-byte double regardless of magnitude, so this
+// patch changes no length or framing anywhere in the block -- every other
+// byte, including the surrounding key names, is untouched. No sample file has
+// a nonzero non-#Pxl stroke unit (docs/psd-vector-shapes.md), so this is the
+// only way to exercise the drop-to-zero path against real-shaped bytes rather
+// than a synthetic descriptor.
+const char* kStarVstkNonzeroDashOffsetHex =
+    "000000100000000100000000000b7374726f6b655374796c65000000100000001273"
+    "74726f6b655374796c6556657273696f6e6c6f6e67000000020000000d7374726f6b"
+    "65456e61626c6564626f6f6c010000000b66696c6c456e61626c6564626f6f6c0100"
+    "0000147374726f6b655374796c654c696e655769647468556e74462350786c3ff000"
+    "0000000000000000197374726f6b655374796c654c696e65446173684f6666736574"
+    "556e744623506e744014000000000000000000157374726f6b655374796c654d6974"
+    "65724c696d6974646f75624059000000000000000000167374726f6b655374796c65"
+    "4c696e6543617054797065656e756d000000167374726f6b655374796c654c696e65"
+    "43617054797065000000127374726f6b655374796c65427574744361700000001773"
+    "74726f6b655374796c654c696e654a6f696e54797065656e756d000000177374726f"
+    "6b655374796c654c696e654a6f696e54797065000000147374726f6b655374796c65"
+    "4d697465724a6f696e000000187374726f6b655374796c654c696e65416c69676e6d"
+    "656e74656e756d000000187374726f6b655374796c654c696e65416c69676e6d656e"
+    "74000000167374726f6b655374796c65416c69676e43656e74657200000014737472"
+    "6f6b655374796c655363616c654c6f636b626f6f6c00000000177374726f6b655374"
+    "796c655374726f6b6541646a757374626f6f6c00000000167374726f6b655374796c"
+    "654c696e6544617368536574566c4c7300000000000000147374726f6b655374796c"
+    "65426c656e644d6f6465656e756d00000000426c6e4d000000004e726d6c00000012"
+    "7374726f6b655374796c654f706163697479556e7446235072634059000000000000"
+    "000000127374726f6b655374796c65436f6e74656e744f626a630000000100000000"
+    "000f736f6c6964436f6c6f724c617965720000000100000000436c72204f626a6300"
+    "00000100000000000052474243000000030000000052642020646f75620000000000"
+    "0000000000000047726e20646f7562000000000000000000000000426c2020646f75"
+    "620000000000000000000000157374726f6b655374796c655265736f6c7574696f6e"
+    "646f75624062000000000000";
+
+// A minimal, well-formed, EMPTY versioned Action Descriptor: version 16,
+// empty className, classId "null" (zero-length Key -> 4 raw bytes), zero
+// items. Neither `PtFl` nor `GdFl` occurs standalone in either sample file
+// (docs/psd-vector-shapes.md), so there is no real-bytes fixture for them --
+// this is hand-built, and it can be this bare because decodePsdVectorStyle()
+// never reads a standalone PtFl/GdFl descriptor's fields, only whether the
+// block is PRESENT (it names the carrier and refuses, Paint being solid-only).
+const char* kEmptyDescriptorHex = "0000001000000000000000006e756c6c00000000";
+
 }  // namespace
 
 bool runPsdVectorStyleTest() {
@@ -318,6 +362,50 @@ bool runPsdVectorStyleTest() {
       if (w.find("LineAlignment") != std::string::npos) alignmentWarned = true;
     check(!alignmentWarned,
           "ns:Star 1: centre alignment (the only kind this codebase can express) warns of nothing");
+    check(approxEq(out.strokeStyle.dashOffset, 0.0f),
+          "ns:Star 1: strokeStyleLineDashOffset is 0 in #Pnt -- used as-is");
+    bool dashOffsetWarnedAtZero = false;
+    for (const std::string& w : out.warnings)
+      if (w.find("strokeStyleLineDashOffset") != std::string::npos) dashOffsetWarnedAtZero = true;
+    check(!dashOffsetWarnedAtZero,
+          "ns:Star 1: a ZERO #Pnt dash offset warns of nothing -- zero is zero in any unit");
+  }
+
+  // ==========================================================================
+  std::printf("  -- D2. A NONZERO #Pnt stroke unit: dropped to zero, warned by name --\n");
+  // ==========================================================================
+  {
+    // Same real vstk as D, with strokeStyleLineDashOffset's UntF VALUE patched
+    // from 0.0 to 5.0 -- its unit is still the real #Pnt bytes. Converting
+    // #Pnt to canvas pixels needs strokeStyleResolution, which has no
+    // receiving field, so a wrong number silently used as pixels would be a
+    // wrong value presented as a right one; this build drops it to zero and
+    // names the field and the unit instead.
+    PsdVectorStyleBlocks blocks;
+    const std::vector<uint8_t> vscg = hexBytes(kStarVscgHex);
+    const std::vector<uint8_t> vstk = hexBytes(kStarVstkNonzeroDashOffsetHex);
+    blocks.vscg = vscg;
+    blocks.vstk = vstk;
+    PsdVectorStyle out;
+    std::string error;
+    check(decodePsdVectorStyle(blocks, out, error), "ns:Star 1 (patched): decodes (not fatal)");
+    check(approxEq(out.strokeStyle.dashOffset, 0.0f),
+          "ns:Star 1 (patched): a nonzero #Pnt dash offset is DROPPED to zero, not used "
+          "unconverted as 5 canvas pixels");
+    bool warnedByName = false;
+    for (const std::string& w : out.warnings)
+      if (w.find("strokeStyleLineDashOffset") != std::string::npos &&
+          w.find("#Pnt") != std::string::npos)
+        warnedByName = true;
+    check(warnedByName,
+          "ns:Star 1 (patched): the warning names both the field (strokeStyleLineDashOffset) "
+          "and the unit (#Pnt)");
+    // Everything else this same descriptor decodes is untouched by the patch:
+    // the width UntF (still genuinely #Pxl and genuinely 1.0) is proof the
+    // drop-to-zero is scoped to the one field with a non-#Pxl unit, not a
+    // blanket zeroing of every stroke measurement.
+    check(approxEq(out.strokeStyle.width, 1.0f),
+          "ns:Star 1 (patched): strokeStyleLineWidth (a real #Pxl field) is unaffected");
   }
 
   // ==========================================================================
@@ -365,6 +453,71 @@ bool runPsdVectorStyleTest() {
     std::string error;
     check(!decodePsdVectorStyle(blocks, out, error) && !error.empty(),
           "vscg: 3 bytes is too short to hold its own 4-byte fill-type tag");
+  }
+
+  // ==========================================================================
+  std::printf("  -- F. Standalone PtFl/GdFl: named and refused, never a flat colour --\n");
+  // ==========================================================================
+  {
+    const std::vector<uint8_t> gdfl = hexBytes(kEmptyDescriptorHex);
+    PsdVectorStyleBlocks blocks;
+    blocks.gdfl = gdfl;
+    PsdVectorStyle out;
+    std::string error;
+    check(decodePsdVectorStyle(blocks, out, error), "standalone GdFl: decodes (not fatal)");
+    check(!out.fill.on, "standalone GdFl: fill.on is false -- Paint is solid-only");
+    bool named = false;
+    for (const std::string& w : out.warnings)
+      if (w.find("GdFl") != std::string::npos) named = true;
+    check(named, "standalone GdFl: the warning names GdFl, not a generic 'no fill' message");
+  }
+  {
+    const std::vector<uint8_t> ptfl = hexBytes(kEmptyDescriptorHex);
+    PsdVectorStyleBlocks blocks;
+    blocks.ptfl = ptfl;
+    PsdVectorStyle out;
+    std::string error;
+    check(decodePsdVectorStyle(blocks, out, error), "standalone PtFl: decodes (not fatal)");
+    check(!out.fill.on, "standalone PtFl: fill.on is false -- Paint is solid-only");
+    bool named = false;
+    for (const std::string& w : out.warnings)
+      if (w.find("PtFl") != std::string::npos) named = true;
+    check(named, "standalone PtFl: the warning names PtFl, not a generic 'no fill' message");
+  }
+  {
+    // Precedence: SoCo beats a standalone GdFl outright -- the layer's fill
+    // is the solid colour, and GdFl is never even named in a warning, exactly
+    // as psd-tools' compositor orders the two.
+    const std::vector<uint8_t> soco = hexBytes(kAppIconSocoHex);
+    const std::vector<uint8_t> gdfl = hexBytes(kEmptyDescriptorHex);
+    PsdVectorStyleBlocks blocks;
+    blocks.soco = soco;
+    blocks.gdfl = gdfl;
+    PsdVectorStyle out;
+    std::string error;
+    check(decodePsdVectorStyle(blocks, out, error), "SoCo + standalone GdFl: decodes");
+    check(out.fill.on, "SoCo + standalone GdFl: SoCo wins -- fill is on");
+    bool mentionsGdFl = false;
+    for (const std::string& w : out.warnings)
+      if (w.find("GdFl") != std::string::npos) mentionsGdFl = true;
+    check(!mentionsGdFl,
+          "SoCo + standalone GdFl: SoCo's precedence means GdFl is never even named");
+  }
+  {
+    // Precedence the other way: a standalone PtFl beats vscg's OWN embedded
+    // SoCo tag -- vscg's bytes are still validated (a malformed vscg is still
+    // an error), but its colour never gets used once PtFl already named the
+    // carrier.
+    const std::vector<uint8_t> ptfl = hexBytes(kEmptyDescriptorHex);
+    const std::vector<uint8_t> vscg = hexBytes(kStarVscgHex);  // embeds its own SoCo tag+colour
+    PsdVectorStyleBlocks blocks;
+    blocks.ptfl = ptfl;
+    blocks.vscg = vscg;
+    PsdVectorStyle out;
+    std::string error;
+    check(decodePsdVectorStyle(blocks, out, error), "standalone PtFl + vscg: decodes");
+    check(!out.fill.on,
+          "standalone PtFl + vscg: PtFl's precedence wins -- vscg's own SoCo colour is not used");
   }
 
   std::printf("[selftest] psd vector style %s\n", ok ? "PASS" : "FAIL");

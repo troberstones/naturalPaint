@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "core/PathFlatten.hpp"  // pathTightBounds()
+
 // io/PsdVectorCompose -- step 2 of docs/psd-vector-shapes.md: fold a
 // `PsdPathStream`'s per-subpath boolean operations into the one thing this
 // codebase can draw, a single compound `Path` with a single `FillRule`.
@@ -37,23 +39,38 @@
 //    name (rather than guessing Union or dropping the subpath silently) --
 //    this module's whole reason to exist is refusing rather than guessing.
 //
-// 4. `sawOpenSubPath` changes nothing here. `core/PathRaster.cpp` fills a
-//    contour as though it were closed regardless of its own `closed` flag
-//    (its own comment: "An open contour is filled as if closed"), so an
-//    open subpath composes exactly like a closed one. Whether an open path
-//    in a *fill* is a modelling mistake worth a warning is the caller's
-//    question, decided with the layer name this function never sees.
+// 4. `sawOpenSubPath` changes nothing here, and this is DECIDED, not merely
+//    unexamined. Two consumers see this geometry, and both already do the
+//    right thing with an open subpath, so there is no case where a warning
+//    would be reporting a real divergence from Photoshop:
+//      - `core/PathRaster.cpp` fills a contour as though it were closed
+//        regardless of its own `closed` flag ("An open contour is filled as
+//        if closed"), matching SVG's rule and Photoshop's own for filling an
+//        open subpath.
+//      - `core/PathStroke.cpp` genuinely honours `SubPath::closed`: read, not
+//        assumed -- its edge/join loop takes `edges = closed ? n : n - 1` and
+//        `joins = closed ? edges : edges - 1`, then caps the two open ends
+//        instead of joining across a seam, and `core/PathFlatten.cpp` carries
+//        `SubPath::closed` into `FlatContour::closed` unchanged on the way
+//        there. An open subpath's stroke genuinely does not close, which is
+//        the one thing a stroke of an open path must not do.
+//    So an open subpath composes exactly like a closed one for BOTH of this
+//    module's callers, and a warning here would have nothing true to say.
 namespace np {
 
 namespace {
 
-// Control-point bounds of one subpath in isolation -- a conservative
-// superset of the curve it actually draws (`pathControlBounds()`'s own
-// guarantee), used only by the heuristic below.
-PathBounds subPathControlBounds(const SubPath& sub) {
+// Tight bounds of one subpath in isolation -- exact for the curve itself
+// (`pathTightBounds()`'s own guarantee), not for the control-point hull
+// around it. Swapping this in for the old control-point bound can only
+// SHRINK the boxes the heuristic below compares, so it can only shrink the
+// false-positive set; a real double-coverage (boxes both grow and still
+// overlap) is still caught, because a curve's tight bounds are themselves a
+// subset of its control-point hull.
+PathBounds subPathTightBounds(const SubPath& sub) {
   Path single;
   single.subpaths.push_back(sub);
-  return pathControlBounds(single);
+  return pathTightBounds(single);
 }
 
 // The rectangle intersection of two bounds, `valid == false` when they don't
@@ -169,14 +186,18 @@ PsdComposedPath composePsdSubPaths(const PsdPathStream& stream) {
   // that region is covered TWICE -- by two overlapping Union pieces
   // underneath it, or by a second Subtract subpath overlapping it. Telling
   // that apart exactly is the boolean-ops pass this codebase does not have;
-  // this is a cheap, CONSERVATIVE stand-in using control-point bounding
-  // boxes (a superset of the true curve -- `pathControlBounds()`'s own
-  // guarantee), so it can warn on a layer that in fact renders fine (boxes
-  // touch, curves don't), but it never misses a real double-coverage.
+  // this is a cheap, CONSERVATIVE stand-in using each subpath's TIGHT bounds
+  // (exact for the curve, not its control-point hull -- `pathTightBounds()`'s
+  // own guarantee), so it still can warn on a layer that in fact renders fine
+  // (boxes touch, curves don't -- axis-aligned rectangles, which dominate
+  // real files, have none of that slack left), but it never misses a real
+  // double-coverage: tight bounds are a SUBSET of control-point bounds, so
+  // shrinking the boxes can only shrink the false-positive set, never hide a
+  // genuine overlap.
   if (sawSubtract) {
     std::vector<PathBounds> unionBoxes, subtractBoxes;
     for (size_t i = 0; i < n; ++i) {
-      const PathBounds b = subPathControlBounds(stream.subpaths[i].sub);
+      const PathBounds b = subPathTightBounds(stream.subpaths[i].sub);
       if (effective[i] == PsdPathOp::Subtract)
         subtractBoxes.push_back(b);
       else

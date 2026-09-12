@@ -68,8 +68,16 @@ struct PsdPathStream {
 
   // True when the block carried an OPEN subpath (record selector 3, with
   // knots 4/5). Open subpaths decode normally -- `SubPath::closed` is false --
-  // but a shape layer's fill of an open path is a question this module does
-  // not answer, so it is flagged rather than hidden.
+  // and DECIDED, not merely flagged: `core/PathRaster` fills a contour as
+  // though closed (matching SVG's and Photoshop's own rule for filling an
+  // open subpath), and `core/PathStroke` genuinely honours `SubPath::closed`
+  // -- it caps an open contour's two ends rather than joining them across a
+  // seam (verified by reading it: the join/cap loop branches on `closed`, and
+  // `flattenPath()` carries the flag through unchanged). So both consumers of
+  // this geometry already do, for an open subpath, the one thing the format
+  // needs: neither invents a closing edge nobody drew. This field exists for
+  // a caller that wants to know without re-deriving it, not because either
+  // consumer needs correcting.
   bool sawOpenSubPath = false;
 
   // Recoverable observations, each naming what was skipped and why. Records of
