@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 
 namespace np {
 namespace {
@@ -103,31 +102,6 @@ float Stabiliser::effectiveStringPx() const noexcept {
 void Stabiliser::appendPathHistory(const StrokeSample& raw) noexcept {
   pathHistory_.push_back(raw);
   if (pathHistory_.size() > kMaxPathHistory) pathHistory_.erase(pathHistory_.begin());
-}
-
-float Stabiliser::projectArcLength(Vec2 from) const noexcept {
-  if (pathHistory_.size() < 2) return 0.0f;
-  float acc = 0.0f;
-  float bestD2 = std::numeric_limits<float>::max();
-  float bestS = 0.0f;
-  for (size_t i = 0; i + 1 < pathHistory_.size(); ++i) {
-    const Vec2 p0 = pathHistory_[i].pos, p1 = pathHistory_[i + 1].pos;
-    const float ux = p1.x - p0.x, uy = p1.y - p0.y;
-    const float len2 = ux * ux + uy * uy;
-    float t = 0.0f;
-    if (len2 > 1e-9f)
-      t = std::clamp(((from.x - p0.x) * ux + (from.y - p0.y) * uy) / len2, 0.0f, 1.0f);
-    const float px = p0.x + ux * t, py = p0.y + uy * t;
-    const float dx = px - from.x, dy = py - from.y;
-    const float d2 = dx * dx + dy * dy;
-    const float segLen = std::sqrt(len2);
-    if (d2 < bestD2) {
-      bestD2 = d2;
-      bestS = acc + segLen * t;
-    }
-    acc += segLen;
-  }
-  return bestS;
 }
 
 bool Stabiliser::addSamplePulledString(const StrokeSample& raw, StrokeSample& out) noexcept {
@@ -353,24 +327,62 @@ bool Stabiliser::forceCatchUp(std::vector<StrokeSample>& steps) noexcept {
   steps.clear();
   if (!haveRaw_) return false;
 
-  // Walk the raw path from wherever the nib currently sits to the lift
-  // point, one step per raw sample the walk passes -- an L-shaped path whose
-  // corner falls inside that span is walked AROUND the corner, not cut
-  // straight across it (Wave 2 brief item 3). `pathHistory_` empty (Off mode
-  // never appends to it, or a caller fed no samples through `addSample()` at
-  // all -- selftest fixtures that call `forceCatchUp()` directly) falls back
-  // to the one exact point this always had.
-  if (pathHistory_.size() < 2) {
+  // How far behind the pen the nib is, and the tail of the raw path it has
+  // not caught up to: walk BACKWARDS from the lift point until the path
+  // behind us is at least as long as that lag. A chord is never longer than
+  // the arc it subtends, so this stops at or after the nib's true position
+  // along the path -- never on an unrelated earlier stretch of it, which is
+  // what a global nearest-point search returns once a slow, jittery stroke
+  // wanders back within a string length of itself (the same ill-conditioning
+  // that made the paused catch-up oscillate).
+  const float lag = std::hypot(lastRaw_.pos.x - nib_.x, lastRaw_.pos.y - nib_.y);
+  size_t first = pathHistory_.empty() ? 0 : pathHistory_.size() - 1;
+  float tailArc = 0.0f;
+  while (first > 0 && tailArc < lag) {
+    const Vec2 a = pathHistory_[first - 1].pos, b = pathHistory_[first].pos;
+    tailArc += std::hypot(b.x - a.x, b.y - a.y);
+    --first;
+  }
+
+  if (pathHistory_.size() - first < 2 || tailArc <= 1e-6f) {
+    // No tail to walk: `pathHistory_` empty (Off mode never appends to it, or
+    // a caller fed no samples through `addSample()` at all -- selftest
+    // fixtures that call this directly), or a nib already at the lift point.
+    // The one exact point this always had.
     steps.push_back(lastRaw_);
   } else {
-    const float s0 = projectArcLength(nib_);
+    // Replay that tail through the string itself rather than emitting the raw
+    // samples: each step is the nib pulled toward the next raw sample, with
+    // the window ramped from `lag` to zero by ARC LENGTH along the tail (not
+    // per sample, so the walk's shape does not change with the pen's report
+    // rate). Two things follow, and both are the point of doing it this way.
+    // The walk STARTS where the nib already is, so the stroke continues
+    // instead of jumping sideways onto the polyline -- that jump is painted
+    // ink, however legitimately the string put the nib off the path. And the
+    // walk is smoothed by the same rule as the rest of the stroke, so the
+    // last string length of every stroke no longer ends in raw pen jitter.
+    // The window still has to reach zero for the stroke to end where the pen
+    // lifted, so the final steps do track the pen closely; what they no
+    // longer do is start there.
     float acc = 0.0f;
-    for (size_t i = 0; i + 1 < pathHistory_.size(); ++i) {
-      const Vec2 p0 = pathHistory_[i].pos, p1 = pathHistory_[i + 1].pos;
+    for (size_t i = first + 1; i < pathHistory_.size(); ++i) {
+      const Vec2 p0 = pathHistory_[i - 1].pos, p1 = pathHistory_[i].pos;
       acc += std::hypot(p1.x - p0.x, p1.y - p0.y);
-      if (acc > s0) steps.push_back(pathHistory_[i + 1]);
+      const float window = lag * std::max(0.0f, 1.0f - acc / tailArc);
+      const float dx = p1.x - nib_.x, dy = p1.y - nib_.y;
+      const float dist = std::hypot(dx, dy);
+      if (dist > window) {
+        const float t = (dist - window) / dist;
+        nib_.x += dx * t;
+        nib_.y += dy * t;
+      }
+      StrokeSample step = pathHistory_[i];
+      step.pos = nib_;
+      steps.push_back(step);
     }
-    if (steps.empty()) steps.push_back(lastRaw_);  // nib already at/past the lift point
+    // `acc` and `tailArc` sum the same segments in opposite orders, so the
+    // last window is only nearly zero. The lift point is exact by fiat.
+    steps.back() = lastRaw_;
   }
 
   nib_ = lastRaw_.pos;

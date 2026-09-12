@@ -108,15 +108,20 @@ class Stabiliser {
   // untouched otherwise, including Off always.
   bool tick(uint64_t nowNs, StrokeSample& out) noexcept;
 
-  // Stroke end, `catchUpAtEnd`: walks the nib to the last raw sample ALONG
-  // THE RAW PATH the pointer actually took (not a straight line from
-  // wherever the nib was lagging) -- one step per raw sample the walk
-  // passes, ending exactly at the lift point (the last step's position is
-  // exact; the dab `StrokePath` emits from each step is still spacing-
-  // quantised like any other). `steps` is cleared and filled in walk order;
-  // the caller feeds each one to `StrokePath::addPoint()` in turn, same as
-  // any other sample. False (nothing written) if no sample has ever been
-  // fed.
+  // Stroke end, `catchUpAtEnd`: walks the nib to the last raw sample along
+  // the SHAPE OF THE PATH the pointer actually took (not a straight line
+  // from wherever the nib was lagging) -- one step per raw sample in the
+  // tail the nib had not reached, each one the nib pulled toward that
+  // sample by the string, with the window ramped to zero across the tail.
+  // So the walk starts where the nib already is and stays smoothed, rather
+  // than jumping sideways onto the raw polyline and then painting its
+  // jitter; it rounds a bend the pen made rather than either cutting across
+  // it or tracing it exactly. It ends exactly at the lift point (that last
+  // step's position is exact; the dab `StrokePath` emits from each step is
+  // still spacing-quantised like any other). `steps` is cleared and filled
+  // in walk order; the caller feeds each one to `StrokePath::addPoint()` in
+  // turn, same as any other sample. False (nothing written) if no sample has
+  // ever been fed.
   bool forceCatchUp(std::vector<StrokeSample>& steps) noexcept;
 
   bool active() const noexcept { return haveRaw_; }
@@ -151,11 +156,13 @@ class Stabiliser {
 
   // The raw samples (this stroke, since `begin()`) the nib has not
   // necessarily caught up to yet -- "the path the pen actually took", now
-  // walked only by the RELEASE catch-up (`forceCatchUp()`, `catchUpAtEnd`);
-  // the paused catch-up no longer touches it (string-fix brief) -- it moves
-  // the nib by a straight chord step toward `lastRaw_.pos` instead, which is
-  // what stops a no-sample frame from ever placing the nib off the path the
-  // pen actually took. Bounded at `kMaxPathHistory`: a hard cap, not an
+  // walked only by the RELEASE catch-up (`forceCatchUp()`, `catchUpAtEnd`),
+  // and only its TAIL -- the stretch behind the lift point as long as the
+  // nib's remaining lag, found by walking back from the end rather than by
+  // projecting the nib onto the whole polyline. The paused catch-up does not
+  // touch this at all: it moves the nib by a straight chord step toward
+  // `lastRaw_.pos` instead, which is what stops a no-sample frame from ever
+  // placing the nib on a raw sample. Bounded at `kMaxPathHistory`: a hard cap, not an
   // arc-length one, because it costs one `erase(begin())` per sample past
   // the cap rather than a second length-tracking pass, and at typical
   // report rates (60-240 Hz) it comfortably outlasts any lag this build's
@@ -166,11 +173,6 @@ class Stabiliser {
   static constexpr size_t kMaxPathHistory = 512;
   std::vector<StrokeSample> pathHistory_;
   void appendPathHistory(const StrokeSample& raw) noexcept;
-  // The arc length, along `pathHistory_`, of the point on it nearest `from`
-  // -- `forceCatchUp()`'s own primitive, to find where along the raw path
-  // the nib (a chord-stepped or filtered point near but not exactly on the
-  // polyline) currently sits before walking forward to the lift point.
-  float projectArcLength(Vec2 from) const noexcept;
 
   StabiliserParams params_;
   float zoom_ = 1.0f;

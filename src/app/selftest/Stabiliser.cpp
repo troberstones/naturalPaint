@@ -889,16 +889,10 @@ bool runStabiliserTest() {
           "trajectory: the walk to the lift point emits more than one dab -- it does not jump "
           "in a single step across the corner");
 
-    // Deviation of the walk's OWN segments (step[i] -> step[i+1]) from the
-    // raw polyline -- NOT the leg from `nibBeforeCatchUp` to `steps[0]`,
-    // which is free to sit up to `stringPx` off the polyline by pulled
-    // string's own ordinary, documented geometry (it moves along the
-    // pointer-nib LINE, not the path) whether or not any catch-up ever
-    // runs; that leg is not the catch-up's doing and blaming it here would
-    // fail correct code. Each step is itself a raw sample the walk passed
-    // through, so a correct walk's deviation is ~0; a walk that skipped the
-    // corner (one giant step) has no "between steps" segment to measure at
-    // all -- `steps.size() >= 2` above is what catches that shape of bug.
+    // Deviation of the walk from the raw polyline, measured from the nib's
+    // own starting position onward -- that leg is part of the walk now: the
+    // first step is the nib itself pulled a little way along, not a jump
+    // sideways onto the polyline.
     float maxDeviation = 0.0f;
     for (size_t k = 0; k + 1 < steps.size(); ++k) {
       constexpr int kSamples = 20;
@@ -923,8 +917,17 @@ bool runStabiliserTest() {
     check(naiveCornerCut > 10.0f,
           "trajectory: RED -- a straight-line catch-up cuts well past 0.5px across this L's "
           "corner");
-    check(maxDeviation < 0.5f,
-          "trajectory: the walked catch-up dabs stay within 0.5px of the raw polyline");
+    // THRESHOLD MOVED, deliberately: this read `< 0.5f` while the walk emitted
+    // the raw samples themselves and so traced the polyline exactly. It now
+    // replays the tail through the string, which ROUNDS this right angle
+    // instead of tracing it -- the same trade the string makes everywhere
+    // else, and the price of not painting raw pen jitter for the last string
+    // length of every stroke (the release-fix block below measures that).
+    // Half the straight line's cut is the claim that survives: the walk still
+    // goes around the bend rather than across it.
+    check(maxDeviation < 0.5f * naiveCornerCut,
+          "trajectory: the walk rounds this L's corner at less than half the depth a straight-"
+          "line catch-up cuts it");
     check(endError < 0.01f, "trajectory: the walk ends exactly at the lift point");
   }
 
@@ -1170,6 +1173,144 @@ bool runStabiliserTest() {
     check(std::fabs(res.minGap - control.minGap) < 1e-3f,
           "string-fix 3: with catch-up on, the minimum nib-to-pen gap matches the no-catch-up "
           "control exactly -- no erosion beyond pulled string's own ordinary geometry");
+  }
+
+  // ==========================================================================
+  // Release-fix (tablet feedback, third pulled-string session): with the
+  // paused catch-up stable, "the release and catchup mechanism ... is still
+  // resulting in a hitch". The release walk emitted the RAW samples of the
+  // tail it crossed, so the last string length of every stroke was painted
+  // through unsmoothed pen positions -- the one stretch of the stroke the
+  // stabiliser was switched on for and did not stabilise -- reached by a step
+  // sideways off the nib onto that polyline. It now replays the same tail
+  // through the string with the window ramped from the nib's lag to zero, so
+  // the walk starts where the nib is and stays smoothed until the last steps,
+  // where the window has to reach zero for the stroke to end at the pen.
+  //
+  // Fixture: a slow pointer on a STRAIGHT line (0.6 px/sample, +-0.8 px
+  // deterministic jitter, stringPx 4.1 -- the user's own saved setting), so
+  // the ideal walk is nearly straight and anything the walk paints beyond
+  // that is jitter it should not have had. The old walk is recomputed here
+  // from the same raw samples, the same way it did it (project the nib onto
+  // the whole polyline, emit every raw sample past that arc length), so the
+  // red numbers are measured in this run rather than quoted from a stashed
+  // build.
+  // ==========================================================================
+  {
+    constexpr float kStringPxFixture = 4.1f;
+    constexpr float kStepPx = 0.6f;
+    constexpr float kJitterPx = 0.8f;
+    constexpr int kNumSamples = 300;
+
+    StabiliserParams p;
+    p.mode = StabiliserMode::PulledString;
+    p.stringPx = kStringPxFixture;
+    p.catchUpMs = 0.0f;  // the release is what is under test, not the pause
+    Stabiliser stab;
+    stab.begin(p, 1.0f);
+
+    uint64_t rng = 20260911ull;  // fixed seed -- deterministic, no platform RNG
+    uint64_t t = 0;
+    StrokeSample out;
+    std::vector<Vec2> raw;
+    for (int i = 0; i < kNumSamples; ++i) {
+      StrokeSample sm;
+      sm.pos = Vec2{static_cast<float>(i) * kStepPx + unitFloat(rng) * 2.0f * kJitterPx,
+                    unitFloat(rng) * 2.0f * kJitterPx};
+      sm.timestamp = t;
+      t += 4'000'000ull;
+      stab.addSample(sm, out);
+      raw.push_back(sm.pos);
+    }
+    const Vec2 liftPoint = raw.back();
+    const Vec2 nibBefore = stab.nibPos();
+
+    // The RED walk: the old algorithm, on this same history.
+    std::vector<Vec2> redWalk;
+    {
+      float acc = 0.0f, bestD2 = std::numeric_limits<float>::max(), s0 = 0.0f;
+      for (size_t i = 0; i + 1 < raw.size(); ++i) {
+        const Vec2 a = raw[i], b = raw[i + 1];
+        const float ux = b.x - a.x, uy = b.y - a.y;
+        const float len2 = ux * ux + uy * uy;
+        float u = 0.0f;
+        if (len2 > 1e-9f)
+          u = std::clamp(((nibBefore.x - a.x) * ux + (nibBefore.y - a.y) * uy) / len2, 0.0f, 1.0f);
+        const float d2 = distance(nibBefore, Vec2{a.x + ux * u, a.y + uy * u});
+        if (d2 * d2 < bestD2) {
+          bestD2 = d2 * d2;
+          s0 = acc + std::sqrt(len2) * u;
+        }
+        acc += std::sqrt(len2);
+      }
+      acc = 0.0f;
+      for (size_t i = 0; i + 1 < raw.size(); ++i) {
+        acc += distance(raw[i], raw[i + 1]);
+        if (acc > s0) redWalk.push_back(raw[i + 1]);
+      }
+    }
+
+    std::vector<StrokeSample> steps;
+    check(stab.forceCatchUp(steps), "release-fix: forceCatchUp() reports a walk");
+    std::vector<Vec2> greenWalk;
+    for (const StrokeSample& st : steps) greenWalk.push_back(st.pos);
+
+    // Length of each walk (from the nib, where the stroke actually is) and
+    // its worst sideways excursion from the straight nib -> lift line. On a
+    // straight fixture both are pure jitter: the straight line is the ideal.
+    auto measure = [&](const std::vector<Vec2>& walk, float& len, float& wobble,
+                       float& biggestStep) {
+      len = 0.0f;
+      wobble = 0.0f;
+      biggestStep = 0.0f;
+      Vec2 prev = nibBefore;
+      const float ux = liftPoint.x - nibBefore.x, uy = liftPoint.y - nibBefore.y;
+      const float chord = std::hypot(ux, uy);
+      for (const Vec2& q : walk) {
+        len += distance(prev, q);
+        biggestStep = std::max(biggestStep, distance(prev, q));
+        prev = q;
+        if (chord > 1e-6f)
+          wobble = std::max(wobble, std::fabs((q.x - nibBefore.x) * uy -
+                                              (q.y - nibBefore.y) * ux) / chord);
+      }
+    };
+    float redLen = 0.0f, redWobble = 0.0f, redStep = 0.0f;
+    float greenLen = 0.0f, greenWobble = 0.0f, greenStep = 0.0f;
+    measure(redWalk, redLen, redWobble, redStep);
+    measure(greenWalk, greenLen, greenWobble, greenStep);
+    const float chord = distance(nibBefore, liftPoint);
+
+    std::printf("  [measured] release-fix: nib lag %.2f px; walk length RED %.2f px / GREEN "
+                "%.2f px (straight line %.2f px); sideways wobble RED %.4f px / GREEN %.4f px; "
+                "biggest single step RED %.4f px / GREEN %.4f px; steps RED %zu / GREEN %zu; "
+                "end error %.4f px\n",
+                chord, redLen, greenLen, chord, redWobble, greenWobble, redStep, greenStep,
+                redWalk.size(), greenWalk.size(), distance(greenWalk.back(), liftPoint));
+
+    check(redLen > 1.2f * chord,
+          "release-fix: RED -- emitting the raw samples paints noticeably more path than the "
+          "tail is long, because it paints the jitter");
+    check(greenLen < 1.05f * chord,
+          "release-fix: the replayed walk is within 5% of the straight-line length -- the "
+          "jitter is gone, not merely reduced");
+    check(greenWobble < 0.5f * redWobble,
+          "release-fix: the walk's worst sideways excursion is less than half the raw tail's");
+    check(distance(greenWalk.back(), liftPoint) < 1e-3f,
+          "release-fix: the walk still ends exactly at the lift point");
+    // The window has to actually REACH zero along the tail, not be cut to zero
+    // at the last step by the lift point being written in exactly: a ramp that
+    // stalls leaves the whole lag in one final jump.
+    check(greenStep <= redStep,
+          "release-fix: the walk advances in steps no larger than the pen's own samples -- the "
+          "window ramps to zero across the tail rather than jumping at the end");
+    // And the tail walked is the one the nib actually lags behind, found by
+    // walking back from the lift point -- not an arc length picked by a
+    // nearest-point search over the whole stroke, which can land anywhere the
+    // path happens to pass close by.
+    check(static_cast<float>(greenWalk.size()) < 2.0f * chord / kStepPx,
+          "release-fix: the walk spans only the tail the nib lags behind, not an arbitrary "
+          "earlier stretch of the stroke");
   }
 
   std::printf("[selftest] stabiliser %s\n", ok ? "PASS" : "FAIL");
