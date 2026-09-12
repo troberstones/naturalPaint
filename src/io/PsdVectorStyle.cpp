@@ -58,21 +58,21 @@ LineJoin mapLineJoin(const std::string& valueId, std::vector<std::string>& warni
 // `#Pxl`, but the dash offset is `#Pnt` (points) in the very same file --
 // genuinely a different unit, not a typo -- and nothing here has the
 // resolution (`strokeStyleResolution` is a sibling field with no receiving
-// slot either) needed to convert points to pixels correctly. Taking the raw
-// number unconverted is exactly right when the value is 0, as it is in every
-// sample seen; for a nonzero non-#Pxl value it is a named approximation, not
-// a silent one.
+// slot either) needed to convert points to pixels correctly. Zero is zero in
+// any unit, so a zero value is used as-is and silently, which is every sample
+// seen so far; a NONZERO non-#Pxl value cannot be converted, and using its raw
+// number as though it were already pixels would be a wrong value presented as
+// a right one -- worse than a named absence, so it is dropped to zero and
+// warned about by name instead.
 float readPixelUnitFloat(const std::optional<DescriptorUnitFloat>& uf, std::string_view fieldName,
                         std::vector<std::string>& warnings) {
   if (!uf) return 0.0f;
-  // Zero is zero in every unit, and `strokeStyleLineDashOffset` is `#Pnt` on
-  // every shape in every sample file while being exactly 0 -- warning on it
-  // would put a line in the report for each shape that says nothing.
-  if (uf->unit != "#Pxl" && uf->value != 0.0) {
-    warnings.push_back("vstk: " + std::string(fieldName) + " unit '" + uf->unit +
-                       "' is not #Pxl; its numeric value is used unconverted as canvas pixels");
-  }
-  return static_cast<float>(uf->value);
+  if (uf->unit == "#Pxl" || uf->value == 0.0) return static_cast<float>(uf->value);
+  warnings.push_back("vstk: " + std::string(fieldName) + " is a nonzero value in unit '" +
+                     uf->unit + "', not #Pxl; no conversion is available (strokeStyleResolution "
+                     "has no receiving field) so it is dropped to zero rather than used "
+                     "unconverted");
+  return 0.0f;
 }
 
 }  // namespace
@@ -155,17 +155,23 @@ bool decodePsdVectorStyle(const PsdVectorStyleBlocks& blocks, PsdVectorStyle& ou
     }
   }
 
-  // Fill precedence matches psd-tools' compositor: a dedicated `SoCo` block
-  // wins outright; otherwise `vscg`'s own embedded fill-type tag says whether
-  // it is `SoCo` (solid), `PtFl` (pattern) or `GdFl` (gradient). This module
-  // is only ever handed the three spans in PsdVectorStyleBlocks, so a file
-  // that carried genuine standalone top-level `PtFl`/`GdFl` blocks (distinct
-  // from vscg's embedded tag) is outside what it can see -- neither fixture
-  // file has one.
+  // Fill precedence matches psd-tools' compositor: `SoCo`, then a standalone
+  // `PtFl`, then a standalone `GdFl`, then `vscg`'s own embedded fill-type
+  // tag (which repeats the same three-way choice one level down, because
+  // `vscg` is where all nine of Apple's fill-bearing layers actually put it).
+  // `fillCarrierNamed` tracks whether SoCo/PtFl/GdFl already settled the
+  // question -- once one of them is present, `vscg`'s tag no longer gets a
+  // vote, even though `vscg` (if also present) still has its bytes validated
+  // below, so a malformed one is never silently ignored just because it lost
+  // the precedence race. In both sample files a standalone PtFl/GdFl never
+  // occurs alongside vscg, so that interaction is reasoned about, not
+  // measured.
   bool haveFillColor = false;
+  bool fillCarrierNamed = false;
   std::array<float, 4> fillRgba{0.0f, 0.0f, 0.0f, 1.0f};
 
   if (!blocks.soco.empty()) {
+    fillCarrierNamed = true;
     const DescriptorParseResult socoResult =
         parseVersionedActionDescriptor(blocks.soco.subspan(kPsdSocoDescriptorSkip));
     if (!socoResult.ok) {
@@ -177,6 +183,18 @@ bool decodePsdVectorStyle(const PsdVectorStyleBlocks& blocks, PsdVectorStyle& ou
     } else {
       out.warnings.push_back("SoCo: no Clr/RGBC colour found in the descriptor");
     }
+  } else if (!blocks.ptfl.empty()) {
+    // Pattern fill: `Paint` is solid-only (core/VectorShape.hpp), so this is a
+    // named refusal, not a flat colour guessed from the pattern.
+    fillCarrierNamed = true;
+    out.warnings.push_back(
+        "PtFl: a standalone pattern fill has no receiving field; fill left off");
+  } else if (!blocks.gdfl.empty()) {
+    // Gradient fill: same refusal, same reason -- never a flat colour guessed
+    // from a gradient stop.
+    fillCarrierNamed = true;
+    out.warnings.push_back(
+        "GdFl: a standalone gradient fill has no receiving field; fill left off");
   }
 
   if (!blocks.vscg.empty()) {
@@ -193,7 +211,7 @@ bool decodePsdVectorStyle(const PsdVectorStyleBlocks& blocks, PsdVectorStyle& ou
       error = "vscg: " + vscgResult.error;
       return false;
     }
-    if (!haveFillColor) {
+    if (!haveFillColor && !fillCarrierNamed) {
       if (fillType == "SoCo") {
         if (readClrColor(vscgResult.tree.root(), fillRgba)) {
           haveFillColor = true;
@@ -214,9 +232,10 @@ bool decodePsdVectorStyle(const PsdVectorStyleBlocks& blocks, PsdVectorStyle& ou
   if (fillEnabled && haveFillColor) {
     out.fill.on = true;
     out.fill.rgba = fillRgba;
-  } else if (fillEnabled && blocks.soco.empty() && blocks.vscg.empty()) {
+  } else if (fillEnabled && blocks.soco.empty() && blocks.ptfl.empty() && blocks.gdfl.empty() &&
+             blocks.vscg.empty()) {
     out.warnings.push_back(
-        "fillEnabled but neither SoCo nor vscg is present; fill left off");
+        "fillEnabled but no fill block (SoCo/PtFl/GdFl/vscg) is present; fill left off");
   }
 
   return true;

@@ -6,6 +6,7 @@
 
 #include "core/Path.hpp"
 #include "core/PathRaster.hpp"
+#include "core/PathStroke.hpp"
 #include "io/PsdVectorPath.hpp"
 
 // io/PsdVectorCompose -- step 2 of docs/psd-vector-shapes.md.
@@ -412,6 +413,114 @@ bool runPsdVectorComposeTest() {
       if (w.find("covered more than once") != std::string::npos) quiet = false;
     check(soundComposed.ok && quiet,
           "I2: a plain nested hole -- one fill, one subtraction -- warns about nothing");
+  }
+
+  // ==========================================================================
+  std::printf("  -- J. Tight bounds narrow the heuristic: two curves whose HANDLES\n");
+  std::printf("        overlap but whose actual curves do not -- no warning --\n");
+  // ==========================================================================
+  {
+    // Two closed subpaths, each one cubic S-curve (handles swung +-100 off a
+    // straight chord) plus a straight return edge. `y(t) = 300(1-t)t(1-2t)`
+    // for a chord at y=0 with handles at +-100 peaks at |y| = 300 * t(1-2t)(1-t)
+    // evaluated at the derivative's root t = (6 - sqrt(12))/12 ~= 0.2113,
+    // giving |y| ~= 28.87 -- the curve never gets close to the +-100 its own
+    // handles reach. Two such curves, chords at y=0 and y=85, have CONTROL
+    // bounds y=[-100,100] and y=[-15,185] (they overlap in [-15,100]) but
+    // TIGHT bounds y=[-28.87,28.87] and y=[56.13,113.87] (a ~27-unit gap: they
+    // do not overlap at all).
+    auto sCurveSubPath = [](float chordY) {
+      SubPath sub;
+      sub.closed = true;
+      Anchor a0, a1;
+      a0.pt = a0.in = PathPoint{0.0f, chordY};
+      a0.out = PathPoint{0.0f, chordY + 100.0f};
+      a1.pt = a1.out = PathPoint{100.0f, chordY};
+      a1.in = PathPoint{100.0f, chordY - 100.0f};
+      sub.anchors = {a0, a1};
+      return sub;
+    };
+
+    PsdPathStream stream;
+    stream.subpaths.push_back(makeSubPath(sCurveSubPath(0.0f), PsdPathOp::Union));
+    stream.subpaths.push_back(makeSubPath(sCurveSubPath(85.0f), PsdPathOp::Union));
+    // Sits inside the CONTROL-bounds overlap [-15,100] but nowhere near either
+    // curve's true tight bounds -- the old, control-point heuristic would have
+    // warned here; measured area below is the proof it no longer does.
+    stream.subpaths.push_back(makeSubPath(squareSubPath(45, 40, 55, 50), PsdPathOp::Subtract));
+
+    const PsdComposedPath composed = composePsdSubPaths(stream);
+    check(composed.ok, "J1: composes (ok) -- a warning here is advisory, never a refusal");
+    bool warnedNarrow = false;
+    for (const std::string& w : composed.warnings)
+      if (w.find("covered more than once") != std::string::npos) warnedNarrow = true;
+    check(!warnedNarrow,
+          "J2: tight bounds see the two curves' control-hull overlap does not survive contact "
+          "with the actual curves, so the double-coverage warning does NOT fire here");
+  }
+
+  // ==========================================================================
+  std::printf("  -- K. sawOpenSubPath decided: an open subpath's fill closes it, its\n");
+  std::printf("        stroke genuinely does not -- both correct, so neither warns --\n");
+  // ==========================================================================
+  {
+    // Three sides of a square, OPEN on the fourth (the bottom, y=0): every
+    // handle coincident with its own anchor, so these are straight edges and
+    // the only variable between the two shapes built from this is `closed`.
+    auto threeSidedSquare = [](bool closed) {
+      SubPath sub;
+      sub.closed = closed;
+      for (const PathPoint& p :
+           {PathPoint{0, 0}, PathPoint{0, 100}, PathPoint{100, 100}, PathPoint{100, 0}}) {
+        Anchor a;
+        a.pt = a.in = a.out = p;
+        sub.anchors.push_back(a);
+      }
+      return sub;
+    };
+
+    PsdPathStream stream;
+    stream.subpaths.push_back(makeSubPath(threeSidedSquare(/*closed=*/false), PsdPathOp::Union));
+    stream.sawOpenSubPath = true;  // what decodePsdPathRecords() would have set (step 1)
+    const PsdComposedPath composed = composePsdSubPaths(stream);
+    check(composed.ok, "K1: an open subpath composes (ok)");
+    bool anyOpenWarning = false;
+    for (const std::string& w : composed.warnings)
+      if (w.find("open") != std::string::npos || w.find("Open") != std::string::npos)
+        anyOpenWarning = true;
+    check(!anyOpenWarning,
+          "K1: composing it warns of nothing naming 'open' -- there is nothing wrong to report");
+
+    // FILL: PathRaster closes the missing fourth side implicitly, so the
+    // WHOLE square fills, not just the three drawn sides.
+    const float fillCentre = sampleAt(rasterizeToImage(composed.path, 100, 100), 100, 100, 50, 50);
+    std::printf("  [measured] open subpath's FILL at centre: %.4f\n", fillCentre);
+    check(fillCentre > 0.99f,
+          "K2: the fill of an open subpath closes implicitly -- the centre is FILLED, matching "
+          "SVG's and Photoshop's own rule for filling an open subpath");
+
+    // STROKE: core/PathStroke must NOT invent the missing fourth side. Same
+    // four anchors, only `closed` differs, so this isolates the flag rather
+    // than comparing two different shapes.
+    StrokeStyle style;
+    style.width = 10.0f;
+    Path openPath;
+    openPath.subpaths.push_back(threeSidedSquare(/*closed=*/false));
+    Path closedPath;
+    closedPath.subpaths.push_back(threeSidedSquare(/*closed=*/true));
+    const Path openStroke = strokePath(openPath, style, 0.25f);
+    const Path closedStroke = strokePath(closedPath, style, 0.25f);
+    const float openBottom = sampleAt(rasterizeToImage(openStroke, 100, 100), 100, 100, 50, 0);
+    const float closedBottom = sampleAt(rasterizeToImage(closedStroke, 100, 100), 100, 100, 50, 0);
+    std::printf("  [measured] stroke coverage at the missing 4th side's midpoint: open %.4f, "
+                "closed %.4f\n",
+                openBottom, closedBottom);
+    check(openBottom < 0.01f,
+          "K3: the OPEN subpath's stroke draws nothing along the side it never drew -- "
+          "core/PathStroke does not close it");
+    check(closedBottom > 0.99f,
+          "K3: the IDENTICAL anchors marked CLOSED do stroke that side -- proving the assertion "
+          "above tests `closed`, not some other difference in the geometry");
   }
 
   std::printf("[selftest] psd vector compose %s\n", ok ? "PASS" : "FAIL");
