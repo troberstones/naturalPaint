@@ -375,6 +375,45 @@ bool runPsdVectorComposeTest() {
           "H2: rasterised area matches pi*r^2 within 1%");
   }
 
+  // --- I. The soundness heuristic actually fires, and stays quiet ---------
+  //
+  // Reversal turns Subtract into a hole exactly where the subtracted region
+  // sits on ONE layer of Union coverage. Where it sits on two, nonzero
+  // winding cancels twice and re-fills part of the hole. Detecting that
+  // exactly needs the boolean-ops pass this codebase does not have, so the
+  // module warns from control-point bounding boxes -- conservative, so it may
+  // warn on a layer that in fact renders fine, and never misses a real one.
+  //
+  // A warning path with no fixture is a warning nobody has ever seen. These
+  // two assertions are what make it a behaviour rather than a comment.
+  {
+    // Two Union squares that overlap, and a Subtract square sitting on the
+    // overlap: the unsound case.
+    PsdPathStream stream;
+    stream.subpaths.push_back(makeSubPath(squareSubPath(0, 0, 60, 60), PsdPathOp::Union));
+    stream.subpaths.push_back(makeSubPath(squareSubPath(40, 0, 100, 60), PsdPathOp::Union));
+    stream.subpaths.push_back(makeSubPath(squareSubPath(45, 20, 55, 40), PsdPathOp::Subtract));
+    const PsdComposedPath composed = composePsdSubPaths(stream);
+    check(composed.ok, "I1: a doubly-covered subtraction still composes -- it is a warning, "
+                       "not a refusal");
+    bool warned = false;
+    for (const std::string& w : composed.warnings)
+      if (w.find("covered more than once") != std::string::npos) warned = true;
+    check(warned, "I1: and it WARNS that the hole may not match Photoshop, naming the cause");
+
+    // Proof the warning is about double coverage and not about the word
+    // Subtract: one Union square with a nested hole is the sound case.
+    PsdPathStream sound;
+    sound.subpaths.push_back(makeSubPath(squareSubPath(0, 0, 60, 60), PsdPathOp::Union));
+    sound.subpaths.push_back(makeSubPath(squareSubPath(20, 20, 40, 40), PsdPathOp::Subtract));
+    const PsdComposedPath soundComposed = composePsdSubPaths(sound);
+    bool quiet = true;
+    for (const std::string& w : soundComposed.warnings)
+      if (w.find("covered more than once") != std::string::npos) quiet = false;
+    check(soundComposed.ok && quiet,
+          "I2: a plain nested hole -- one fill, one subtraction -- warns about nothing");
+  }
+
   std::printf("[selftest] psd vector compose %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }
