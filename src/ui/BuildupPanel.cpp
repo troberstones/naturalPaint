@@ -3,7 +3,9 @@
 #include <cfloat>
 #include <string>
 
+#include "app/DocumentLifecycle.hpp"
 #include "app/StrokePreferences.hpp"
+#include "app/StrokeSession.hpp"
 #include "imgui.h"
 #include "ui/AtelierChrome.hpp"  // pushAtelierMono()/popAtelierMono(), for the options-bar field
 
@@ -16,9 +18,17 @@ void save(AppState& st) {
                                   st.pigmentBuildup, &err);
 }
 
+StrokeRoute activeRoute(AppState& st) {
+  const OpenDocument* od = st.documents.active();
+  return strokeRouteFor(st.brush.tool, od != nullptr ? activeLayerOf(*od) : nullptr);
+}
+
 // What the closed field reads, so the band says which rules are live without
-// being opened -- `ui/TaperPanel`'s `compactLabel()` for the same reason.
-std::string compactLabel(const PigmentBuildup& b) {
+// being opened -- `ui/TaperPanel`'s `compactLabel()` for the same reason. Off
+// the Pigment deposit it says so: an RGB layer is what File > New makes, and
+// switches that read "Saturate" over a stroke they cannot reach look broken.
+std::string compactLabel(const PigmentBuildup& b, StrokeRoute route) {
+  if (route != StrokeRoute::CpuDeposit) return "Off here";
   if (b.saturating && b.strokeCeiling) return "Sat + cap";
   if (b.saturating) return "Saturate";
   if (b.strokeCeiling) return "Stroke cap";
@@ -31,9 +41,22 @@ void drawBuildupControls(AppState& st) {
   ensureStrokePreferencesLoaded(st.strokePreferences, st.strokePreferencesLoaded,
                                 st.stabiliserPrefs, st.pigmentBuildup);
   PigmentBuildup& b = st.pigmentBuildup;
+  const StrokeRoute route = activeRoute(st);
+  const bool reaches = route == StrokeRoute::CpuDeposit;
 
   ImGui::TextDisabled("Where a stroke crosses itself");
   ImGui::Spacing();
+  if (route == StrokeRoute::RgbDeposit) {
+    ImGui::TextUnformatted("This layer is RGB, where strokes already\n"
+                           "diminish on overlap and stop at Opacity.\n"
+                           "These switches are for Pigment layers.");
+    ImGui::Spacing();
+  } else if (!reaches) {
+    ImGui::Text("No effect on this stroke (%s).\nThese switches are for Pigment layers.",
+                strokeRouteName(route));
+    ImGui::Spacing();
+  }
+  ImGui::BeginDisabled(!reaches);
 
   if (ImGui::Checkbox("Diminishing overlaps", &b.saturating)) save(st);
   ImGui::SetItemTooltip(
@@ -45,15 +68,20 @@ void drawBuildupControls(AppState& st) {
   ImGui::SetItemTooltip(
       "One stroke lays at most its Opacity of paint at any one place, however often it "
       "crosses itself. A second stroke still layers over the first.");
-  if (b.strokeCeiling)
-    ImGui::TextDisabled("Opacity is 100%% by default, where this\nchanges nothing -- bring it "
-                        "down to see it.");
-
-  ImGui::Spacing();
-  ImGui::TextDisabled("Pigment layers only.");
+  if (b.strokeCeiling) {
+    // Here as well as in Brush Settings, because the switch is useless without
+    // it and the options bar has no room for a field of its own.
+    ImGui::SetNextItemWidth(180.0f);
+    ImGui::SliderFloat("Opacity", &st.brush.opacity, 0.0f, 1.0f, "%.2f");
+    if (st.brush.opacity >= 1.0f)
+      ImGui::TextDisabled("At 100%% this changes nothing.");
+  }
+  ImGui::EndDisabled();
 }
 
 void drawBuildupOptionsBarField(AppState& st) {
+  ensureStrokePreferencesLoaded(st.strokePreferences, st.strokePreferencesLoaded,
+                                st.stabiliserPrefs, st.pigmentBuildup);
   pushAtelierMono();
   ImGui::SetNextItemWidth(kBandFieldWidthPx);
   // `ImGuiComboFlags_HeightLargest` rather than a `SetNextWindowSizeConstraints`
@@ -66,7 +94,7 @@ void drawBuildupOptionsBarField(AppState& st) {
   // -- a dialog, a panel, anything -- which quietly resized windows that have
   // nothing to do with this field.
   const bool open = ImGui::BeginCombo("##buildupField",
-                                      compactLabel(st.pigmentBuildup).c_str(),
+                                      compactLabel(st.pigmentBuildup, activeRoute(st)).c_str(),
                                       ImGuiComboFlags_HeightLargest);
   popAtelierMono();
   if (open) {

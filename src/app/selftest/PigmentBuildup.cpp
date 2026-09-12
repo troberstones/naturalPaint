@@ -280,6 +280,70 @@ bool runPigmentBuildupTest() {
           "opacity, and a second pass is not capped by what the first one spent");
   }
 
+  // ======================================================================
+  // 5. A stroke that crosses itself, through the session and the chrome's gate
+  // ======================================================================
+  //
+  // The user's own case end to end: one X-shaped stroke of a soft brush at load
+  // 0.18, read at the crossing. Then the predicate the Opacity slider greys
+  // itself out by -- it once left the slider disabled on the Pigment deposit
+  // over a ceiling that worked, so turning the switch on changed nothing a
+  // painter could reach.
+  {
+    const auto crossingOf = [&](PigmentBuildup buildup, float opacity) {
+      OpenDocument od = makePigmentDoc(256, 256);
+      BrushState brush;
+      brush.model.tip.diameterPx = 40.0f;
+      brush.model.tip.hardness = 0.3f;
+      brush.native.load = 0.18f;
+      brush.opacity = opacity;
+      MixboxLut noLut;
+      const BrushTip t = brushTipFor(brush, noLut, 1.0f);
+      std::string error;
+      StrokeSession session;
+      session.begin(od, 1, t, Tool::Brush, &error, /*model=*/nullptr, DynamicInputs{},
+                    /*clone=*/nullptr, StabiliserParams{}, 1.0f, &brush.native, buildup);
+      const float pts[4][2] = {{40, 40}, {216, 216}, {216, 40}, {40, 216}};
+      for (int s = 0; s < 3; ++s)
+        for (int i = 0; i < 44; ++i) {
+          const float f = static_cast<float>(i) / 44.0f;
+          session.addPoint(pts[s][0] + (pts[s + 1][0] - pts[s][0]) * f,
+                           pts[s][1] + (pts[s + 1][1] - pts[s][1]) * f);
+        }
+      session.addPoint(40.0f, 216.0f);
+      session.end();
+      const PigmentTile* tile = od.document.layers[1].pigmentTiles->find(TileCoord{1, 1});
+      return tile != nullptr ? tile->readTexel(tileLocalOffset(PixelCoord{128, 128})).mass
+                             : 0.0f;
+    };
+    PigmentBuildup sat;
+    sat.saturating = true;
+    PigmentBuildup cap;
+    cap.strokeCeiling = true;
+    const float linear = crossingOf(PigmentBuildup{}, 1.0f);
+    const float saturating = crossingOf(sat, 1.0f);
+    const float capped = crossingOf(cap, 0.5f);
+    std::printf("  [measured] an X stroke's crossing: mass %.4f linear, %.4f saturating, "
+                "%.4f with the ceiling at opacity 0.5\n",
+                linear, saturating, capped);
+    check(linear > 0.9f && saturating < linear - 0.2f,
+          "a self-crossing stroke: diminishing overlaps lightens the crossing a painter "
+          "actually draws, not only a stack of dabs at one point");
+    check(capped <= 0.5f + 1.0e-3f,
+          "a self-crossing stroke: with the ceiling on, the crossing stops at the opacity");
+
+    OpenDocument od = makePigmentDoc(16, 16);
+    const StrokeRoute pigment = strokeRouteFor(Tool::Brush, &od.document.layers[1]);
+    check(pigment == StrokeRoute::CpuDeposit &&
+              !opacityReachesRoute(pigment, PigmentBuildup{}) &&
+              opacityReachesRoute(pigment, cap),
+          "the Opacity slider is live on a Pigment layer exactly while the stroke ceiling is "
+          "on -- the switch is not left pointing at a greyed-out control");
+    check(opacityReachesRoute(StrokeRoute::RgbDeposit, PigmentBuildup{}) &&
+              !opacityReachesRoute(StrokeRoute::Smudge, cap),
+          "...and the other routes answer as the slider always did, whatever BUILDUP says");
+  }
+
   std::printf("[selftest] pigment buildup %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

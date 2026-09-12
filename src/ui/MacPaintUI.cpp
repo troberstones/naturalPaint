@@ -5807,11 +5807,10 @@ void drawBrushPaintGroup(AppState& st) {
     // the exact complaint this disabled-rather-than-hidden treatment was written
     // to answer.
     //
-    // `cpu-deposit` is still the one layer-writing route that ignores it, and
-    // still for the stated reason: the pigment DEPOSIT has no per-stroke
-    // accumulator, so it has no ceiling to raise or lower. The pigment ERASE
-    // does -- `E` is the fraction removed, dimensionless, so the floor
-    // `mass_0 * (1 - strength)` needs nothing the deposit was missing.
+    // `cpu-deposit` reads it only while BUILDUP's stroke ceiling is on
+    // (brush/Deposit.hpp §1a), its one per-stroke accumulator. The pigment ERASE
+    // needs no such switch -- `E` is the fraction removed, dimensionless, so the
+    // floor `mass_0 * (1 - strength)` needs nothing the deposit was missing.
     const bool erasing =
         route == StrokeRoute::RgbErase || route == StrokeRoute::PigmentErase;
     // **The tonal route reads the same slider as its STRENGTH too**
@@ -5843,8 +5842,7 @@ void drawBrushPaintGroup(AppState& st) {
     // the same cap, so this slider decides how opaque the repair comes out. A
     // route left out of this list is a live control dimmed over a sentence
     // saying it does nothing.
-    const bool honoured = erasing || toning || route == StrokeRoute::RgbDeposit ||
-                          route == StrokeRoute::CloneStamp || route == StrokeRoute::Heal;
+    const bool honoured = opacityReachesRoute(route, st.pigmentBuildup);
     ImGui::BeginDisabled(!honoured);
     ctlSlider("Opacity", &st.brush.opacity, 0.0f, 1.0f);
     ImGui::EndDisabled();
@@ -5860,6 +5858,8 @@ void drawBrushPaintGroup(AppState& st) {
       ImGui::TextDisabled("The smudge reads STRENGTH in the options bar, not this.");
     else if (honoured)
       ImGui::TextDisabled("Flow is how fast paint builds; opacity is where it stops.");
+    else if (route == StrokeRoute::CpuDeposit)
+      ImGui::TextDisabled("On a Pigment layer, turn on BUILDUP > Limit one stroke to its Opacity.");
     else
       ImGui::TextDisabled("Opacity is a stroke ceiling; this stroke goes to %s.",
                           strokeRouteName(route));

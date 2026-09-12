@@ -1038,6 +1038,29 @@ inline bool grainReachesRoute(StrokeRoute route) noexcept {
          route != StrokeRoute::StrokesRecord;
 }
 
+// Whether a stroke on `route` reads OPACITY (`BrushState::opacity`) -- what
+// the Brush Settings slider greys itself out by. The Pigment deposit is the one
+// route whose answer is a SETTING rather than a fact: its only per-stroke
+// accumulator is BUILDUP's stroke ceiling (brush/Deposit.hpp §1a), so with that
+// off there is no ceiling for the slider to move. Answered here because the
+// slider's own copy of this list is what left the slider greyed out over a
+// ceiling that worked.
+inline bool opacityReachesRoute(StrokeRoute route, const PigmentBuildup& buildup) noexcept {
+  switch (route) {
+    case StrokeRoute::RgbDeposit:
+    case StrokeRoute::RgbErase:
+    case StrokeRoute::PigmentErase:
+    case StrokeRoute::TonalBrush:
+    case StrokeRoute::CloneStamp:
+    case StrokeRoute::Heal:
+      return true;
+    case StrokeRoute::CpuDeposit:
+      return buildup.strokeCeiling;
+    default:
+      return false;
+  }
+}
+
 const char* strokeRouteName(StrokeRoute route) noexcept;
 
 // `target` is the layer the stroke is aimed at, or nullptr when there is none.
