@@ -20,6 +20,7 @@
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
 #include "io/ImageIO.hpp"
+#include "io/Export.hpp"
 #include "io/PsdImport.hpp"
 
 // io/PsdImport (and the app/OpenAnyFile seam it fills) -- headless, GPU-free.
@@ -2096,6 +2097,48 @@ bool runPsdImportTest() {
         named = true;
     check(named, "E5: and a warning names the layer AND the operation -- a shape that quietly "
                  "vanished would look like artwork the file never had");
+  }
+
+  {
+    // The compound case, end to end through the real importer and the real
+    // compositor: `App Icon Shape`'s shape -- a full-canvas rectangle with a
+    // smaller shape SUBTRACTED from it. Photoshop draws the corners and not
+    // the middle.
+    //
+    // The bounds alone cannot say this: a build that dropped the subtraction
+    // entirely, or failed to reverse its winding, reports the same rectangle
+    // and fills the hole solid. Only the pixels tell the two apart, so this
+    // asserts pixels, and it takes them from flattenDocumentToLinear() --
+    // the same path the canvas composites through.
+    const std::vector<std::pair<double, double>> outer = {{0, 0}, {32, 0}, {32, 32}, {0, 32}};
+    const std::vector<std::pair<double, double>> inner = {{8, 8}, {24, 8}, {24, 24}, {8, 24}};
+    ByteWriter two;
+    const std::vector<uint8_t> a = vsmsBlock(outer, 32, 32, /*op=*/1);
+    const std::vector<uint8_t> b = vsmsBlock(inner, 32, 32, /*op=*/2);
+    two.bytes(a);
+    for (size_t i = 8 + 52; i < b.size(); ++i) two.u8(b[i]);  // its records, not its header
+
+    LayerSpec shape;
+    shape.pascalName = "rect minus hole";
+    shape.channels = {{0, {}}, {1, {}}, {2, {}}, {-1, {}}};
+    shape.extraBlocks = {{"vsms", two.b}, {"SoCo", hexBlock(kRealSocoHex)}};
+    const PsdImportResult r = importPsd(buildPsd(32, 32, 8, {shape}));
+    check(r.ok && r.document.layers.size() == 1 &&
+              r.document.layers[0].kind == LayerKind::Vector &&
+              r.document.layers[0].shapes.size() == 1,
+          "E6: a Union + Subtract shape layer imports as ONE compound shape, not two");
+
+    const DecodedImage flat = flattenDocumentToLinear(r.document);
+    auto alphaAt = [&flat](int32_t x, int32_t y) {
+      const size_t i = (static_cast<size_t>(y) * static_cast<size_t>(flat.width) +
+                        static_cast<size_t>(x)) * 4;
+      return i + 3 < flat.pixels.size() ? flat.pixels[i + 3] : -1.0f;
+    };
+    check(flat.valid() && alphaAt(2, 2) > 0.9f && alphaAt(29, 29) > 0.9f,
+          "E6: the corners OUTSIDE the subtracted square are painted");
+    check(flat.valid() && alphaAt(16, 16) < 0.1f,
+          "E6: and the middle is a real HOLE -- a build that dropped the subtraction, or "
+          "failed to reverse its winding, fills this pixel and reports the same bounds");
   }
 
   std::printf("[selftest] psd import %s\n", ok ? "PASS" : "FAIL");
