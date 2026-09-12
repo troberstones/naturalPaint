@@ -39,6 +39,14 @@ struct PsdVectorStyleBlocks {
   std::span<const uint8_t> soco;
   std::span<const uint8_t> vscg;
   std::span<const uint8_t> vstk;
+
+  // A standalone pattern or gradient fill, the two carriers that sit where
+  // `SoCo` would. Neither has a receiving field (see below), so they are here
+  // to be NAMED in a warning rather than decoded: without them a top-level
+  // `GdFl` layer reports "no fill block" and reads as an accident instead of
+  // an unsupported fill. Both start at their descriptor, skip 0.
+  std::span<const uint8_t> ptfl;
+  std::span<const uint8_t> gdfl;
 };
 
 struct PsdVectorStyle {

@@ -344,6 +344,22 @@
 // way it already closed the stacking-order and flags-inversion ones above.
 namespace np {
 
+// One guide from the file's Image Resources (resource 1032).
+//
+// `vertical` is the guide's OWN orientation, which is what both Photoshop's
+// direction byte and `app::GuideOrientation` name: a vertical guide is a
+// vertical line at a fixed x. `position` is in document pixels -- the file
+// stores 32nds of a pixel, and this is already divided.
+//
+// A separate struct rather than `app::Guide` because `io/` does not depend on
+// `app/`; app/OpenAnyFile converts. A guide may legitimately sit outside the
+// canvas (Photoshop keeps one dragged past the edge), so a position is carried
+// through rather than clamped or dropped.
+struct PsdGuide {
+  bool vertical = false;
+  float position = 0.0f;
+};
+
 // One PSD import's outcome.
 struct PsdImportResult {
   bool ok = false;
@@ -380,6 +396,17 @@ struct PsdImportResult {
   // per-file surprise, so it lives in this header's comment rather than in
   // every result's `warnings`).
   std::vector<std::string> warnings;
+
+  // The file's guides, in file order (which is the order the user created
+  // them, not sorted). Valid only when `ok`. Empty is the common case and not
+  // a failure: three of the five sample files carry resource 1032 with a count
+  // of zero, and two carry no resource section worth speaking of at all.
+  //
+  // These are NOT part of `document`, because this codebase's guides are
+  // session state (`app::AppState::guides`) rather than document content --
+  // app/OpenAnyFile carries them across. That placement is a statement about
+  // where guides live today, not a claim that it is where they belong.
+  std::vector<PsdGuide> guides;
 };
 
 // Parses `bytes` as a PSD file and builds a layered `Document` from its
