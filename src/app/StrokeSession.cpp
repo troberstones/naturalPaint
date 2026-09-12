@@ -4,13 +4,17 @@
 #include <cmath>
 
 #include "app/PenAxes.hpp"
-#include "brush/EntryTaper.hpp"
+#include "brush/Taper.hpp"
 #include "brush/ToolOptionsBlend.hpp"
 #include "color/Space.hpp"
 #include "core/StrokesContent.hpp"
 
 namespace np {
 namespace {
+
+float dabDistance(const StrokeDab& a, const StrokeDab& b) noexcept {
+  return std::hypot(b.pos.x - a.pos.x, b.pos.y - a.pos.y);
+}
 
 // A per-dab XOR salt, folded into the seed before drawing SCATTER's random
 // direction -- see `applyPerDabScatter()`. Any fixed odd 64-bit constant
@@ -1775,15 +1779,15 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // before must not bleed into this one -- brush/StrokePath::reset()'s own
   // contract, and the same call ui/MacPaintUI already makes at pen-down.
   path_.reset();
-  // The resolved stabiliser and entry taper, latched with everything else at
+  // The resolved stabiliser and both tapers, latched with everything else at
   // `begin()` -- see this method's own header comment on `stabiliser`/
   // `viewZoom`/`native`.
   stabiliserParams_ = stabiliser;
   stabiliser_.begin(stabiliser, viewZoom);
-  taperInPx_ = native != nullptr ? native->taperInPx : 0.0f;
-  taperMinSize_ = native != nullptr ? native->taperMinSize : 0.0f;
-  taperFlow_ = native != nullptr && native->taperFlow;
+  taperIn_ = native != nullptr ? native->taperIn : BrushTaper{};
+  taperOut_ = native != nullptr ? native->taperOut : BrushTaper{};
   pending_.clear();
+  heldBack_.clear();
   frameTiles_.clear();
   strokeTiles_.clear();
   dabs_ = 0;
@@ -1858,14 +1862,18 @@ float StrokeSession::smoothPressureByDistance(float rawPressure, float distanceP
 }
 
 float StrokeSession::taperedSpacingPx() const noexcept {
-  const float taperMul =
-      std::max(entryTaperMultiplier(distanceTravelled_, taperInPx_, taperMinSize_), 0.05f);
+  // Entry only. Spacing has to be chosen as dabs are EMITTED, and at that
+  // moment the exit taper's own multiplier is unknowable -- every point is
+  // still within a taper length of the tip. The exit taper closes that gap
+  // where it can: `depositPending()` subdivides the held-back tail at
+  // deposit time, when the remaining distance is finally known.
+  const float taperMul = std::max(taperMultiplier(distanceTravelled_, taperIn_), 0.05f);
   return tip_.spacingPx() * taperMul;
 }
 
 void StrokeSession::depositPending(bool isEndFlush) {
   frameTiles_.clear();
-  if (pending_.empty()) return;
+  if (pending_.empty() && heldBack_.empty()) return;
   const bool isClickDab = isEndFlush && !havePrevDab_;
 
   Document& doc = doc_->document;
@@ -1879,6 +1887,7 @@ void StrokeSession::depositPending(bool isEndFlush) {
   // and the header says what that does and does not cover.
   if (doc.layers.size() != layerCount_ || layerIndex_ >= doc.layers.size()) {
     pending_.clear();
+    heldBack_.clear();
     return;
   }
   Layer& layer = doc.layers[layerIndex_];
@@ -1906,6 +1915,7 @@ void StrokeSession::depositPending(bool isEndFlush) {
   // removed answers `None`.
   if (strokeRouteFor(tool_, &layer, editTarget_) != route_) {
     pending_.clear();
+    heldBack_.clear();
     return;
   }
 
@@ -1946,7 +1956,55 @@ void StrokeSession::depositPending(bool isEndFlush) {
   // `--pigment-stroke-demo` reference and no existing `--selftest` assertion
   // about a dab's footprint or a stroke's byte-identical undo has anything to
   // notice.
+  // --- the exit taper's hold-back (`heldBack_`'s own comment) --------------
+  //
+  // Whatever was held from earlier frames goes back at the FRONT: these dabs
+  // are older than anything `path_` has emitted since, and every per-dab
+  // signal below (`distanceTravelled_`, `dabs_`, the stroke-local sources'
+  // own index) advances in emission order, so deferring a suffix is only
+  // legitimate while that order is preserved exactly.
+  if (!heldBack_.empty()) {
+    pending_.insert(pending_.begin(), heldBack_.begin(), heldBack_.end());
+    heldBack_.clear();
+  }
+  const bool exitTaper = taperOut_.on && taperOut_.lengthPx > 0.0f;
+  std::vector<float> exitMul;
+  if (exitTaper && !isEndFlush) {
+    // Hold back every dab still within a taper length of the tip: whether it
+    // is tapered at all depends on how the stroke ENDS, which is not known
+    // yet. A stroke shorter than the taper length holds everything, which is
+    // correct -- all of it may yet be inside the ramp.
+    size_t firstHeld = 0;
+    float arc = 0.0f;
+    for (size_t i = pending_.size(); i-- > 0;) {
+      if (i + 1 < pending_.size()) arc += dabDistance(pending_[i], pending_[i + 1]);
+      if (arc >= taperOut_.lengthPx) {
+        firstHeld = i + 1;
+        break;
+      }
+    }
+    heldBack_.assign(pending_.begin() + static_cast<ptrdiff_t>(firstHeld), pending_.end());
+    pending_.erase(pending_.begin() + static_cast<ptrdiff_t>(firstHeld), pending_.end());
+    if (pending_.empty()) return;  // nothing released this frame
+  } else if (exitTaper) {
+    // The stroke ended: the tail's remaining distance is finally known, so
+    // the ramp can be resolved -- and the dabs it thins can be SUBDIVIDED to
+    // match. Spacing was chosen at emission time for a full-size tip
+    // (`taperedSpacingPx()`'s own comment); leaving it there would space the
+    // thin end of the taper for dabs several times the size of the ones
+    // actually landing, and a tapering stroke would break into dots exactly
+    // where it should be finest.
+    subdivideTaperedTail(pending_, taperOut_, tip_.spacingPx());
+    exitMul.resize(pending_.size(), 1.0f);
+    float arc = 0.0f;
+    for (size_t i = pending_.size(); i-- > 0;) {
+      if (i + 1 < pending_.size()) arc += dabDistance(pending_[i], pending_[i + 1]);
+      exitMul[i] = taperMultiplier(arc, taperOut_);
+    }
+  }
+
   size_t frameTexels = 0;
+  size_t dabIndexInFrame = 0;
   for (const StrokeDab& p : pending_) {
     // The seed, latched once from the stroke's very FIRST dab position --
     // brush/Dynamics.hpp's own section comment on why position rather than a
@@ -2111,10 +2169,11 @@ void StrokeSession::depositPending(bool isEndFlush) {
           std::clamp(static_cast<int32_t>(std::lround(baseCount_ * countMul)), 1, 16);
     }
 
-    // Entry taper: `distanceTravelled_` (just above) is this dab's own arc
-    // length from the stroke's origin. `entryTaperMultiplier()` returns 1.0f
-    // unmodified whenever `taperInPx_ <= 0` (off, the default), which is
-    // what keeps a non-tapering brush bit-identical.
+    // The two tapers: `distanceTravelled_` (just above) is this dab's own arc
+    // length from the stroke's origin, and `exitMul` its distance to the last
+    // dab, resolved once above for the whole tail. `taperMultiplier()` returns
+    // 1.0f unmodified whenever its taper is off (the default for both), which
+    // is what keeps a non-tapering brush bit-identical.
     //
     // **The stationary-click dab is never tapered.** It has `distanceTravelled_
     // == 0` for the identical reason a moving stroke's own origin dab does --
@@ -2122,10 +2181,13 @@ void StrokeSession::depositPending(bool isEndFlush) {
     // not partway along a ramp toward full size, it IS the whole gesture, and
     // taperMinSize 0 (a point) would otherwise paint it at radius 0, i.e. not
     // at all.
-    const float taperMul =
-        isClickDab ? 1.0f : entryTaperMultiplier(distanceTravelled_, taperInPx_, taperMinSize_);
-    dabTip.radius *= taperMul;
-    if (taperFlow_) dabTip.flow *= taperMul;
+    const float entryMul = isClickDab ? 1.0f : taperMultiplier(distanceTravelled_, taperIn_);
+    const float exitMulHere =
+        (isClickDab || dabIndexInFrame >= exitMul.size()) ? 1.0f : exitMul[dabIndexInFrame];
+    ++dabIndexInFrame;
+    dabTip.radius *= entryMul * exitMulHere;
+    if (taperIn_.flow) dabTip.flow *= entryMul;
+    if (taperOut_.flow) dabTip.flow *= exitMulHere;
 
     dabTip.count = resolvedCount;
     // No further flooring here: `brush/Variance.hpp`'s `minimum` is already

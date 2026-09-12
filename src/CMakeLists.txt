@@ -379,7 +379,7 @@ add_executable(naturalPaint
   brush/ToolOptionsBlend.cpp
   brush/Variance.cpp
   brush/Stabiliser.cpp
-  brush/EntryTaper.cpp
+  brush/Taper.cpp
   app/StrokePreferences.cpp
   color/LutBake.cpp
   color/Shaper.cpp

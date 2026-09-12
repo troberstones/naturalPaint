@@ -2,6 +2,7 @@
 
 #include "brush/Grain.hpp"
 #include "brush/Stabiliser.hpp"
+#include "brush/Taper.hpp"
 
 namespace np {
 
@@ -76,20 +77,18 @@ struct NativeBrush {
   // against the global setting by `resolveStabiliser()`.
   BrushStabiliserSetting stabiliser;
 
-  // Entry taper. `taperInPx` is the arc length over which radius (and flow,
-  // if `taperFlow`) ramps up from the stroke's origin; 0 is off.
-  // `taperMinSize` is the fraction (0-100%) of full size the very first dab
-  // starts at -- 0 is a point. Applied per dab in
-  // `StrokeSession::depositPending()`; exit taper is a later wave.
-  float taperInPx = 0.0f;
-  float taperMinSize = 0.0f;
-  bool taperFlow = false;
+  // The two ends of a stroke, independently switchable and independently set
+  // (`brush/Taper.hpp`). Both are applied per dab in
+  // `StrokeSession::depositPending()`, and `taperOut` is the reason that
+  // function holds the tail of a stroke back -- see its own comment.
+  BrushTaper taperIn;
+  BrushTaper taperOut;
 };
 
 // Bit equality on `load`/`wetness`, `grainParamsEqual()` on `grain`,
 // `stabiliser`'s own field-by-field comparison (and `own`'s five, but only
 // when `mode == Own` -- the other fields are never read then) and
-// `taperInPx`/`taperMinSize`/`taperFlow` -- the same "no tolerance, every
+// `brushTaperEqual()` on both tapers -- the same "no tolerance, every
 // value arrives from a slider or a preset" convention `brush/Library.hpp`'s
 // `presetMatches()` states for itself, extended to this struct now that it
 // holds what that function used to compare as three loose arguments.

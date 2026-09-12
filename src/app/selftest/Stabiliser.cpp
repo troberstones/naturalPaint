@@ -583,12 +583,13 @@ bool runStabiliserTest() {
           "fix 8: the three rejected lines (mode, strength, foo) all survive as unknown lines "
           "for the next save");
 
-    // user-presets.txt: the new `taper`/`stabiliser` preset lines round trip.
+    // user-presets.txt: the `taperin`/`taperout`/`stabiliser` lines round trip.
     BrushPreset preset;
     preset.name = "Taper And Stabiliser";
-    preset.native.taperInPx = 48.0f;
-    preset.native.taperMinSize = 15.0f;
-    preset.native.taperFlow = true;
+    preset.native.taperIn = BrushTaper{true, 48.0f, 15.0f, true};
+    // Switched OFF but set: the length has to survive the toggle, which is
+    // the whole reason `on` is a field rather than "lengthPx > 0".
+    preset.native.taperOut = BrushTaper{false, 120.0f, 5.0f, false};
     preset.native.stabiliser.mode = StabiliserBrushMode::Own;
     preset.native.stabiliser.amountPct = 250.0f;
     preset.native.stabiliser.own.mode = StabiliserMode::WeightedAverage;
@@ -607,9 +608,10 @@ bool runStabiliserTest() {
     const BrushPreset* back = nullptr;
     for (const BrushPreset& p : reloadedLib.presets)
       if (p.name == "Taper And Stabiliser") back = &p;
-    check(back != nullptr && back->native.taperInPx == 48.0f &&
-              back->native.taperMinSize == 15.0f && back->native.taperFlow == true,
-          "user-presets.txt: the new `taper` line round-trips exactly");
+    check(back != nullptr && brushTaperEqual(back->native.taperIn, preset.native.taperIn) &&
+              brushTaperEqual(back->native.taperOut, preset.native.taperOut),
+          "user-presets.txt: both `taperin`/`taperout` lines round-trip exactly, switched-off "
+          "settings included");
     check(back != nullptr && back->native.stabiliser.mode == StabiliserBrushMode::Own &&
               back->native.stabiliser.amountPct == 250.0f &&
               back->native.stabiliser.own.mode == StabiliserMode::WeightedAverage &&
@@ -692,7 +694,7 @@ bool runStabiliserTest() {
       r.parse(fx, lib2);
       // A copy, not a pointer into `lib2` -- `lib2` is local to this lambda.
       for (const BrushPreset& q : lib2.presets)
-        if (q.name == "T") return std::optional<float>(q.native.taperMinSize);
+        if (q.name == "T") return std::optional<float>(q.native.taperIn.minSizePct);
       return std::optional<float>();
     };
     const std::optional<float> clampedHi = taperMinSizeFor("taper 60 150 0");
@@ -711,9 +713,9 @@ bool runStabiliserTest() {
       const BrushPreset* p = nullptr;
       for (const BrushPreset& q : lib2.presets)
         if (q.name == "NanTaper") p = &q;
-      check(p != nullptr && p->native.taperInPx == 0.0f,
-            "fix 8: 'taper nan 0 0' is rejected outright -- taperInPx stays default (off), not "
-            "NaN");
+      check(p != nullptr && p->native.taperIn.lengthPx == 0.0f && !p->native.taperIn.on,
+            "fix 8: 'taper nan 0 0' is rejected outright -- the entry taper stays default (off), "
+            "not NaN");
       const std::string nanResaved = r.serialize(lib2);
       check(nanResaved.find("taper nan 0 0") != std::string::npos,
             "fix 8: the rejected NaN `taper` line is preserved verbatim for the next save");

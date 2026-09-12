@@ -372,8 +372,11 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
       continue;
     }
 
-    if (key == "taper") {
-      // Entry taper (brush/NativeBrush.hpp). A separate keyword for
+    if (key == "taper" || key == "taperin" || key == "taperout") {
+      // The two tapers (brush/Taper.hpp). `taper` is the ENTRY taper's older
+      // three-number spelling, kept readable for files written before the
+      // exit taper existed -- an explicit on/off did not exist then either,
+      // so a length above zero is what "on" meant. A separate keyword for
       // `scalars`'s own reason: growing that line's required count would
       // fail `takeFloats(rest, 7, ...)` for a file written before this
       // field existed.
@@ -387,12 +390,16 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
       // malformed one just leaves the default, always a legal brush), but a
       // rejected `taper`/`stabiliser` line has no safe default to fall back
       // to that also protects a value this build cannot make sense of.
-      float n[3];
-      if (takeFloats(rest, 3, n) && std::isfinite(n[0]) && std::isfinite(n[1]) &&
-          std::isfinite(n[2])) {
-        pending.native.taperInPx = std::clamp(n[0], 0.0f, 500.0f);
-        pending.native.taperMinSize = std::clamp(n[1], 0.0f, 100.0f);
-        pending.native.taperFlow = n[2] != 0.0f;
+      const bool legacy = key == "taper";
+      const int count = legacy ? 3 : 4;
+      float n[4];
+      if (takeFloats(rest, count, n) && std::isfinite(n[0]) && std::isfinite(n[1]) &&
+          std::isfinite(n[2]) && (legacy || std::isfinite(n[3]))) {
+        BrushTaper& t = key == "taperout" ? pending.native.taperOut : pending.native.taperIn;
+        t.lengthPx = std::clamp(n[legacy ? 0 : 1], 0.0f, 500.0f);
+        t.minSizePct = std::clamp(n[legacy ? 1 : 2], 0.0f, 100.0f);
+        t.flow = n[legacy ? 2 : 3] != 0.0f;
+        t.on = legacy ? t.lengthPx > 0.0f : n[0] != 0.0f;
       } else {
         pendingUnknown.push_back(line);
       }
@@ -653,13 +660,19 @@ std::string UserBrushLibraryStore::serialize(const BrushLibrary& lib) const {
       // off link's shape would make the toggle destructive.
       for (const CurvePoint& pt : link.curve) out += "point " + f9(pt.x) + " " + f9(pt.y) + "\n";
     }
-    // `taper`/`stabiliser`, written only when non-default -- so a preset
-    // nobody has touched either on round-trips byte-identical to a file
-    // written before either key existed.
-    if (p.native.taperInPx != 0.0f || p.native.taperMinSize != 0.0f || p.native.taperFlow) {
-      out += "taper " + f9(p.native.taperInPx) + " " + f9(p.native.taperMinSize) + " " +
-             (p.native.taperFlow ? "1" : "0") + "\n";
-    }
+    // `taperin`/`taperout`/`stabiliser`, written only when non-default -- so a
+    // preset nobody has touched either on round-trips byte-identical to a
+    // file written before any of these keys existed. The older `taper` key is
+    // still READ (above) and never written back: a file saved by this build
+    // loses its entry taper in an older one, which is the same one-way step
+    // every added key here has taken.
+    const auto writeTaper = [&](const char* key, const BrushTaper& t) {
+      if (brushTaperEqual(t, BrushTaper{})) return;
+      out += std::string(key) + " " + (t.on ? "1" : "0") + " " + f9(t.lengthPx) + " " +
+             f9(t.minSizePct) + " " + (t.flow ? "1" : "0") + "\n";
+    };
+    writeTaper("taperin", p.native.taperIn);
+    writeTaper("taperout", p.native.taperOut);
     const BrushStabiliserSetting& s = p.native.stabiliser;
     // **`own` is checked against ITS OWN default regardless of `mode`.** A
     // painter can tune `own` under `Own`, then switch back to `Follow

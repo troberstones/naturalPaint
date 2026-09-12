@@ -20,8 +20,8 @@ bool stabiliserSettingEqual(const BrushStabiliserSetting& a,
 
 bool nativeBrushEqual(const NativeBrush& a, const NativeBrush& b) noexcept {
   return a.load == b.load && a.wetness == b.wetness && grainParamsEqual(a.grain, b.grain) &&
-         stabiliserSettingEqual(a.stabiliser, b.stabiliser) && a.taperInPx == b.taperInPx &&
-         a.taperMinSize == b.taperMinSize && a.taperFlow == b.taperFlow;
+         stabiliserSettingEqual(a.stabiliser, b.stabiliser) &&
+         brushTaperEqual(a.taperIn, b.taperIn) && brushTaperEqual(a.taperOut, b.taperOut);
 }
 
 }  // namespace np

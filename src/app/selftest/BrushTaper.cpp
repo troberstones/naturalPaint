@@ -7,14 +7,14 @@
 #include "app/DocumentLifecycle.hpp"
 #include "app/LayerEditor.hpp"
 #include "app/StrokeSession.hpp"
-#include "brush/EntryTaper.hpp"
+#include "brush/Taper.hpp"
 #include "brush/StrokePath.hpp"
 #include "paint/Palette.hpp"
 
 namespace np {
 
-// Wave 2 entry taper (`brush/EntryTaper.hpp`, `NativeBrush::taperInPx`/
-// `taperMinSize`/`taperFlow`) and the origin-dab fix (`brush/StrokePath.cpp`)
+// The two tapers (`brush/Taper.hpp`, `NativeBrush::taperIn`/`taperOut`) and
+// the origin-dab fix (`brush/StrokePath.cpp`)
 // it depends on: a moving stroke's first dab must be its own (stabilised)
 // origin, not one spacing along the curve, or "the origin dab is the
 // taper's smallest dab" has no dab to be. Assertion 10's bit-identical claim
@@ -29,23 +29,31 @@ bool runBrushTaperTest() {
     if (!cond) ok = false;
   };
 
+  const auto distanceBetween = [](Vec2 a, Vec2 b) { return std::hypot(b.x - a.x, b.y - a.y); };
+
+  // A live entry ramp: the three loose arguments this section used to pass,
+  // now that a taper is a struct with its own on/off.
+  const auto ramp = [](float lengthPx, float minPct) {
+    return BrushTaper{true, lengthPx, minPct, false};
+  };
+
   std::printf("[selftest] brush taper / origin dab\n");
 
   // ==========================================================================
   // 8. Entry taper formula: arc length 0, L/2, >= L.
   // ==========================================================================
   {
-    check(entryTaperMultiplier(0.0f, 100.0f, 20.0f) == 0.2f,
-          "entryTaperMultiplier: arc length 0 -> exactly taperMinSize/100");
-    check(entryTaperMultiplier(50.0f, 100.0f, 20.0f) == 0.6f,
-          "entryTaperMultiplier: arc length L/2 -> smoothstep(0.5) == 0.5, so exactly the "
+    check(taperMultiplier(0.0f, ramp(100.0f, 20.0f)) == 0.2f,
+          "taperMultiplier: arc length 0 -> exactly taperMinSize/100");
+    check(taperMultiplier(50.0f, ramp(100.0f, 20.0f)) == 0.6f,
+          "taperMultiplier: arc length L/2 -> smoothstep(0.5) == 0.5, so exactly the "
           "formula's midpoint");
-    check(entryTaperMultiplier(100.0f, 100.0f, 20.0f) == 1.0f &&
-              entryTaperMultiplier(250.0f, 100.0f, 20.0f) == 1.0f,
-          "entryTaperMultiplier: arc length >= L -> exactly 1.0 (full size), clamped beyond L");
-    check(entryTaperMultiplier(0.0f, 0.0f, 20.0f) == 1.0f &&
-              entryTaperMultiplier(999.0f, 0.0f, 20.0f) == 1.0f,
-          "entryTaperMultiplier: taperInPx <= 0 (off) -> exactly 1.0 regardless of distance");
+    check(taperMultiplier(100.0f, ramp(100.0f, 20.0f)) == 1.0f &&
+              taperMultiplier(250.0f, ramp(100.0f, 20.0f)) == 1.0f,
+          "taperMultiplier: arc length >= L -> exactly 1.0 (full size), clamped beyond L");
+    check(taperMultiplier(0.0f, ramp(0.0f, 20.0f)) == 1.0f &&
+              taperMultiplier(999.0f, ramp(0.0f, 20.0f)) == 1.0f,
+          "taperMultiplier: taperInPx <= 0 (off) -> exactly 1.0 regardless of distance");
 
     // Flow is untouched unless taperFlow -- proved end to end, on a real
     // stroke, just below (section on `depositPending()`'s wiring).
@@ -60,9 +68,7 @@ bool runBrushTaperTest() {
     BrushState brush;
     brush.model.tip.diameterPx = 60.0f;  // radius 30
     brush.native.load = 0.8f;            // -> tip.flow
-    brush.native.taperInPx = 100.0f;
-    brush.native.taperMinSize = 20.0f;
-    brush.native.taperFlow = false;
+    brush.native.taperIn = ramp(100.0f, 20.0f);
     MixboxLut noLut;
 
     OpenDocument d = makeBlankOpenDocument(256, 256, WorkingSpace{}, "T");
@@ -84,10 +90,10 @@ bool runBrushTaperTest() {
     session.addPoint(0.0f, 128.0f);
     session.addPoint(50.0f, 128.0f);
     check(session.dabCount() == 1, "setup: exactly the origin dab has landed so far");
-    const float expectedOriginRadius = tip.radius * entryTaperMultiplier(0.0f, 100.0f, 20.0f);
+    const float expectedOriginRadius = tip.radius * taperMultiplier(0.0f, ramp(100.0f, 20.0f));
     check(session.lastDabRadius() == expectedOriginRadius,
           "entry taper wired in: the origin dab's radius is tip.radius * "
-          "entryTaperMultiplier(0, taperInPx, taperMinSize) exactly");
+          "taperMultiplier(0, ramp(taperInPx, taperMinSize)) exactly");
 
     // Travel well past taperInPx: the dab radius reaches the tip's own
     // (untapered) radius.
@@ -107,9 +113,8 @@ bool runBrushTaperTest() {
     BrushState brush;
     brush.model.tip.diameterPx = 60.0f;
     brush.native.load = 0.8f;
-    brush.native.taperInPx = 100.0f;
-    brush.native.taperMinSize = 20.0f;
-    brush.native.taperFlow = true;
+    brush.native.taperIn = ramp(100.0f, 20.0f);
+    brush.native.taperIn.flow = true;
     MixboxLut noLut;
     OpenDocument d = makeBlankOpenDocument(256, 256, WorkingSpace{}, "F");
     applyLayerCommand(d, LayerCommand::NewPigmentLayer, d.activeLayer);
@@ -128,7 +133,7 @@ bool runBrushTaperTest() {
     // bearing claim here is narrower and exact: the origin dab's radius
     // taper is unaffected by `taperFlow` being on (same formula, same
     // multiplier, radius and flow share one `taperMul`).
-    const float expectedOriginRadius = tip.radius * entryTaperMultiplier(0.0f, 100.0f, 20.0f);
+    const float expectedOriginRadius = tip.radius * taperMultiplier(0.0f, ramp(100.0f, 20.0f));
     check(session.lastDabRadius() == expectedOriginRadius,
           "entry taper with taperFlow on: the origin dab's RADIUS taper is unaffected -- radius "
           "and flow share one multiplier, computed once");
@@ -147,8 +152,7 @@ bool runBrushTaperTest() {
     for (const float taperIn : {0.0f, 60.0f}) {
       BrushState brush;
       brush.model.tip.diameterPx = 40.0f;
-      brush.native.taperInPx = taperIn;
-      brush.native.taperMinSize = 0.0f;  // pointed
+      brush.native.taperIn = ramp(taperIn, 0.0f);  // pointed
       MixboxLut noLut;
       OpenDocument d = makeBlankOpenDocument(256, 256, WorkingSpace{}, "C");
       applyLayerCommand(d, LayerCommand::NewRgbLayer, d.activeLayer);
@@ -173,10 +177,10 @@ bool runBrushTaperTest() {
   // Fix 3: "beaded" taper. `tip_.spacingPx() * max(taperMul, 0.05)`, taperMul
   // at the CURRENT arc length, is what `StrokeSession` now passes to
   // `path_.addPoint()` (`taperedSpacingPx()`'s own comment) -- reproduced
-  // here at the pure-module level (`StrokePath` + `entryTaperMultiplier()`
-  // directly, no document) so the exact formula can be checked against dab
+  // here at the pure-module level (`StrokePath` + `taperMultiplier()`
+  // directly, ramp(no document) so the exact formula can be checked against dab
   // POSITIONS, which `StrokeSession` does not expose. r=20, spacing 25%
-  // (spacingPx 5), taperInPx 60, min 0: every consecutive dab pair must
+  // (spacingPx 5)), taperInPx 60, min 0: every consecutive dab pair must
   // overlap (centre gap <= sum of radii) rather than leave a string of
   // separated beads.
   // ==========================================================================
@@ -201,7 +205,7 @@ bool runBrushTaperTest() {
       for (; processed < dabs.size(); ++processed) {
         const float stepDist = havePrevDab ? std::fabs(dabs[processed].pos.x - prevDabX) : 0.0f;
         distanceTravelled += stepDist;
-        radii.push_back(radius * entryTaperMultiplier(distanceTravelled, taperInPx, taperMinPct));
+        radii.push_back(radius * taperMultiplier(distanceTravelled, ramp(taperInPx, taperMinPct)));
         prevDabX = dabs[processed].pos.x;
         havePrevDab = true;
       }
@@ -212,13 +216,13 @@ bool runBrushTaperTest() {
       // PREVIOUS call -- the arc length StrokeSession currently knows.
       const float spacingPx =
           baseSpacingPx *
-          std::max(entryTaperMultiplier(distanceTravelled, taperInPx, taperMinPct), 0.05f);
+          std::max(taperMultiplier(distanceTravelled, ramp(taperInPx, taperMinPct)), 0.05f);
       path.addPoint(StrokeSample{Vec2{static_cast<float>(i), 0.0f}}, spacingPx, dabs);
       absorbNewDabs();
     }
     const float finalSpacingPx =
         baseSpacingPx *
-        std::max(entryTaperMultiplier(distanceTravelled, taperInPx, taperMinPct), 0.05f);
+        std::max(taperMultiplier(distanceTravelled, ramp(taperInPx, taperMinPct)), 0.05f);
     path.flush(finalSpacingPx, dabs);
     absorbNewDabs();
 
@@ -288,6 +292,121 @@ bool runBrushTaperTest() {
     oneSample.addPoint(StrokeSample{Vec2{5.0f, 5.0f}}, spacingPx, oneDabs);
     oneSample.flush(spacingPx, oneDabs);
     check(oneDabs.size() == 1, "origin dab: a single-sample click also emits exactly one dab");
+  }
+
+  // ==========================================================================
+  // The `on` toggle is not "lengthPx > 0": a taper switched off keeps its
+  // settings, so switching it back on brings them back.
+  // ==========================================================================
+  {
+    const BrushTaper offButSet{false, 100.0f, 20.0f, true};
+    check(taperMultiplier(0.0f, offButSet) == 1.0f &&
+              taperMultiplier(50.0f, offButSet) == 1.0f,
+          "taperMultiplier: a taper switched OFF is exactly 1.0 at every distance, length and "
+          "minimum still set");
+  }
+
+  // ==========================================================================
+  // `subdivideTaperedTail()`: spacing is chosen when a dab is emitted, which
+  // is before the exit taper's multiplier can be known, so the tail is split
+  // at deposit time instead. Fixture: 10 dabs 5 px apart (the spacing a
+  // full-size tip wants here), a 50 px ramp down to 10% -- so the last dabs
+  // want a fifth of that spacing or they land as separate dots.
+  // ==========================================================================
+  {
+    constexpr float kSpacingPx = 5.0f;
+    const BrushTaper out{true, 50.0f, 10.0f, false};
+    std::vector<StrokeDab> tail;
+    for (int i = 0; i < 10; ++i)
+      tail.push_back(StrokeDab{Vec2{static_cast<float>(i) * kSpacingPx, 0.0f}});
+    const std::vector<StrokeDab> before = tail;
+
+    std::vector<StrokeDab> untouched = tail;
+    subdivideTaperedTail(untouched, BrushTaper{false, 50.0f, 10.0f, false}, kSpacingPx);
+    check(untouched.size() == before.size(),
+          "subdivideTaperedTail: a taper that is off leaves the tail exactly as it was");
+
+    subdivideTaperedTail(tail, out, kSpacingPx);
+
+    // Every gap must be no wider than the spacing the TAPERED tip at that
+    // point wants -- measured against the ramp read at each gap's own
+    // distance from the end, the same way the deposit does.
+    float totalArc = 0.0f;
+    for (size_t i = 0; i + 1 < tail.size(); ++i)
+      totalArc += distanceBetween(tail[i].pos, tail[i + 1].pos);
+    float worstRatio = 0.0f;
+    float arc = 0.0f;
+    for (size_t i = tail.size(); i-- > 1;) {
+      const float gap = distanceBetween(tail[i - 1].pos, tail[i].pos);
+      const float want = kSpacingPx * std::max(taperMultiplier(arc, out), 0.05f);
+      worstRatio = std::max(worstRatio, gap / want);
+      arc += gap;
+    }
+    std::printf("  [measured] subdivideTaperedTail: %zu dab(s) -> %zu; arc %.2f px preserved as "
+                "%.2f px; worst gap %.3fx the spacing its own point wants\n",
+                before.size(), tail.size(), 45.0f, totalArc, worstRatio);
+    check(worstRatio <= 1.0f + 1e-3f,
+          "subdivideTaperedTail: no gap is wider than the spacing the tapered tip wants there");
+    check(tail.size() > before.size(),
+          "subdivideTaperedTail: the tail really was split -- this is not vacuously true");
+    check(tail.front().pos.x == before.front().pos.x &&
+              tail.back().pos.x == before.back().pos.x &&
+              std::fabs(totalArc - 45.0f) < 1e-3f,
+          "subdivideTaperedTail: the path itself is unchanged -- same ends, same arc length");
+  }
+
+  // ==========================================================================
+  // Exit taper wired into a real stroke, and the hold-back it needs: the last
+  // dab of the stroke is the smallest, and while the pen is down the ink
+  // trails the pointer by the taper's length (those dabs cannot be painted
+  // until it is known whether the stroke ends there).
+  // ==========================================================================
+  {
+    const auto runStroke = [&](const BrushTaper& exit, size_t& dabsBeforeEnd,
+                               size_t& dabsAfterEnd, float& lastRadius, float& tipRadius) {
+      BrushState brush;
+      brush.model.tip.diameterPx = 20.0f;  // radius 10
+      brush.native.taperOut = exit;
+      MixboxLut noLut;
+      OpenDocument d = makeBlankOpenDocument(512, 256, WorkingSpace{}, "T");
+      applyLayerCommand(d, LayerCommand::NewPigmentLayer, d.activeLayer);
+      setActiveLayer(d, 1);
+      StrokeSession session;
+      std::string error;
+      const BrushTip tip = brushTipFor(brush, noLut, 1.0f);
+      tipRadius = tip.radius;
+      session.begin(d, d.activeLayer, tip, Tool::Brush, &error, /*model=*/nullptr,
+                    DynamicInputs{}, /*clone=*/nullptr, StabiliserParams{}, 1.0f, &brush.native);
+      for (int i = 0; i <= 20; ++i) session.addPoint(20.0f + static_cast<float>(i) * 20.0f, 128.0f);
+      dabsBeforeEnd = session.dabCount();
+      session.end();
+      dabsAfterEnd = session.dabCount();
+      lastRadius = session.lastDabRadius();
+    };
+
+    constexpr float kTaperOutPx = 80.0f;
+    constexpr float kMinPct = 15.0f;
+    size_t offBefore = 0, offAfter = 0, onBefore = 0, onAfter = 0;
+    float offLast = 0.0f, onLast = 0.0f, tipRadius = 0.0f, unused = 0.0f;
+    runStroke(BrushTaper{}, offBefore, offAfter, offLast, tipRadius);
+    runStroke(BrushTaper{true, kTaperOutPx, kMinPct, false}, onBefore, onAfter, onLast, unused);
+
+    std::printf("  [measured] exit taper: dabs before end() %zu (taper off) vs %zu (on, the "
+                "hold-back); after end() %zu vs %zu; final dab radius %.3f px vs %.3f px "
+                "(tip %.3f px, min %.0f%% = %.3f px)\n",
+                offBefore, onBefore, offAfter, onAfter, offLast, onLast, tipRadius, kMinPct,
+                tipRadius * kMinPct / 100.0f);
+
+    check(std::fabs(onLast - tipRadius * kMinPct / 100.0f) < 0.05f,
+          "exit taper wired in: the stroke's last dab is exactly the ramp's minimum size");
+    check(std::fabs(offLast - tipRadius) < 1e-3f,
+          "exit taper off: the same stroke's last dab is full size -- the fixture discriminates");
+    check(onBefore < offBefore,
+          "hold-back: while the pen is down, the tail within a taper length of the tip has NOT "
+          "been painted yet");
+    check(onAfter >= offAfter,
+          "hold-back: end() releases all of it -- a tapered stroke paints no fewer dabs than an "
+          "untapered one, so nothing is silently dropped");
   }
 
   std::printf("[selftest] brush taper / origin dab %s\n", ok ? "PASS" : "FAIL");

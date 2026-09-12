@@ -403,16 +403,17 @@ bool runStrokePreviewTest() {
   // Fix 10: entry taper reaches the preview strip. It used to be invisible
   // there -- `rasteriseStrokePreview()`'s own `stroke.begin()` call left
   // `native` at its default `nullptr`, so `StrokeSession` never saw
-  // `NativeBrush::taperInPx` and every stroke it painted, tapered brush or
+  // `NativeBrush::taperIn` and every stroke it painted, tapered brush or
   // not, was the untapered one.
   // ======================================================================
   {
     BrushState tapered = base;
     tapered.model.tip.diameterPx = 40.0f;
-    tapered.native.taperInPx = 200.0f;   // most of the strip's own length
-    tapered.native.taperMinSize = 0.0f;  // pointed, so the change is stark
+    tapered.native.taperIn.on = true;
+    tapered.native.taperIn.lengthPx = 200.0f;   // most of the strip's own length
+    tapered.native.taperIn.minSizePct = 0.0f;   // pointed, so the change is stark
     BrushState untapered = tapered;
-    untapered.native.taperInPx = 0.0f;
+    untapered.native.taperIn.on = false;
 
     const StrokePreviewImage withTaper = rasteriseStrokePreview(tapered, lut);
     const StrokePreviewImage withoutTaper = rasteriseStrokePreview(untapered, lut);
