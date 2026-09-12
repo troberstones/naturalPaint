@@ -10,6 +10,14 @@ Four of the five gaps below need **no engine work at all**. The receiving
 feature already exists, is already composited, and is already persisted — only
 the decode is missing. That is why the ordering below is what it is.
 
+**Shape layers are no longer on this list.** They were the sixth gap and the
+largest; `docs/psd-vector-shapes.md` steps 1-4 closed them, and a Photoshop
+shape layer now imports as `LayerKind::Vector` with its geometry, fill and
+stroke. What that work knowingly left behind is **"Still open after steps 1-4
+landed"** in that same document — S1 (a Vector layer exports EMPTY to a
+layered PSD, so a round trip loses shapes) is the one that costs a user
+artwork; the rest warn and degrade.
+
 ## The evidence these are worth doing
 
 `Peter_confronts_a_small_monster_with_fire.psd` opened in the application today
