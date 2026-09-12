@@ -29,6 +29,16 @@ constexpr float kMinSpacingFrac = 0.05f;
 // of dabs. A segment needing more than this is already finer than any tip
 // this can be painting with.
 constexpr int kMaxPiecesPerSegment = 32;
+// How much longer than the wanted spacing a segment must be before it is
+// worth splitting. Without this the function halves the UNTAPERED body of
+// every stroke: it is handed the whole stroke, each dab already sits at the
+// spacing it was emitted at, and `ceil()` of a ratio that is 1 plus a float
+// hair is 2. Real segment lengths scatter either side of that 1, so only
+// SOME segments split -- which paints a stroke of irregular double-density
+// patches, and at a low load, where each dab deposits little and the eye
+// integrates the pair, that reads as blotches. 5% is far above the noise and
+// far below the ratio any genuinely tapered segment reaches.
+constexpr float kSplitSlack = 0.05f;
 
 StrokeDab lerpDab(const StrokeDab& a, const StrokeDab& b, float t) noexcept {
   StrokeDab out = b;  // timestamp and any future field follow the later dab
@@ -63,7 +73,8 @@ void subdivideTaperedTail(std::vector<StrokeDab>& tail, const BrushTaper& taper,
                                         taperMultiplier(arc[i + 1], taper)),
                                kMinSpacingFrac);
     const float want = spacingPx * mul;
-    const int pieces = std::min(static_cast<int>(std::ceil(segLen / want)), kMaxPiecesPerSegment);
+    const int pieces = std::clamp(static_cast<int>(std::ceil(segLen / want - kSplitSlack)), 1,
+                                  kMaxPiecesPerSegment);
     for (int k = 1; k < pieces; ++k)
       out.push_back(lerpDab(tail[i], tail[i + 1], static_cast<float>(k) / static_cast<float>(pieces)));
   }

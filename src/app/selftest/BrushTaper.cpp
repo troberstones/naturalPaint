@@ -501,16 +501,19 @@ bool runBrushTaperTest() {
   }
 
   // ==========================================================================
-  // A stroke SHORTER than its ramps. Both ramps are read off a length the
-  // brush carries, not a length the stroke has, so a short stroke used to be
-  // thinned along the whole of itself -- it never reached the brush's own
-  // width anywhere -- and with both tapers on the two multipliers compounded
-  // (`radius *= entryMul * exitMul`), squaring the loss. A 40 px stroke with
-  // 80 px ramps came out at a quarter of its width, which at a small tip or a
-  // low minimum is a stroke that deposits nothing at all and reads as the
-  // brush having failed. The ramps are capped at a proportional share of the
-  // stroke's own length, so they meet at one point rather than overlapping,
-  // and that point is full size.
+  // A stroke SHORTER than its ramps draws a THIN LINE, and that is the
+  // point. Both ramps are read off a length the brush carries rather than the
+  // length the stroke has, so a short stroke is thinned along the whole of
+  // itself, and with both tapers on the two multipliers compound (`radius *=
+  // entryMul * exitMul`). A quick flick of a big brush therefore leaves a
+  // fine mark, the way a real brush barely touching the paper does.
+  //
+  // This was briefly "fixed" by capping each ramp at its share of the
+  // stroke, so that a short stroke reached full width. The user rejected that
+  // by feel: "I liked the behaviour where both tapers merged together and a
+  // thin line was drawn, I don't like the new behaviour where the short
+  // stroke becomes a blob." These assertions exist to stop it being
+  // helpfully repaired a second time.
   // ==========================================================================
   {
     // The mark's greatest thickness, in texels: the widest column a
@@ -563,12 +566,61 @@ bool runBrushTaperTest() {
                 "(no taper) vs %zu (exit only) vs %zu (both)\n",
                 plain, exitOnly, both);
 
-    check(exitOnly >= plain * 9 / 10,
-          "a stroke shorter than the exit ramp still reaches the brush's own width somewhere -- "
-          "the ramp is capped at the stroke's length rather than thinning all of it");
-    check(both >= plain * 9 / 10,
-          "...and so does one with BOTH tapers on: the two ramps share the stroke and meet at "
-          "full size, rather than compounding into a stroke that is nowhere full width");
+    check(exitOnly < plain * 4 / 5,
+          "a stroke shorter than the exit ramp is thinner than the brush the whole way along "
+          "itself -- the ramp is a length the BRUSH carries, deliberately not one capped at "
+          "the length of the stroke");
+    check(both < exitOnly,
+          "...and with both tapers on the two ramps compound into a finer line still, which is "
+          "the mark a quick flick of a big brush is meant to leave");
+    check(both >= 1,
+          "...but it is still a line: a short stroke thins, it does not vanish");
+  }
+
+  // ==========================================================================
+  // `subdivideTaperedTail()` must leave the UNTAPERED body of a stroke alone.
+  // It is handed the whole stroke, every dab in it already sits at the
+  // spacing it was emitted at, and a segment the ramp does not thin is
+  // therefore being compared against its own spacing -- where `ceil()` of a
+  // ratio that is 1 plus a float hair is 2. Real segment lengths scatter
+  // either side of that 1, so only SOME segments split, and the repaint comes
+  // back as a stroke of irregular double-density patches. At a low load
+  // (reported from a tablet at 0.18), where one dab deposits little and the
+  // eye integrates the pair, that reads as blotches.
+  //
+  // `minSizePct` 100 is a ramp that thins nothing, so the spacing it wants is
+  // the spacing every dab already has and the right answer is to split
+  // NOTHING: any dab beyond the ten fed in is a spurious one. The
+  // `subdivideTaperedTail` block above guards the opposite direction -- that a
+  // ramp which does thin still subdivides -- so the two cannot both be
+  // satisfied by declining to do any work.
+  // ==========================================================================
+  {
+    const auto subdivided = [](float segLen) {
+      std::vector<StrokeDab> tail;
+      for (int i = 0; i < 10; ++i) {
+        StrokeDab d;
+        d.pos = Vec2{static_cast<float>(i) * segLen, 0.0f};
+        d.pressure = 1.0f;
+        tail.push_back(d);
+      }
+      subdivideTaperedTail(tail, BrushTaper{true, 40.0f, 100.0f, false}, 5.0f);
+      return tail.size();
+    };
+
+    const size_t exact = subdivided(5.0f);
+    const size_t over = subdivided(5.0001f);
+    std::printf("  [measured] ramp that thins nothing, 9 segments at the spacing: %zu dab(s) "
+                "from 10 at exactly the spacing, %zu at spacing+0.0001\n",
+                exact, over);
+
+    check(exact == 10,
+          "subdivideTaperedTail splits nothing when the ramp thins nothing: dabs already at "
+          "the spacing they were emitted at are left where they are");
+    check(over == 10,
+          "...and splits nothing when that spacing overshoots by a float hair either, which is "
+          "what a real stroke's segments do -- splitting there doubles the dab density of the "
+          "stroke in patches, which blotches a low-load repaint");
   }
 
   std::printf("[selftest] brush taper / origin dab %s\n", ok ? "PASS" : "FAIL");
