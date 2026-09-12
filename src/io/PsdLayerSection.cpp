@@ -294,8 +294,35 @@ void attachVectorShape(const Layer& layer, const Document& doc, PsdLayerRecord& 
   // which this build does not write -- so writing a black `SoCo` would paint
   // a shape nobody authored, exactly the `PNG/4 - Layer.png` trap
   // io/PsdVectorStyle.hpp names from the reading side.
-  if (shape.fill.on)
+  //
+  // A GRADIENT fill goes out as a real `GdFl` instead (S2). The placement is
+  // resolved against the SAME bounds io/PsdVectorStyle would resolve it
+  // against on the way back in -- the shape's own tight bounds -- which is
+  // what makes the round trip land the ramp where it started.
+  if (shape.fill.on && shape.fill.kind == PaintKind::Gradient) {
+    if (shape.fill.gradient < doc.gradients.size()) {
+      const std::vector<uint8_t> gdfl = encodePsdGradientFillBlock(
+          doc.gradients[shape.fill.gradient], pathTightBounds(shape.path));
+      if (!gdfl.empty()) {
+        writePsdTaggedBlock(w, "GdFl", gdfl);
+      } else {
+        warnings.push_back(named +
+                           ": its gradient fill has no colour stops, so no GdFl block is "
+                           "written; the layer exports as its rasterised copy alone.");
+      }
+    } else {
+      // An index past the table paints nothing on screen either
+      // (core/VectorShape.hpp), so writing any fill block here would make the
+      // exported file show something the document does not.
+      warnings.push_back(named + ": its fill names gradient " +
+                         std::to_string(shape.fill.gradient) +
+                         ", which is past the end of this document's table of " +
+                         std::to_string(doc.gradients.size()) +
+                         "; no fill block is written, matching what it paints on screen.");
+    }
+  } else if (shape.fill.on) {
     writePsdTaggedBlock(w, "SoCo", encodePsdSolidColorBlock(shape.fill.rgba));
+  }
   if (!w.ok()) {
     warnings.push_back(named +
                        ": the byte writer rejected a field while framing its vector blocks, so "

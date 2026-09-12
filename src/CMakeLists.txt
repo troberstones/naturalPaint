@@ -173,6 +173,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/PsdVectorCompose.cpp
   app/selftest/PsdVectorPath.cpp
   app/selftest/PsdVectorStyle.cpp
+  app/selftest/PsdVectorGradient.cpp
   app/selftest/QuitGuard.cpp
   app/selftest/RecoveryJournal.cpp
   app/selftest/ResamplePerf.cpp

@@ -6,6 +6,7 @@
 #include <string_view>
 #include <vector>
 
+#include "core/Gradient.hpp"
 #include "core/Path.hpp"
 #include "io/PsdWrite.hpp"
 
@@ -77,11 +78,18 @@
 // --- The Action Descriptor writer ----------------------------------------
 //
 // io/Descriptor PARSES Photoshop's versioned Action Descriptors and nothing
-// in the tree wrote one before this. The primitives below are exactly enough
-// to emit `SoCo`, and they are here rather than in io/Descriptor so that a
-// future writer of `vscg`, `vstk` or `lfx2` extends this file instead of
-// starting over: such a writer adds `bool`, `long`, `UntF`, `enum` and `VlLs`
-// items beside `writePsdDescriptorDouble()` and needs nothing else.
+// in the tree wrote one before this. The primitives below were exactly enough
+// to emit `SoCo`, and S2's `GdFl` is the predicted extension arriving: it
+// added `bool`, `long`, `UntF`, `enum`, `TEXT` and `VlLs` beside
+// `writePsdDescriptorDouble()` and needed nothing else, which is what that
+// prediction was worth.
+//
+// A `VlLs` element has NO key -- list items are positional, and
+// io/Descriptor's parser reads a key only inside a keyed container -- so
+// `writePsdDescriptorListObjectElement()` is deliberately a different call
+// from `writePsdDescriptorObjectItem()` rather than the same one with an
+// empty key, which would write a four-byte length of zero and desynchronise
+// the whole list.
 //
 // Two quirks, both of which io/Descriptor.hpp documents from the reading side
 // and both of which a writer gets wrong by being reasonable:
@@ -124,6 +132,35 @@ void writePsdDescriptorObjectItem(PsdWriter& w, std::string_view key, std::strin
 
 // One `doub` item: key, `doub`, then an IEEE-754 binary64 big-endian.
 void writePsdDescriptorDouble(PsdWriter& w, std::string_view key, double value);
+
+// One `bool` item: key, `bool`, one byte.
+void writePsdDescriptorBool(PsdWriter& w, std::string_view key, bool value);
+
+// One `long` item: key, `long`, a big-endian int32.
+void writePsdDescriptorInteger(PsdWriter& w, std::string_view key, int32_t value);
+
+// One `UntF` item: key, `UntF`, the four-character unit code, then a binary64.
+// The unit is a bare four-character code and **not** a Key, so the zero-length
+// quirk does not apply to it (io/Descriptor.hpp says so from the reading side).
+void writePsdDescriptorUnitFloat(PsdWriter& w, std::string_view key, std::string_view unit,
+                                 double value);
+
+// One `enum` item: key, `enum`, then the enumeration id and the member id,
+// both Keys and both therefore subject to the zero-length quirk.
+void writePsdDescriptorEnum(PsdWriter& w, std::string_view key, std::string_view typeId,
+                            std::string_view valueId);
+
+// One `TEXT` item: key, `TEXT`, then a UnicodeString with its NUL counted.
+void writePsdDescriptorText(PsdWriter& w, std::string_view key, std::string_view utf8);
+
+// One `VlLs` item: key, `VlLs`, the element count. The caller writes that many
+// elements immediately after, each with NO key of its own.
+void writePsdDescriptorListItem(PsdWriter& w, std::string_view key, uint32_t count);
+
+// One element of a `VlLs` whose value is a nested descriptor: the `Objc` code
+// and that descriptor's head, with no key -- see this header's note.
+void writePsdDescriptorListObjectElement(PsdWriter& w, std::string_view classId,
+                                         uint32_t itemCount);
 
 // --- `vsms`: the path record stream --------------------------------------
 
@@ -196,5 +233,41 @@ PsdVectorShapeMask encodePsdVectorShapeMask(const Path& path, int32_t docWidth,
 // transparency lives in the layer's own opacity. A caller with a colour whose
 // alpha is not 1 should say so; this function cannot.
 std::vector<uint8_t> encodePsdSolidColorBlock(const std::array<float, 4>& linearRgba);
+
+// --- `GdFl`: the gradient fill -------------------------------------------
+
+// The `GdFl` payload for one `GradientDef`, placed against a shape whose tight
+// bounds are `bounds` -- docs/psd-vector-shapes.md S2's export half.
+//
+// **This is the exact inverse of io/PsdVectorStyle's decode**, including
+// `psdGradientGeometryFor()`: the two geometry points come back as an angle, a
+// scale percentage and an offset percentage pair, so a document written here
+// and re-imported gets the same ramp in the same place. That round trip is
+// what app/selftest/PsdVectorGradient.cpp asserts, and it is the strongest
+// statement available, because **no file on this machine carries a real `GdFl`
+// to compare against** -- io/PsdVectorStyle.hpp's own section says so at
+// length, and every word of it applies here. A wrong key name would round-trip
+// perfectly and still not open in Photoshop.
+//
+// What is written: `Grad` (an `Objc` of class `Grdn` carrying `Nm  `, `GrdF`,
+// `Intr`, `Clrs` and `Trns`), then `Type`, `Angl`, `Scl `, `Ofst`, `Dthr`,
+// `Rvrs` and `Algn`.
+//
+// **`Rvrs` is always false and `Dthr` always true**, which is not laziness in
+// either case: io/PsdVectorStyle applies `Rvrs` to the STOPS on the way in, so
+// by the time a ramp is in a `GradientDef` there is nothing left to reverse;
+// and `Dthr` is what Photoshop writes by default and has no receiving field
+// here at all (ops/Gradient.hpp §3 measures that this build's f16 output
+// cannot band), so it is Photoshop's own default rather than a claim about
+// this document.
+//
+// **An Angular gradient exports with `Scl ` at 100 and its own angle**, since
+// its geometry carries a direction and no length. A gradient whose geometry is
+// degenerate (p0 == p1) writes a scale of 0, which is what it is.
+//
+// Returns an empty vector when the ramp has no colour stops -- a `GdFl` with
+// an empty `Clrs` is not something to write, and the caller emits no block.
+std::vector<uint8_t> encodePsdGradientFillBlock(const GradientDef& gradient,
+                                                const PathBounds& bounds);
 
 }  // namespace np

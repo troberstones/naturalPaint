@@ -4074,6 +4074,10 @@ int main(int argc, char** argv) {
     // io/PsdVectorStyle: step 3 -- the fill and stroke descriptors, and the
     // first real Photoshop bytes this tree has fed to io/Descriptor.
     const bool psdVectorStyleOk = np::runPsdVectorStyleTest();
+    // docs/psd-vector-shapes.md S2's PSD half: `GdFl` in and `GdFl` out. Read
+    // app/SelfTest.hpp on what this section can and cannot prove -- no file on
+    // this machine carries a real `GdFl` to check against.
+    const bool psdVectorGradientOk = np::runPsdVectorGradientTest();
     // The three of them in order on one real layer -- the seam no per-module
     // section can see.
     const bool psdVectorChainOk = np::runPsdVectorChainTest();
@@ -4320,7 +4324,7 @@ int main(int argc, char** argv) {
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk && pigmentPanelOk &&
                     openAnyFileOk && psdImportOk && psdVectorPathOk && psdVectorComposeOk &&
-                    psdVectorStyleOk && psdVectorChainOk && filterMenuOk &&
+                    psdVectorStyleOk && psdVectorGradientOk && psdVectorChainOk && filterMenuOk &&
                     adjustmentMenuOk && tileableOk &&
                     selectMenuOk &&
                     chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk && tilePreviewOk &&

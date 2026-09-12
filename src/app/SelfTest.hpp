@@ -5452,6 +5452,32 @@ bool runPsdVectorComposeTest();
 // Headless, GPU-free.
 bool runPsdVectorStyleTest();
 
+// docs/psd-vector-shapes.md S2's PSD half: `GdFl` decoded into a `GradientDef`
+// and written back out.
+//
+// **It cannot prove agreement with Photoshop and says so.** No `.psd` on this
+// machine contains a `GdFl` block at all, so the fixture is this tree's own
+// encoder's output rather than real bytes -- the opposite of
+// runPsdVectorStyleTest(), every one of whose fixtures is a hex dump from a
+// real file. Two things are done about that: the encoded descriptor's whole
+// TREE is asserted against a literal with every Adobe key name spelled out, so
+// a typo is a visible diff rather than a symmetric mistake; and the round trip
+// runs through the DECODER rather than through the encoder's own field list,
+// so a one-sided error -- a unit read as a fraction, a `Lctn` scaled by 100
+// instead of 4096, the y-down negation applied on one side only -- fails even
+// though a shared misunderstanding would not.
+//
+// Also proves: a mid-grey stop goes out sRGB-ENCODED (the blind spot a
+// black-and-white fixture cannot see, since srgbEncode fixes 0 and 1); a
+// 30-degree ramp on a 100x50 shape returns to its own two points; Radial and
+// Reflected keep their centre at p0 rather than at the midpoint;
+// `reverseGradientStops()` mirrors the ramp, moves each midpoint back one stop
+// AND flips it, and is its own inverse; and that a diamond gradient, a noise
+// gradient, an empty `Clrs` list and `fillEnabled = false` each leave the fill
+// OFF with a named warning rather than painting something nobody authored.
+// See app/selftest/PsdVectorGradient.cpp.
+bool runPsdVectorGradientTest();
+
 // The three PSD vector modules run IN ORDER on one real layer's own bytes.
 // Each has its own section proving its own function; none of them can see a
 // seam between the three. Expected values are psd-tools' render of that

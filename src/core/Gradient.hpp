@@ -341,6 +341,34 @@ using GradientTable = std::vector<GradientDef>;
 // drag; nothing in the render path calls it (see the contract above).
 void sortGradientStops(GradientStops& stops);
 
+// The ramp played backwards: `t` in the result reads what `1 - t` read before.
+//
+// Both lists are reversed and every position becomes `1 - position`, so the
+// sorted-ascending contract above still holds. **The midpoints move by one**,
+// which is the part that is easy to get wrong and the reason this is a
+// function rather than three lines at each call site: a midpoint belongs to
+// the SEGMENT after its stop, so reversing sends segment `i` of `n-1` to
+// segment `n-2-i`, and a segment whose 50 % blend landed at `m` now has it at
+// `1 - m`. The final stop of each reversed list has no segment after it and
+// keeps the default.
+//
+// **What this is NOT: an exact mirror of the ramp, and that is a property of
+// the skew rather than of this function.** `ColorStop::midpoint` is
+// implemented as `t^(ln 0.5 / ln m)`, and that family is not symmetric:
+// `skew(1-x, 1-m)` is not `1 - skew(x, m)` in general (measured on m = 0.25,
+// x = 0.75: 0.0354 against 0.134). So a reversed ramp agrees with the original
+// at every STOP position and at every segment's own 50 %-blend position -- the
+// two places the skew is pinned -- and differs by up to a tenth of a segment
+// in between, for any segment whose midpoint is not 0.5. Reversing twice is
+// still exactly the identity. This is what Photoshop's own Reverse does too if
+// it uses the same one-parameter family, and closing the gap would mean a
+// different skew, not a different reversal.
+//
+// Photoshop's `GdFl` "Reverse" checkbox is what this exists for (io/PsdVectorStyle),
+// and it is a model operation rather than an importer one because a gradient
+// editor wants the identical button.
+void reverseGradientStops(GradientStops& stops);
+
 // The ramp parameter at a document position, with `spread` already applied --
 // so the result is in [0, 1] for `Repeat`/`Reflect`/`Angular`, and in [0, 1]
 // after clamping for `Pad`.

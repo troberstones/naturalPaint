@@ -1038,7 +1038,14 @@ const std::array<float, 256>& srgb8DecodeTable() {
 // itself, so it knows; and `importPsd()` has callers that are not
 // app/OpenAnyFile (--psd-report, the selftests), every one of which would
 // otherwise receive shapes that all answer to id 0.
-void appendPsdShape(const ParsedLayer& pl, int32_t docWidth, int32_t docHeight, Layer& layer,
+//
+// **`gradients` is the document's own table, and this is its only writer on
+// the import path.** io/PsdVectorStyle cannot append to it -- it has no
+// `Document` -- so it hands back a `PsdGradientFill` and this function turns
+// that into an entry plus the index that points at it. Keeping both here
+// means `Paint::gradient` is never briefly a placeholder.
+void appendPsdShape(const ParsedLayer& pl, int32_t docWidth, int32_t docHeight,
+                    GradientTable& gradients, Layer& layer,
                     std::vector<std::string>& warnings) {
   const std::string named = "layer '" + (pl.name.empty() ? std::string("(unnamed)") : pl.name) + "'";
   if (docWidth <= 0 || docHeight <= 0) return;
@@ -1084,6 +1091,24 @@ void appendPsdShape(const ParsedLayer& pl, int32_t docWidth, int32_t docHeight, 
   shape.fill = style.fill;
   shape.stroke = style.stroke;
   shape.strokeStyle = style.strokeStyle;
+
+  // A gradient fill becomes a table entry plus an index. The placement is
+  // resolved here and not in the decoder because it needs the SHAPE's extent,
+  // which only exists once the path has been composed -- io/PsdVectorStyle.hpp
+  // states the formula and which parts of it are readings rather than
+  // measurements.
+  if (style.fillGradient.has_value()) {
+    GradientDef def;
+    def.name = style.fillGradient->name;
+    def.stops = std::move(style.fillGradient->stops);
+    def.geometry =
+        psdGradientGeometryFor(style.fillGradient->placement, pathTightBounds(composed.path));
+    shape.fill.on = true;
+    shape.fill.kind = PaintKind::Gradient;
+    shape.fill.gradient = static_cast<uint32_t>(gradients.size());
+    gradients.push_back(std::move(def));
+  }
+
   shape.id = layer.nextShapeId++;
   layer.shapes.push_back(std::move(shape));
 }
@@ -1895,12 +1920,11 @@ PsdImportResult importPsd(std::span<const uint8_t> bytes) {
     // dropped: `appendPsdVectorMask()` below rasterises it into
     // `Layer::mask` (docs/psd-vector-shapes.md S4).
     //
-    // `PtFl`/`GdFl` count as a fill block too, even though neither has a
-    // receiving field yet (io/PsdVectorStyle.hpp) -- a shape whose fill is a
-    // pattern or gradient is still a SHAPE with a fill this build cannot
-    // paint, not a raster layer with a vector mask. Leaving them out here
-    // would misroute exactly that layer into S4 the moment a real file
-    // supplies one, since neither block was even sliced before this change.
+    // `PtFl`/`GdFl` count as a fill block too. `GdFl` now has a receiving
+    // field (docs/psd-vector-shapes.md S2); `PtFl` still does not -- and
+    // either way a shape whose fill is a pattern or a gradient is a SHAPE,
+    // not a raster layer with a vector mask. Leaving them out here would
+    // misroute exactly that layer into S4.
     const bool hasFillBlock = !pl.socoBlock.empty() || !pl.vscgBlock.empty() ||
                               !pl.ptflBlock.empty() || !pl.gdflBlock.empty();
     const bool looksLikeShape = !pl.vectorPath.empty() && (hasFillBlock || pixels.empty());
@@ -1909,12 +1933,17 @@ PsdImportResult importPsd(std::span<const uint8_t> bytes) {
     bool importedAsShape = false;
     if (looksLikeShape) {
       Layer shape = makeVectorLayer(pl.name);
-      appendPsdShape(pl, doc.width, doc.height, shape, result.warnings);
-      // A fill this build cannot express -- a gradient or a pattern -- leaves
-      // the shape unpainted. When Photoshop cached a raster of it, that
-      // raster is the better import: it is what the artwork looks like, and
-      // an invisible shape is not. When there is no raster, the shape is all
-      // there is and goes in unpainted.
+      // Appends onto the document's table as a side effect -- see
+      // appendPsdShape()'s own comment. A shape that then turns out to be
+      // unpaintable leaves its entry behind, which costs a few dozen bytes and
+      // is exactly what core/Gradient.hpp's "entries are never removed" rule
+      // requires: erasing it would renumber every index after it.
+      appendPsdShape(pl, doc.width, doc.height, doc.gradients, shape, result.warnings);
+      // A fill this build cannot express -- a pattern, a noise or diamond
+      // gradient -- leaves the shape unpainted. When Photoshop cached a raster
+      // of it, that raster is the better import: it is what the artwork looks
+      // like, and an invisible shape is not. When there is no raster, the
+      // shape is all there is and goes in unpainted.
       const bool paintable = !shape.shapes.empty() &&
                              (shape.shapes.front().fill.on || shape.shapes.front().stroke.on);
       if (!shape.shapes.empty() && (paintable || pixels.empty())) {

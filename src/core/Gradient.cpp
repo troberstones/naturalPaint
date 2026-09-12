@@ -78,6 +78,27 @@ void sortGradientStops(GradientStops& stops) {
       [](const OpacityStop& a, const OpacityStop& b) { return a.position < b.position; });
 }
 
+void reverseGradientStops(GradientStops& stops) {
+  // One helper for both lists: they differ only in which payload field they
+  // carry, and the position/midpoint bookkeeping -- the half worth getting
+  // right -- is identical.
+  auto flip = [](auto& list) {
+    const size_t n = list.size();
+    if (n == 0) return;
+    // Midpoints first, read off the ORIGINAL order: segment i becomes segment
+    // n-2-i, and its 50 % blend lands at 1 - m of the way along.
+    std::vector<float> midpoints(n, 0.5f);
+    for (size_t i = 0; i + 1 < n; ++i) midpoints[n - 2 - i] = 1.0f - list[i].midpoint;
+    std::reverse(list.begin(), list.end());
+    for (size_t i = 0; i < n; ++i) {
+      list[i].position = 1.0f - list[i].position;
+      list[i].midpoint = midpoints[i];
+    }
+  };
+  flip(stops.colorStops);
+  flip(stops.opacityStops);
+}
+
 float gradientParameterAt(const GradientGeometry& geometry, float px, float py) noexcept {
   const float dx = geometry.x1 - geometry.x0;
   const float dy = geometry.y1 - geometry.y0;
