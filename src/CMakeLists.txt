@@ -1,84 +1,25 @@
-add_executable(naturalPaint
-  main.cpp
-  app/BrushLibraryFile.cpp
-  app/DabLibrary.cpp
-  app/AbrReport.cpp
-  app/BrushSheet.cpp
-  app/BrushRowIcon.cpp
-  app/CloseDecision.cpp
-  app/Action.cpp
-  app/Batch.cpp
-  app/BatchDialog.cpp
-  app/Command.cpp
-  app/CommandCoverage.cpp
-  app/CommandsImage.cpp
-  app/CommandsLayers.cpp
-  app/CommandsOpStack.cpp
-  app/CommandsPatterns.cpp
-  app/CommandsRegions.cpp
-  app/CompPanel.cpp
-  app/PanelLayout.cpp
-  app/ControlsLayout.cpp
-  app/CurveEdit.cpp
-  app/DabPreview.cpp
-  app/DocumentLifecycle.cpp
-  app/ImportImage.cpp
-  app/Journal.cpp
-  app/HistoryPanel.cpp
-  app/Keymap.cpp
-  app/PenAxes.cpp
-  app/PointerQueue.cpp
-  app/PathOps.cpp
-  app/PathsPanel.cpp
-  app/PenTool.cpp
-  app/ShapeTool.cpp
-  app/VectorStyle.cpp
-  app/TextTool.cpp
-  app/PsdExportCli.cpp
-  app/PsdReport.cpp
-  app/SvgReport.cpp
-  app/ProfileToggle.cpp
-  app/Screenshot.cpp
-  app/SelectionDrag.cpp
-  app/LayerEditor.cpp
-  app/TransformSession.cpp
-  app/MoveTool.cpp
-  app/ToolSwitch.cpp
-  app/FramePacing.cpp
-  app/ToolSurface.cpp
-  app/ExportDialog.cpp
-  app/LayerPanel.cpp
-  app/Latency.cpp
-  app/Memory.cpp
-  app/MunsellSelection.cpp
-  app/NoDocumentCanvas.cpp
-  app/Recorder.cpp
-  app/Replay.cpp
-  app/ActionsPanel.cpp
-  # One translation unit per --selftest section, plus Driver.cpp for the three
-  # drivers and Support.cpp for what they share (src/app/selftest/Support.hpp).
-  # These were one 20 815-line app/SelfTest.cpp until every parallel branch
-  # started conflicting in it; app/SelfTest.hpp is still the single index of
-  # what the suite proves and is deliberately NOT split. Listed explicitly
-  # rather than globbed, same as every other source in this target, so adding
-  # a section is a visible line in the diff and CMake reconfigures for it.
-  # flats/ -- the flatting library absorbed from autoFlats (ADR-0009,
-  # docs/autoflats-migration.md), plus its evaluation cache and the
-  # `np:flats` carrier. Pure CPU; see flatstest below.
-  flats/Field.cpp
-  flats/Ink.cpp
-  flats/Morphology.cpp
-  flats/Expand.cpp
-  flats/Segment.cpp
-  flats/Membrane.cpp
-  flats/Sag.cpp
-  flats/Gaps.cpp
-  flats/Model.cpp
-  flats/Tool.cpp
-  flats/FlatsLayer.cpp
+# ---- the --selftest suite ---------------------------------------------------
+#
+# One translation unit per --selftest section, plus Driver.cpp for the three
+# drivers and Support.cpp for what they share (src/app/selftest/Support.hpp).
+# These were one 20 815-line app/SelfTest.cpp until every parallel branch
+# started conflicting in it; app/SelfTest.hpp is still the single index of
+# what the suite proves and is deliberately NOT split. Listed explicitly
+# rather than globbed, same as every other source in this target, so adding
+# a section is a visible line in the diff and CMake reconfigures for it.
+#
+# **These are 236 of the target's 475 translation units**, so NP_SELFTEST=OFF
+# roughly halves a from-scratch build for someone iterating on a feature. It
+# is a subset, not a variant: nothing here is compiled differently, the files
+# are simply absent, and main.cpp's NP_WITH_SELFTEST guard is the only code
+# the two configurations do not share. That is the whole reason this is
+# allowed to be an option at all -- an #if branch nobody builds is how
+# NP_USE_MIXBOX became a documented fallback that does not exist (see the
+# root CMakeLists) -- and it is still an option you must build before you
+# trust: `--selftest` and the golden harness both need NP_SELFTEST=ON.
+option(NP_SELFTEST "Compile the --selftest suite into naturalPaint" ON)
+set(NP_SELFTEST_SOURCES
   flats/FlatsSelfTest.cpp
-  io/FlatsSerial.cpp
-
   app/selftest/Accumulator.cpp
   app/selftest/AdjustmentMenu.cpp
   app/selftest/AdjustmentLayer.cpp
@@ -314,6 +255,81 @@ add_executable(naturalPaint
   app/selftest/StrokeInput.cpp
   app/selftest/PointerQueue.cpp
   app/selftest/AppIcon.cpp
+)
+
+add_executable(naturalPaint
+  main.cpp
+  app/BrushLibraryFile.cpp
+  app/DabLibrary.cpp
+  app/AbrReport.cpp
+  app/BrushSheet.cpp
+  app/BrushRowIcon.cpp
+  app/CloseDecision.cpp
+  app/Action.cpp
+  app/Batch.cpp
+  app/BatchDialog.cpp
+  app/Command.cpp
+  app/CommandCoverage.cpp
+  app/CommandsImage.cpp
+  app/CommandsLayers.cpp
+  app/CommandsOpStack.cpp
+  app/CommandsPatterns.cpp
+  app/CommandsRegions.cpp
+  app/CompPanel.cpp
+  app/PanelLayout.cpp
+  app/ControlsLayout.cpp
+  app/CurveEdit.cpp
+  app/DabPreview.cpp
+  app/DocumentLifecycle.cpp
+  app/ImportImage.cpp
+  app/Journal.cpp
+  app/HistoryPanel.cpp
+  app/Keymap.cpp
+  app/PenAxes.cpp
+  app/PointerQueue.cpp
+  app/PathOps.cpp
+  app/PathsPanel.cpp
+  app/PenTool.cpp
+  app/ShapeTool.cpp
+  app/VectorStyle.cpp
+  app/TextTool.cpp
+  app/PsdExportCli.cpp
+  app/PsdReport.cpp
+  app/SvgReport.cpp
+  app/ProfileToggle.cpp
+  app/Screenshot.cpp
+  app/SelectionDrag.cpp
+  app/LayerEditor.cpp
+  app/TransformSession.cpp
+  app/MoveTool.cpp
+  app/ToolSwitch.cpp
+  app/FramePacing.cpp
+  app/ToolSurface.cpp
+  app/ExportDialog.cpp
+  app/LayerPanel.cpp
+  app/Latency.cpp
+  app/Memory.cpp
+  app/MunsellSelection.cpp
+  app/NoDocumentCanvas.cpp
+  app/Recorder.cpp
+  app/Replay.cpp
+  app/ActionsPanel.cpp
+  # flats/ -- the flatting library absorbed from autoFlats (ADR-0009,
+  # docs/autoflats-migration.md), plus its evaluation cache and the
+  # `np:flats` carrier. Pure CPU; see flatstest below.
+  flats/Field.cpp
+  flats/Ink.cpp
+  flats/Morphology.cpp
+  flats/Expand.cpp
+  flats/Segment.cpp
+  flats/Membrane.cpp
+  flats/Sag.cpp
+  flats/Gaps.cpp
+  flats/Model.cpp
+  flats/Tool.cpp
+  flats/FlatsLayer.cpp
+  io/FlatsSerial.cpp
+
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
   app/LayerThumbnail.cpp
@@ -480,6 +496,19 @@ add_executable(naturalPaint
   ui/TransformCompositeSplit.cpp
   ui/TransformPreviewTexture.cpp
 )
+
+# NP_SELFTEST's two halves: the 236 section TUs, and the guard main.cpp's
+# --selftest / --diag / --mode-test chain sits behind. A binary built without
+# them says so and exits 2 rather than pretending the suite passed.
+if(NP_SELFTEST)
+  target_sources(naturalPaint PRIVATE ${NP_SELFTEST_SOURCES})
+  target_compile_definitions(naturalPaint PRIVATE NP_WITH_SELFTEST=1)
+  message(STATUS "naturalPaint: --selftest compiled in (236 extra TUs)")
+else()
+  target_compile_definitions(naturalPaint PRIVATE NP_WITH_SELFTEST=0)
+  message(STATUS "naturalPaint: --selftest NOT compiled in (NP_SELFTEST=OFF) -- 236 fewer TUs; the binary refuses --selftest, --diag and --mode-test")
+endif()
+
 
 # ---- the native menu bar (ui/MacNativeMenu.mm) ------------------------------
 #

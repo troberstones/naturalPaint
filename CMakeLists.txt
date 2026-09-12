@@ -84,6 +84,23 @@ if(DEFINED NP_USE_OIIO AND NOT NP_USE_OIIO)
     "-DCMAKE_PREFIX_PATH=\"$ENV{HOME}/.local/openimageio\" instead.")
 endif()
 
+# ccache, when the machine has it. Worth far more here than on a typical
+# project: this repo is worked in several git worktrees at once, and a
+# worktree's first build is otherwise ~470 cold compiles of sources identical
+# to ones already built next door. Opt out with -DNP_CCACHE=OFF.
+option(NP_CCACHE "Use ccache as the compiler launcher when it is installed" ON)
+if(NP_CCACHE)
+  find_program(NP_CCACHE_PROGRAM ccache)
+  if(NP_CCACHE_PROGRAM)
+    foreach(_np_lang C CXX OBJCXX)
+      set(CMAKE_${_np_lang}_COMPILER_LAUNCHER "${NP_CCACHE_PROGRAM}")
+    endforeach()
+    message(STATUS "naturalPaint: ccache at ${NP_CCACHE_PROGRAM}")
+  else()
+    message(STATUS "naturalPaint: no ccache found -- brew install ccache")
+  endif()
+endif()
+
 include(cmake/Dependencies.cmake)
 
 add_subdirectory(src)

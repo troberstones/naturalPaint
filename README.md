@@ -279,6 +279,38 @@ dependency is required, and [Requirements](#requirements) above for building it.
 |---|---|---|
 | `NP_USE_MIXBOX` | `ON` | Use the Mixbox pigment LUT. **CC BY-NC — non-commercial only.** ⚠️ The `OFF` path is **not implemented** — see below. |
 | `NP_MACOS_APP_BUNDLE` | `OFF` | macOS: build `build/src/naturalPaint.app` (Finder icon, `Info.plist`) instead of the bare `build/src/naturalPaint`. `OFF` because the golden harness and every doc run the bare path. See [App icon](#app-icon). |
+| `NP_SELFTEST` | `ON` | Compile the `--selftest` suite into the binary. `OFF` drops **236 of the 476 translation units** and roughly halves a from-scratch build — for iterating on a feature. The binary then refuses `--selftest`, `--diag` and `--mode-test` with exit 2. See [Fast builds](#fast-builds). |
+| `NP_PCH` | `ON` | Precompile the stdlib headers. Roughly a third off a full build; header parsing is ~90% of a translation unit here. `OFF` is the configuration that still checks each file's own `#include`s. |
+| `NP_LTO` | `ON` for `Release`, else `OFF` | Link-time optimisation. `-flto=thin` redoes whole-program codegen on **every** link, so it costs ~180 s of CPU per one-line edit while barely changing a full build. Benchmark and ship with it on. |
+| `NP_CCACHE` | `ON` | Use `ccache` as the compiler launcher when it is installed. Worth most across several worktrees, where a fresh one otherwise cold-compiles ~470 sources identical to ones already built next door. |
+
+#### Fast builds
+
+The defaults are already tuned for the edit loop. Two things are worth adding on
+your machine, and one flag is worth knowing:
+
+```bash
+brew install ninja ccache                       # ccache is picked up automatically
+cmake -S . -B build -G Ninja \
+      -DCMAKE_PREFIX_PATH="$HOME/.local/openimageio"
+cmake --build build                             # Ninja parallelises without -j
+```
+
+Measured on a 16-core M-series Mac, `RelWithDebInfo`, dependencies already built:
+
+| | `NP_SELFTEST=ON` | `NP_SELFTEST=OFF` |
+|---|---|---|
+| from scratch, cold `ccache` | 51 s (476 TUs) | **25 s** (240 TUs) |
+| from scratch, warm `ccache` | — | **2.7 s** |
+| one `.cpp` changed | ~4 s | ~4 s |
+| nothing changed | 0.05 s | 0.05 s |
+
+**`NP_SELFTEST=OFF` is for iterating, not for believing.** It is a subset build —
+the section files are simply absent, nothing is compiled differently, and
+`main.cpp`'s `NP_WITH_SELFTEST` guard is the only code the two configurations do
+not share — but neither `--selftest` nor `tools/golden/run_golden.sh` can tell
+you anything about a binary built without it. Reconfigure with `-DNP_SELFTEST=ON`
+before you merge.
 
 **OpenImageIO is a required dependency**, not a build option. It used to be
 `NP_USE_OIIO`, defaulting `OFF`, on the reasoning that format support is a
