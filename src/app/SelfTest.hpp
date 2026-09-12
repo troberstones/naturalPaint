@@ -1616,6 +1616,12 @@ bool runPsdLayerSectionTest();
 // hand-written fixture and says so in its own assertion text: every group in
 // every real Photoshop file this project has examined is depth 0.
 bool runPsdLayerExtrasTest();
+
+// io/PsdVectorPath -- decodePsdPathRecords(): the `vsms`/`vmsk` path-record
+// stream (docs/psd-vector-shapes.md step 1) into `core::Path` geometry.
+// Known-answer fixtures are real record blocks dumped from two Photoshop
+// files, cross-checked against psd-tools' own reading. Headless, GPU-free.
+bool runPsdVectorPathTest();
 bool runTransformCompositeSplitTest();
 bool runTransformPreviewTextureTest();
 
