@@ -492,6 +492,7 @@ add_executable(naturalPaint
   ui/BrushSettingsWindow.cpp
   ui/BrushFieldPresentation.cpp
   ui/StabiliserPanel.cpp
+  ui/TaperPanel.cpp
   ui/FileDialog.cpp
   ui/AtelierLayout.cpp
   ui/DockLayout.cpp

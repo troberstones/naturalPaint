@@ -29,6 +29,7 @@
 #include "ui/Fonts.hpp"
 #include "ui/MacPaintUI.hpp"
 #include "ui/StabiliserPanel.hpp"
+#include "ui/TaperPanel.hpp"
 
 #include "imgui.h"
 
@@ -2390,6 +2391,14 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     capsLabel("STABILISER");
     ImGui::SameLine();
     drawStabiliserOptionsBarField(st);
+
+    bandSeparator();
+    // Same shape again, for the same reason the stabiliser needed it: the
+    // controls exist in the Brush Settings window's NATURALPAINT group, and
+    // a painter who does not already know that cannot find them there.
+    capsLabel("TAPER");
+    ImGui::SameLine();
+    drawTaperOptionsBarField(st);
   }
 
   // --- the smudge's own controls -------------------------------------------

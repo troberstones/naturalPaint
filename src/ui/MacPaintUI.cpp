@@ -19,6 +19,7 @@
 #include "ui/AtelierTheme.hpp"
 #include "ui/NewDocumentDialog.hpp"
 #include "ui/StabiliserPanel.hpp"
+#include "ui/TaperPanel.hpp"
 
 #include <filesystem>
 #include <algorithm>
@@ -6042,27 +6043,8 @@ void drawBrushNativeGroup(AppState& st) {
   if (!wetHonoured) ImGui::TextDisabled("Reaches the wet canvas only.");
   ctlSlider("Opacity", &st.brush.opacity, 0.0f, 1.0f);
 
-  // Both ends, one shape each, so the two read as the same control twice
-  // rather than as two features. The length stays editable while the taper is
-  // off -- it is what you set BEFORE switching it on.
-  const auto taperControls = [](const char* title, const char* idScope, BrushTaper& taper) {
-    ImGui::Spacing();
-    ImGui::PushID(idScope);
-    ImGui::Checkbox(title, &taper.on);
-    ctlSlider("Length (px)", &taper.lengthPx, 0.0f, 500.0f, "%.0f");
-    ImGui::BeginDisabled(!taper.on || taper.lengthPx <= 0.0f);
-    ctlSlider("Min size", &taper.minSizePct, 0.0f, 100.0f, "%.0f");
-    ImGui::Checkbox("Taper flow too", &taper.flow);
-    ImGui::EndDisabled();
-    ImGui::PopID();
-  };
-  taperControls("Entry taper", "taperin", st.brush.native.taperIn);
-  taperControls("Exit taper", "taperout", st.brush.native.taperOut);
-  ImGui::TextDisabled(
-      "Applies to the CPU brush routes only -- not the GPU (oil/watercolour) solver route.");
-  if (st.brush.native.taperOut.on && st.brush.native.taperOut.lengthPx > 0.0f)
-    ImGui::TextDisabled("The exit taper can only be drawn once the stroke ends, so the ink\n"
-                        "trails the pointer by its length while the pen is down.");
+  ImGui::Spacing();
+  drawBrushTaperControls(st);
 
   ImGui::Spacing();
   ImGui::TextUnformatted("STABILISER");
