@@ -309,7 +309,7 @@ bool runBrushTaperTest() {
   }
 
   // ==========================================================================
-  // `subdivideTaperedTail()`: spacing is chosen when a dab is emitted, which
+  // `resampleTaperedTail()`: spacing is chosen when a dab is emitted, which
   // is before the exit taper's multiplier can be known, so the tail is split
   // at deposit time instead. Fixture: 10 dabs 5 px apart (the spacing a
   // full-size tip wants here), a 50 px ramp down to 10% -- so the last dabs
@@ -324,11 +324,12 @@ bool runBrushTaperTest() {
     const std::vector<StrokeDab> before = tail;
 
     std::vector<StrokeDab> untouched = tail;
-    subdivideTaperedTail(untouched, BrushTaper{false, 50.0f, 10.0f, false}, kSpacingPx);
+    resampleTaperedTail(untouched, BrushTaper{}, BrushTaper{false, 50.0f, 10.0f, false},
+                        kSpacingPx);
     check(untouched.size() == before.size(),
-          "subdivideTaperedTail: a taper that is off leaves the tail exactly as it was");
+          "resampleTaperedTail: a taper that is off leaves the tail exactly as it was");
 
-    subdivideTaperedTail(tail, out, kSpacingPx);
+    resampleTaperedTail(tail, BrushTaper{}, out, kSpacingPx);
 
     // Every gap must be no wider than the spacing the TAPERED tip at that
     // point wants -- measured against the ramp read at each gap's own
@@ -336,25 +337,43 @@ bool runBrushTaperTest() {
     float totalArc = 0.0f;
     for (size_t i = 0; i + 1 < tail.size(); ++i)
       totalArc += distanceBetween(tail[i].pos, tail[i + 1].pos);
+    // Each gap is measured against the spacing wanted at its own MIDPOINT.
+    // The dabs now tile the tail in phase -- each gap holds exactly one
+    // "wanted spacing", integrated across itself -- so by the mean value
+    // theorem every gap equals the spacing wanted at SOME point inside
+    // itself, and a reading taken anywhere else in the gap differs by how
+    // much the ramp moves across one dab. This assertion used to read the
+    // ramp at the gap's finest end and hold to 1.0 + 1e-3, which only the old
+    // per-segment `ceil()` could satisfy -- by over-subdividing, which is
+    // exactly what banded the start of the taper. Both numbers are printed so
+    // the change of convention is visible rather than implied. What actually
+    // keeps a tapering stroke from beading is asserted directly, and
+    // physically, by the disjoint-pairs block above: gap vs the sum of the
+    // two dabs' radii.
     float worstRatio = 0.0f;
+    float worstAtFineEnd = 0.0f;
     float arc = 0.0f;
     for (size_t i = tail.size(); i-- > 1;) {
       const float gap = distanceBetween(tail[i - 1].pos, tail[i].pos);
-      const float want = kSpacingPx * std::max(taperMultiplier(arc, out), 0.05f);
-      worstRatio = std::max(worstRatio, gap / want);
+      const float fine = kSpacingPx * std::max(taperMultiplier(arc, out), 0.05f);
+      const float mid = kSpacingPx * std::max(taperMultiplier(arc + gap * 0.5f, out), 0.05f);
+      worstRatio = std::max(worstRatio, gap / mid);
+      worstAtFineEnd = std::max(worstAtFineEnd, gap / fine);
       arc += gap;
     }
-    std::printf("  [measured] subdivideTaperedTail: %zu dab(s) -> %zu; arc %.2f px preserved as "
-                "%.2f px; worst gap %.3fx the spacing its own point wants\n",
-                before.size(), tail.size(), 45.0f, totalArc, worstRatio);
-    check(worstRatio <= 1.0f + 1e-3f,
-          "subdivideTaperedTail: no gap is wider than the spacing the tapered tip wants there");
+    std::printf("  [measured] resampleTaperedTail: %zu dab(s) -> %zu; arc %.2f px preserved as "
+                "%.2f px; worst gap %.3fx the spacing wanted at its midpoint (%.3fx read at "
+                "its finest end)\n",
+                before.size(), tail.size(), 45.0f, totalArc, worstRatio, worstAtFineEnd);
+    check(worstRatio <= 1.05f,
+          "resampleTaperedTail: no gap is wider than the spacing the tapered tip wants across "
+          "it -- the tail is spaced by what the ramp asks for, not by what fits");
     check(tail.size() > before.size(),
-          "subdivideTaperedTail: the tail really was split -- this is not vacuously true");
+          "resampleTaperedTail: the tail really was split -- this is not vacuously true");
     check(tail.front().pos.x == before.front().pos.x &&
               tail.back().pos.x == before.back().pos.x &&
               std::fabs(totalArc - 45.0f) < 1e-3f,
-          "subdivideTaperedTail: the path itself is unchanged -- same ends, same arc length");
+          "resampleTaperedTail: the path itself is unchanged -- same ends, same arc length");
   }
 
   // ==========================================================================
@@ -578,7 +597,7 @@ bool runBrushTaperTest() {
   }
 
   // ==========================================================================
-  // `subdivideTaperedTail()` must leave the UNTAPERED body of a stroke alone.
+  // `resampleTaperedTail()` must leave the UNTAPERED body of a stroke alone.
   // It is handed the whole stroke, every dab in it already sits at the
   // spacing it was emitted at, and a segment the ramp does not thin is
   // therefore being compared against its own spacing -- where `ceil()` of a
@@ -591,7 +610,7 @@ bool runBrushTaperTest() {
   // `minSizePct` 100 is a ramp that thins nothing, so the spacing it wants is
   // the spacing every dab already has and the right answer is to split
   // NOTHING: any dab beyond the ten fed in is a spurious one. The
-  // `subdivideTaperedTail` block above guards the opposite direction -- that a
+  // `resampleTaperedTail` block above guards the opposite direction -- that a
   // ramp which does thin still subdivides -- so the two cannot both be
   // satisfied by declining to do any work.
   // ==========================================================================
@@ -604,7 +623,7 @@ bool runBrushTaperTest() {
         d.pressure = 1.0f;
         tail.push_back(d);
       }
-      subdivideTaperedTail(tail, BrushTaper{true, 40.0f, 100.0f, false}, 5.0f);
+      resampleTaperedTail(tail, BrushTaper{}, BrushTaper{true, 40.0f, 100.0f, false}, 5.0f);
       return tail.size();
     };
 
@@ -621,6 +640,49 @@ bool runBrushTaperTest() {
           "...and splits nothing when that spacing overshoots by a float hair either, which is "
           "what a real stroke's segments do -- splitting there doubles the dab density of the "
           "stroke in patches, which blotches a low-load repaint");
+  }
+
+  // ==========================================================================
+  // The dab density must not STEP anywhere along the ramp. Reported from a
+  // tablet once the blotching was fixed: "the beginning of the end taper
+  // still gets a little darker, some dab doubling is still happening." That
+  // is the last of the per-segment subdivision: at the ramp's own start the
+  // wanted spacing dips a hair below the spacing the dabs already have, so
+  // `ceil(length / wanted)` went from one piece to two and the density
+  // doubled in a single segment -- while the dabs there are still nearly full
+  // size, so nothing about them absorbs it and the extra ink reads as a dark
+  // band right where the taper begins.
+  //
+  // Measured as the worst ratio between neighbouring gaps: a continuous walk
+  // can only change a gap by as much as the ramp itself moves over one step,
+  // while a doubling shows up as 2.
+  // ==========================================================================
+  {
+    constexpr float kSpacingPx = 5.0f;
+    const BrushTaper out{true, 50.0f, 10.0f, false};
+    std::vector<StrokeDab> tail;
+    for (int i = 0; i < 40; ++i)
+      tail.push_back(StrokeDab{Vec2{static_cast<float>(i) * kSpacingPx, 0.0f}});
+    resampleTaperedTail(tail, BrushTaper{}, out, kSpacingPx);
+
+    float worstStep = 1.0f;
+    size_t worstAt = 0;
+    for (size_t i = 1; i + 1 < tail.size(); ++i) {
+      const float a = distanceBetween(tail[i - 1].pos, tail[i].pos);
+      const float b = distanceBetween(tail[i].pos, tail[i + 1].pos);
+      if (a <= 1e-6f || b <= 1e-6f) continue;
+      const float ratio = std::max(a / b, b / a);
+      if (ratio > worstStep) {
+        worstStep = ratio;
+        worstAt = i;
+      }
+    }
+    std::printf("  [measured] density continuity over a 50 px ramp on a 195 px stroke: worst "
+                "neighbouring-gap ratio %.3fx (at dab %zu of %zu)\n",
+                worstStep, worstAt, tail.size());
+    check(worstStep < 1.25f,
+          "the dab density follows the ramp continuously -- no neighbouring gap is a step "
+          "change, which is what painted a dark band at the start of the exit taper");
   }
 
   std::printf("[selftest] brush taper / origin dab %s\n", ok ? "PASS" : "FAIL");

@@ -2072,7 +2072,7 @@ void StrokeSession::depositPending(bool isEndFlush) {
     // thin end of the ramp for dabs several times the size of the ones
     // actually landing, and a tapering stroke would break into dots exactly
     // where it should be finest.
-    subdivideTaperedTail(pending_, taperOut_, tip_.spacingPx());
+    resampleTaperedTail(pending_, taperIn_, taperOut_, tip_.spacingPx());
     exitMul.resize(pending_.size(), 1.0f);
     float arc = 0.0f;
     for (size_t i = pending_.size(); i-- > 0;) {

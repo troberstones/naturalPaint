@@ -38,15 +38,23 @@ bool brushTaperEqual(const BrushTaper& a, const BrushTaper& b) noexcept;
 // stroke this taper belongs to.
 float taperMultiplier(float distanceFromEndPx, const BrushTaper& taper) noexcept;
 
-// Splits the segments of a stroke's held-back tail until consecutive dabs sit
-// no further apart than the spacing the TAPERED tip at that point wants --
+// Re-places the dabs of a stroke's tail so that consecutive dabs sit no
+// further apart than the spacing the TAPERED tip at that point wants --
 // `spacingPx` is the full-size spacing, scaled by the same ramp that is about
 // to shrink the dabs. Without this a tapering stroke breaks into dots exactly
 // where it is finest: spacing is chosen when a dab is EMITTED, and an exit
 // taper is not resolvable until the stroke ends (`StrokeSession::
-// taperedSpacingPx()`'s own comment, and `allDabs_`'s). A no-op, leaving
-// `tail` untouched, when the taper is off or has no length.
-void subdivideTaperedTail(std::vector<StrokeDab>& tail, const BrushTaper& taper,
-                          float spacingPx) noexcept;
+// taperedSpacingPx()`'s own comment, and `allDabs_`'s).
+//
+// A continuous walk by arc length, NOT a per-segment subdivision, so that the
+// dab density follows the ramp smoothly; `brush/Taper.cpp` says what the
+// per-segment version banded. Dabs before the exit ramp are left exactly as
+// they were, and `taperIn` is read only where a stroke is short enough for
+// the two ramps to overlap -- there it keeps the walk from coarsening a start
+// the entry taper had already made fine. Both ends of the tail survive
+// unmoved, the last one because it is the lift point. A no-op, leaving `tail`
+// untouched, when the exit taper is off or has no length.
+void resampleTaperedTail(std::vector<StrokeDab>& tail, const BrushTaper& taperIn,
+                         const BrushTaper& taperOut, float spacingPx) noexcept;
 
 }  // namespace np
