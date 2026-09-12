@@ -6633,4 +6633,8 @@ bool runStabiliserTest();
 // app/selftest/BrushTaper.cpp.
 bool runBrushTaperTest();
 
+// ui/AppIcon: the embedded PNG decodes at 512 px, matches the committed file
+// byte for byte, reaches SDL unchanged, and the window accepted it.
+bool runAppIconTest();
+
 }  // namespace np

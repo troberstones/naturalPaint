@@ -4,7 +4,7 @@
 #include <string_view>
 #include <vector>
 
-#include "app/AppState.hpp"      // Guide, GuideOrientation
+#include "app/CanvasView.hpp"     // Guide, GuideOrientation
 #include "brush/StrokePath.hpp"  // Vec2
 
 namespace np {

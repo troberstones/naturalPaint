@@ -1,4 +1,6 @@
 #pragma once
+
+#include "ui/TileScreenRect.hpp"
 #include <cstdint>
 #include <vector>
 
@@ -110,12 +112,6 @@ struct GpuTile {
   std::vector<WGPUTextureView> levelViews;
 };
 
-// A tile's on-screen quad, in the same screen-pixel space MacPaintUI's canvas
-// block computes `origin`/`drawSize` in (MacPaintUI.cpp ~line 478-482).
-struct TileScreenRect {
-  ImVec2 min;
-  ImVec2 max;
-};
 
 // Where tile `coord` lands on screen given the current pan/zoom `view` and
 // `canvasOrigin` -- the screen position document pixel (0, 0) would sit at

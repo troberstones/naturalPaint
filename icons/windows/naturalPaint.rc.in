@@ -1,0 +1,3 @@
+// The .exe's Explorer icon. Configured with an absolute .ico path because rc
+// and windres disagree about relative ones. Untested: Windows does not build.
+IDI_APP_ICON ICON "@NP_APP_ICON_ICO@"

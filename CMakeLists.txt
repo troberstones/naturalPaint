@@ -31,6 +31,10 @@ endif()
 # back to a plain Kubelka-Munk two-constant mix with no licence encumbrance.
 option(NP_USE_MIXBOX "Use the Mixbox pigment LUT (CC BY-NC, non-commercial only)" ON)
 
+# OFF because the golden harness and scripts run build/src/naturalPaint; ON
+# moves it into naturalPaint.app/Contents/MacOS. The Dock icon needs neither.
+option(NP_MACOS_APP_BUNDLE "macOS: build naturalPaint.app (Finder icon) instead of a bare executable" OFF)
+
 # OpenImageIO backs EXR/TIFF/HDR/DPX and flattened-PSD read (PLAN.md phase 4
 # step 2). **It is a hard requirement, and it used to be an option that
 # defaulted OFF.** The reversal is deliberate and the reason it was made is
@@ -78,6 +82,23 @@ if(DEFINED NP_USE_OIIO AND NOT NP_USE_OIIO)
     ".npaint format and the recovery journal, so a build without it cannot "
     "save or open a document. Drop the flag and configure with "
     "-DCMAKE_PREFIX_PATH=\"$ENV{HOME}/.local/openimageio\" instead.")
+endif()
+
+# ccache, when the machine has it. Worth far more here than on a typical
+# project: this repo is worked in several git worktrees at once, and a
+# worktree's first build is otherwise ~470 cold compiles of sources identical
+# to ones already built next door. Opt out with -DNP_CCACHE=OFF.
+option(NP_CCACHE "Use ccache as the compiler launcher when it is installed" ON)
+if(NP_CCACHE)
+  find_program(NP_CCACHE_PROGRAM ccache)
+  if(NP_CCACHE_PROGRAM)
+    foreach(_np_lang C CXX OBJCXX)
+      set(CMAKE_${_np_lang}_COMPILER_LAUNCHER "${NP_CCACHE_PROGRAM}")
+    endforeach()
+    message(STATUS "naturalPaint: ccache at ${NP_CCACHE_PROGRAM}")
+  else()
+    message(STATUS "naturalPaint: no ccache found -- brew install ccache")
+  endif()
 endif()
 
 include(cmake/Dependencies.cmake)

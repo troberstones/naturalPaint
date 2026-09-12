@@ -127,10 +127,10 @@ About half was rework. Rules for every later wave:
    history and review findings go in the commit message. Fix a header claim a
    change makes false; do not rewrite the section. (Wave 1 added 453 lines of
    production code and 1,687 of comments.)
-5. **Iterate fast, verify slow.** Configure a second build dir with
-   `-DNP_NO_LTO=ON` (a `.cpp` edit rebuilds in 3–10 s instead of 17–21 s) and
-   run one section with `--selftest-only <substring>`. The full suite on the
-   LTO build runs once, at the end. Widely-included headers (`StrokePath.hpp`,
+5. **Iterate fast, verify slow.** A default (RelWithDebInfo) build dir already
+   links without LTO (a `.cpp` edit rebuilds in ~5 s instead of ~29 s); run one
+   section with `--selftest-only <substring>`. The full suite on a
+   `-DCMAKE_BUILD_TYPE=Release` (LTO) build runs once, at the end. Widely-included headers (`StrokePath.hpp`,
    `Deposit.hpp`, `Dynamics.hpp`, `AppState.hpp` are each in ~60% of 479 TUs)
    cost ~55 s per edit, comment-only edits included.
 6. **One sabotage per new behaviour**, not per assertion. Every new assertion

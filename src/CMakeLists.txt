@@ -1,84 +1,25 @@
-add_executable(naturalPaint
-  main.cpp
-  app/BrushLibraryFile.cpp
-  app/DabLibrary.cpp
-  app/AbrReport.cpp
-  app/BrushSheet.cpp
-  app/BrushRowIcon.cpp
-  app/CloseDecision.cpp
-  app/Action.cpp
-  app/Batch.cpp
-  app/BatchDialog.cpp
-  app/Command.cpp
-  app/CommandCoverage.cpp
-  app/CommandsImage.cpp
-  app/CommandsLayers.cpp
-  app/CommandsOpStack.cpp
-  app/CommandsPatterns.cpp
-  app/CommandsRegions.cpp
-  app/CompPanel.cpp
-  app/PanelLayout.cpp
-  app/ControlsLayout.cpp
-  app/CurveEdit.cpp
-  app/DabPreview.cpp
-  app/DocumentLifecycle.cpp
-  app/ImportImage.cpp
-  app/Journal.cpp
-  app/HistoryPanel.cpp
-  app/Keymap.cpp
-  app/PenAxes.cpp
-  app/PointerQueue.cpp
-  app/PathOps.cpp
-  app/PathsPanel.cpp
-  app/PenTool.cpp
-  app/ShapeTool.cpp
-  app/VectorStyle.cpp
-  app/TextTool.cpp
-  app/PsdExportCli.cpp
-  app/PsdReport.cpp
-  app/SvgReport.cpp
-  app/ProfileToggle.cpp
-  app/Screenshot.cpp
-  app/SelectionDrag.cpp
-  app/LayerEditor.cpp
-  app/TransformSession.cpp
-  app/MoveTool.cpp
-  app/ToolSwitch.cpp
-  app/FramePacing.cpp
-  app/ToolSurface.cpp
-  app/ExportDialog.cpp
-  app/LayerPanel.cpp
-  app/Latency.cpp
-  app/Memory.cpp
-  app/MunsellSelection.cpp
-  app/NoDocumentCanvas.cpp
-  app/Recorder.cpp
-  app/Replay.cpp
-  app/ActionsPanel.cpp
-  # One translation unit per --selftest section, plus Driver.cpp for the three
-  # drivers and Support.cpp for what they share (src/app/selftest/Support.hpp).
-  # These were one 20 815-line app/SelfTest.cpp until every parallel branch
-  # started conflicting in it; app/SelfTest.hpp is still the single index of
-  # what the suite proves and is deliberately NOT split. Listed explicitly
-  # rather than globbed, same as every other source in this target, so adding
-  # a section is a visible line in the diff and CMake reconfigures for it.
-  # flats/ -- the flatting library absorbed from autoFlats (ADR-0009,
-  # docs/autoflats-migration.md), plus its evaluation cache and the
-  # `np:flats` carrier. Pure CPU; see flatstest below.
-  flats/Field.cpp
-  flats/Ink.cpp
-  flats/Morphology.cpp
-  flats/Expand.cpp
-  flats/Segment.cpp
-  flats/Membrane.cpp
-  flats/Sag.cpp
-  flats/Gaps.cpp
-  flats/Model.cpp
-  flats/Tool.cpp
-  flats/FlatsLayer.cpp
+# ---- the --selftest suite ---------------------------------------------------
+#
+# One translation unit per --selftest section, plus Driver.cpp for the three
+# drivers and Support.cpp for what they share (src/app/selftest/Support.hpp).
+# These were one 20 815-line app/SelfTest.cpp until every parallel branch
+# started conflicting in it; app/SelfTest.hpp is still the single index of
+# what the suite proves and is deliberately NOT split. Listed explicitly
+# rather than globbed, same as every other source in this target, so adding
+# a section is a visible line in the diff and CMake reconfigures for it.
+#
+# **These are 236 of the target's 475 translation units**, so NP_SELFTEST=OFF
+# roughly halves a from-scratch build for someone iterating on a feature. It
+# is a subset, not a variant: nothing here is compiled differently, the files
+# are simply absent, and main.cpp's NP_WITH_SELFTEST guard is the only code
+# the two configurations do not share. That is the whole reason this is
+# allowed to be an option at all -- an #if branch nobody builds is how
+# NP_USE_MIXBOX became a documented fallback that does not exist (see the
+# root CMakeLists) -- and it is still an option you must build before you
+# trust: `--selftest` and the golden harness both need NP_SELFTEST=ON.
+option(NP_SELFTEST "Compile the --selftest suite into naturalPaint" ON)
+set(NP_SELFTEST_SOURCES
   flats/FlatsSelfTest.cpp
-  io/FlatsSerial.cpp
-
   app/selftest/Accumulator.cpp
   app/selftest/AdjustmentMenu.cpp
   app/selftest/AdjustmentLayer.cpp
@@ -315,6 +256,82 @@ add_executable(naturalPaint
   app/selftest/PointerQueue.cpp
   app/selftest/Stabiliser.cpp
   app/selftest/BrushTaper.cpp
+  app/selftest/AppIcon.cpp
+)
+
+add_executable(naturalPaint
+  main.cpp
+  app/BrushLibraryFile.cpp
+  app/DabLibrary.cpp
+  app/AbrReport.cpp
+  app/BrushSheet.cpp
+  app/BrushRowIcon.cpp
+  app/CloseDecision.cpp
+  app/Action.cpp
+  app/Batch.cpp
+  app/BatchDialog.cpp
+  app/Command.cpp
+  app/CommandCoverage.cpp
+  app/CommandsImage.cpp
+  app/CommandsLayers.cpp
+  app/CommandsOpStack.cpp
+  app/CommandsPatterns.cpp
+  app/CommandsRegions.cpp
+  app/CompPanel.cpp
+  app/PanelLayout.cpp
+  app/ControlsLayout.cpp
+  app/CurveEdit.cpp
+  app/DabPreview.cpp
+  app/DocumentLifecycle.cpp
+  app/ImportImage.cpp
+  app/Journal.cpp
+  app/HistoryPanel.cpp
+  app/Keymap.cpp
+  app/PenAxes.cpp
+  app/PointerQueue.cpp
+  app/PathOps.cpp
+  app/PathsPanel.cpp
+  app/PenTool.cpp
+  app/ShapeTool.cpp
+  app/VectorStyle.cpp
+  app/TextTool.cpp
+  app/PsdExportCli.cpp
+  app/PsdReport.cpp
+  app/SvgReport.cpp
+  app/ProfileToggle.cpp
+  app/Screenshot.cpp
+  app/SelectionDrag.cpp
+  app/LayerEditor.cpp
+  app/TransformSession.cpp
+  app/MoveTool.cpp
+  app/ToolSwitch.cpp
+  app/FramePacing.cpp
+  app/ToolSurface.cpp
+  app/ExportDialog.cpp
+  app/LayerPanel.cpp
+  app/Latency.cpp
+  app/Memory.cpp
+  app/MunsellSelection.cpp
+  app/NoDocumentCanvas.cpp
+  app/Recorder.cpp
+  app/Replay.cpp
+  app/ActionsPanel.cpp
+  # flats/ -- the flatting library absorbed from autoFlats (ADR-0009,
+  # docs/autoflats-migration.md), plus its evaluation cache and the
+  # `np:flats` carrier. Pure CPU; see flatstest below.
+  flats/Field.cpp
+  flats/Ink.cpp
+  flats/Morphology.cpp
+  flats/Expand.cpp
+  flats/Segment.cpp
+  flats/Membrane.cpp
+  flats/Sag.cpp
+  flats/Gaps.cpp
+  flats/Model.cpp
+  flats/Tool.cpp
+  flats/FlatsLayer.cpp
+  io/FlatsSerial.cpp
+
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
   app/LayerThumbnail.cpp
@@ -468,6 +485,7 @@ add_executable(naturalPaint
   ui/MacPaintUI.cpp
   ui/NaturalPaintUI.cpp
   ui/Fonts.cpp
+  ui/AppIcon.cpp
   ui/AtelierTheme.cpp
   ui/CanvasQuad.cpp
   ui/DabPicker.cpp
@@ -484,6 +502,19 @@ add_executable(naturalPaint
   ui/TransformCompositeSplit.cpp
   ui/TransformPreviewTexture.cpp
 )
+
+# NP_SELFTEST's two halves: the 236 section TUs, and the guard main.cpp's
+# --selftest / --diag / --mode-test chain sits behind. A binary built without
+# them says so and exits 2 rather than pretending the suite passed.
+if(NP_SELFTEST)
+  target_sources(naturalPaint PRIVATE ${NP_SELFTEST_SOURCES})
+  target_compile_definitions(naturalPaint PRIVATE NP_WITH_SELFTEST=1)
+  message(STATUS "naturalPaint: --selftest compiled in (236 extra TUs)")
+else()
+  target_compile_definitions(naturalPaint PRIVATE NP_WITH_SELFTEST=0)
+  message(STATUS "naturalPaint: --selftest NOT compiled in (NP_SELFTEST=OFF) -- 236 fewer TUs; the binary refuses --selftest, --diag and --mode-test")
+endif()
+
 
 # ---- the native menu bar (ui/MacNativeMenu.mm) ------------------------------
 #
@@ -585,6 +616,49 @@ endif()
 target_include_directories(naturalPaint PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
 )
+# ---- the application icon (icons/, ui/AppIcon) -----------------------------
+# The 512 px PNG is compiled in for SDL_SetWindowIcon(); configure_file(COPYONLY)
+# rewrites the include only when the bytes change. Icons are generated and
+# committed by icons/make_icons.sh, so no ImageMagick or iconutil is needed here.
+set(NP_APP_ICON_PNG "${CMAKE_SOURCE_DIR}/icons/linux/hicolor/512x512/apps/naturalPaint.png")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${NP_APP_ICON_PNG}")
+file(READ "${NP_APP_ICON_PNG}" _np_icon_hex HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," _np_icon_bytes "${_np_icon_hex}")
+# 24 bytes per line: no compiler should meet a 600 KB line.
+string(REGEX REPLACE "((0x[0-9a-f][0-9a-f],){24})" "\\1\n" _np_icon_bytes "${_np_icon_bytes}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/AppIconPng.inc.tmp"
+  "// Generated by src/CMakeLists.txt from icons/linux/hicolor/512x512/apps/naturalPaint.png.\n"
+  "// Do not edit: rerun icons/make_icons.sh on the master and reconfigure.\n"
+  "const unsigned char kAppIconPng[] = {\n${_np_icon_bytes}\n};\n")
+configure_file("${CMAKE_CURRENT_BINARY_DIR}/generated/AppIconPng.inc.tmp"
+               "${CMAKE_CURRENT_BINARY_DIR}/generated/AppIconPng.inc" COPYONLY)
+target_include_directories(naturalPaint PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+# For app/selftest/AppIcon.cpp's embedded-vs-committed comparison.
+target_compile_definitions(naturalPaint PRIVATE NP_APP_ICON_PNG="${NP_APP_ICON_PNG}")
+
+if(WIN32)
+  set(NP_APP_ICON_ICO "${CMAKE_SOURCE_DIR}/icons/windows/naturalPaint.ico")
+  configure_file("${CMAKE_SOURCE_DIR}/icons/windows/naturalPaint.rc.in"
+                 "${CMAKE_CURRENT_BINARY_DIR}/generated/naturalPaint.rc" @ONLY)
+  target_sources(naturalPaint PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/naturalPaint.rc")
+endif()
+
+if(APPLE AND NP_MACOS_APP_BUNDLE)
+  set(NP_APP_ICON_ICNS "${CMAKE_SOURCE_DIR}/icons/macos/naturalPaint.icns")
+  target_sources(naturalPaint PRIVATE "${NP_APP_ICON_ICNS}")
+  set_source_files_properties("${NP_APP_ICON_ICNS}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+  set_target_properties(naturalPaint PROPERTIES
+    MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/icons/macos/Info.plist.in"
+    MACOSX_BUNDLE_BUNDLE_NAME "naturalPaint"
+    MACOSX_BUNDLE_ICON_FILE "naturalPaint.icns"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.troberstones.naturalPaint"
+    # No project() VERSION yet; Launch Services treats an empty one as malformed.
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "0.0"
+    MACOSX_BUNDLE_BUNDLE_VERSION "0")
+  message(STATUS "naturalPaint: building naturalPaint.app (NP_MACOS_APP_BUNDLE=ON)")
+endif()
+
 # third_party is SYSTEM so the -Werror=unused-* guard at the bottom of this
 # file judges only code this project owns: stb_image.h's implementation emits
 # static functions a given translation unit may not call, and that is the
@@ -938,6 +1012,38 @@ target_compile_options(naturalPaint PRIVATE
   -fstack-protector-strong
 )
 
+# ---- precompiled headers ----------------------------------------------------
+#
+# 90% of a typical TU's compile is parsing headers, not generating code: with
+# -ftime-trace, app/selftest/Half.cpp spends 0.75 s in the frontend and 0.02 s
+# in the backend. 474 translation units re-parse the same <vector>/<string>/
+# <filesystem> every time. Precompiling them cuts a full rebuild of this target
+# from 81 s to 48 s (-j16, LTO off).
+#
+# Deliberately stdlib-only. A project header in here would make every edit to
+# it rebuild all 474 TUs instead of only its includers -- the PCH must hold
+# things that do not change. The cost of the trade is that a TU which forgets
+# an #include still compiles, so the include hygiene of any file is only
+# checked by a NP_PCH=OFF build.
+option(NP_PCH "Precompile the stdlib headers (much faster builds)" ON)
+if(NP_PCH)
+  # .mm sources are OBJCXX and cannot consume a CXX PCH: clang refuses with
+  # "Objective-C automated reference counting was disabled in PCH file but is
+  # currently enabled".
+  get_target_property(_np_pch_srcs naturalPaint SOURCES)
+  foreach(_np_pch_src IN LISTS _np_pch_srcs)
+    if(_np_pch_src MATCHES "\\.mm$")
+      set_source_files_properties(${_np_pch_src} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+    endif()
+  endforeach()
+  target_precompile_headers(naturalPaint PRIVATE
+    <algorithm> <array> <chrono> <cmath> <cstddef> <cstdint> <cstdio> <cstdlib>
+    <cstring> <filesystem> <fstream> <functional> <limits> <map> <memory>
+    <optional> <sstream> <stdexcept> <string> <string_view> <type_traits>
+    <unordered_map> <utility> <vector>
+  )
+endif()
+
 # ---- link-time optimisation (docs/architecture-review.md P0-2) --------------
 #
 # The per-pixel inner loop of `core/Composite.cpp` calls `blendPixel()` (in
@@ -959,12 +1065,31 @@ target_compile_options(naturalPaint PRIVATE
 # The RESULT/OUTPUT pair means a refusal is reported with the compiler's own
 # reason instead of silently producing an un-optimised build -- the same
 # "make the degradation loud" rule ui/Fonts.cpp's missing-font path exists for.
+#
+# **Off outside Release builds**, because the cost lands on every edit rather
+# than on the occasional full build. -flto=thin defers codegen to the link, so
+# the link redoes whole-program optimisation whatever changed: a one-line edit
+# to one .cpp costs 29 s wall / 183 s CPU with it and 5 s / 4 s without. A full
+# rebuild is barely affected (72 s vs 81 s -- the work moves, it does not
+# vanish), so this is purely about the incremental loop.
+#
+# The default build type here is RelWithDebInfo, so the default build is a
+# development build and gets the fast link. Ship and benchmark with
+# -DCMAKE_BUILD_TYPE=Release, or force it back on with -DNP_LTO=ON. --selftest
+# passes either way, CompositeCost included, so the suite will not catch a
+# composite regression that only LTO hides.
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+  set(_np_lto_default ON)
+else()
+  set(_np_lto_default OFF)
+endif()
+option(NP_LTO "Link-time optimisation: faster binary, much slower link" ${_np_lto_default})
+
 include(CheckIPOSupported)
 check_ipo_supported(RESULT np_ipo_ok OUTPUT np_ipo_why)
-# NP_NO_LTO=ON: a dev build dir for fast edit-test loops (a .cpp edit relinks in
-# ~3-10 s instead of ~17-21 s). Verify on the default LTO build.
-option(NP_NO_LTO "Disable link-time optimisation (fast iteration builds)" OFF)
-if(np_ipo_ok AND NOT NP_NO_LTO)
+if(NOT NP_LTO)
+  message(STATUS "naturalPaint: link-time optimisation off (NP_LTO=OFF) -- fast links; use -DNP_LTO=ON to benchmark")
+elseif(np_ipo_ok)
   set_property(TARGET naturalPaint PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
   message(STATUS "naturalPaint: link-time optimisation enabled (P0-2)")
 else()

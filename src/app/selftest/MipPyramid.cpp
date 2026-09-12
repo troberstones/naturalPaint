@@ -1,5 +1,9 @@
 #include "app/selftest/Support.hpp"
 
+// Support.hpp deliberately stops at ui/TileScreenRect.hpp; this is the one
+// section that exercises the tile/mip API itself.
+#include "ui/NaturalPaintUI.hpp"
+
 namespace np {
 
 // PLAN.md Phase 2 step 9 ("Mip pyramid for tiles, so a 25% zoom evaluates at

@@ -278,6 +278,39 @@ dependency is required, and [Requirements](#requirements) above for building it.
 | Option | Default | What it does |
 |---|---|---|
 | `NP_USE_MIXBOX` | `ON` | Use the Mixbox pigment LUT. **CC BY-NC — non-commercial only.** ⚠️ The `OFF` path is **not implemented** — see below. |
+| `NP_MACOS_APP_BUNDLE` | `OFF` | macOS: build `build/src/naturalPaint.app` (Finder icon, `Info.plist`) instead of the bare `build/src/naturalPaint`. `OFF` because the golden harness and every doc run the bare path. See [App icon](#app-icon). |
+| `NP_SELFTEST` | `ON` | Compile the `--selftest` suite into the binary. `OFF` drops **236 of the 476 translation units** and roughly halves a from-scratch build — for iterating on a feature. The binary then refuses `--selftest`, `--diag` and `--mode-test` with exit 2. See [Fast builds](#fast-builds). |
+| `NP_PCH` | `ON` | Precompile the stdlib headers. Roughly a third off a full build; header parsing is ~90% of a translation unit here. `OFF` is the configuration that still checks each file's own `#include`s. |
+| `NP_LTO` | `ON` for `Release`, else `OFF` | Link-time optimisation. `-flto=thin` redoes whole-program codegen on **every** link, so it costs ~180 s of CPU per one-line edit while barely changing a full build. Benchmark and ship with it on. |
+| `NP_CCACHE` | `ON` | Use `ccache` as the compiler launcher when it is installed. Worth most across several worktrees, where a fresh one otherwise cold-compiles ~470 sources identical to ones already built next door. |
+
+#### Fast builds
+
+The defaults are already tuned for the edit loop. Two things are worth adding on
+your machine, and one flag is worth knowing:
+
+```bash
+brew install ninja ccache                       # ccache is picked up automatically
+cmake -S . -B build -G Ninja \
+      -DCMAKE_PREFIX_PATH="$HOME/.local/openimageio"
+cmake --build build                             # Ninja parallelises without -j
+```
+
+Measured on a 16-core M-series Mac, `RelWithDebInfo`, dependencies already built:
+
+| | `NP_SELFTEST=ON` | `NP_SELFTEST=OFF` |
+|---|---|---|
+| from scratch, cold `ccache` | 51 s (476 TUs) | **25 s** (240 TUs) |
+| from scratch, warm `ccache` | — | **2.7 s** |
+| one `.cpp` changed | ~4 s | ~4 s |
+| nothing changed | 0.05 s | 0.05 s |
+
+**`NP_SELFTEST=OFF` is for iterating, not for believing.** It is a subset build —
+the section files are simply absent, nothing is compiled differently, and
+`main.cpp`'s `NP_WITH_SELFTEST` guard is the only code the two configurations do
+not share — but neither `--selftest` nor `tools/golden/run_golden.sh` can tell
+you anything about a binary built without it. Reconfigure with `-DNP_SELFTEST=ON`
+before you merge.
 
 **OpenImageIO is a required dependency**, not a build option. It used to be
 `NP_USE_OIIO`, defaulting `OFF`, on the reasoning that format support is a
@@ -324,6 +357,22 @@ read from the source tree at runtime via absolute paths baked in at compile time
 what lets you edit any `.wgsl` and hit **⌘R** to recompile the solver without
 restarting, and hand-edit `keymaps/default.json`. It also means moving the
 executable away from the checkout breaks it.
+
+### App icon
+
+The icon's artwork is `icons/np_icon.kra` (Krita), exported to the 1024 px
+master `icons/np_icon.png`. Every platform's icon is generated from the master
+by `icons/make_icons.sh` and committed, so a build needs no ImageMagick or
+`iconutil`. After editing the artwork, re-export the master, rerun the script,
+and commit what it writes.
+
+| Platform | How the icon reaches it |
+|---|---|
+| all | At startup `ui/AppIcon` hands the 512 px PNG, compiled into the binary, to `SDL_SetWindowIcon`. That is the **Dock** icon on macOS, `_NET_WM_ICON` on X11, `xdg-toplevel-icon` on Wayland, and the title bar/taskbar on Windows. `--selftest` checks the embedded bytes match the committed PNG. |
+| macOS | The Finder icon needs a bundle: configure with `-DNP_MACOS_APP_BUNDLE=ON`. |
+| Linux | For the launcher and Wayland compositors without `xdg-toplevel-icon`, run `icons/linux/install-desktop-entry.sh` (per user; `--uninstall` to remove). A `tools/package-linux/package.sh` package carries the same installer at its root, plus a `share/` tree with the entry and icons. |
+| Windows | `icons/windows/naturalPaint.rc.in` embeds the `.ico` as the `.exe`'s Explorer icon. **Untested:** this tree does not build on Windows. |
+| iOS | `icons/ios/AppIcon.appiconset` is generated but not wired to anything; there is no iOS target yet ([docs/ios-spike-plan.md](docs/ios-spike-plan.md)). |
 
 ### Command-line modes
 
@@ -589,6 +638,8 @@ src/
 shaders/     WGSL — read from the source tree at runtime, ⌘R to reload
 keymaps/     default.json — hand-editable
 docs/        format, operations, UI, shortcuts, ADRs, solver log
+icons/      the app icon: Krita source, master, make_icons.sh, and per-OS
+             outputs (.icns, hicolor PNGs + .desktop, .ico + .rc, iOS set)
 third_party/ mixbox (submodule), wgpu (vendored binary), stb
 ```
 

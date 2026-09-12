@@ -56,7 +56,7 @@ while [ $# -gt 0 ]; do
     -o|--out)     out="$2"; shift ;;
     --tar)        make_tar=1 ;;
     --no-strip)   do_strip=0 ;;
-    -h|--help)    sed -n '3,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)    awk 'NR < 3 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "${BASH_SOURCE[0]}"; exit 0 ;;
     *)            printf 'unrecognised argument: %s\n' "$1" >&2; exit 1 ;;
   esac
   shift
@@ -88,6 +88,20 @@ for res in shaders keymaps third_party; do
     warn "expected resource directory missing: build/src/$res (selftest's \"staged beside the executable\" section will say so too)"
   fi
 done
+
+# --- Desktop integration -----------------------------------------------------
+# A freedesktop share/ tree, so it can be merged into ~/.local/share or
+# /usr/local/share as-is, plus the installer that does that per user with
+# Exec= pointed at this package's own binary (a tarball has no fixed path).
+if [ -d "$REPO/icons/linux/hicolor" ]; then
+  mkdir -p "$out/share/applications" "$out/share/icons"
+  cp -r "$REPO/icons/linux/hicolor" "$out/share/icons/hicolor"
+  cp "$REPO/icons/linux/naturalPaint.desktop" "$out/share/applications/"
+  cp "$REPO/icons/linux/install-desktop-entry.sh" "$out/install-desktop-entry.sh"
+  say "desktop entry + icons: share/, install with ./install-desktop-entry.sh"
+else
+  warn "icons/linux/hicolor missing -- the package will have no launcher entry or icon files"
+fi
 
 # --- Find what actually needs bundling ---------------------------------------
 # Ask the loader, don't assume: anything ldd resolves outside /lib, /lib64,

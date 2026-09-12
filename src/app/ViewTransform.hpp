@@ -1,6 +1,6 @@
 #pragma once
 
-#include "app/AppState.hpp"      // CanvasView
+#include "app/CanvasView.hpp"     // CanvasView
 #include "brush/StrokePath.hpp"  // Vec2
 
 namespace np {

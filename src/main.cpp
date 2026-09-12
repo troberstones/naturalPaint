@@ -41,7 +41,9 @@
 #include "app/OpenAnyFile.hpp"
 #include "app/PenAxes.hpp"
 #include "app/Screenshot.hpp"
+#if NP_WITH_SELFTEST
 #include "app/SelfTest.hpp"
+#endif
 #include "app/StrokeBake.hpp"
 #include "app/StrokeSession.hpp"
 #include "app/CropTool.hpp"
@@ -65,6 +67,7 @@
 #include "io/ImageDecode.hpp"
 #include "paint/Palette.hpp"
 #include "sim/PaintSim.hpp"
+#include "ui/AppIcon.hpp"
 #include "ui/Fonts.hpp"
 #include "ui/BrushSettingsWindow.hpp"
 #include "ui/CanvasQuad.hpp"
@@ -1650,10 +1653,12 @@ bool verifySplitDemoScreenshot(const std::string& path, np::AtelierSplit mode, f
 int main(int argc, char** argv) {
   // --selftest [out.png] runs the solver headless and checks that latent-space
   // pigment mixing actually produces green where blue crosses yellow.
-  const char* selfTestOut = nullptr;
+  // [[maybe_unused]]: only --selftest reads these, and NP_SELFTEST=OFF compiles
+  // that chain out. -Werror would otherwise make the option unbuildable.
+  [[maybe_unused]] const char* selfTestOut = nullptr;
   // --selftest-only <substring>: run only the sections whose run...Test()
   // name contains it (case-insensitive), for a fast edit-test loop.
-  std::string selfTestOnly;
+  [[maybe_unused]] std::string selfTestOnly;
   bool selfTest = false;
   float diagSeconds = 0.0f;
   bool modeTest = false;
@@ -2627,6 +2632,20 @@ int main(int argc, char** argv) {
     // opening nothing, not about diagnosing an unrecognised flag.
   }
 
+#if !NP_WITH_SELFTEST
+  // Built with -DNP_SELFTEST=OFF: the 236 section TUs are not in this binary.
+  // Refused here, before SDL, so the answer needs no window and no GPU -- and
+  // refused loudly, because a --selftest that quietly did nothing and exited 0
+  // is the one failure mode this option must not have.
+  if (selfTest || modeTest || diagSeconds > 0.0f) {
+    std::fprintf(stderr,
+                 "naturalPaint: built without the self-test suite "
+                 "(-DNP_SELFTEST=OFF), so --selftest, --diag and --mode-test "
+                 "are unavailable. Reconfigure with -DNP_SELFTEST=ON.\n");
+    return 2;
+  }
+#endif
+
   // Before SDL, deliberately: an .abr is a file and a parser, and nothing in
   // the report needs a device, a window or a surface. Putting it here means it
   // runs in milliseconds on a headless box and cannot be perturbed by anything
@@ -2700,6 +2719,13 @@ int main(int argc, char** argv) {
   // dead for as long as the panel is up.
   np::setFileDialogParentWindow(window);
 
+  // Dock / taskbar / Wayland icon (ui/AppIcon). Never fatal.
+  {
+    std::string iconError;
+    if (!np::installAppIcon(window, &iconError))
+      std::fprintf(stderr, "warning: %s\n", iconError.c_str());
+  }
+
   // ---- the native menu bar (ui/MacNativeMenu, ui/MenuModel) ---------------
   //
   // A no-op off Apple, where the ImGui menu bar in the title band is the whole
@@ -2758,14 +2784,14 @@ int main(int argc, char** argv) {
   // assertion checks a real "before any heavy subsystem exists" number
   // rather than one taken after a sim it constructs eagerly for its own
   // purposes.
-  const size_t idleRssBytes = np::currentResidentBytes();
+  [[maybe_unused]] const size_t idleRssBytes = np::currentResidentBytes();
   // Captured in the same breath as the RSS above and for the same reason --
   // this is the last moment at which "idle" means anything. It is the number
   // Activity Monitor would show for this process right now, and
   // docs/testing-issues.md T6 exists because it and `idleRssBytes` differ by
   // roughly a factor of four with nothing in the build saying so.
   // app/selftest/IdleMemory.cpp prints it beside the assertion.
-  const size_t idleFootprintBytes = np::currentFootprintBytes();
+  [[maybe_unused]] const size_t idleFootprintBytes = np::currentFootprintBytes();
 
   // Null until something actually needs the solver. --selftest/--diag/
   // --modes exist specifically to exercise it, so they construct it via
@@ -2775,6 +2801,10 @@ int main(int argc, char** argv) {
   // near zero rather than paying for the sim on every launch.
   std::unique_ptr<np::PaintSim> sim;
 
+#if NP_WITH_SELFTEST
+// The three --selftest drivers and the whole section chain. Absent, together
+// with the 236 TUs they call, when NP_SELFTEST=OFF; the refusal is up by the
+// argument parsing, before SDL.
   if (modeTest) {
     np::PaintSim* s = np::ensurePaintSim(sim, gpu, kCanvasW, kCanvasH, lut);
     if (!s) return 1;
@@ -4233,6 +4263,7 @@ int main(int argc, char** argv) {
     // (app/SelfTest.hpp's own comment on each).
     const bool stabiliserOk = !wanted("runStabiliserTest") || np::runStabiliserTest();
     const bool brushTaperOk = !wanted("runBrushTaperTest") || np::runBrushTaperTest();
+    const bool appIconOk = !wanted("runAppIconTest") || np::runAppIconTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4302,7 +4333,7 @@ int main(int argc, char** argv) {
                     penToolOk && pathOpsOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
-                    nativeBrushOk && strokeInputOk && pointerQueueOk &&
+                    nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
                     stabiliserOk && brushTaperOk;
     if (!selfTestOnly.empty()) {
       std::printf("[selftest] --selftest-only \"%s\": %d section(s) run\n", selfTestOnly.c_str(),
@@ -4315,6 +4346,7 @@ int main(int argc, char** argv) {
     SDL_Quit();
     return ok ? 0 : 1;
   }
+#endif  // NP_WITH_SELFTEST
 
   // ---- ImGui ----
   IMGUI_CHECKVERSION();
