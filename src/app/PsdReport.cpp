@@ -195,14 +195,28 @@ int runPsdReport(const char* path) {
         if (sh.fill.on) ++filled;
         if (sh.stroke.on) ++stroked;
       }
-      const std::array<float, 4>& c =
-          l.shapes.empty() ? std::array<float, 4>{0, 0, 0, 0} : l.shapes.front().fill.rgba;
-      std::snprintf(coverage, sizeof(coverage),
-                    "%zu shape(s), %zu filled, %zu stroked, first fill linear rgba "
-                    "%.5f %.5f %.5f %.5f",
-                    l.shapes.size(), filled, stroked, static_cast<double>(c[0]),
-                    static_cast<double>(c[1]), static_cast<double>(c[2]),
-                    static_cast<double>(c[3]));
+      // A GRADIENT fill's `rgba` is meaningless (core/VectorShape.hpp), so
+      // printing it would report a black fill where the truth is a ramp --
+      // the same shape of lie as reporting a Vector layer as EMPTY, which is
+      // why this whole branch exists.
+      const Paint firstFill = l.shapes.empty() ? Paint{} : l.shapes.front().fill;
+      if (firstFill.kind == PaintKind::Gradient) {
+        const size_t stops = firstFill.gradient < doc.gradients.size()
+                                 ? doc.gradients[firstFill.gradient].stops.colorStops.size()
+                                 : 0;
+        std::snprintf(coverage, sizeof(coverage),
+                      "%zu shape(s), %zu filled, %zu stroked, first fill GRADIENT #%u (%zu "
+                      "colour stop(s))",
+                      l.shapes.size(), filled, stroked, firstFill.gradient, stops);
+      } else {
+        const std::array<float, 4>& c = firstFill.rgba;
+        std::snprintf(coverage, sizeof(coverage),
+                      "%zu shape(s), %zu filled, %zu stroked, first fill linear rgba "
+                      "%.5f %.5f %.5f %.5f",
+                      l.shapes.size(), filled, stroked, static_cast<double>(c[0]),
+                      static_cast<double>(c[1]), static_cast<double>(c[2]),
+                      static_cast<double>(c[3]));
+      }
       std::printf("%-4zu %-34.34s %-10.10s %6.3f %4s %4s %-6s %5s  %-22s %s\n", i, l.name.c_str(),
                   l.blend.c_str(), static_cast<double>(l.opacity), l.visible ? "Y" : "n",
                   l.clipped ? "Y" : "n", label, "vec", extent, coverage);

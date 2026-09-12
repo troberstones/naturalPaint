@@ -204,6 +204,37 @@ struct Document {
   // each.
   std::vector<Region> regions;
 
+  // **The gradient table** (docs/psd-vector-shapes.md S2), indexed by
+  // `Paint::gradient` on every `VectorShape` whose fill or stroke has
+  // `kind == PaintKind::Gradient`. core/Gradient.hpp's `GradientDef` argues
+  // the table itself -- why the ramp is not inline in the paint, and why an
+  // entry is never erased.
+  //
+  // On `Document` for the three reasons `comps`, `channels` and `regions`
+  // above each give, and the first of them is load-bearing here rather than
+  // merely convenient: `core::History` entries hold a whole `Document` by
+  // value, so editing a gradient is undoable for free AND the table cannot
+  // desynchronise from the indices that point into it. A table on
+  // `app::OpenDocument` would sit outside every history entry, and undoing a
+  // shape edit would restore shapes whose `Paint::gradient` indexed a table
+  // that had moved on -- silently re-aiming a fill at a different ramp, which
+  // is precisely the failure an index-into-a-shared-table invites and
+  // precisely what this placement removes.
+  //
+  // The cost is one `std::vector` per history entry, and unlike `channels` it
+  // is a real copy rather than a share: a `GradientStops` is two heap vectors
+  // and there is no copy-on-write layer under it. It is affordable because the
+  // table is small by construction -- one entry per gradient a file declared,
+  // not one per shape -- and a document with none is one empty vector, which
+  // allocates nothing.
+  //
+  // io/NpaintFile writes it as `np:gradients` on part 0, **only when
+  // non-empty**, so a document with no gradients produces exactly the bytes it
+  // produced before this member existed -- the same property `comps`,
+  // `channels` and `regions` are each held to, and `--selftest` asserts it
+  // against a file rather than assuming it.
+  GradientTable gradients;
+
   // The next value `core::addRegion()` will hand out for `Region::id`.
   // A counter and not "one above the highest present", for `nextLayerId`'s
   // own reason: the highest id present falls when the highest-numbered

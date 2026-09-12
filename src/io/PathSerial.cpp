@@ -45,9 +45,24 @@ void putPoint(std::vector<uint8_t>& b, const PathPoint& p) {
   putF32(b, p.y);
 }
 
-void putPaint(std::vector<uint8_t>& b, const Paint& p) {
+// v1 writes `on` + rgba; v2 appends the kind byte and the table index. See
+// io/PathSerial.hpp's "Two live versions" for why the older framing is still
+// written when nothing needs the newer one.
+void putPaint(std::vector<uint8_t>& b, const Paint& p, int version) {
   putU8(b, p.on ? 1u : 0u);
   for (float c : p.rgba) putF32(b, c);
+  if (version >= 2) {
+    putU8(b, static_cast<uint8_t>(p.kind));
+    putU32(b, p.gradient);
+  }
+}
+
+// Whether this shape list needs the v2 framing at all: exactly when some paint
+// is not solid, since that is the only thing v2 can say that v1 cannot.
+bool needsVersion2(const std::vector<VectorShape>& shapes) {
+  for (const VectorShape& s : shapes)
+    if (s.fill.kind != PaintKind::Solid || s.stroke.kind != PaintKind::Solid) return true;
+  return false;
 }
 
 void putPath(std::vector<uint8_t>& b, const Path& path) {
@@ -121,10 +136,23 @@ struct Reader {
     q.y = f32();
     return q;
   }
-  Paint paint() {
+  Paint paint(int version) {
     Paint p;
     p.on = u8() != 0;
     for (float& c : p.rgba) c = f32();
+    if (version >= 2) {
+      // An unknown kind is refused rather than clamped to Solid, for
+      // `readPath()`'s own reason about an unknown fill rule: a shape painted
+      // with something this build does not have is not "approximately" that
+      // shape, and rendering it as a flat colour is the guess PRD I10 forbids.
+      const uint8_t kind = u8();
+      if (kind > static_cast<uint8_t>(PaintKind::Gradient)) {
+        bad = true;
+        return p;
+      }
+      p.kind = static_cast<PaintKind>(kind);
+      p.gradient = u32();
+    }
     return p;
   }
 };
@@ -169,7 +197,7 @@ bool readPath(Reader& r, Path* out) {
   return !r.bad;
 }
 
-bool parseShapeRecord(const uint8_t* body, size_t length, VectorShape* out) {
+bool parseShapeRecord(const uint8_t* body, size_t length, int version, VectorShape* out) {
   if (length < kMinShapeRecordBytes) return false;
   Reader r{body, length, false};
   // A byte this build writes as 0 that came back non-zero means a newer build
@@ -180,8 +208,9 @@ bool parseShapeRecord(const uint8_t* body, size_t length, VectorShape* out) {
   VectorShape s;
   s.id = r.u64();
   s.name = r.str();
-  s.fill = r.paint();
-  s.stroke = r.paint();
+  s.fill = r.paint(version);
+  s.stroke = r.paint(version);
+  if (r.bad) return false;
 
   s.strokeStyle.width = r.f32();
   const uint8_t cap = r.u8();
@@ -232,6 +261,7 @@ int hexDigit(char c) {
 
 std::string serializeVectorShapes(const std::vector<VectorShape>& shapes,
                                   uint64_t nextShapeId) {
+  const int version = needsVersion2(shapes) ? 2 : 1;
   std::vector<uint8_t> payload;
   putU64(payload, nextShapeId);
 
@@ -242,8 +272,8 @@ std::string serializeVectorShapes(const std::vector<VectorShape>& shapes,
     putU8(body, 0u);  // reserved
     putU64(body, s.id);
     putString(body, s.name);
-    putPaint(body, s.fill);
-    putPaint(body, s.stroke);
+    putPaint(body, s.fill, version);
+    putPaint(body, s.stroke, version);
 
     putF32(body, s.strokeStyle.width);
     putU8(body, static_cast<uint8_t>(s.strokeStyle.cap));
@@ -270,7 +300,7 @@ std::string serializeVectorShapes(const std::vector<VectorShape>& shapes,
   }
 
   static constexpr char kHex[] = "0123456789abcdef";
-  std::string out = kVectorShapeSerialPrefix;
+  std::string out = version >= 2 ? kVectorShapeSerialPrefixV2 : kVectorShapeSerialPrefix;
   out.reserve(out.size() + payload.size() * 2);
   for (const uint8_t b : payload) {
     out.push_back(kHex[b >> 4]);
@@ -287,15 +317,27 @@ bool deserializeVectorShapes(std::string_view value, std::vector<VectorShape>* s
   };
   if (shapesOut == nullptr) return fail("no destination for the decoded shapes.");
 
-  const std::string_view prefix(kVectorShapeSerialPrefix);
   // The version is read before a byte is decoded. See the header: this is what
-  // makes a newer document survive an older build unaltered.
-  if (value.size() < prefix.size() || value.substr(0, prefix.size()) != prefix)
-    return fail("np:vector does not begin with '" + std::string(prefix) +
+  // makes a newer document survive an older build unaltered. Two versions are
+  // live; anything else is refused by name.
+  const std::string_view v1(kVectorShapeSerialPrefix);
+  const std::string_view v2(kVectorShapeSerialPrefixV2);
+  int version = 0;
+  size_t prefixLen = 0;
+  if (value.size() >= v1.size() && value.substr(0, v1.size()) == v1) {
+    version = 1;
+    prefixLen = v1.size();
+  } else if (value.size() >= v2.size() && value.substr(0, v2.size()) == v2) {
+    version = 2;
+    prefixLen = v2.size();
+  } else {
+    return fail("np:vector does not begin with '" + std::string(v1) + "' or '" +
+                std::string(v2) +
                 "' -- this build cannot read that version, and the attribute is carried "
                 "through unchanged rather than being reinterpreted.");
+  }
 
-  const std::string_view hex = value.substr(prefix.size());
+  const std::string_view hex = value.substr(prefixLen);
   if (hex.size() % 2 != 0)
     return fail("np:vector payload has an odd number of hex digits (" +
                 std::to_string(hex.size()) + "), so it is truncated.");
@@ -328,7 +370,7 @@ bool deserializeVectorShapes(std::string_view value, std::vector<VectorShape>* s
       return fail("np:vector shape " + std::to_string(i) + " declares " +
                   std::to_string(bodyLen) + " bytes, past the end of the payload.");
     VectorShape s;
-    if (!parseShapeRecord(r.p, bodyLen, &s))
+    if (!parseShapeRecord(r.p, bodyLen, version, &s))
       return fail("np:vector shape " + std::to_string(i) +
                   " could not be decoded -- either it carries a reserved byte this build "
                   "does not understand, or its own declared lengths do not add up.");

@@ -173,6 +173,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/PsdVectorCompose.cpp
   app/selftest/PsdVectorPath.cpp
   app/selftest/PsdVectorStyle.cpp
+  app/selftest/PsdVectorGradient.cpp
   app/selftest/QuitGuard.cpp
   app/selftest/RecoveryJournal.cpp
   app/selftest/ResamplePerf.cpp
@@ -243,6 +244,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/SvgPath.cpp
   app/selftest/SvgStyle.cpp
   app/selftest/VectorLayer.cpp
+  app/selftest/VectorGradient.cpp
   app/selftest/TextContent.cpp
   app/selftest/UserBrushLibrary.cpp
   app/selftest/ViewTransform.cpp
@@ -391,6 +393,7 @@ add_executable(naturalPaint
   core/Clipboard.cpp
   core/Composite.cpp
   core/DirtyTiles.cpp
+  core/Gradient.cpp
   core/Histogram.cpp
   core/History.cpp
   core/LayerCompOps.cpp
@@ -436,6 +439,7 @@ add_executable(naturalPaint
   io/ImageIO.cpp
   io/ActionFile.cpp
   io/GradientPresetFile.cpp
+  io/GradientSerial.cpp
   io/Json.cpp
   io/NpaintFile.cpp
   io/OpSerial.cpp

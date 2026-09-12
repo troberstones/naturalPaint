@@ -5,6 +5,8 @@
 #include <cstring>
 #include <string>
 
+#include "core/Path.hpp"
+
 #include "color/Space.hpp"
 #include "io/Descriptor.hpp"
 #include "io/PsdVectorPath.hpp"
@@ -94,6 +96,18 @@ double channelToRgbcDouble(float linear) {
   return static_cast<double>(std::clamp(encoded, 0.0f, 1.0f)) * 255.0;
 }
 
+// Photoshop's stop position on the wire: a `long` in 0..4096, the exact
+// inverse of io/PsdVectorStyle.cpp's `locationToPosition()`.
+int32_t positionToLocation(float position) {
+  return static_cast<int32_t>(
+      std::lround(std::clamp(position, 0.0f, 1.0f) * 4096.0f));
+}
+
+// `Mdpn`, a `long` percentage. The inverse of `midpointFromPercent()`.
+int32_t midpointToPercent(float midpoint) {
+  return static_cast<int32_t>(std::lround(std::clamp(midpoint, 0.0f, 1.0f) * 100.0f));
+}
+
 }  // namespace
 
 // ==========================================================================
@@ -133,6 +147,55 @@ void writePsdDescriptorDouble(PsdWriter& w, std::string_view key, double value) 
   writePsdDescriptorKey(w, key);
   w.fourcc("doub");
   writeDoubleBE(w, value);
+}
+
+void writePsdDescriptorBool(PsdWriter& w, std::string_view key, bool value) {
+  writePsdDescriptorKey(w, key);
+  w.fourcc("bool");
+  w.u8(value ? 1u : 0u);
+}
+
+void writePsdDescriptorInteger(PsdWriter& w, std::string_view key, int32_t value) {
+  writePsdDescriptorKey(w, key);
+  w.fourcc("long");
+  w.u32(static_cast<uint32_t>(value));
+}
+
+void writePsdDescriptorUnitFloat(PsdWriter& w, std::string_view key, std::string_view unit,
+                                 double value) {
+  writePsdDescriptorKey(w, key);
+  w.fourcc("UntF");
+  // The unit is a BARE four-character code, not a Key: no length precedes it.
+  for (const char c : unit) w.u8(static_cast<uint8_t>(c));
+  writeDoubleBE(w, value);
+}
+
+void writePsdDescriptorEnum(PsdWriter& w, std::string_view key, std::string_view typeId,
+                            std::string_view valueId) {
+  writePsdDescriptorKey(w, key);
+  w.fourcc("enum");
+  // Both halves ARE Keys, so both take the zero-means-four rule.
+  writePsdDescriptorKey(w, typeId);
+  writePsdDescriptorKey(w, valueId);
+}
+
+void writePsdDescriptorText(PsdWriter& w, std::string_view key, std::string_view utf8) {
+  writePsdDescriptorKey(w, key);
+  w.fourcc("TEXT");
+  writePsdDescriptorUnicodeString(w, utf8);
+}
+
+void writePsdDescriptorListItem(PsdWriter& w, std::string_view key, uint32_t count) {
+  writePsdDescriptorKey(w, key);
+  w.fourcc("VlLs");
+  w.u32(count);
+}
+
+void writePsdDescriptorListObjectElement(PsdWriter& w, std::string_view classId,
+                                         uint32_t itemCount) {
+  // NO key: a list element is positional. See the header.
+  w.fourcc("Objc");
+  writePsdDescriptorHead(w, classId, itemCount);
 }
 
 // ==========================================================================
@@ -223,6 +286,132 @@ std::vector<uint8_t> encodePsdSolidColorBlock(const std::array<float, 4>& linear
   writePsdDescriptorDouble(w, "Bl  ", channelToRgbcDouble(linearRgba[2]));
   if (!w.ok()) return {};
   return w.take();
+}
+
+// ==========================================================================
+// `GdFl`
+// ==========================================================================
+
+std::vector<uint8_t> encodePsdGradientFillBlock(const GradientDef& gradient,
+                                                const PathBounds& bounds) {
+  if (gradient.stops.colorStops.empty()) return {};
+
+  // --- The inverse of psdGradientGeometryFor() ----------------------------
+  //
+  // Two points in document texels go back out as an angle, a scale percentage
+  // and an offset percentage pair. Everything here mirrors a line of that
+  // function, including the y negation that turns a y-down direction back into
+  // Photoshop's y-up angle.
+  const GradientGeometry& g = gradient.geometry;
+  const bool reflected = g.spread == GradientSpread::Reflect;
+  const double dx = static_cast<double>(g.x1) - static_cast<double>(g.x0);
+  const double dy = static_cast<double>(g.y1) - static_cast<double>(g.y0);
+  const double span = std::sqrt(dx * dx + dy * dy);
+
+  // A Linear-Pad ramp's centre is the midpoint of its two points; every other
+  // kind runs from its centre outward, so p0 IS the centre.
+  const bool centreIsP0 = reflected || g.kind != GradientKind::Linear;
+  const double cx = centreIsP0 ? g.x0 : (static_cast<double>(g.x0) + static_cast<double>(g.x1)) * 0.5;
+  const double cy = centreIsP0 ? g.y0 : (static_cast<double>(g.y0) + static_cast<double>(g.y1)) * 0.5;
+
+  double w = 0.0, h = 0.0, boundsCx = cx, boundsCy = cy;
+  if (bounds.valid) {
+    w = static_cast<double>(bounds.maxX) - static_cast<double>(bounds.minX);
+    h = static_cast<double>(bounds.maxY) - static_cast<double>(bounds.minY);
+    boundsCx = (static_cast<double>(bounds.minX) + static_cast<double>(bounds.maxX)) * 0.5;
+    boundsCy = (static_cast<double>(bounds.minY) + static_cast<double>(bounds.maxY)) * 0.5;
+  }
+
+  constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
+  // atan2 of the NEGATED dy, undoing the y-down flip the decoder applied.
+  double angleDegrees = span > 0.0 ? std::atan2(-dy, dx) * kRadToDeg : 0.0;
+  // atan2(-0.0, positive) is -0.0, which prints as "-0" and round-trips
+  // perfectly but reads as a bug in every dump. Normalised, not clamped.
+  if (angleDegrees == 0.0) angleDegrees = 0.0;
+  double scalePercent = 100.0;
+
+  if (g.kind == GradientKind::Radial) {
+    // The radial's angle is meaningless (the decoder never reads it back
+    // either), so it goes out as zero rather than as whatever atan2 made of an
+    // axis-aligned radius vector.
+    angleDegrees = 0.0;
+    const double diagonalHalf = std::sqrt(w * w + h * h) * 0.5;
+    scalePercent = diagonalHalf > 0.0 ? span / diagonalHalf * 100.0 : 0.0;
+  } else if (g.kind == GradientKind::Angular) {
+    scalePercent = 100.0;  // an angular ramp has a direction and no length
+  } else {
+    const double a = angleDegrees / kRadToDeg;
+    const double projected = std::fabs(w * std::cos(a)) + std::fabs(h * std::sin(a));
+    const double length = reflected ? span * 2.0 : span;
+    scalePercent = projected > 0.0 ? length / projected * 100.0 : 0.0;
+  }
+
+  const double offsetXPercent = w > 0.0 ? (cx - boundsCx) / w * 100.0 : 0.0;
+  const double offsetYPercent = h > 0.0 ? (cy - boundsCy) / h * 100.0 : 0.0;
+
+  const char* typeId = "Lnr ";
+  if (reflected && g.kind == GradientKind::Linear) typeId = "Rflc";
+  else if (g.kind == GradientKind::Radial) typeId = "Rdl ";
+  else if (g.kind == GradientKind::Angular) typeId = "Angl";
+
+  // --- The descriptor -----------------------------------------------------
+  PsdWriter w2;
+  w2.u32(kActionDescriptorVersion);
+  // EIGHT items: Grad, Type, Angl, Scl, Ofst, Dthr, Rvrs, Algn. A count that
+  // disagrees with what follows leaves the parser mid-item at the end of the
+  // block -- app/selftest/PsdVectorGradient.cpp asserts the parse consumes the
+  // block EXACTLY, which is what caught this being 7.
+  writePsdDescriptorHead(w2, "null", 8);
+
+  const uint32_t colorCount = static_cast<uint32_t>(
+      std::min<size_t>(gradient.stops.colorStops.size(), 0xFFFFFFFFull));
+  const uint32_t opacityCount = static_cast<uint32_t>(
+      std::min<size_t>(gradient.stops.opacityStops.size(), 0xFFFFFFFFull));
+
+  writePsdDescriptorObjectItem(w2, "Grad", "Grdn", 5);
+  writePsdDescriptorText(w2, "Nm  ", gradient.name);
+  // `CstS` -- a custom-stop ramp, the only form with a stop list, which is the
+  // only form this build can produce.
+  writePsdDescriptorEnum(w2, "GrdF", "GrdF", "CstS");
+  // `Intr` is the smoothness, 4096 being 100 %. This build's ramp is always
+  // fully smooth between stops, so the maximum is the honest value.
+  writePsdDescriptorDouble(w2, "Intr", 4096.0);
+  writePsdDescriptorListItem(w2, "Clrs", colorCount);
+  for (const ColorStop& c : gradient.stops.colorStops) {
+    writePsdDescriptorListObjectElement(w2, "Clrt", 4);
+    writePsdDescriptorObjectItem(w2, "Clr ", "RGBC", 3);
+    writePsdDescriptorDouble(w2, "Rd  ", channelToRgbcDouble(c.color[0]));
+    writePsdDescriptorDouble(w2, "Grn ", channelToRgbcDouble(c.color[1]));
+    writePsdDescriptorDouble(w2, "Bl  ", channelToRgbcDouble(c.color[2]));
+    // `UsrS`: a fixed colour rather than one tracking a swatch. This build has
+    // no foreground/background stop, so it can only ever write this one.
+    writePsdDescriptorEnum(w2, "Type", "Clry", "UsrS");
+    writePsdDescriptorInteger(w2, "Lctn", positionToLocation(c.position));
+    writePsdDescriptorInteger(w2, "Mdpn", midpointToPercent(c.midpoint));
+  }
+  writePsdDescriptorListItem(w2, "Trns", opacityCount);
+  for (const OpacityStop& o : gradient.stops.opacityStops) {
+    writePsdDescriptorListObjectElement(w2, "TrnS", 3);
+    writePsdDescriptorUnitFloat(w2, "Opct", "#Prc",
+                                static_cast<double>(std::clamp(o.opacity, 0.0f, 1.0f)) * 100.0);
+    writePsdDescriptorInteger(w2, "Lctn", positionToLocation(o.position));
+    writePsdDescriptorInteger(w2, "Mdpn", midpointToPercent(o.midpoint));
+  }
+
+  writePsdDescriptorEnum(w2, "Type", "GrdT", typeId);
+  writePsdDescriptorUnitFloat(w2, "Angl", "#Ang", angleDegrees);
+  writePsdDescriptorUnitFloat(w2, "Scl ", "#Prc", scalePercent);
+  writePsdDescriptorObjectItem(w2, "Ofst", "Pnt ", 2);
+  writePsdDescriptorUnitFloat(w2, "Hrzn", "#Prc", offsetXPercent);
+  writePsdDescriptorUnitFloat(w2, "Vrtc", "#Prc", offsetYPercent);
+  // Photoshop's own defaults -- see the header on why neither is a claim about
+  // this document.
+  writePsdDescriptorBool(w2, "Dthr", true);
+  writePsdDescriptorBool(w2, "Rvrs", false);
+  writePsdDescriptorBool(w2, "Algn", true);
+
+  if (!w2.ok()) return {};
+  return w2.take();
 }
 
 }  // namespace np

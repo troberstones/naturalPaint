@@ -251,8 +251,15 @@ DocumentDirtyTiles documentDirtyTiles(const Document& before, const Document& af
     // reintroduces exactly the invisible-edit bug this block exists to close.
     // Correct first; narrowing is a measured optimisation with its own proof,
     // and Stage 4's manipulator drag is where it will be worth taking.
+    //
+    // **Each side hashes against its OWN document's gradient table.** The two
+    // tables are what the two sets of `Paint::gradient` indices mean, so
+    // hashing both sides against one of them would compare a shape against a
+    // ramp it never referenced -- and editing a gradient would then be
+    // invisible, which is the very failure this block exists to close.
     if (a.kind == LayerKind::Vector && b.kind == LayerKind::Vector &&
-        vectorContentHash(a.shapes) != vectorContentHash(b.shapes))
+        vectorContentHash(a.shapes, before.gradients) !=
+            vectorContentHash(b.shapes, after.gradients))
       return whole(FullRecompositeReason::VectorGeometryChanged, i);
     // A Text layer's content is `text`, which no comparison above reaches
     // either -- and it is worse than the Vector case, because a Text layer

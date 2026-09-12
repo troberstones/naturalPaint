@@ -5452,6 +5452,32 @@ bool runPsdVectorComposeTest();
 // Headless, GPU-free.
 bool runPsdVectorStyleTest();
 
+// docs/psd-vector-shapes.md S2's PSD half: `GdFl` decoded into a `GradientDef`
+// and written back out.
+//
+// **It cannot prove agreement with Photoshop and says so.** No `.psd` on this
+// machine contains a `GdFl` block at all, so the fixture is this tree's own
+// encoder's output rather than real bytes -- the opposite of
+// runPsdVectorStyleTest(), every one of whose fixtures is a hex dump from a
+// real file. Two things are done about that: the encoded descriptor's whole
+// TREE is asserted against a literal with every Adobe key name spelled out, so
+// a typo is a visible diff rather than a symmetric mistake; and the round trip
+// runs through the DECODER rather than through the encoder's own field list,
+// so a one-sided error -- a unit read as a fraction, a `Lctn` scaled by 100
+// instead of 4096, the y-down negation applied on one side only -- fails even
+// though a shared misunderstanding would not.
+//
+// Also proves: a mid-grey stop goes out sRGB-ENCODED (the blind spot a
+// black-and-white fixture cannot see, since srgbEncode fixes 0 and 1); a
+// 30-degree ramp on a 100x50 shape returns to its own two points; Radial and
+// Reflected keep their centre at p0 rather than at the midpoint;
+// `reverseGradientStops()` mirrors the ramp, moves each midpoint back one stop
+// AND flips it, and is its own inverse; and that a diamond gradient, a noise
+// gradient, an empty `Clrs` list and `fillEnabled = false` each leave the fill
+// OFF with a named warning rather than painting something nobody authored.
+// See app/selftest/PsdVectorGradient.cpp.
+bool runPsdVectorGradientTest();
+
 // The three PSD vector modules run IN ORDER on one real layer's own bytes.
 // Each has its own section proving its own function; none of them can see a
 // seam between the three. Expected values are psd-tools' render of that
@@ -6347,6 +6373,32 @@ bool runTextToolTest();
 // all; and stroke bounds outset by half the width, or by miterLimit times it
 // for a miter join. See app/selftest/VectorLayer.cpp.
 bool runVectorLayerTest();
+
+// docs/psd-vector-shapes.md S2 -- a gradient fill on a vector shape, from the
+// document-level table down to both halves of the on-disk form.
+//
+// The load-bearing sections are the three whose failure is SILENT. (1) A
+// gradient's appearance lives in `Document::gradients`, which a shape only
+// POINTS at, so `vectorContentHash()` over the shapes alone cannot see a ramp
+// edit: the stops change, the hash does not, and the cached raster comes
+// back -- an edit that never appears. Asserted at the hash, through
+// `MaterializedDocument`, and through `documentDirtyTiles()`. (2) A
+// `Paint::gradient` past the end of the table must paint NOTHING; the shape
+// under test carries an opaque RED `rgba` and the table a visible ramp, so a
+// fallback to either would show rather than pass. (3) `np:vector` stays at
+// `npvec1:` unless a gradient is present, asserted by the exact 20-hex-digit
+// length difference rather than by eye, so the version bump cannot quietly
+// rewrite every existing document's geometry attribute.
+//
+// Also proves: the vector path and ops/Gradient's `renderGradient()` produce
+// BIT-IDENTICAL texels over the same span (one evaluator, two loops); a
+// gradient STROKE, not only a fill; the no-colour-stops / no-opacity-stops
+// asymmetry through the vector path; io/GradientSerial's round trip including
+// midpoints and opacity stops, its hostile-count and trailing-byte refusals,
+// and its whole-table refusal of an unknown kind byte; and that a document
+// with no gradients writes no `np:gradients` attribute at all, checked against
+// the file's own bytes. See app/selftest/VectorGradient.cpp.
+bool runVectorGradientTest();
 
 // text/Shaper: PRD K2's platform-independent shaping interface, and its
 // CoreText implementation. Point and paragraph text (K3), the y-up-to-y-down

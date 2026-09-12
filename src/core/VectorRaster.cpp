@@ -23,6 +23,53 @@ namespace {
 // at 8x zoom needs an eighth of this, and that is the caller's decision.
 constexpr float kDocumentTolerancePx = 0.1f;
 
+// What a shape is painted with, resolved once per fill or stroke: either a
+// constant straight RGBA, or a gradient to sample per texel.
+//
+// **`Paint` is not passed down here, deliberately.** Resolving the index into
+// the table is the one step that can fail (an index past the end), and it
+// happens ONCE at the top of `resolvePaint()` rather than per texel -- so the
+// painting loop below has no table, no index and no way to reach past the end
+// of one.
+struct ResolvedPaint {
+  bool paints = false;
+  std::array<float, 4> straightRgba{0.0f, 0.0f, 0.0f, 1.0f};
+  // Null for a solid paint. Non-null means sample per texel instead.
+  const GradientDef* gradient = nullptr;
+};
+
+// `paint` against `gradients`, or `paints == false` for anything that draws
+// nothing at all.
+//
+// The three ways to draw nothing, stated together because they are easy to
+// conflate and only the first is the common one:
+//
+//   * `on == false` -- no fill AT ALL, distinct from alpha 0 (core/VectorShape).
+//   * a gradient index past the end of the table -- NOTHING, never `rgba` and
+//     never the last entry, per `Paint::gradient`'s own contract. A document
+//     that opens and renders a colour nobody authored is the failure mode this
+//     project refuses; an out-of-range index is a producer's bug and has to
+//     look like one.
+//   * a gradient with no colour stops -- NOTHING, matching ops/Gradient's
+//     `renderGradient()`, which returns 0 for the same input. The other empty
+//     case, no OPACITY stops, means fully opaque and is handled inside
+//     `gradientOpacityAt()`.
+ResolvedPaint resolvePaint(const Paint& paint, const GradientTable& gradients) {
+  ResolvedPaint out;
+  if (!paint.on) return out;
+  if (paint.kind == PaintKind::Gradient) {
+    if (paint.gradient >= gradients.size()) return out;
+    const GradientDef& def = gradients[paint.gradient];
+    if (def.stops.colorStops.empty()) return out;
+    out.gradient = &def;
+    out.paints = true;
+    return out;
+  }
+  out.straightRgba = paint.rgba;
+  out.paints = paint.rgba[3] > 0.0f;
+  return out;
+}
+
 // Paint one already-built coverage source over the tile store, "over" in
 // linear premultiplied space.
 //
@@ -30,15 +77,23 @@ constexpr float kDocumentTolerancePx = 0.1f;
 // is exactly what SVG's `clip-path` means and is why core/PathRaster emits
 // spans rather than owning a destination: intersecting two coverages is a
 // multiply over a row with no intermediate image.
-void paintCoverage(TileStore& out, const Path& path, const std::array<float, 4>& straightRgba,
+//
+// **core/PathRaster is untouched by gradients, and that is the design and not
+// an omission.** It emits coverage and never owns a destination or a colour
+// (its own section 1), so a gradient is a property of what the caller does
+// with a span -- exactly like the clip multiply already sitting in this loop.
+// Teaching the rasteriser about paint would give four consumers a colour model
+// three of them do not want.
+void paintCoverage(TileStore& out, const Path& path, const ResolvedPaint& paint,
                    const Selection* clip, int32_t width, int32_t height,
                    PathRasterScratch& scratch) {
+  if (!paint.paints) return;
   const RasterClip clipRect = clipForPath(path, width, height);
   if (clipRect.x1 <= clipRect.x0 || clipRect.y1 <= clipRect.y0) return;
 
-  const float r = straightRgba[0], g = straightRgba[1], b = straightRgba[2];
-  const float a = straightRgba[3];
-  if (!(a > 0.0f)) return;
+  const GradientDef* grad = paint.gradient;
+  const float r = paint.straightRgba[0], g = paint.straightRgba[1], b = paint.straightRgba[2];
+  const float a = paint.straightRgba[3];
 
   rasterizePath(path, kDocumentTolerancePx, clipRect, scratch,
                 [&](int32_t y, int32_t x0, int32_t x1, const float* cov) {
@@ -49,18 +104,36 @@ void paintCoverage(TileStore& out, const Path& path, const std::array<float, 4>&
                       c *= selectionCoverageAt(clip, at);
                       if (!(c > 0.0f)) continue;
                     }
-                    const float srcA = c * a;
+
+                    float sr = r, sg = g, sb = b, sa = a;
+                    if (grad != nullptr) {
+                      // Texel CENTRES, exactly as ops/Gradient's render loop
+                      // samples them -- the same two calls on the same
+                      // geometry, so a ramp filling a shape and the same ramp
+                      // drawn with the Gradient tool agree texel for texel.
+                      const float t = gradientParameterAt(grad->geometry,
+                                                          static_cast<float>(x) + 0.5f,
+                                                          static_cast<float>(y) + 0.5f);
+                      const std::array<float, 4> sample =
+                          gradientSampleStraight(grad->stops, t);
+                      sr = sample[0];
+                      sg = sample[1];
+                      sb = sample[2];
+                      sa = sample[3];
+                    }
+
+                    const float srcA = c * sa;
                     if (!(srcA > 0.0f)) continue;
 
                     Tile& tile = out.getOrCreate(tileCoordAt(at));
                     const PixelCoord local = tileLocalOffset(at);
                     const std::array<float, 4> dst = tile.readPixel(local);
-                    // Source-over, premultiplied. `straightRgba` is straight,
-                    // so the source premultiplies here and nowhere else --
+                    // Source-over, premultiplied. The sample is straight, so
+                    // the source premultiplies here and nowhere else --
                     // core/VectorShape.hpp's stated convention.
                     const float inv = 1.0f - srcA;
-                    tile.writePixel(local, {r * srcA + dst[0] * inv, g * srcA + dst[1] * inv,
-                                            b * srcA + dst[2] * inv, srcA + dst[3] * inv});
+                    tile.writePixel(local, {sr * srcA + dst[0] * inv, sg * srcA + dst[1] * inv,
+                                            sb * srcA + dst[2] * inv, srcA + dst[3] * inv});
                   }
                 });
 }
@@ -91,8 +164,8 @@ Selection clipCoverage(const Path& path, int32_t width, int32_t height,
 
 }  // namespace
 
-TileStore rasterizeVectorLayer(const std::vector<VectorShape>& shapes, int32_t width,
-                               int32_t height) {
+TileStore rasterizeVectorLayer(const std::vector<VectorShape>& shapes,
+                               const GradientTable& gradients, int32_t width, int32_t height) {
   TileStore out;
   if (width <= 0 || height <= 0) return out;
 
@@ -115,13 +188,14 @@ TileStore rasterizeVectorLayer(const std::vector<VectorShape>& shapes, int32_t w
     const Selection* clipPtr = clip.has_value() ? &*clip : nullptr;
 
     // SVG's order, and the only one under which a stroke reads as an outline.
-    if (shape.fill.on)
-      paintCoverage(out, shape.path, shape.fill.rgba, clipPtr, width, height, scratch);
+    paintCoverage(out, shape.path, resolvePaint(shape.fill, gradients), clipPtr, width, height,
+                  scratch);
 
     if (shape.stroke.on && shape.strokeStyle.width > 0.0f) {
       const Path outline = strokePath(shape.path, shape.strokeStyle, kDocumentTolerancePx);
       if (!outline.subpaths.empty())
-        paintCoverage(out, outline, shape.stroke.rgba, clipPtr, width, height, scratch);
+        paintCoverage(out, outline, resolvePaint(shape.stroke, gradients), clipPtr, width, height,
+                      scratch);
     }
   }
   return out;
@@ -229,7 +303,7 @@ MaterializedDocument::MaterializedDocument(const Document& doc, VectorRasterCach
     // claim made concrete.
     const bool isText = layer.kind == LayerKind::Text;
     const uint64_t hash =
-        isText ? textContentHash(layer.text) : vectorContentHash(layer.shapes);
+        isText ? textContentHash(layer.text) : vectorContentHash(layer.shapes, doc.gradients);
     std::shared_ptr<const TileStore> tiles =
         cache ? cache->lookup(layer.id, hash) : nullptr;
     if (!tiles) {
@@ -238,7 +312,7 @@ MaterializedDocument::MaterializedDocument(const Document& doc, VectorRasterCach
       // and a per-frame one would be visible.
       const std::vector<VectorShape> shapes =
           isText ? textContentToShapes(layer.text) : layer.shapes;
-      TileStore built = rasterizeVectorLayer(shapes, doc.width, doc.height);
+      TileStore built = rasterizeVectorLayer(shapes, doc.gradients, doc.width, doc.height);
       tiles = cache ? cache->store(layer.id, hash, std::move(built))
                     : std::make_shared<const TileStore>(std::move(built));
     }

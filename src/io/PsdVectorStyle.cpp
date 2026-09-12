@@ -1,5 +1,7 @@
 #include "io/PsdVectorStyle.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <string>
 #include <string_view>
 
@@ -31,6 +33,184 @@ bool readClrColor(DescriptorRef parent, std::array<float, 4>& rgba) {
   rgba[1] = srgbDecode(static_cast<float>(*gr / 255.0));
   rgba[2] = srgbDecode(static_cast<float>(*bl / 255.0));
   rgba[3] = 1.0f;
+  return true;
+}
+
+// `Clr `'s three channels as straight linear RGB, without the alpha
+// `readClrColor()` also writes. A gradient stop carries no alpha of its own --
+// transparency lives in the separate `Trns` list -- so the four-component form
+// would be inventing a field.
+bool readClrRgb(DescriptorRef parent, std::array<float, 3>& rgb) {
+  std::array<float, 4> rgba{0.0f, 0.0f, 0.0f, 1.0f};
+  if (!readClrColor(parent, rgba)) return false;
+  rgb = {rgba[0], rgba[1], rgba[2]};
+  return true;
+}
+
+// Photoshop's stop position: a `long` in 0..4096, not a percentage and not a
+// fraction. Clamped rather than refused -- a position outside the range is a
+// stop outside the ramp, which core/Gradient's flat extrapolation already
+// handles, and refusing a whole gradient over one would lose the picture for
+// a detail nothing can see.
+float locationToPosition(const std::optional<int32_t>& lctn) {
+  if (!lctn) return 0.0f;
+  return std::clamp(static_cast<float>(*lctn) / 4096.0f, 0.0f, 1.0f);
+}
+
+// `Mdpn`, a `long` percentage in 0..100. core/Gradient clamps the extremes
+// itself (both send the skew exponent to infinity), so this only normalises.
+float midpointFromPercent(const std::optional<int32_t>& mdpn) {
+  if (!mdpn) return 0.5f;
+  return std::clamp(static_cast<float>(*mdpn) / 100.0f, 0.0f, 1.0f);
+}
+
+// `GrdT`'s five members. Two map onto one `GradientKind` each, `Rflc` maps
+// onto Linear-with-Reflect (which is what "reflected" IS: the ramp mirrored
+// about its start), and `Dmnd` has nothing to map onto at all.
+bool mapGradientType(const std::string& valueId, PsdGradientPlacement& out) {
+  if (valueId == "Lnr ") {
+    out.kind = GradientKind::Linear;
+    out.spread = GradientSpread::Pad;
+    return true;
+  }
+  if (valueId == "Rdl ") {
+    out.kind = GradientKind::Radial;
+    out.spread = GradientSpread::Pad;
+    return true;
+  }
+  if (valueId == "Angl") {
+    out.kind = GradientKind::Angular;
+    out.spread = GradientSpread::Pad;  // Angular wraps and ignores this
+    return true;
+  }
+  if (valueId == "Rflc") {
+    out.kind = GradientKind::Linear;
+    out.spread = GradientSpread::Reflect;
+    return true;
+  }
+  // `Dmnd` -- a diamond gradient, whose parameter is a Chebyshev-style
+  // distance no `GradientKind` expresses. Refused by name rather than
+  // approximated with a radial, which would be visibly a different shape.
+  return false;
+}
+
+// The `GdFl` descriptor's root, into a ramp plus a placement. `false` with a
+// warning appended means "recognisably a gradient this build cannot express",
+// which the caller turns into `fill.on = false`.
+bool readGradientFill(DescriptorRef root, std::string_view carrier, PsdGradientFill& out,
+                      std::vector<std::string>& warnings) {
+  const std::string named(carrier);
+  const DescriptorRef grad = root.field("Grad");
+  if (!grad.valid()) {
+    warnings.push_back(named + ": a gradient fill with no 'Grad' descriptor; fill left off");
+    return false;
+  }
+
+  if (const std::optional<std::string_view> name = grad.field("Nm  ").asText())
+    out.name = std::string(*name);
+
+  // A NOISE gradient has no stop list at all -- it is a random ramp generated
+  // from a seed and a colour model, and nothing here can reproduce it. Named
+  // rather than silently arriving as an empty ramp.
+  if (const std::optional<DescriptorEnumerated> form = grad.field("GrdF").asEnumerated()) {
+    if (form->valueId != "CstS") {
+      warnings.push_back(named + ": gradient form '" + form->valueId +
+                         "' is not a custom-stop ramp (it is most likely a noise gradient, "
+                         "which has no stop list to read); fill left off");
+      return false;
+    }
+  }
+
+  const DescriptorRef colors = grad.field("Clrs");
+  for (size_t i = 0; i < colors.childCount(); ++i) {
+    const DescriptorRef stop = colors.child(i);
+    ColorStop cs;
+    cs.position = locationToPosition(stop.field("Lctn").asInteger());
+    cs.midpoint = midpointFromPercent(stop.field("Mdpn").asInteger());
+    if (!readClrRgb(stop, cs.color)) {
+      warnings.push_back(named + ": gradient colour stop " + std::to_string(i) +
+                         " has no Clr/RGBC colour; it is skipped");
+      continue;
+    }
+    // `Clry` = `FrgC`/`BckC` means "whatever the swatch holds when this is
+    // drawn". `GradientStops` has no such field, so the stop imports with the
+    // colour Photoshop last resolved into `Clr ` -- which is a real colour and
+    // not a guess, but stops tracking the swatch. Named, because that is a
+    // difference a user would otherwise discover by changing the foreground.
+    if (const std::optional<DescriptorEnumerated> type = stop.field("Type").asEnumerated()) {
+      if (type->valueId == "FrgC" || type->valueId == "BckC") {
+        warnings.push_back(named + ": gradient colour stop " + std::to_string(i) +
+                           " tracks Photoshop's " +
+                           (type->valueId == "FrgC" ? "foreground" : "background") +
+                           " swatch; it imports as the fixed colour the file last stored for "
+                           "it and no longer follows a swatch");
+      }
+    }
+    out.stops.colorStops.push_back(cs);
+  }
+
+  if (out.stops.colorStops.empty()) {
+    warnings.push_back(named +
+                       ": a gradient fill whose colour-stop list is empty or unreadable; fill "
+                       "left off rather than painted black");
+    return false;
+  }
+
+  const DescriptorRef trns = grad.field("Trns");
+  for (size_t i = 0; i < trns.childCount(); ++i) {
+    const DescriptorRef stop = trns.child(i);
+    OpacityStop os;
+    os.position = locationToPosition(stop.field("Lctn").asInteger());
+    os.midpoint = midpointFromPercent(stop.field("Mdpn").asInteger());
+    // `Opct` is a `#Prc`, so 0..100 rather than 0..1.
+    if (const std::optional<DescriptorUnitFloat> op = stop.field("Opct").asUnitFloat())
+      os.opacity = std::clamp(static_cast<float>(op->value / 100.0), 0.0f, 1.0f);
+    else if (const std::optional<double> d = stop.field("Opct").asDouble())
+      os.opacity = std::clamp(static_cast<float>(*d / 100.0), 0.0f, 1.0f);
+    out.stops.opacityStops.push_back(os);
+  }
+
+  // Photoshop writes both lists ascending, but the sort is the render path's
+  // stated precondition and costs nothing on lists this size -- and a file
+  // from anywhere is untrusted input.
+  sortGradientStops(out.stops);
+
+  if (const std::optional<DescriptorEnumerated> type = root.field("Type").asEnumerated()) {
+    if (!mapGradientType(type->valueId, out.placement)) {
+      warnings.push_back(named + ": gradient type '" + type->valueId +
+                         "' has no receiving field (this build has linear, radial and angular "
+                         "only); fill left off rather than drawn as a different shape");
+      return false;
+    }
+  }
+
+  if (const std::optional<DescriptorUnitFloat> angle = root.field("Angl").asUnitFloat())
+    out.placement.angleDegrees = angle->value;
+  else if (const std::optional<double> d = root.field("Angl").asDouble())
+    out.placement.angleDegrees = *d;
+
+  if (const std::optional<DescriptorUnitFloat> scale = root.field("Scl ").asUnitFloat())
+    out.placement.scalePercent = scale->value;
+  else if (const std::optional<double> d = root.field("Scl ").asDouble())
+    out.placement.scalePercent = *d;
+
+  const DescriptorRef offset = root.field("Ofst");
+  if (offset.valid()) {
+    if (const std::optional<DescriptorUnitFloat> h = offset.field("Hrzn").asUnitFloat())
+      out.placement.offsetXPercent = h->value;
+    if (const std::optional<DescriptorUnitFloat> v = offset.field("Vrtc").asUnitFloat())
+      out.placement.offsetYPercent = v->value;
+  }
+
+  // `Rvrs` is applied to the STOPS here rather than carried to the renderer,
+  // so nothing downstream has to know about it -- and swapping the two
+  // geometry endpoints instead would have been wrong for Radial (whose ramp
+  // runs centre to rim) and for Angular (whose sweep direction is fixed).
+  if (root.field("Rvrs").asBoolean().value_or(false)) reverseGradientStops(out.stops);
+
+  // `Dthr` (dither) has no receiving field and needs none: ops/Gradient.hpp §3
+  // measures that f16 output cannot band, so Photoshop's dither would be
+  // correcting a problem this build does not have. Silent on purpose.
   return true;
 }
 
@@ -147,6 +327,15 @@ bool decodePsdVectorStyle(const PsdVectorStyleBlocks& blocks, PsdVectorStyle& ou
       if (content.valid() && readClrColor(content, strokeRgba)) {
         out.stroke.on = true;
         out.stroke.rgba = strokeRgba;
+      } else if (content.valid() && content.field("Grad").valid()) {
+        // A gradient STROKE. `Paint` can receive one, but resolving its
+        // placement needs the STROKE's outline rather than the fill's, and no
+        // sample file has one to check that against -- so it is named rather
+        // than guessed. io/PsdVectorStyle.hpp states the cut.
+        out.warnings.push_back(
+            "vstk: strokeStyleContent is a gradient; a gradient STROKE is not imported (its "
+            "placement would have to be resolved against the stroke outline, which nothing "
+            "here has measured); stroke left off");
       } else {
         out.warnings.push_back(
             "vstk: strokeEnabled but strokeStyleContent has no solid Clr/RGBC colour; "
@@ -169,6 +358,7 @@ bool decodePsdVectorStyle(const PsdVectorStyleBlocks& blocks, PsdVectorStyle& ou
   bool haveFillColor = false;
   bool fillCarrierNamed = false;
   std::array<float, 4> fillRgba{0.0f, 0.0f, 0.0f, 1.0f};
+  std::optional<PsdGradientFill> gradientFill;
 
   if (!blocks.soco.empty()) {
     fillCarrierNamed = true;
@@ -190,11 +380,16 @@ bool decodePsdVectorStyle(const PsdVectorStyleBlocks& blocks, PsdVectorStyle& ou
     out.warnings.push_back(
         "PtFl: a standalone pattern fill has no receiving field; fill left off");
   } else if (!blocks.gdfl.empty()) {
-    // Gradient fill: same refusal, same reason -- never a flat colour guessed
-    // from a gradient stop.
     fillCarrierNamed = true;
-    out.warnings.push_back(
-        "GdFl: a standalone gradient fill has no receiving field; fill left off");
+    const DescriptorParseResult gdflResult =
+        parseVersionedActionDescriptor(blocks.gdfl.subspan(kPsdGdflDescriptorSkip));
+    if (!gdflResult.ok) {
+      error = "GdFl: " + gdflResult.error;
+      return false;
+    }
+    PsdGradientFill grad;
+    if (readGradientFill(gdflResult.tree.root(), "GdFl", grad, out.warnings))
+      gradientFill = std::move(grad);
   }
 
   if (!blocks.vscg.empty()) {
@@ -218,10 +413,13 @@ bool decodePsdVectorStyle(const PsdVectorStyleBlocks& blocks, PsdVectorStyle& ou
         } else {
           out.warnings.push_back("vscg: no Clr/RGBC colour found in the descriptor");
         }
-      } else if (fillType == "PtFl" || fillType == "GdFl") {
-        out.warnings.push_back("vscg: fill kind '" + fillType + "' (" +
-                               (fillType == "PtFl" ? "pattern" : "gradient") +
-                               ") has no receiving field; fill left off");
+      } else if (fillType == "GdFl") {
+        PsdGradientFill grad;
+        if (readGradientFill(vscgResult.tree.root(), "vscg/GdFl", grad, out.warnings))
+          gradientFill = std::move(grad);
+      } else if (fillType == "PtFl") {
+        out.warnings.push_back(
+            "vscg: fill kind 'PtFl' (pattern) has no receiving field; fill left off");
       } else {
         out.warnings.push_back("vscg: unrecognised fill-type tag '" + fillType +
                                "'; fill left off");
@@ -232,6 +430,11 @@ bool decodePsdVectorStyle(const PsdVectorStyleBlocks& blocks, PsdVectorStyle& ou
   if (fillEnabled && haveFillColor) {
     out.fill.on = true;
     out.fill.rgba = fillRgba;
+  } else if (fillEnabled && gradientFill.has_value()) {
+    // `fill.on` stays FALSE here: the caller turns it on once it has appended
+    // the gradient to the document's table and knows the index. See
+    // io/PsdVectorStyle.hpp on why the index has exactly one writer.
+    out.fillGradient = std::move(gradientFill);
   } else if (fillEnabled && blocks.soco.empty() && blocks.ptfl.empty() && blocks.gdfl.empty() &&
              blocks.vscg.empty()) {
     out.warnings.push_back(
@@ -239,6 +442,71 @@ bool decodePsdVectorStyle(const PsdVectorStyleBlocks& blocks, PsdVectorStyle& ou
   }
 
   return true;
+}
+
+GradientGeometry psdGradientGeometryFor(const PsdGradientPlacement& placement,
+                                       const PathBounds& bounds) {
+  GradientGeometry g;
+  g.kind = placement.kind;
+  g.spread = placement.spread;
+  if (!bounds.valid) return g;
+
+  const double w = static_cast<double>(bounds.maxX) - static_cast<double>(bounds.minX);
+  const double h = static_cast<double>(bounds.maxY) - static_cast<double>(bounds.minY);
+  const double scale = placement.scalePercent / 100.0;
+
+  const double cx = (static_cast<double>(bounds.minX) + static_cast<double>(bounds.maxX)) * 0.5 +
+                    w * placement.offsetXPercent / 100.0;
+  const double cy = (static_cast<double>(bounds.minY) + static_cast<double>(bounds.maxY)) * 0.5 +
+                    h * placement.offsetYPercent / 100.0;
+
+  constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+  const double a = placement.angleDegrees * kDegToRad;
+  const double ca = std::cos(a);
+  // NEGATED: Photoshop's angle is measured on a y-UP screen and document space
+  // is y-DOWN, so 90 degrees must point toward SMALLER y. Dropping this sign
+  // flips every non-axis-aligned gradient vertically, which looks plausible
+  // and is wrong -- the header names it as one of the three readings to check
+  // against the first real file.
+  const double sa = -std::sin(a);
+
+  g.x0 = static_cast<float>(cx);
+  g.y0 = static_cast<float>(cy);
+
+  if (placement.kind == GradientKind::Angular) {
+    // Only the DIRECTION matters: `gradientParameterAt()` measures the sample's
+    // angle relative to p0->p1 and wraps. A unit vector keeps it non-degenerate
+    // for any bounds, including a zero-area one.
+    g.x1 = static_cast<float>(cx + ca);
+    g.y1 = static_cast<float>(cy + sa);
+    return g;
+  }
+
+  if (placement.kind == GradientKind::Radial) {
+    // Half the DIAGONAL, so the ramp reaches the corners rather than stopping
+    // at the edge midpoints. A reading, not a measurement -- see the header.
+    const double radius = std::sqrt(w * w + h * h) * 0.5 * scale;
+    g.x1 = static_cast<float>(cx + radius);
+    g.y1 = static_cast<float>(cy);
+    return g;
+  }
+
+  // Linear, and Reflected (which is Linear with a Reflect spread). The length
+  // is the bounds projected onto the ramp direction: the span a ramp needs to
+  // cross the shape at that angle.
+  const double length = (std::fabs(w * ca) + std::fabs(h * std::sin(a))) * scale;
+  if (placement.spread == GradientSpread::Reflect) {
+    // Reflected runs from the CENTRE outward and mirrors, so p0 is the centre
+    // and the ramp is half as long.
+    g.x1 = static_cast<float>(cx + ca * length * 0.5);
+    g.y1 = static_cast<float>(cy + sa * length * 0.5);
+    return g;
+  }
+  g.x0 = static_cast<float>(cx - ca * length * 0.5);
+  g.y0 = static_cast<float>(cy - sa * length * 0.5);
+  g.x1 = static_cast<float>(cx + ca * length * 0.5);
+  g.y1 = static_cast<float>(cy + sa * length * 0.5);
+  return g;
 }
 
 }  // namespace np

@@ -50,8 +50,17 @@ std::vector<uint16_t> transformPreviewStraightHalf(const Layer& layer, const Sel
   if (layer.kind == LayerKind::Text) {
     const int32_t docW = sourceBounds.x + static_cast<int32_t>(sourceBounds.width);
     const int32_t docH = sourceBounds.y + static_cast<int32_t>(sourceBounds.height);
+    // An EMPTY gradient table, and that is a statement rather than a
+    // convenience: `textContentToShapes()` builds every glyph with a SOLID
+    // fill, so no shape reaching this line can carry a `PaintKind::Gradient`,
+    // and this function is handed a `Layer` with no `Document` to take a table
+    // from. The day text gains a gradient fill, this line stops being right
+    // and the signature has to grow a table -- which is why the empty one is
+    // spelled here with a reason instead of defaulted in the callee.
+    static const GradientTable kNoGradients;
     const TileStore tiles = rasterizeVectorLayer(textContentToShapes(layer.text, nullptr),
-                                                 docW < 0 ? 0 : docW, docH < 0 ? 0 : docH);
+                                                 kNoGradients, docW < 0 ? 0 : docW,
+                                                 docH < 0 ? 0 : docH);
     const TransformImage timg = imageFromTileStore(tiles, sourceBounds.x, sourceBounds.y,
                                                    sourceBounds.width, sourceBounds.height);
     if (!timg.valid()) return {};
