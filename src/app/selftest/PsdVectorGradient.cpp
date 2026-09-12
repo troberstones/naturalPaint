@@ -8,7 +8,12 @@
 #include "color/Space.hpp"
 #include "core/Gradient.hpp"
 #include "core/Path.hpp"
+#include "core/LayerOps.hpp"
+#include "core/VectorRaster.hpp"
 #include "io/Descriptor.hpp"
+#include "io/PsdExport.hpp"
+#include "io/PsdImport.hpp"
+#include "io/PsdLayerSection.hpp"
 #include "io/PsdVectorStyle.hpp"
 #include "io/PsdVectorWrite.hpp"
 
@@ -49,6 +54,13 @@ bool runPsdVectorGradientTest() {
   auto check = [&](bool cond, const char* what) {
     std::printf("  %-72s %s\n", what, cond ? "pass" : "FAIL");
     if (!cond) ok = false;
+  };
+
+  auto texel = [](const TileStore& tiles, int32_t x, int32_t y) {
+    const PixelCoord p{x, y};
+    const Tile* t = tiles.find(tileCoordAt(p));
+    return t == nullptr ? std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f}
+                        : t->readPixel(tileLocalOffset(p));
   };
 
   // The shape a gradient is placed against throughout: a 100 x 50 box whose
@@ -456,6 +468,128 @@ bool runPsdVectorGradientTest() {
             "fillEnabled=false: the style decodes");
       check(!style.fillGradient.has_value() && !style.fill.on,
             "fillEnabled=false: a GRADIENT fill is disabled too, not only a solid one");
+    }
+  }
+
+  // ==========================================================================
+  std::printf("  -- E. Through writePsd() and back: the wiring, not the codec --\n");
+  // ==========================================================================
+  //
+  // Sections A-D exercise the two encoders directly. **Neither of them notices
+  // if io/PsdLayerSection never calls them**, which is the gap this section
+  // closes: a gradient-filled shape whose export path still emitted `SoCo`
+  // would pass every assertion above and write a black shape into every file.
+  {
+    constexpr int32_t kW = 48, kH = 32;
+    Document doc = Document::createBlank(kW, kH, WorkingSpace{});
+    doc.layers.clear();
+    doc.layers.push_back(makeVectorLayer("ramp"));
+
+    VectorShape s;
+    SubPath sub;
+    sub.closed = true;
+    for (const PathPoint& q : {PathPoint{8.0f, 6.0f}, PathPoint{40.0f, 6.0f},
+                              PathPoint{40.0f, 26.0f}, PathPoint{8.0f, 26.0f}}) {
+      Anchor a;
+      a.pt = a.in = a.out = q;
+      sub.anchors.push_back(a);
+    }
+    s.path.subpaths.push_back(std::move(sub));
+    s.id = 1;
+    s.fill.on = true;
+    s.fill.kind = PaintKind::Gradient;
+    s.fill.gradient = 0;
+    doc.layers[0].shapes.push_back(s);
+    doc.layers[0].nextShapeId = 2;
+
+    GradientDef g;
+    g.name = "Ramp";
+    g.geometry.kind = GradientKind::Linear;
+    g.geometry.x0 = 8.0f;
+    g.geometry.y0 = 16.0f;
+    g.geometry.x1 = 40.0f;
+    g.geometry.y1 = 16.0f;
+    // Three channels that differ and none at 0 or 1, so a channel swap and a
+    // missing transfer function both fail rather than coinciding.
+    g.stops.colorStops.push_back(ColorStop{0.0f, {0.25f, 0.5f, 0.75f}, 0.5f});
+    g.stops.colorStops.push_back(ColorStop{1.0f, {0.75f, 0.25f, 0.5f}, 0.5f});
+    doc.gradients.push_back(g);
+
+    // The block the record actually carries. `GdFl`, and NOT `SoCo`: the
+    // second half is the load-bearing one, because a black `SoCo` is exactly
+    // what this path wrote before S2 and it looks like a deliberate fill.
+    {
+      PsdLayerRecord rec;
+      std::vector<std::string> warnings;
+      const bool built = buildPsdLayerRecord(doc.layers[0], doc, rec, warnings);
+      auto carries = [&](const char* tag) {
+        const std::vector<uint8_t> needle{'8', 'B', 'I', 'M', static_cast<uint8_t>(tag[0]),
+                                          static_cast<uint8_t>(tag[1]),
+                                          static_cast<uint8_t>(tag[2]),
+                                          static_cast<uint8_t>(tag[3])};
+        if (rec.extraBlocks.size() < needle.size()) return false;
+        for (size_t i = 0; i + needle.size() <= rec.extraBlocks.size(); ++i) {
+          bool hit = true;
+          for (size_t k = 0; k < needle.size(); ++k)
+            if (rec.extraBlocks[i + k] != needle[k]) hit = false;
+          if (hit) return true;
+        }
+        return false;
+      };
+      check(built, "wiring: a gradient-filled Vector layer builds a record");
+      check(built && carries("vsms"), "wiring: the record carries its 8BIM/vsms geometry");
+      check(built && carries("GdFl"), "wiring: and an 8BIM/GdFl fill block beside it");
+      check(built && !carries("SoCo"),
+            "wiring: and NO SoCo -- a black one is what this path wrote before S2");
+    }
+
+    // The whole chain: write a PSD, read it back with this build's own
+    // importer, and check the ramp arrived.
+    const PsdExportResult written = writeLayeredPsd(doc);
+    check(written.ok, "wiring: the document writes a layered PSD");
+    if (written.ok) {
+      const PsdImportResult back = importPsd(written.bytes);
+      check(back.ok && back.document.layers.size() == 1,
+            "wiring: and re-imports as exactly one layer");
+      const bool isVec = back.ok && back.document.layers.size() == 1 &&
+                         back.document.layers[0].kind == LayerKind::Vector &&
+                         back.document.layers[0].shapes.size() == 1;
+      check(isVec, "wiring: which is a Vector layer carrying one shape");
+      if (isVec) {
+        const VectorShape& r = back.document.layers[0].shapes[0];
+        check(r.fill.on && r.fill.kind == PaintKind::Gradient,
+              "wiring: whose fill is a GRADIENT, not the solid black a lost GdFl would give");
+        check(r.fill.gradient < back.document.gradients.size(),
+              "wiring: and whose index points inside the re-imported document's own table");
+        if (r.fill.gradient < back.document.gradients.size()) {
+          const GradientDef& rg = back.document.gradients[r.fill.gradient];
+          check(rg.name == "Ramp", "wiring: the gradient's name made the whole trip");
+          check(rg.stops.colorStops.size() == 2,
+                "wiring: and both its colour stops did");
+
+          // The pixels, which is what a user would see. Probed at two points
+          // across the ramp through the SAME rasteriser the compositor uses.
+          const TileStore before =
+              rasterizeVectorLayer(doc.layers[0].shapes, doc.gradients, kW, kH);
+          const TileStore after = rasterizeVectorLayer(
+              back.document.layers[0].shapes, back.document.gradients, kW, kH);
+          bool close = true;
+          bool differsAcross = false;
+          for (const int32_t x : {12, 36}) {
+            const std::array<float, 4> a = texel(before, x, 16);
+            const std::array<float, 4> b = texel(after, x, 16);
+            for (int c = 0; c < 4; ++c)
+              if (std::fabs(a[c] - b[c]) > 3e-3f) close = false;
+          }
+          if (std::fabs(texel(after, 12, 16)[0] - texel(after, 36, 16)[0]) > 0.2f)
+            differsAcross = true;
+          check(close,
+                "wiring: the re-imported shape rasterises to the same texels, within the "
+                "8-bit step the descriptor's colour field has");
+          check(differsAcross,
+                "wiring: and it is still a RAMP across the shape, not one flat colour");
+        }
+      }
     }
   }
 
