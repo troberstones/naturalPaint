@@ -291,9 +291,64 @@ Stamping ids at import time from a foreign document breaks that invariant.
 Probably: do **not** import `lyid` unless a concrete need appears. Recorded
 here so the decision is visible rather than an oversight.
 
-`lclr` → `Layer::colorLabel`. Present on all 53 layers of `Peter_…fire.psd`
-and set to NONE on every one, so nothing in these files is lost. Low value,
-trivial, do it alongside `lspf` if at all.
+`lclr` → `Layer::colorLabel`. **DONE**, and this entry's own estimate of it was
+wrong in a way worth keeping: it read "present on all 53 layers of
+`Peter_…fire.psd` and set to NONE on every one … low value, trivial", which
+was a judgement made from three files that all happened to carry no labels.
+`App Icon Template.psd`, which arrived later, is organised almost entirely by
+colour — red on the layers marked do-not-export, yellow across the PNG-export
+group, green across the SVG-export group, **including each group's divider and
+folder-marker records**, which carry their group's own colour. Losing that
+loses the file's structure, not a decoration.
+
+The block is 8 bytes: a `uint16` index at offset 0 and six zero bytes. 0 is
+unlabelled (and an absent block means the same thing). 1..7 are Photoshop's
+seven, in its own menu order — which is exactly the order
+`core/Layer.hpp`'s `kLayerColorLabelNames` had already independently chosen, so
+index *i* maps to `kLayerColorLabelNames[i-1]` and nothing else was needed:
+`app/LayerPanel` already drew a swatch per row and `io/NpaintFile` already
+round-tripped the field as `np:label`. 8 or more is a colour a newer Photoshop
+invented — warned by name and index, imported unlabelled rather than guessed.
+io/PsdLayerExtras writes the block back out on export.
+
+---
+
+## 6. Guides — the Image Resources section, which was skipped whole
+
+**DONE.** `importPsd()` used to step over the entire Image Resources section by
+its length. It now walks it for one resource, **1032** ("Grid and guides"), and
+steps over everything else by its declared length as before.
+
+Layout: `uint32` version, two `uint32` grid cycles, `uint32` count, then that
+many (`uint32` location, `uint8` direction) records. **The location is in 32nds
+of a pixel**, confirmed twice over rather than taken from the spec: the grid
+cycles read 576 in all five sample files and 576/32 is 18 px, Photoshop's own
+default grid, and every real guide location divides exactly by 32. Resource
+entries pad to **even** — not the pad-to-4 the Additional Layer Information
+walk uses, and getting that backwards desynchronises the whole section rather
+than one resource.
+
+**The direction byte cannot be verified from any file available here.** Adobe
+says 0 = vertical, 1 = horizontal. The only sample file with guides is square
+and carries the same seven positions on both axes, so the numbers are
+symmetric and prove nothing either way. One vertical guide in a non-square
+document would settle it. The code says so rather than implying it was
+measured.
+
+Guides do not live in `Document`: they are session state (`AppState::guides`),
+because a guide on `Document` would sit inside every `core::History` snapshot,
+making undo restore guides and a guide drag an undoable edit — the objection
+`app/DocumentLifecycle.hpp` already records for the active selection.
+`PsdImportResult::guides` carries them to `app/OpenAnyFile`, which converts and
+hands them to the caller; a file seeds the session only when it actually has
+guides, so opening a guide-less picture leaves a hand-placed set alone.
+
+**A malformed resource section never fails the import.** Guides are decoration;
+a desync stops the walk (nothing after it can be trusted to start at the right
+offset) but keeps whatever was already found and reads the layers normally.
+The guide count is never used to size an allocation — it is an
+attacker-controlled `uint32`, and a five-byte record means the resource's own
+size is the real bound.
 
 ---
 

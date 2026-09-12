@@ -328,87 +328,141 @@ direction that pushes an implementer straight into the trap. Use the render
 for geometry on layers whose fill is enabled; use the **saved composite** and
 the descriptors for anything else.
 
-## Still open after steps 1-4 landed
+## Still open after steps 1-5 landed
 
-Steps 1 through 4 are **built and on main** (`13f8f82`): a Photoshop shape
-layer imports as `LayerKind::Vector`, with its geometry, its fill and its
-stroke. What follows is everything this work knowingly left, in the order the
-damage is visible to someone opening a file.
+Steps 1 through 4 imported a Photoshop shape layer. A second wave closed S1,
+S4 and S5 and left S2 and S3, which are the two that need engine work rather
+than importer work. What follows is the current state, not the plan.
 
-### S1. A Vector layer exports EMPTY to a layered PSD
+### S1. Shape layers now export as shape layers. CLOSED
 
-The one that loses artwork. `writePsd()` hands the RAW document to
-`writePsdLayerAndMaskInfo()` while taking its composite from
-`flattenDocumentToLinear()`, which materialises vector layers — so a PSD
-written from a document with shape layers carries **an empty layer record and
-a merged image that shows the shape**. Open it anywhere and the picture looks
-right; open its layers and they are gone.
+`writePsd()` used to hand the RAW document to `writePsdLayerAndMaskInfo()`
+while taking its composite from `flattenDocumentToLinear()`, so a PSD written
+from a document with shape layers carried an empty layer record and a merged
+image that showed the shape. It now writes both halves of what Photoshop
+writes: a real `vsms` path block plus a `SoCo` fill descriptor, **and** a
+rasterised cache in the layer's own channel data. A reader that understands
+shapes gets editable geometry; one that does not gets correct pixels.
 
-It is not silent (`PsdLayerSection.cpp` warns "its Bezier geometry … exports
-EMPTY") and it is asserted in section H of `app/selftest/PsdExport.cpp`. Two
-ways to close it, and the choice is a real one: rasterise each Vector layer
-into its record on the way out — correct-looking, lossy, and matches what
-Photoshop does for apps that cannot read shapes — or write a genuine `vsms` +
-`SoCo` shape layer, which is this import in reverse and is the only version
-that round-trips. `io/PsdVectorPath.hpp`'s encoding notes are the spec for the
-second.
+io/PsdVectorWrite is that encoder, and its `SoCo` output is **byte-identical
+to the block Photoshop wrote for `App Icon Shape`**, which settles both of
+io/Descriptor.hpp's documented quirks from the writing side: a four-character
+Key writes a length of **zero**, and a UnicodeString's trailing NUL is counted
+**inside** its length. Note what that assertion does and does not prove --
+the fixture colour is black, and `srgbEncode(0) == 0`, so byte-identity
+confirms the descriptor framing and not the transfer function. The colour path
+is covered by the separate round-trip assertion instead, which is the one that
+fails when the encode is wrong.
 
-### S2. Gradient and pattern fills have nowhere to land
+**What a shape layer written by this code still loses**, all of it warned
+about by name rather than silent:
 
-`GdFl` and `PtFl` are named warnings with `fill.on = false`; where Photoshop
-cached a raster the importer falls back to it, so the picture survives and the
-editability does not. `core/VectorShape.hpp:33-49` argues the receiving field:
-a paint kind plus an index into a **document-level gradient table**, reusing
-`ops/Gradient.hpp` rather than duplicating it, so the heavy type sits at the
-table and not in every layer. That is a `core/` change, not an importer one,
-and `io/SvgImport` wants exactly the same field.
+- **Shapes past the first.** A PSD shape layer is exactly one path; the rest
+  survive only in the raster.
+- **Stroke and stroke style**, and `Paint::on == false` ("no fill"), and
+  anything else carried in `vstk` -- not written at all. A fill-less shape
+  gets `vsms` and no `SoCo`, so a reader that decides "shape layer" by looking
+  for a fill block takes the raster instead.
+- **Fill alpha.** PSD's shape colour has no alpha field; only the layer's own
+  opacity carries transparency.
+- **Clip path, and per-shape `name`/`id`/`pivot`** -- no PSD field exists.
+- **Labelling, not appearance**: a NonZero compound's hole comes back marked
+  Union rather than Subtract (the winding does the work, and it draws
+  identically), and a **single-subpath** EvenOdd path comes back NonZero,
+  because `composePsdSubPaths()` votes on the rule using subpaths 1..n-1 and a
+  lone subpath casts no vote. Identical rendering for anything that does not
+  self-intersect.
+- **No `vmsk` beside `vsms`**, deliberately: `vmsk` is also how a vector mask
+  on a raster layer is stored (S4), and a reader taking it that way would clip
+  the outer half of a centred stroke out of the raster written next to it.
 
-### S3. Intersect is refused by name
+### S2. Gradient and pattern fills have nowhere to land. STILL OPEN
+
+`GdFl` and `PtFl` are now recognised wherever they occur -- standalone as well
+as embedded in `vscg`'s fill-type tag -- and are a named warning with
+`fill.on = false`. Recognising them is all that can be done from here: where
+Photoshop cached a raster the importer falls back to it, so the picture
+survives and the editability does not.
+
+`core/VectorShape.hpp:33-49` argues the receiving field: a paint kind plus an
+index into a **document-level gradient table**, reusing `ops/Gradient.hpp`
+rather than duplicating it, so the heavy type sits at the table and not in
+every layer. That is a `core/` change, not an importer one, and `io/SvgImport`
+wants exactly the same field.
+
+### S3. Intersect is refused by name. STILL OPEN
 
 Union, Subtract and Exclude all fall out of one compound path plus a fill
 rule. Intersect does not, and `composePsdSubPaths()` refuses the layer rather
 than guessing. Closing it means real boolean path operations, which belong to
-`app/PathOps` and the PATHS panel — `app/PathOps.hpp:149`'s eleven verbs are
+`app/PathOps` and the PATHS panel -- `app/PathOps.hpp:149`'s eleven verbs are
 `Close … MakeCompound` and none of them is a boolean. A layer mixing Exclude
-with the others is refused for the same reason and would fall out of the same
-work.
+with the others is refused for the same reason and falls out of the same work.
 
-### S4. A vector mask on a raster layer is still ignored
+The double-coverage soundness heuristic is the other thing exact boolean ops
+would finish: it is now **tight** bounds per subpath rather than control-point
+hulls, which strictly shrinks the false-positive set without ever hiding a
+real overlap, but a bounding box is still not an intersection test.
 
-`vmsk` + real pixels + **no** fill block is a raster layer wearing a vector
-mask. It imports as RGB with the mask dropped, which is what it did before any
-of this work — the pixels are the artwork, so nothing is lost that was not
-already being lost. The fix is to rasterise the decoded path into
-`Layer::mask`, which is now a few lines given steps 1-2 exist; the reason it is
-not done is that no sample file has one, so it would ship unverified.
-`PsdImport.cpp` already walks past channel −3 deliberately for the same reason.
+### S4. A vector mask on a raster layer. CLOSED
 
-### S5. The smaller ones, each already warned about
+`vmsk`/`vsms` + real pixels + **no** fill block is a raster layer wearing a
+vector mask. The outline is now rasterised into `Layer::mask` rather than
+dropped: the layer stays `LayerKind::RGB`, and the path becomes what reveals
+its pixels instead of becoming content of its own.
 
-- **Standalone `PtFl`/`GdFl` blocks.** `PsdVectorStyleBlocks` carries only
-  `soco`/`vscg`/`vstk`, so a top-level pattern or gradient block would be
-  invisible to the style reader. In both sample files these appear only as
-  `vscg`'s own embedded fill-type tag, never standalone — the decision belongs
-  to whichever code slices blocks in `io/PsdImport.cpp`, not to the reader.
-- **`strokeStyleLineAlignment`** other than centre. `core/PathStroke` centres
-  every stroke; inside and outside alignment warn rather than guess.
+Two things worth knowing:
+
+- **Combining with a raster mask (channel −2) on the same layer MULTIPLIES.**
+  Photoshop composites through the intersection of the two. No sample file
+  carries both at once, so this is a stated design decision rather than a
+  measurement, and `--selftest` asserts it rather than leaving it to be
+  discovered.
+- **The discriminator widened.** `hasFillBlock` counts `PtFl` and `GdFl` too,
+  not just `SoCo`/`vscg`. Without that, the first real file with a
+  gradient-filled shape would route here and import as a raster wearing its
+  own outline as a mask -- a layer that looks almost right. That case only
+  became reachable when this wave started slicing those two blocks.
+
+Still verified only against hand-built fixtures: no sample file has a vector
+mask on a raster layer.
+
+### S5. The smaller ones. CLOSED, except one that is not ours
+
+- **Standalone `PtFl`/`GdFl`** are recognised and named -- see S2.
 - **Non-`#Pxl` stroke units.** `strokeStyleLineDashOffset` arrives as `#Pnt`
-  in real files and the number is used unconverted. Safe **only because every
-  sample value is 0**, and zero is zero in any unit; a non-zero one warns. A
-  real conversion needs `strokeStyleResolution`, which has no receiving field.
-- **Open subpaths.** `PsdPathStream::sawOpenSubPath` is set and nothing acts
-  on it. `core/PathRaster` fills a contour as if closed, so an open subpath in
-  a fill draws something plausible; whether that is right is undecided.
-- **The Union+Subtract soundness heuristic** is control-point bounding boxes,
-  so it over-warns where boxes touch and curves do not. Exact detection is the
-  same boolean-ops pass S3 needs.
+  in real files, and its number used to be used **unconverted**, which was a
+  wrong value presented as a right one. It is now dropped to zero and warned
+  about by name. Zero stays silent, in any unit, because zero is zero
+  everywhere. A real conversion needs `strokeStyleResolution`, which has no
+  receiving field.
+- **Open subpaths.** `PsdPathStream::sawOpenSubPath` was set and nothing acted
+  on it, and the honest answer turned out to be that nothing should:
+  `core/PathFlatten` propagates `SubPath::closed` faithfully, `core/PathStroke`
+  branches on it (an open contour gets end caps and no seam-joining edge), and
+  `core/PathRaster` implicitly closes a contour for **filling**, which is what
+  Photoshop and SVG both do. Both consumers already match Photoshop, so a
+  warning would report nothing true. Asserted in both directions rather than
+  only commented: an open three-sided square fills at its centre, and stroking
+  the same anchors leaves the fourth side bare while the identical anchors
+  marked closed do stroke it.
+- **`strokeStyleLineAlignment`** other than centre is the one still open, and
+  it is not importer work: `core/PathStroke` centres every stroke, so inside
+  and outside alignment warn rather than guess.
 
 ### What is NOT left
 
 Worth stating so nobody re-opens it: the coordinate encoding is settled
-against a second file, `io/Descriptor` is proven against real Photoshop bytes,
-the `fillEnabled` trap is asserted, `vogk`'s `Trnf` is correctly ignored, and
-the three modules chained on one real layer match psd-tools' render to 0.04%.
+against a second file, `io/Descriptor` is proven against real Photoshop bytes
+in **both** directions, the `fillEnabled` trap is asserted, `vogk`'s `Trnf` is
+correctly ignored, and the three modules chained on one real layer match
+psd-tools' render to 0.04%.
+
+**psd-tools is no longer installed on the machine this was developed on.**
+Every fact above that names it as an oracle was established while it was; a
+future session must either reinstall it or reason from the bytes, and the
+Python probes that read the layer records and image resources directly are the
+cheaper of the two.
 
 ## What this does not cover
 
