@@ -302,7 +302,7 @@ Known-answer renders from this file, all measured:
 |---|---|
 | `Background (Do not export)` | 1,048,576 opaque px, (245,245,245) |
 | `PNG/1`, `SVG/1` | circle centre (512,357) r 256, (192,204,216) |
-| `PNG/4` | **nothing drawn** — fill disabled |
+| `PNG/4` | **nothing drawn** — fill disabled (psd-tools renders it anyway; see below) |
 | `App Icon Shape` | 57,136 opaque px, black, four corners only |
 | `SVG/4 - Layer.svg` | **nothing** — it is a plain empty pixel layer with no vector data at all, unlike its three siblings |
 
@@ -310,10 +310,23 @@ That last row is worth keeping: an importer that produced four shapes for the
 SVG group would be wrong in a way that looks right.
 
 Note the fill colours above are the descriptor's own doubles. psd-tools'
-*render* of `PNG/1` comes back (188,203,216) rather than (192,204,216); the
-4-unit drift is somewhere in its compositing and was not chased. **Compare
-geometry and coverage against the render, but compare colour against the
-descriptor.**
+*render* of `PNG/1` comes back (188,203,216) rather than (192,204,216), and
+its render of `testNonSquareWithShapesOffPage.psd`'s `Star 1` drifts 10 units
+on red. **Compare colour against the descriptor, never against the render.**
+
+**And the render is not a safe coverage oracle either, on precisely the row
+that matters most.** `psd_tools`' per-layer `ShapeLayer.composite()` does not
+consult `vstk.fillEnabled`: it renders `PNG/4 - Layer.png` as 205,452 opaque
+pixels — the same count as its enabled sibling `PNG/2`, though painted white
+rather than the layer's own orange. Photoshop draws nothing at all for that
+layer, and the file's own saved flattened composite is the arbiter: it
+contains **zero** pixels of `PNG/4`'s orange.
+
+So on the one layer whose whole purpose is to catch the `fillEnabled` trap,
+the oracle says "fully covered" where the truth is "nothing drawn", in a
+direction that pushes an implementer straight into the trap. Use the render
+for geometry on layers whose fill is enabled; use the **saved composite** and
+the descriptors for anything else.
 
 ## What this does not cover
 
