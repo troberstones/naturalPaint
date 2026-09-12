@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "core/DirtyTiles.hpp"
+#include "core/History.hpp"
 #include "core/Gradient.hpp"
 #include "core/LayerOps.hpp"
 #include "core/VectorRaster.hpp"
@@ -532,6 +533,58 @@ bool runVectorGradientTest() {
       check(fileContains(withPath, "np:gradients"),
             "npaint: while a document WITH one does -- so the check above discriminates");
     std::remove(withPath);
+  }
+
+  // ==========================================================================
+  std::printf("  -- F2. Undo restores the TABLE, not only the shapes --\n");
+  // ==========================================================================
+  //
+  // The whole argument for putting the table on `Document` rather than on the
+  // session record is that `core::History` snapshots a whole `Document` by
+  // value, so the table and the indices that point into it cannot come apart
+  // under undo. That is a placement claim, and a placement claim is exactly
+  // the kind that is asserted by a header comment and never by a test.
+  {
+    Document doc = Document::createBlank(kW, kH, WorkingSpace{});
+    doc.layers.clear();
+    doc.layers.push_back(makeVectorLayer("art"));
+    doc.layers[0].id = 5;
+    VectorShape s = rectShape(8.0f, 8.0f, 56.0f, 56.0f);
+    s.fill.on = true;
+    s.fill.kind = PaintKind::Gradient;
+    s.fill.gradient = 0;
+    doc.layers[0].shapes.push_back(s);
+    doc.gradients.push_back(rampDef(8.0f, 56.0f));
+
+    History history;
+    history.begin("open", doc);
+
+    // Edit the RAMP only -- no shape changes at all, which is the case a
+    // shapes-only history would lose entirely.
+    Document edited = doc;
+    edited.gradients[0].stops.colorStops[1].color = {0.0f, 1.0f, 0.0f};
+    history.record("recolour gradient", edited);
+
+    const Document* undone = history.undo();
+    check(undone != nullptr && undone->gradients.size() == 1,
+          "history: undo gives back a document with its gradient table");
+    // RED and BLUE, not green: the ramp's far stop was WHITE (1,1,1) and the
+    // edit made it GREEN (0,1,0), so the green channel is 1 in both and cannot
+    // tell them apart. An earlier draft of this check used it and failed on
+    // the correct document.
+    check(undone != nullptr && undone->gradients.size() == 1 &&
+              undone->gradients[0].stops.colorStops[1].color[0] == 1.0f &&
+              undone->gradients[0].stops.colorStops[1].color[2] == 1.0f,
+          "history: and the ramp is the one from BEFORE the edit -- white, not green");
+    check(undone != nullptr && !undone->layers.empty() && !undone->layers[0].shapes.empty() &&
+              undone->layers[0].shapes[0].fill.gradient == 0,
+          "history: with the shape's index still pointing at it");
+
+    const Document* redone = history.redo();
+    check(redone != nullptr && redone->gradients.size() == 1 &&
+              redone->gradients[0].stops.colorStops[1].color[0] == 0.0f &&
+              redone->gradients[0].stops.colorStops[1].color[2] == 0.0f,
+          "history: and redo brings the edited ramp back -- green, red and blue both zero");
   }
 
   // ==========================================================================
