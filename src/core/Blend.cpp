@@ -2,6 +2,9 @@
 
 #include <cmath>
 
+#include "core/Document.hpp"
+#include "core/Layer.hpp"
+
 namespace np {
 namespace {
 
