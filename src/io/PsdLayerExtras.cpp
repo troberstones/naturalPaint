@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <unordered_set>
@@ -299,6 +300,46 @@ void writePsdLsctBlock(PsdWriter& w, PsdRecordRole role, bool openFolder) {
     w.u32(0);
   }
   w.endLengthU32(marker);
+}
+
+// ==========================================================================
+// Additional Layer Information framing
+// ==========================================================================
+
+void writePsdTaggedBlock(PsdWriter& w, const char* key, std::span<const uint8_t> payload) {
+  w.fourcc("8BIM");
+  w.fourcc(key);
+  const size_t marker = w.beginLengthU32();
+  const size_t start = w.size();
+  w.raw(payload);
+  // Inside the declared length -- see the header. `padTo` counts from
+  // `start`, which is the first byte after the length word, so the number
+  // this backpatches is exactly the number io/PsdImport will step over.
+  w.padTo(2, start);
+  w.endLengthU32(marker);
+}
+
+// ==========================================================================
+// The sheet colour
+// ==========================================================================
+
+bool psdLayerColorLabelIndex(const std::string& colorLabel, uint16_t& index) {
+  if (colorLabel.empty()) return false;  // the format's own "no label"
+  for (size_t i = 0; i < std::size(kLayerColorLabelNames); ++i) {
+    if (colorLabel == kLayerColorLabelNames[i]) {
+      // Photoshop's menu order IS this array's order, so the index is the
+      // position plus one -- 0 being "unlabelled", which never reaches here.
+      index = static_cast<uint16_t>(i + 1);
+      return true;
+    }
+  }
+  return false;
+}
+
+std::vector<uint8_t> encodePsdLclrBlock(uint16_t index) {
+  return {static_cast<uint8_t>((index >> 8) & 0xFFu),
+          static_cast<uint8_t>(index & 0xFFu),
+          0, 0, 0, 0, 0, 0};
 }
 
 }  // namespace np

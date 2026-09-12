@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -121,6 +122,30 @@
 // but `app/selftest/PsdLayerExtras.cpp` says plainly, in the assertion text
 // itself, that its depth-2 case is a hand-built fixture and not evidence from
 // a real file.
+//
+// ==========================================================================
+// (3) THE SHEET COLOUR -- `lclr`, and the label this writer refuses to guess
+// ==========================================================================
+//
+// Eight bytes: a `uint16` index, then six zero bytes. Index 0 is unlabelled
+// and 1..7 are Photoshop's own menu order, which is exactly the order of
+// `core/Layer.hpp`'s `kLayerColorLabelNames` -- so the name at array position
+// *i* writes as index *i* + 1. Real bytes from `App Icon Template.psd`: red is
+// `0001000000000000`, yellow `0003000000000000`, green `0004000000000000`.
+//
+// Two cases that are not the same, and conflating them is the whole reason
+// this is a function rather than an index lookup at the call site:
+//
+//   * **An empty label writes NO BLOCK AT ALL.** That is the format's own
+//     "no label", and it keeps the bytes of a label-free document exactly
+//     what they were before this block existed.
+//   * **A label outside the seven writes no block either, and warns naming
+//     it.** `Layer::colorLabel` is deliberately an open set (core/Layer.hpp:
+//     "not a closed set the format enforces"), so a future build's `"teal"`
+//     is legal data arriving through a `.npaint`. Guessing an index for it
+//     would put a colour on the layer that nobody chose. This is the same
+//     rule `psdBlendKeyFor()` already follows for a blend mode PSD has no key
+//     for.
 
 namespace np {
 
@@ -301,5 +326,35 @@ bool planPsdRecords(const Document& doc, std::vector<PsdRecordPlan>& out, std::s
 // unconditionally instead of branching. There is deliberately no error case
 // here -- the writer's `ok()` is untouched on every role.
 void writePsdLsctBlock(PsdWriter& w, PsdRecordRole role, bool openFolder);
+
+// --- Additional Layer Information framing ---------------------------------
+
+// One complete `8BIM` + four-character key + `u32` length + payload block,
+// padded to an even total.
+//
+// `PsdLayerRecord::extraBlocks` is a plain byte buffer whose blocks
+// io/PsdImport walks by their declared lengths with no even-rounding of its
+// own, so **a block whose payload is odd must carry the pad byte INSIDE its
+// declared length**, not after it: a stray byte the walk did not expect
+// desynchronises it into reading a length out of the middle of the next
+// block's key. That is one rule, stated once, rather than at each producer --
+// `writePsdLsctBlock()` above predates it and frames its own two fixed-size
+// (and therefore even) payloads inline.
+void writePsdTaggedBlock(PsdWriter& w, const char* key, std::span<const uint8_t> payload);
+
+// --- The sheet colour -----------------------------------------------------
+
+// Photoshop's 1..7 index for `colorLabel`, per section 3 above.
+//
+// Returns **false, with `index` untouched, for any label that must not become
+// a block**: the empty label and any name outside `kLayerColorLabelNames`.
+// The caller tells the two apart by asking whether the label was empty --
+// which it has in hand -- rather than by a second out-parameter, because the
+// only difference between them is whether a warning is warranted.
+bool psdLayerColorLabelIndex(const std::string& colorLabel, uint16_t& index);
+
+// The `lclr` payload: the `u16` index then six zero bytes. Eight bytes, so it
+// is even and needs no pad of its own.
+std::vector<uint8_t> encodePsdLclrBlock(uint16_t index);
 
 }  // namespace np

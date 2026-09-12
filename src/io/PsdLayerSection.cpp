@@ -14,7 +14,9 @@
 #include "color/Space.hpp"
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
+#include "core/VectorRaster.hpp"
 #include "io/PackBits.hpp"
+#include "io/PsdVectorWrite.hpp"
 
 namespace np {
 namespace {
@@ -205,11 +207,139 @@ const char* lostContentFor(LayerKind kind) {
     case LayerKind::Adjustment: return "its op stack";
     case LayerKind::Text: return "its editability (it is pixels, not a 'TySh' type layer)";
     case LayerKind::Flats: return "its fill table and adjacency";
-    case LayerKind::Vector: return "its Bezier geometry";
+    // **Vector is deliberately absent from this table.** Every other kind
+    // here loses its parametric content on the way into PSD; a Vector layer
+    // does not, since docs/psd-vector-shapes.md's S1 closed -- its geometry
+    // and fill go out as a real `vsms` + `SoCo` shape layer
+    // (`attachVectorShape()` below). What it *can* still lose is per-layer
+    // and per-shape rather than per-kind (a second shape, a stroke, a clip),
+    // so those are named there, with numbers, instead of by one sentence
+    // that would be wrong for the common case.
+    case LayerKind::Vector: return "";
     case LayerKind::RGB: return "";
     case LayerKind::Group: return "";
   }
   return "";
+}
+
+// A Vector layer's rasterised cache, or an empty store.
+//
+// **The same `rasterizeVectorLayer()` the compositor reaches through
+// `MaterializedDocument`**, called directly rather than through it: that class
+// rewrites Text, Flats and Strokes layers too, and giving those a raster here
+// would change what three other kinds export as a side effect of fixing S1.
+// What matters for agreement is that this is the one rasteriser -- the merged
+// composite comes from `flattenDocumentToLinear()`, which materialises through
+// the same function, so the record's pixels and the file's preview cannot
+// disagree about what the shape looks like.
+TileStore rasterizeVectorCache(const Layer& layer, const Document& doc) {
+  if (layer.shapes.empty()) return TileStore{};
+  return rasterizeVectorLayer(layer.shapes, doc.width, doc.height);
+}
+
+// Appends this layer's `lclr` block, or nothing. Section 3 of
+// io/PsdLayerExtras.hpp argues both halves of "or nothing".
+void attachColorLabel(const Layer& layer, PsdLayerRecord& rec,
+                      std::vector<std::string>& warnings) {
+  if (layer.colorLabel.empty()) return;  // no label, and therefore no block
+  uint16_t index = 0;
+  if (!psdLayerColorLabelIndex(layer.colorLabel, index)) {
+    warnings.push_back("layer " + quoted(layer.name) + ": its colour label '" +
+                       layer.colorLabel +
+                       "' is not one of the seven PSD has an index for, so no sheet colour is "
+                       "written -- a guessed index would put a colour on the layer that "
+                       "nobody chose.");
+    return;
+  }
+  PsdWriter w;
+  writePsdTaggedBlock(w, "lclr", encodePsdLclrBlock(index));
+  const std::vector<uint8_t>& bytes = w.bytes();
+  if (w.ok()) rec.extraBlocks.insert(rec.extraBlocks.end(), bytes.begin(), bytes.end());
+}
+
+// Appends this layer's `vsms` (geometry) and `SoCo` (fill colour) blocks --
+// docs/psd-vector-shapes.md S1's editable half. The raster half is the
+// ordinary channel data every record carries, fed from
+// `rasterizeVectorCache()` above.
+//
+// **Everything this cannot carry is named with a number**, rather than by the
+// one blanket "its Bezier geometry could not be carried" sentence that stood
+// here before S1 closed and that is now false for the common case. A PSD shape
+// layer is exactly one path and one fill; a `core::Layer` is a list of shapes
+// each with a fill, a stroke, a stroke style and an optional clip.
+void attachVectorShape(const Layer& layer, const Document& doc, PsdLayerRecord& rec,
+                       std::vector<std::string>& warnings) {
+  const std::string named = "layer " + quoted(layer.name) + " (Vector)";
+  if (layer.shapes.empty()) {
+    warnings.push_back(named +
+                       ": it holds no shapes at all, so it exports as an empty layer record.");
+    return;
+  }
+
+  const VectorShape& shape = layer.shapes.front();
+  const PsdVectorShapeMask mask =
+      encodePsdVectorShapeMask(shape.path, doc.width, doc.height);
+  if (mask.bytes.empty()) {
+    warnings.push_back(named +
+                       ": its first shape's path has no subpath of two or more anchors, so it "
+                       "encloses nothing PSD can carry and no vector outline is written; the "
+                       "layer exports as its rasterised copy alone.");
+    return;
+  }
+
+  PsdWriter w;
+  writePsdTaggedBlock(w, "vsms", mask.bytes);
+  // **No `SoCo` for a fill that is off.** `Paint::on == false` is genuinely
+  // "no fill", and PSD carries that only in `vstk`'s `fillEnabled` flag,
+  // which this build does not write -- so writing a black `SoCo` would paint
+  // a shape nobody authored, exactly the `PNG/4 - Layer.png` trap
+  // io/PsdVectorStyle.hpp names from the reading side.
+  if (shape.fill.on)
+    writePsdTaggedBlock(w, "SoCo", encodePsdSolidColorBlock(shape.fill.rgba));
+  if (!w.ok()) {
+    warnings.push_back(named +
+                       ": the byte writer rejected a field while framing its vector blocks, so "
+                       "none were written; the layer exports as its rasterised copy alone.");
+    return;
+  }
+  const std::vector<uint8_t>& bytes = w.bytes();
+  rec.extraBlocks.insert(rec.extraBlocks.end(), bytes.begin(), bytes.end());
+
+  if (layer.shapes.size() > 1)
+    warnings.push_back(named + ": a PSD shape layer carries exactly one path, so " +
+                       std::to_string(layer.shapes.size() - 1) + " of its " +
+                       std::to_string(layer.shapes.size()) +
+                       " shapes are in the rasterised copy written beside the geometry and are "
+                       "not editable in PSD.");
+  if (mask.subpathsWritten < shape.path.subpaths.size())
+    warnings.push_back(named + ": " +
+                       std::to_string(shape.path.subpaths.size() - mask.subpathsWritten) +
+                       " of its first shape's subpath(s) have fewer than two anchors, enclose "
+                       "no area, and were not written.");
+  if (mask.saturatedCoords > 0)
+    warnings.push_back(named + ": " + std::to_string(mask.saturatedCoords) +
+                       " path coordinate(s) lie more than 128 canvas-widths off the document "
+                       "and were clamped to the limit of PSD's 8.24 fixed-point field.");
+  if (!shape.fill.on)
+    warnings.push_back(named +
+                       ": its first shape has no fill, and PSD records 'no fill' only in a "
+                       "'vstk' descriptor this build does not write -- so a reader that decides "
+                       "a layer is a shape layer by looking for a fill block will take the "
+                       "rasterised copy instead of the geometry.");
+  else if (shape.fill.rgba[3] < 1.0f)
+    warnings.push_back(named +
+                       ": its fill colour's alpha is not carried -- PSD's shape colour has no "
+                       "alpha field, so the shape exports fully opaque and the layer's own "
+                       "opacity is the only transparency in the file.");
+  if (shape.stroke.on)
+    warnings.push_back(named +
+                       ": its stroke is not carried into the shape layer (that needs a 'vstk' "
+                       "descriptor this build does not write); it is drawn in the rasterised "
+                       "copy beside the geometry.");
+  if (shape.clip.has_value())
+    warnings.push_back(named +
+                       ": its clip path is not carried into the shape layer; it is applied in "
+                       "the rasterised copy beside the geometry.");
 }
 
 }  // namespace
@@ -268,8 +398,20 @@ bool buildPsdLayerRecord(const Layer& layer, const Document& doc, PsdLayerRecord
     warnings.push_back("layer " + quoted(layer.name) +
                        ": its layer mask is not carried into this PSD.");
 
+  // **A Vector layer's pixels are not on the layer.** core/VectorRaster.hpp
+  // section 1 argues at length why a Vector layer stores geometry and no
+  // tiles, so the raster that goes in this record's channel data is built
+  // here -- the Maximize-Compatibility copy that keeps the artwork visible to
+  // every reader that does not understand `vsms`.
+  TileStore vectorRaster;
+  if (layer.kind == LayerKind::Vector) vectorRaster = rasterizeVectorCache(layer, doc);
+  const TileStore* rasterSource =
+      layer.rgbTiles.has_value()
+          ? &*layer.rgbTiles
+          : (layer.kind == LayerKind::Vector ? &vectorRaster : nullptr);
+
   const char* lost = lostContentFor(layer.kind);
-  const bool hasRaster = layer.rgbTiles.has_value();
+  const bool hasRaster = rasterSource != nullptr;
   if (lost[0] != '\0') {
     if (hasRaster) {
       warnings.push_back("layer " + quoted(layer.name) + " (" + layerKindName(layer.kind) +
@@ -286,7 +428,7 @@ bool buildPsdLayerRecord(const Layer& layer, const Document& doc, PsdLayerRecord
   Rect rect;
   RectSamples samples;
   if (hasRaster) {
-    const TileStore& tiles = *layer.rgbTiles;
+    const TileStore& tiles = *rasterSource;
     const Rect bounds = occupiedTileBounds(tiles);
     if (!bounds.empty()) {
       rect.left = std::max(bounds.left, 0);
@@ -334,6 +476,14 @@ bool buildPsdLayerRecord(const Layer& layer, const Document& doc, PsdLayerRecord
                        std::to_string(samples.clippedSamples) +
                        " colour sample(s) outside [0,1] in linear light were clipped by the "
                        "8-bit destination.");
+
+  // The Additional Layer Information blocks, appended in the order Photoshop
+  // writes them: the small fixed-shape ones first, then the descriptor-bearing
+  // ones. Nothing reads them positionally -- io/PsdImport walks the region
+  // block by block and dispatches on the key -- so the order is a convention
+  // rather than a requirement.
+  attachColorLabel(layer, out, warnings);
+  if (layer.kind == LayerKind::Vector) attachVectorShape(layer, doc, out, warnings);
 
   return true;
 }

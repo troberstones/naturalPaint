@@ -453,6 +453,7 @@ add_executable(naturalPaint
   io/PsdVectorCompose.cpp
   io/PsdVectorPath.cpp
   io/PsdVectorStyle.cpp
+  io/PsdVectorWrite.cpp
   io/SvgImport.cpp
   io/SvgPath.cpp
   io/SvgStyle.cpp
