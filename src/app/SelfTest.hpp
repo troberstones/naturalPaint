@@ -5428,6 +5428,15 @@ bool runOpenAnyFileTest();
 // file, never read from a checked-in binary.
 bool runPsdImportTest();
 
+// io/PsdVectorCompose -- step 2 of docs/psd-vector-shapes.md: folds a
+// decoded PSD path stream's per-subpath boolean operations (Union, Subtract,
+// Exclude, Intersect, merge-with-previous) into the single compound `Path`
+// and single `FillRule` this codebase can actually draw, refusing by name
+// (Intersect; Exclude mixed with the others) rather than guessing. Headless,
+// GPU-free; every fixture is hand-built `PsdPathStream` data, not read from
+// a decoder.
+bool runPsdVectorComposeTest();
+
 // **The Filter and Image menus, and app/FilterOps -- the bridge that makes
 // docs/reachability-audit.md's C1 stop being true for six of the ~93 entries
 // it names.** `runBlurTest()` and `runFiltersTest()` already prove the
