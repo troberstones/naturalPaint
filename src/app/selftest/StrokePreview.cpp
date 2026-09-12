@@ -424,6 +424,31 @@ bool runStrokePreviewTest() {
           "changing radius along the stroke, so this rules out every route but the real one");
   }
 
+  // ======================================================================
+  // And the EXIT taper reaches it too -- through `stroke.end()`, the release
+  // of the hold-back, which the entry taper never exercises. Asserted here
+  // and not only against `StrokeSession` directly because "the module does
+  // it" and "it reaches a painted strip" are separate claims, and it was the
+  // second one that was false for the entry taper (fix 10 above).
+  // ======================================================================
+  {
+    BrushState tapered = base;
+    tapered.model.tip.diameterPx = 40.0f;
+    tapered.native.taperOut.on = true;
+    tapered.native.taperOut.lengthPx = 200.0f;
+    tapered.native.taperOut.minSizePct = 0.0f;
+    BrushState untapered = tapered;
+    untapered.native.taperOut.on = false;
+
+    const StrokePreviewImage withTaper = rasteriseStrokePreview(tapered, lut);
+    const StrokePreviewImage withoutTaper = rasteriseStrokePreview(untapered, lut);
+    std::printf("  [measured] exit taper vs no taper: %zu differing byte(s) of %zu\n",
+                differingBytes(withTaper, withoutTaper), withTaper.rgba.size());
+    check(differingBytes(withTaper, withoutTaper) > 0,
+          "exit taper changes the preview strip -- the held-back tail really is released and "
+          "tapered by the time a stroke is finished");
+  }
+
   std::printf("[selftest] stroke preview %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

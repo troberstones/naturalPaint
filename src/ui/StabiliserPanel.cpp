@@ -1,5 +1,6 @@
 #include "ui/StabiliserPanel.hpp"
 
+#include <cfloat>
 #include <cstdio>
 
 #include "imgui.h"
@@ -177,6 +178,11 @@ void drawStabiliserOptionsBarField(AppState& st) {
   // works unchanged inside it.
   pushAtelierMono();
   ImGui::SetNextItemWidth(130.0f);
+  // Same eight-item popup cap as `ui/TaperPanel.cpp`'s own field, and the same
+  // reason to lift it: these contents are far taller than eight rows, so the
+  // bottom of them was reachable only by scrolling a popup that does not look
+  // scrollable.
+  ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
   if (ImGui::BeginCombo("##stabiliserField", compactEffectiveLabel(eff).c_str())) {
     drawStabiliserPopoverContents(st);
     ImGui::EndCombo();

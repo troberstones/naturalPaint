@@ -1,5 +1,6 @@
 #include "ui/TaperPanel.hpp"
 
+#include <cfloat>
 #include <cstdio>
 #include <string>
 
@@ -13,9 +14,16 @@ namespace {
 // control twice rather than as two features. The length stays editable while
 // the taper is off: it is what you set BEFORE switching it on, and what the
 // `on` field exists to preserve (`BrushTaper::on`'s own comment).
+// What a taper switched on for the first time gets, so ticking the box does
+// something visible. 0 px is a legal setting -- it is just not one anybody
+// reaches for on purpose, and it is what "I ticked it and nothing happened"
+// was.
+constexpr float kDefaultLengthPx = 40.0f;
+
 void drawOne(const char* title, const char* idScope, BrushTaper& taper) {
   ImGui::PushID(idScope);
-  ImGui::Checkbox(title, &taper.on);
+  if (ImGui::Checkbox(title, &taper.on) && taper.on && taper.lengthPx <= 0.0f)
+    taper.lengthPx = kDefaultLengthPx;
   ImGui::SetNextItemWidth(120.0f);
   ImGui::SliderFloat("Length (px)", &taper.lengthPx, 0.0f, 500.0f, "%.0f");
   ImGui::BeginDisabled(!taper.on || taper.lengthPx <= 0.0f);
@@ -23,6 +31,7 @@ void drawOne(const char* title, const char* idScope, BrushTaper& taper) {
   ImGui::SliderFloat("Min size %", &taper.minSizePct, 0.0f, 100.0f, "%.0f");
   ImGui::Checkbox("Taper flow too", &taper.flow);
   ImGui::EndDisabled();
+  if (taper.on && taper.lengthPx <= 0.0f) ImGui::TextDisabled("0 px is no ramp -- set a length.");
   ImGui::PopID();
 }
 
@@ -63,6 +72,13 @@ void drawBrushTaperControls(AppState& st) {
 void drawTaperOptionsBarField(AppState& st) {
   pushAtelierMono();
   ImGui::SetNextItemWidth(130.0f);
+  // Without a constraint of our own, a combo popup is capped at EIGHT items
+  // tall (`ImGuiComboFlags_HeightRegular`, imgui_widgets.cpp's own
+  // `CalcMaxPopupHeightFromItemCount()`) and silently scrolls the rest. These
+  // contents are about a dozen rows, so the whole exit taper sat below the
+  // fold -- which is exactly how it came to look like a control that did
+  // nothing.
+  ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
   const bool open = ImGui::BeginCombo("##taperField", compactLabel(st.brush.native).c_str());
   popAtelierMono();
   if (open) {
