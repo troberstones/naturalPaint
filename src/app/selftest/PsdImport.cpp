@@ -2042,6 +2042,17 @@ bool runPsdImportTest() {
               r.document.layers[0].rgbTiles.has_value(),
           "E3: an outline with real pixels and NO fill block stays an RGB layer -- a vector "
           "MASK is not a shape layer, and its pixels are the artwork");
+    // And it says NOTHING. The kind alone does not pin the fill-block test:
+    // a build that tried to make a shape of this layer would fail to paint it
+    // and fall back to the very same raster, arriving at the right kind by the
+    // wrong route -- and telling the user its shape could not be painted, on
+    // an ordinary masked layer that has no shape and needs no excuse.
+    bool complained = false;
+    for (const std::string& w : r.warnings)
+      if (w.find("masked raster") != std::string::npos) complained = true;
+    check(!complained,
+          "E3: and it warns about nothing -- this layer is not a failed shape, so a message "
+          "explaining why its shape could not be painted would be noise about a bug");
   }
   {
     // An outline with no fill block AND no raster is not a vector mask on
