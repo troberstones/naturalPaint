@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <utility>
 #include <vector>
 
@@ -497,6 +498,77 @@ bool runBrushTaperTest() {
     check(worstError < 0.05f,
           "a stroke shorter than the exit ramp still tapers, and does so identically in all "
           "four directions -- it is not mistaken for a stationary click");
+  }
+
+  // ==========================================================================
+  // A stroke SHORTER than its ramps. Both ramps are read off a length the
+  // brush carries, not a length the stroke has, so a short stroke used to be
+  // thinned along the whole of itself -- it never reached the brush's own
+  // width anywhere -- and with both tapers on the two multipliers compounded
+  // (`radius *= entryMul * exitMul`), squaring the loss. A 40 px stroke with
+  // 80 px ramps came out at a quarter of its width, which at a small tip or a
+  // low minimum is a stroke that deposits nothing at all and reads as the
+  // brush having failed. The ramps are capped at a proportional share of the
+  // stroke's own length, so they meet at one point rather than overlapping,
+  // and that point is full size.
+  // ==========================================================================
+  {
+    // The mark's greatest thickness, in texels: the widest column a
+    // horizontal stroke painted. This is the observable the user's eye
+    // actually uses -- "is my line the width of my brush?" -- and unlike
+    // `lastDabRadius()` it sees the MIDDLE of the stroke, which is where
+    // compounding does its damage.
+    const auto maxThickness = [](const OpenDocument& d, size_t layerIndex) {
+      const Layer& l = d.document.layers[layerIndex];
+      std::map<int32_t, size_t> column;
+      if (l.rgbTiles.has_value())
+        for (const auto& [coord, tile] : *l.rgbTiles)
+          for (int32_t y = 0; y < kTileSize; ++y)
+            for (int32_t x = 0; x < kTileSize; ++x)
+              if (tile.readPixel(PixelCoord{x, y})[3] > 0.0f)
+                ++column[coord.x * kTileSize + x];
+      size_t worst = 0;
+      for (const auto& [x, n] : column) {
+        (void)x;
+        if (n > worst) worst = n;
+      }
+      return worst;
+    };
+
+    constexpr float kRampPx = 80.0f;   // twice the stroke
+    constexpr float kMinPct = 20.0f;
+    const auto runShort = [&](const BrushTaper& in, const BrushTaper& out) {
+      BrushState brush;
+      brush.model.tip.diameterPx = 20.0f;  // radius 10, so ~20 texels thick
+      brush.native.taperIn = in;
+      brush.native.taperOut = out;
+      MixboxLut noLut;
+      OpenDocument d = makeBlankOpenDocument(256, 256, WorkingSpace{}, "T");
+      StrokeSession session;
+      std::string error;
+      const BrushTip tip = brushTipFor(brush, noLut, 1.0f);
+      session.begin(d, d.activeLayer, tip, Tool::Brush, &error, /*model=*/nullptr,
+                    DynamicInputs{}, /*clone=*/nullptr, StabiliserParams{}, 1.0f, &brush.native);
+      for (int i = 0; i <= 8; ++i) session.addPoint(100.0f + static_cast<float>(i) * 5.0f, 128.0f);
+      session.end();
+      return maxThickness(d, d.activeLayer);
+    };
+
+    const BrushTaper ramp{true, kRampPx, kMinPct, false};
+    const size_t plain = runShort(BrushTaper{}, BrushTaper{});
+    const size_t exitOnly = runShort(BrushTaper{}, ramp);
+    const size_t both = runShort(ramp, ramp);
+
+    std::printf("  [measured] 40 px stroke, 80 px ramps, 20 px tip: widest point %zu texels "
+                "(no taper) vs %zu (exit only) vs %zu (both)\n",
+                plain, exitOnly, both);
+
+    check(exitOnly >= plain * 9 / 10,
+          "a stroke shorter than the exit ramp still reaches the brush's own width somewhere -- "
+          "the ramp is capped at the stroke's length rather than thinning all of it");
+    check(both >= plain * 9 / 10,
+          "...and so does one with BOTH tapers on: the two ramps share the stroke and meet at "
+          "full size, rather than compounding into a stroke that is nowhere full width");
   }
 
   std::printf("[selftest] brush taper / origin dab %s\n", ok ? "PASS" : "FAIL");

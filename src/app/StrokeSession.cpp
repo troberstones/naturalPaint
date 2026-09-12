@@ -1960,6 +1960,35 @@ void StrokeSession::replayWithExitTaper() {
   pressureSmoothLatched_ = false;
   strokeTiles_.clear();
 
+  // Both ramps are lengths the BRUSH carries, and the stroke it just painted
+  // may be shorter than either. Left uncapped, such a stroke is thinned along
+  // the whole of itself -- it reaches the brush's own width nowhere -- and
+  // with both tapers on the two multipliers COMPOUND (`radius *= entryMul *
+  // exitMul` in `depositPending()`), squaring the loss: a 40 px stroke of a
+  // 20 px tip with 80 px ramps measured 2 texels at its widest instead of 20,
+  // and at a small tip or a low minimum that is a stroke which deposits
+  // nothing at all and reads as the brush being broken.
+  //
+  // So each ramp is capped at its own PROPORTIONAL share of the stroke. The
+  // two then meet at exactly one point instead of overlapping, and that point
+  // is full size; a stroke long enough to hold both keeps them whole, which
+  // is what makes this a no-op for every ordinary stroke. Capping is possible
+  // only here, because this is the first moment the stroke's total length is
+  // a known quantity -- while the pen was down every point was still within a
+  // taper length of the end. Writing the members is safe: the session is
+  // finished when this returns, and a zero-length gesture caps both ramps to
+  // zero, which is the click rule (never tapered) arrived at by arithmetic.
+  float strokeArc = 0.0f;
+  for (size_t i = 1; i < allDabs_.size(); ++i)
+    strokeArc += dabDistance(allDabs_[i - 1], allDabs_[i]);
+  const float wantIn = taperIn_.on ? std::max(taperIn_.lengthPx, 0.0f) : 0.0f;
+  const float wantOut = taperOut_.on ? std::max(taperOut_.lengthPx, 0.0f) : 0.0f;
+  if (const float want = wantIn + wantOut; want > 0.0f && strokeArc < want) {
+    const float share = strokeArc / want;
+    taperIn_.lengthPx = wantIn * share;
+    taperOut_.lengthPx = wantOut * share;
+  }
+
   pending_ = allDabs_;
   replaying_ = true;
   depositPending(/*isEndFlush=*/true);
