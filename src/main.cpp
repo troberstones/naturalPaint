@@ -49,6 +49,7 @@
 #include "app/RegionTool.hpp"  // --region-demo
 #include "app/TilePreview.hpp"
 #include "app/ToolSwitch.hpp"
+#include "app/Version.hpp"
 #include "app/ZoomAndSize.hpp"
 #include "brush/Deposit.hpp"
 #include "color/Space.hpp"
@@ -1650,6 +1651,14 @@ bool verifySplitDemoScreenshot(const std::string& path, np::AtelierSplit mode, f
 }  // namespace
 
 int main(int argc, char** argv) {
+  // --version / -v : print `versionString()` and exit 0, before SDL, the GPU
+  // or a window -- the same posture as --abr-report and the other headless
+  // flags below, and the one flag that has to work even in a checkout that
+  // cannot make a window at all. `-v` is free: nothing in this build reads
+  // it already.
+  bool versionFlag = false;
+  // --help / -h : usage, printed before SDL for the identical reason.
+  bool helpFlag = false;
   // --selftest [out.png] runs the solver headless and checks that latent-space
   // pigment mixing actually produces green where blue crosses yellow.
   // [[maybe_unused]]: only --selftest reads these, and NP_SELFTEST=OFF compiles
@@ -1915,7 +1924,11 @@ int main(int argc, char** argv) {
   std::vector<std::string> positionalPaths;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a(argv[i]);
-    if (a == "--selftest") {
+    if (a == "--version" || a == "-v") {
+      versionFlag = true;
+    } else if (a == "--help" || a == "-h") {
+      helpFlag = true;
+    } else if (a == "--selftest") {
       selfTest = true;
       if (i + 1 < argc && argv[i + 1][0] != '-') selfTestOut = argv[++i];
     } else if (a == "--abr-report") {
@@ -2630,6 +2643,35 @@ int main(int argc, char** argv) {
     // falls through here unchanged -- pre-existing behaviour this step does
     // not touch, and out of scope for D4, which is about a bare filename
     // opening nothing, not about diagnosing an unrecognised flag.
+  }
+
+  // Before everything else, including the NP_SELFTEST=OFF refusal below:
+  // both of these have to work in every build, not only one with the self-
+  // test suite compiled in.
+  if (versionFlag) {
+    std::printf("%s\n", np::versionString().c_str());
+    return 0;
+  }
+  if (helpFlag) {
+    // Deliberately not an exhaustive list of every flag this binary reads --
+    // most of the others (--abr-report, --psd-report, --dab-scan, the
+    // --*-demo family, ...) are developer instrumentation for a specific
+    // subsystem, documented beside the code that reads them, not part of
+    // the interface a user of the application needs.
+    std::printf(
+        "%s\n"
+        "Usage: naturalPaint [options] [file...]\n"
+        "\n"
+        "  --version, -v   print the version and exit\n"
+        "  --help, -h      print this message and exit\n"
+        "  --selftest      run the headless self-test suite and exit\n"
+        "  --batch <action.npaction> <output-dir> <file...>\n"
+        "                  run one recorded action over files, headless, and exit\n"
+        "  <file>...       open one or more documents, one tab each\n"
+        "\n"
+        "Run with no arguments to open an empty document.\n",
+        np::versionString().c_str());
+    return 0;
   }
 
 #if !NP_WITH_SELFTEST
@@ -4291,6 +4333,9 @@ int main(int argc, char** argv) {
     // PRD D23: app/WarpMesh's bicubic lattice and app/TransformSession's Warp
     // mode built on it. Headless and GPU-free.
     const bool warpMeshOk = np::runWarpMeshTest();
+    // `naturalPaint --version`: app/Version's versionString() format.
+    // Headless and GPU-free.
+    const bool versionOk = np::runVersionTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4364,7 +4409,8 @@ int main(int argc, char** argv) {
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
                     nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
-                    pasteCommandsOk && commandsFillOk && zoomToSelectionOk && warpMeshOk;
+                    pasteCommandsOk && commandsFillOk && zoomToSelectionOk && warpMeshOk &&
+                    versionOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

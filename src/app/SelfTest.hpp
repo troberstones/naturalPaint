@@ -6776,4 +6776,12 @@ bool runZoomToSelectionTest();
 // touches ui/. See app/selftest/WarpMesh.cpp.
 bool runWarpMeshTest();
 
+// `naturalPaint --version`: app/Version's versionString() has the shape
+// "naturalPaint <semver> (<hex7+>[-dirty]|unknown)", and this checkout never
+// reports "unknown" (it is a real git checkout). Headless and GPU-free --
+// the flag itself exits before SDL/GPU/window init, so this calls the same
+// production function rather than spawning the binary. See
+// app/selftest/Version.cpp.
+bool runVersionTest();
+
 }  // namespace np
