@@ -5,6 +5,7 @@
 #include "app/DocumentLifecycle.hpp"
 #include "brush/QuickMaskPaint.hpp"
 #include "color/Space.hpp"
+#include "core/Half.hpp"
 #include "core/SelectionOps.hpp"
 #include "ui/MacPaintUI.hpp"
 
@@ -152,6 +153,50 @@ bool runQuickMaskPaintTest() {
           "quick mask: an eraser dab over painted coverage reduces it");
     check(near(afterErase, 0.5f, kQuantStep),
           "quick mask: Subtract's min(1-flow) rule -- half-flow erases to ~0.5 here");
+  }
+
+  // --- F. The overlay packer: red everywhere, alpha follows coverage ------
+  //
+  // ui/MacPaintUI.cpp's `QuickMaskOverlayTexture` (the GPU upload) is outside
+  // --selftest's reach the same way `FilterPreviewTexture` is -- there is no
+  // window to read a texture back from. `packQuickMaskOverlayHalf()` carries
+  // every texel decision (the tint colour, the default-vs-painted alpha, the
+  // tile-to-canvas clipping) in a plain function that takes no GPU type, so
+  // that logic is proven here instead of only by looking at a screenshot.
+  {
+    OpenDocument od = makeQuickMaskFixture();
+    toggleQuickMask(od);  // empty mask: nothing painted yet
+    const std::vector<uint16_t> blank =
+        packQuickMaskOverlayHalf(*od.quickMask, od.document.width, od.document.height);
+    check(blank.size() == static_cast<size_t>(od.document.width) *
+                              static_cast<size_t>(od.document.height) * 4,
+          "quick mask overlay: one RGBA half-float quad per document texel");
+    bool blankIsHalfRedEverywhere = true;
+    for (size_t t = 0; t < blank.size(); t += 4) {
+      if (halfToFloat(blank[t + 0]) != 1.0f || halfToFloat(blank[t + 1]) != 0.0f ||
+          halfToFloat(blank[t + 2]) != 0.0f || !near(halfToFloat(blank[t + 3]), 0.5f, 1e-3f)) {
+        blankIsHalfRedEverywhere = false;
+        break;
+      }
+    }
+    check(blankIsHalfRedEverywhere,
+          "quick mask overlay: an untouched mask is 50% red (1,0,0,0.5) at every texel");
+
+    const BrushTip full = discTip(6.0f, 1.0f, 1.0f);
+    paintQuickMaskDab(*od.quickMask, full, Vec2{16.0f, 16.0f}, od.document.width,
+                      od.document.height, /*erase=*/false);
+    const std::vector<uint16_t> painted =
+        packQuickMaskOverlayHalf(*od.quickMask, od.document.width, od.document.height);
+    const size_t centreIdx =
+        (static_cast<size_t>(16) * od.document.width + static_cast<size_t>(16)) * 4;
+    check(halfToFloat(painted[centreIdx + 0]) == 1.0f &&
+              near(halfToFloat(painted[centreIdx + 3]), 0.0f, 1e-3f),
+          "quick mask overlay: full coverage fades the tint to fully transparent, not just "
+          "less red");
+    const size_t farIdx =
+        (static_cast<size_t>(40) * od.document.width + static_cast<size_t>(40)) * 4;
+    check(near(halfToFloat(painted[farIdx + 3]), 0.5f, 1e-3f),
+          "quick mask overlay: a texel outside the dab is untouched by painting one spot");
   }
 
   return ok;

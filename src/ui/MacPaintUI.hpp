@@ -670,4 +670,15 @@ bool undoLastRefine(OpenDocument& od);
 // `core::History` in either direction.
 void toggleQuickMask(OpenDocument& od);
 
+// PRD E12's overlay tint, packed as straight-alpha RGBA16Float half floats --
+// red where the mask has no coverage, fading to transparent where it does.
+// Pure CPU, no GPU/ImGui type in its signature, so `app/selftest` can prove
+// the packing directly rather than only through a texture nobody but a real
+// GPU frame ever reads back. External linkage for that reason alone; the
+// GPU-side texture upload built on top of it (ui/MacPaintUI.cpp's
+// `QuickMaskOverlayTexture`) stays file-local like `FilterPreviewTexture`
+// beside it, since `--selftest` never opens a window to exercise either.
+std::vector<uint16_t> packQuickMaskOverlayHalf(const QuickMask& mask, int32_t width,
+                                               int32_t height);
+
 }  // namespace np

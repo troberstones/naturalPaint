@@ -83,9 +83,9 @@ const std::vector<ControlsSectionSpec>& controlsSections() {
        "active selection into one; double-click a row, or LOAD, to make it the active "
        "selection again. Rename and delete act on the row, by name -- a channel is "
        "document data, so both are undoable.\n\n"
-       "Q toggles QUICK MASK: the active selection opens up as a paintable overlay -- "
-       "brush adds to it and the eraser removes -- and leaving converts the overlay back "
-       "into the selection."},
+       "Q toggles QUICK MASK: the active selection opens up as a paintable overlay, shown "
+       "on the canvas as a 50% red tint over the unselected area -- brush adds to it and "
+       "the eraser removes -- and leaving converts the overlay back into the selection."},
       // docs/automation-plan.md step 7 / PRD P1, P5. A `Document` role beside
       // the three above it, and starting CLOSED for the same budget reason
       // they mostly do -- but note that its default PLACEMENT is the flyout

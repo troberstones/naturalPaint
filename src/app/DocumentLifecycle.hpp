@@ -306,6 +306,14 @@ struct OpenDocument {
   // live mask into another's.
   std::optional<QuickMask> quickMask;
 
+  // Bumped whenever `quickMask`'s content changes (entering, painting, or
+  // erasing) -- the same "has it changed?" question `selectionRevision`
+  // answers for `selection`, needed here too because painting into the
+  // overlay does not touch `selection` at all while quick mask is engaged.
+  // ui/MacPaintUI's overlay texture is keyed on this so it re-uploads only
+  // when a stroke actually deposited something, not every frame.
+  uint64_t quickMaskRevision = 0;
+
   // Bumped whenever `selection` changes. ui/MacPaintUI caches the selection's
   // drawn bounds against this, and PaintSim's GPU coverage upload is keyed on
   // it too -- both are expensive enough that "has it changed?" needs an O(1)

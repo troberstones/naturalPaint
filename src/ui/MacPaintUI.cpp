@@ -83,6 +83,7 @@
 #include "app/WheelInput.hpp"
 #include "app/ZoomAndSize.hpp"
 #include "color/LutBake.hpp"  // kMaxCurvePointsPerChannel
+#include "core/Half.hpp"
 #include "core/Histogram.hpp"
 #include "core/LayerCompOps.hpp"
 #include "core/LayerOps.hpp"
@@ -6479,7 +6480,57 @@ void toggleQuickMask(OpenDocument& od) {
     // (Cmd+Shift+D) should not arm on it.
     od.selection.reset();
     ++od.selectionRevision;
+    ++od.quickMaskRevision;
   }
+}
+
+// PRD E12's overlay tint: 50% red where the quick mask does NOT cover, fading
+// to transparent where it does -- straight-alpha RGBA16Float, the same format
+// `compositeDocumentStraightHalf()` produces, so it draws through the
+// identical `addCanvasQuad()` pipeline with no new shader or blend state
+// (ui/MacPaintUI.cpp's `QuickMaskOverlayTexture` uploads exactly this). RGB is
+// a constant (1,0,0); only alpha, `(1 - coverage) * 0.5`, varies per texel.
+// core/Channels.hpp's own `QuickMask` comment leaves "the overlay's colour
+// and opacity" to this layer on purpose, so the packing lives here.
+//
+// Fills the whole buffer with the constant "nothing painted here" pixel
+// first, then overwrites only the texels an allocated `SelectionTile`
+// actually covers -- `core::Selection`'s own rule that an absent tile reads
+// as 0.0 coverage, so this is `quickMaskCoverageAt()` inlined at tile
+// granularity rather than a texel-by-texel call into it, which would repeat
+// the same tile lookup for every one of a tile's 16384 texels.
+//
+// External linkage (declared in ui/MacPaintUI.hpp) purely so `app/selftest`
+// can prove this packing directly -- it takes no GPU or ImGui type, unlike
+// the texture built on top of it, which `--selftest` never exercises because
+// it never opens a window.
+std::vector<uint16_t> packQuickMaskOverlayHalf(const QuickMask& mask, int32_t width,
+                                               int32_t height) {
+  const uint16_t red = floatToHalf(1.0f);
+  const uint16_t zero = floatToHalf(0.0f);
+  const uint16_t defaultAlpha = floatToHalf(0.5f);  // coverage 0.0 -> alpha 0.5
+  std::vector<uint16_t> halves(static_cast<size_t>(width) * height * 4);
+  for (size_t t = 0; t < halves.size(); t += 4) {
+    halves[t + 0] = red;
+    halves[t + 1] = zero;
+    halves[t + 2] = zero;
+    halves[t + 3] = defaultAlpha;
+  }
+  for (const auto& [coord, tile] : mask.coverage.tiles) {
+    const PixelCoord origin = tileOrigin(coord);
+    for (int32_t ly = 0; ly < kTileSize; ++ly) {
+      const int32_t y = origin.y + ly;
+      if (y < 0 || y >= height) continue;
+      for (int32_t lx = 0; lx < kTileSize; ++lx) {
+        const int32_t x = origin.x + lx;
+        if (x < 0 || x >= width) continue;
+        const float coverage = tile.coverageAt(PixelCoord{lx, ly});
+        const float alpha = (1.0f - coverage) * 0.5f;
+        halves[(static_cast<size_t>(y) * width + x) * 4 + 3] = floatToHalf(alpha);
+      }
+    }
+  }
+  return halves;
 }
 
 // ---------------------------------------------------------------------------
@@ -9902,6 +9953,82 @@ class FilterPreviewTexture {
   std::vector<Retired> retired_;
 };
 FilterPreviewTexture g_filterPreviewTexture;
+
+// Same shape as `FilterPreviewTexture` above -- fresh-on-resize, retire not
+// release, re-upload keyed on a caller generation rather than a revision this
+// overlay has no document-wide counter for. A single global rather than one
+// per `OpenDocument`: at most one document is ever the active canvas a frame
+// draws, so there is never more than one of these on screen at once, and
+// `quickMaskOverlayViewFor()` folds the document's own id into the generation
+// it passes in, so switching to a different document with its own live quick
+// mask forces a re-upload instead of showing the previous document's texels
+// for one frame.
+class QuickMaskOverlayTexture {
+ public:
+  WGPUTextureView viewFor(GpuContext& gpu, const QuickMask& mask, int32_t width, int32_t height,
+                          uint64_t generation) {
+    if (width <= 0 || height <= 0) return nullptr;
+    const bool freshTexture = texture_ == nullptr || width != width_ || height != height_;
+    if (freshTexture) {
+      if (texture_ != nullptr) retired_.push_back(Retired{texture_, view_});
+      WGPUTextureDescriptor td = {};
+      td.label = sv("quick mask overlay");
+      td.dimension = WGPUTextureDimension_2D;
+      td.size = {static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1};
+      td.format = WGPUTextureFormat_RGBA16Float;
+      td.mipLevelCount = 1;
+      td.sampleCount = 1;
+      td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+      texture_ = wgpuDeviceCreateTexture(gpu.device, &td);
+      view_ = wgpuTextureCreateView(texture_, nullptr);
+      width_ = width;
+      height_ = height;
+      uploaded_ = 0;
+    }
+    if (freshTexture || generation != uploaded_) {
+      const std::vector<uint16_t> halves = packQuickMaskOverlayHalf(mask, width_, height_);
+      WGPUTexelCopyTextureInfo dst = {};
+      dst.texture = texture_;
+      dst.mipLevel = 0;
+      dst.aspect = WGPUTextureAspect_All;
+      WGPUTexelCopyBufferLayout layout = {};
+      layout.bytesPerRow = static_cast<uint32_t>(width_) * 4u * sizeof(uint16_t);
+      layout.rowsPerImage = static_cast<uint32_t>(height_);
+      const WGPUExtent3D extent = {static_cast<uint32_t>(width_), static_cast<uint32_t>(height_),
+                                   1};
+      wgpuQueueWriteTexture(gpu.queue, &dst, halves.data(), halves.size() * sizeof(uint16_t),
+                            &layout, &extent);
+      uploaded_ = generation;
+    }
+    return view_;
+  }
+
+ private:
+  struct Retired {
+    WGPUTexture texture = nullptr;
+    WGPUTextureView view = nullptr;
+  };
+  WGPUTexture texture_ = nullptr;
+  WGPUTextureView view_ = nullptr;
+  int32_t width_ = 0;
+  int32_t height_ = 0;
+  uint64_t uploaded_ = 0;
+  std::vector<Retired> retired_;
+};
+QuickMaskOverlayTexture g_quickMaskOverlayTexture;
+
+// `nullptr` when `activeDoc` has no live quick mask, otherwise the overlay
+// view to draw on top of the real canvas quad. The generation folds in
+// `activeDoc.id` (`ui/DocumentTexture.hpp`'s own style of combining two
+// numbers into a cache key) so a document switch always re-uploads rather
+// than risking a stale document's texels for a frame.
+WGPUTextureView quickMaskOverlayViewFor(GpuContext& gpu, const OpenDocument& activeDoc) {
+  if (!activeDoc.quickMask.has_value()) return nullptr;
+  const uint64_t generation =
+      static_cast<uint64_t>(activeDoc.id) * 1000003ull + activeDoc.quickMaskRevision;
+  return g_quickMaskOverlayTexture.viewFor(gpu, *activeDoc.quickMask, activeDoc.document.width,
+                                           activeDoc.document.height, generation);
+}
 
 // The canvas draw code's one hook into all of this: `nullptr` when nothing
 // has an active preview for `activeDoc`, otherwise the view to draw INSTEAD
@@ -17615,6 +17742,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
       if (documentView == nullptr)
         documentView = g_documentTextures.viewFor(gpu, *activeDocument, nullptr, &docViewport);
+      // PRD E12's tint: a second quad over the same corners, drawn only when
+      // this document has a live quick mask. Straight-alpha "over" is already
+      // `addCanvasQuad()`'s blend state, so the translucent red layer
+      // composites correctly with no new pipeline or bind group.
+      const WGPUTextureView quickMaskView = quickMaskOverlayViewFor(gpu, *activeDocument);
       // Once per copy (PRD D8). The nine share one texture and one revision
       // cache, so the repeats cost nine quads and no second composite -- this
       // is a view of the pixels, not nine of them.
@@ -17622,6 +17754,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         ImVec2 c[4];
         tileQuad(tiles[t], c);
         addCanvasQuad(dl, documentView, c[0], c[1], c[2], c[3]);
+        if (quickMaskView != nullptr) addCanvasQuad(dl, quickMaskView, c[0], c[1], c[2], c[3]);
       }
     }
     // T5, reversed: no border around a canvas that was never drawn.
@@ -20772,6 +20905,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       for (const Vec2& dab : dabs)
         paintQuickMaskDab(*strokeDoc->quickMask, tip, dab, strokeDoc->document.width,
                           strokeDoc->document.height, erase);
+      if (!dabs.empty()) ++strokeDoc->quickMaskRevision;
       st.lastX = tx;
       st.lastY = ty;
     } else if (strokeTool && down && hovered && inside && !panning && !rotating && !sizingHeld &&
@@ -21154,6 +21288,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           for (const Vec2& dab : tailDabs)
             paintQuickMaskDab(*qmDoc->quickMask, tip, dab, qmDoc->document.width,
                               qmDoc->document.height, erase);
+          if (!tailDabs.empty()) ++qmDoc->quickMaskRevision;
         }
         st.quickMaskStrokeActive = false;
       }
