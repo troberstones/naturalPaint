@@ -4,7 +4,7 @@
 #include "ops/Filters.hpp"  // LocalContrastParams
 #include "ops/Lens.hpp"     // LensParams
 
-// app/FilterCommandsExtra -- reach wave, track `zoom`: encoders for the three
+// app/FilterCommandsExtra -- encoders for the three
 // Filter-menu additions (Highpass, Local Contrast, Lens Correction) this
 // track wires a dialog to.
 //

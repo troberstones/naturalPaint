@@ -9845,7 +9845,7 @@ enum class FilterPreviewOwner {
   // is not the gradient or the pointer is not down (see the owner-guarded
   // call beside the canvas input block).
   GradientTool,
-  // Reach wave, track `zoom`: Highpass/Local Contrast/Lens Correction, drawn
+  // Highpass/Local Contrast/Lens Correction, drawn
   // from ui/FilterDialogsExtra.cpp -- a dialog outside this file, so it
   // cannot name one of the enumerators above. `setExternalFilterPreview()`/
   // `clearExternalFilterPreview()` (ui/MacPaintUI.hpp) are the only door onto
@@ -12984,8 +12984,8 @@ bool keyboardBelongsToTyping(const AppState& st) {
 // Declared in ui/MacPaintUI.hpp, for the identical reason `toolMenuFamily()`
 // below it is: `FilterPreviewOwner`/`setFilterPreview()`/`clearFilterPreview()`
 // are internally linked (the anonymous namespace just closed), so a dialog
-// living in its own translation unit (ui/FilterDialogsExtra.cpp, reach wave
-// track `zoom`) needs a pair of externally-linked functions to reach them
+// living in its own translation unit (ui/FilterDialogsExtra.cpp)
+//  needs a pair of externally-linked functions to reach them
 // through -- see ui/MacPaintUI.hpp's own comment on why `External` exists.
 void setExternalFilterPreview(DocumentId id, size_t layerIndex, TileStore tiles) {
   setFilterPreview(FilterPreviewOwner::External, id, layerIndex, std::move(tiles));
@@ -13718,7 +13718,7 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
 
     // --- View -------------------------------------------------------------
     case MenuAction::FitToWindow: st.requestFitWindow = true; break;
-    // PRD Q1 (P0), reach wave track `zoom`: same request-then-consume shape
+    // PRD Q1 (P0): same request-then-consume shape
     // as FitToWindow, and consumed at the same point (the canvas window's
     // on-screen size only exists inside MacPaintUI's Begin()/End() block).
     case MenuAction::ZoomToSelection: st.requestZoomToSelection = true; break;
@@ -13797,7 +13797,7 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     // PRD D8's two.
     case MenuAction::RemoveLightingGradient: g_removeLightingGradientRequested = true; break;
     case MenuAction::Offset:                 g_offsetRequested = true;                 break;
-    // Reach wave, track `zoom`: ui/FilterDialogsExtra.hpp's three dialogs --
+    // Ui/FilterDialogsExtra.hpp's three dialogs --
     // the small hooks reach-common.md asks for; the dialogs themselves live
     // in that file, not here.
     case MenuAction::Highpass:      requestHighpassDialog();      break;
@@ -16932,7 +16932,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // make-tileable pixel ops, same placement rule again.
   drawRemoveLightingGradientDialog(st);
   drawOffsetDialog(st);
-  // Reach wave, track `zoom`: Highpass, Local Contrast and Lens Correction --
+  // Highpass, Local Contrast and Lens Correction --
   // living in their own translation unit (ui/FilterDialogsExtra.hpp), same
   // placement rule again.
   drawHighpassDialog(st);
@@ -18456,7 +18456,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       applyZoomFactor(1.0f / kZoomStepFactor, viewportCenter);
       st.requestZoomOut = false;
     }
-    // PRD Q1 (P0), reach wave track `zoom`: View > Zoom to Selection, the
+    // PRD Q1 (P0): View > Zoom to Selection, the
     // menu's own `hasEngagedSelection` predicate already keeps the item
     // (and the keymap chord reaching here at all in practice) gated on a
     // real selection -- this re-checks rather than trusts that, the same

@@ -769,7 +769,7 @@ bool runFilterMenuTest() {
           "what the preview held");
   }
 
-  std::printf("  -- J. reach wave, track `zoom`: Highpass and Local Contrast --\n");
+  std::printf("  -- J. Highpass and Local Contrast --\n");
   {
     // Section A's own standard: the layer's result after `applyHighpass()`
     // must be bit-identical to calling `highpassTiles()` directly with the

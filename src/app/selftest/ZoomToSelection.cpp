@@ -6,7 +6,7 @@
 #include "app/ZoomAndSize.hpp"      // kViewZoomMin, kViewZoomMax
 #include "app/ZoomToSelection.hpp"
 
-// PRD Q1 (P0), reach wave track `zoom`: View > Zoom to Selection.
+// PRD Q1 (P0): View > Zoom to Selection.
 // `fitZoomToSelection()` is pure -- see app/ZoomToSelection.hpp's own header
 // for why -- so this section is entirely headless and GPU-free, the same
 // posture app/selftest/ZoomAndSize.cpp already takes for the sibling zoom

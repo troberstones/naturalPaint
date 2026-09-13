@@ -221,7 +221,7 @@ bool runMenuModelTest() {
   // 100 -> 108: PRD M9's `PasteInto` and `PasteAsNewDocument`, PRD D26's
   // `Fill`, `Stroke` and `DefinePattern`, and PRD E11/E12's
   // `SaveSelectionAsChannel`, `LoadChannelAsSelection` and `ToggleQuickMask`.
-  // 108 -> 112 in the reach wave's `zoom` track: PRD Q1's `ZoomToSelection`
+  // 108 -> 112: PRD Q1's `ZoomToSelection`
   // and PRD D22/reachability-audit C1's `Highpass`, `LocalContrast` and
   // `LensCorrect` -- counted the same way, off `MenuAction`'s enumerators in
   // the merged header (113 including `Count`), never by adding 4 to 108.
@@ -761,7 +761,7 @@ bool runMenuModelTest() {
     // 33 -> 34: PRD M9's Paste Into, Shift+Opt+Cmd+V -- verified free (Cmd+V
     // is plain Paste's), checked free in keymaps/default.json before being
     // claimed. Paste as New Document claims nothing, matching Photoshop.
-    // 34 -> 35, reach wave track `zoom`: PRD Q1's Zoom to Selection,
+    // 34 -> 35: PRD Q1's Zoom to Selection,
     // Cmd+Opt+0 -- checked free of both keymaps/default.json and every other
     // claimed chord before being taken (neither had ever bound Cmd+Alt+0).
     // Highpass/Local Contrast/Lens Correction claim nothing, matching

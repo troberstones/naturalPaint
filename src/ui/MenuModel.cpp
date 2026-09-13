@@ -174,7 +174,7 @@ const MenuItemSpec* specTable() {
 
     set(MenuAction::FitToWindow, "Fit to Window", "Cmd+0",
         MenuKeyEquivalent{'0', kMenuModCmd, "fit_window"});
-    // PRD Q1 (P0), reach wave track `zoom`. `Cmd+Opt+0` sits next to
+    // PRD Q1 (P0). `Cmd+Opt+0` sits next to
     // `Cmd+0`/`Cmd+1` for the identical reason `ResetView` claimed
     // `Shift+Cmd+0` -- checked free of both a `keymaps/default.json` binding
     // and any other `MenuKeyEquivalent` chord before being claimed (neither
@@ -267,7 +267,7 @@ const MenuItemSpec* specTable() {
     // before SDL sees it -- not a thing to claim speculatively.
     set(MenuAction::RemoveLightingGradient, "Remove Lighting Gradient...", "");
     set(MenuAction::Offset, "Offset...", "");
-    // Reach wave, track `zoom`. No key equivalents, same reason as the two
+    // No key equivalents, same reason as the two
     // above: `docs/shortcuts.md` assigns none of these three.
     set(MenuAction::Highpass, "Highpass...", "");
     set(MenuAction::LocalContrast, "Local Contrast...", "");
@@ -587,7 +587,7 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     // them is inside `OpenDocument::document`. Zooming to place something
     // precisely is a mid-transform gesture, not an interruption of one.
     case MenuAction::FitToWindow:
-    // PRD Q1, reach wave track `zoom`: the same seat as FitToWindow -- it
+    // PRD Q1: the same seat as FitToWindow -- it
     // rewrites `AppState::view` alone, nothing inside `OpenDocument::document`.
     case MenuAction::ZoomToSelection:
     case MenuAction::Zoom100:
@@ -749,7 +749,7 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::Inpaint:
     case MenuAction::RemoveLightingGradient:
     case MenuAction::Offset:
-    // Reach wave, track `zoom`: the same seat as GaussianBlur above -- each
+    // The same seat as GaussianBlur above -- each
     // rewrites the active layer's own texels.
     case MenuAction::Highpass:
     case MenuAction::LocalContrast:
@@ -814,7 +814,7 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     // PRD D8's two, for the identical reason -- each opens a modal.
     case MenuAction::RemoveLightingGradient:
     case MenuAction::Offset:
-    // Reach wave, track `zoom`: the identical reason -- each opens a modal
+    // The identical reason -- each opens a modal
     // (ui/FilterDialogsExtra.hpp).
     case MenuAction::Highpass:
     case MenuAction::LocalContrast:
@@ -1288,7 +1288,7 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     flt.push_back(filterItem(MenuAction::Emboss));
     flt.push_back(filterItem(MenuAction::MotionBlur));
     flt.push_back(separator());
-    // Reach wave, track `zoom`: two more engines with no menu path before
+    // Two more engines with no menu path before
     // this. Highpass beside the blur-family it reuses `BlurParams` with;
     // Local Contrast set apart, a tonal op rather than a blur-based one.
     flt.push_back(filterItem(MenuAction::Highpass));
@@ -1319,7 +1319,7 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     flt.push_back(separator());
     flt.push_back(filterItem(MenuAction::RemoveLightingGradient));
     flt.push_back(filterItem(MenuAction::Offset));
-    // PRD D22, reach wave track `zoom`. Set apart from D8's make-tileable pair
+    // PRD D22. Set apart from D8's make-tileable pair
     // above it -- a geometric correction, not a tiling workflow step -- but
     // sharing their enable predicate: `lensCorrectTiles()` is bounded by the
     // selection exactly as every filter in this menu is.
@@ -1333,7 +1333,7 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     MenuNode view = submenu("View");
     std::vector<MenuNode>& v = view.children;
     v.push_back(item(MenuAction::FitToWindow));
-    // PRD Q1 (P0), reach wave track `zoom`. Disabled without an engaged
+    // PRD Q1 (P0). Disabled without an engaged
     // selection -- `Inpaint`'s own tooltip above makes the identical case for
     // reusing `hasEngagedSelection` rather than a new context field.
     {

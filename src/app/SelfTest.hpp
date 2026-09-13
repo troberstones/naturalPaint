@@ -6753,7 +6753,7 @@ bool runPasteCommandsTest();
 // app/selftest/CommandsFill.cpp.
 bool runCommandsFillTest();
 
-// PRD Q1 (P0), reach wave track `zoom`: View > Zoom to Selection.
+// PRD Q1 (P0): View > Zoom to Selection.
 // `fitZoomToSelection()` (app/ZoomToSelection.hpp) -- the largest zoom that
 // fits the selection's bounds with the tighter axis deciding, the selection's
 // own centre landing exactly on the viewport's centre (round-tripped through

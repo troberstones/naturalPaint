@@ -259,7 +259,7 @@ CommandResult doGaussianBlur(OpenDocument& doc, const JsonValue& params) {
   return fromFilterResult(applyGaussianBlur(doc, sigma), doc, "gaussian blur");
 }
 
-// Reach wave, track `zoom`: PLAN.md's highpass, `src - blur(src)`
+// PLAN.md's highpass, `src - blur(src)`
 // (ops/Filters.hpp §1). Gaussian only -- the dialog exposes one "Radius"
 // slider, the identical shape `doGaussianBlur()` above takes, rather than
 // unsharp mask's Gaussian/box choice; nothing in PLAN.md's own formulation of
@@ -272,7 +272,7 @@ CommandResult doHighpass(OpenDocument& doc, const JsonValue& params) {
   return fromFilterResult(applyHighpass(doc, sigma), doc, "highpass");
 }
 
-// Reach wave, track `zoom`: local contrast (ops/Filters.hpp §6). `radius` is
+// Local contrast (ops/Filters.hpp §6). `radius` is
 // `LocalContrastParams::blur.sigma` -- Gaussian only, the same simplification
 // `doHighpass()` above makes -- and `amount` may be negative (it flattens
 // rather than sharpens), so it is gated by `requireNonZero()`, not
@@ -1189,7 +1189,7 @@ void registerImageCommands(std::vector<CommandSpec>* out) {
   // ---- the Filter menu's seven, plus three more ---------------------------
   out->push_back({"filter_gaussian_blur", "Gaussian Blur", {"sigma"}, pixelOpUnavailable,
                   doGaussianBlur, /*selectionBounded=*/true});
-  // Reach wave, track `zoom`: two more engines with no menu path before this
+  // Two more engines with no menu path before this
   // (docs/reachability-audit.md C1), registered beside their nearest sibling
   // rather than at the end of this table -- `filter_gaussian_blur` reuses the
   // identical `BlurParams`/Gaussian-only shape `filter_highpass` does.

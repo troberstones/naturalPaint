@@ -627,7 +627,7 @@ bool runCommandsPatternsTest() {
     r = applyCommand(od, lens);
     check(r.ok && r.texelsChanged > 0, "command: a real lens_correct runs and changes texels");
 
-    // Reach wave, track `zoom`: `applyLensCorrect()`/`previewLensCorrect()`
+    // `applyLensCorrect()`/`previewLensCorrect()`
     // (app/FilterOps.hpp) are new -- `doLensCorrect()` above now calls the
     // first of them instead of `applyPixelFilter()` directly, but neither
     // function had a test of its own yet. Section A's own standard, on a

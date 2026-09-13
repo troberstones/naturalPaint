@@ -219,7 +219,7 @@ std::vector<ImageCommandFixture> imageCommandFixtures() {
     p.set("sigma", num(2.0));
     add("filter_gaussian_blur", p);
   }
-  // Reach wave, track `zoom`: two more engines with no menu path before this.
+  // Two more engines with no menu path before this.
   {
     JsonValue p = JsonValue::object();
     p.set("sigma", num(6.0));
@@ -728,7 +728,7 @@ bool runCommandsImageTest() {
     check(!r7.ok && contains(r7.status, "strength"),
           "range: a strength of zero refuses rather than running the identity");
 
-    // Reach wave, track `zoom`: `filter_highpass` shares `requireAbove()` with
+    // `filter_highpass` shares `requireAbove()` with
     // `filter_gaussian_blur`/`filter_sharpen` above, so a sigma of zero
     // refuses the same way.
     JsonValue zeroSigma = JsonValue::object();

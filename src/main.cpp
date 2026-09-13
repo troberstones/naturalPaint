@@ -4279,7 +4279,7 @@ int main(int argc, char** argv) {
     const bool pasteCommandsOk = np::runPasteCommandsTest();
     // PRD D26: `fill` and `stroke`.
     const bool commandsFillOk = np::runCommandsFillTest();
-    // PRD Q1 (P0), reach wave track `zoom`: View > Zoom to Selection.
+    // PRD Q1 (P0): View > Zoom to Selection.
     const bool zoomToSelectionOk = np::runZoomToSelectionTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&

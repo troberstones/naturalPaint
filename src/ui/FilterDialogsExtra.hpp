@@ -1,6 +1,6 @@
 #pragma once
 
-// ui/FilterDialogsExtra -- reach wave, track `zoom`: the Filter menu's three
+// ui/FilterDialogsExtra -- the Filter menu's three
 // additions (Highpass, Local Contrast, Lens Correction; PRD D22), split out
 // of ui/MacPaintUI.cpp for the reason ui/FillDialog.hpp's own header gives:
 // that file is 23k lines, other tracks edit it concurrently, and a dialog

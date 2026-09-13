@@ -206,7 +206,7 @@ FilterOpResult applyEmboss(OpenDocument& doc, const EmbossParams& params);
 FilterOpResult applyMedian(OpenDocument& doc, const MedianParams& params);
 FilterOpResult applyMotionBlur(OpenDocument& doc, const MotionBlurParams& params);
 
-// Reach wave, track `zoom`: three more engines with no menu path
+// Three more engines with no menu path
 // (docs/reachability-audit.md C1), wired the identical way.
 //
 // Highpass is PLAN.md's own `src - blur(src)` formulation and reuses

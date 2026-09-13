@@ -5,7 +5,7 @@
 
 namespace np {
 
-// app/ZoomToSelection -- PRD Q1 (P0), reach wave track `zoom`: View > Zoom to
+// app/ZoomToSelection -- PRD Q1 (P0): View > Zoom to
 // Selection.
 //
 // Pure and headless, like app/ZoomAndSize.hpp's own functions and for the
