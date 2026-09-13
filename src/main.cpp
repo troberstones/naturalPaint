@@ -4279,6 +4279,9 @@ int main(int argc, char** argv) {
     const bool pasteCommandsOk = np::runPasteCommandsTest();
     // PRD D26: `fill` and `stroke`.
     const bool commandsFillOk = np::runCommandsFillTest();
+    // PRD D23: app/WarpMesh's bicubic lattice and app/TransformSession's Warp
+    // mode built on it. Headless and GPU-free.
+    const bool warpMeshOk = np::runWarpMeshTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4352,7 +4355,7 @@ int main(int argc, char** argv) {
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
                     nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
-                    pasteCommandsOk && commandsFillOk;
+                    pasteCommandsOk && commandsFillOk && warpMeshOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

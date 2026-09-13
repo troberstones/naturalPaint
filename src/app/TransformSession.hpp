@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "app/DocumentLifecycle.hpp"
+#include "app/WarpMesh.hpp"
 #include "core/Clipboard.hpp"
 #include "core/Document.hpp"
 #include "core/Layer.hpp"
@@ -382,6 +383,54 @@ namespace np {
 //     geometry (a pure function of `sourceBounds()`/`pending()`) is exact
 //     either way -- what is missing is only the live paint inside it.
 // ==========================================================================
+// ==========================================================================
+// (9) WARP: A SECOND SHAPE FOR THE SAME SESSION (PRD D23, track `warp`)
+// ==========================================================================
+//
+// `TransformMode::Warp` is a Free Transform ⇄ Warp TOGGLE on the SAME live
+// session, not a second session type: `beginLayer()`/`beginSelectionPixels()`
+// are unchanged, and everything section 1-8 says about `sourceBounds_`,
+// `documentId_`, `layerIndex_`/`layerId_` and cancel needing no restore step
+// applies to a warp exactly as it does to an affine drag.
+//
+// **`setWarpMode(true, gridN)` bakes the CURRENT affine `pending()` into the
+// warp's starting net.** `app/WarpMesh::flat(sourceBounds_, gridN)` is an
+// evenly-spaced net that reproduces `sourceBounds_` exactly (its own header
+// section 2); mapping every one of its control points through `pending_`
+// bakes in whatever rotate/scale/translate the user had already dragged, so
+// switching to Warp mid-drag does not throw away work -- PRD D23's own
+// "switching keeps the session" requirement. Switching back
+// (`setWarpMode(false)`) discards the net and returns to `pending_` as it
+// stood at the LAST affine drag (not recomputed from the warp shape, which
+// is generally not affine at all and has no single matrix to recover it
+// from) -- a decision this file makes rather than the brief, named here: a
+// user who bends the net and then flips back to Free Transform gets the
+// pre-warp box back, not an attempt to approximate the bend as one matrix.
+//
+// **`setWarpMode(true, differentGridN)` while already warping** re-fits the
+// net via `WarpMesh::refit()` -- exact if the net is still affine (nobody
+// has dragged a control point since the bake), an approximation otherwise,
+// exactly as that function's own header documents.
+//
+// **Commit, targets, and what is refused.** `TransformTarget::LayerSet` is
+// refused BY NAME in `Warp` mode: `app/WarpMesh.hpp` section 6 already
+// states why (no per-member live-preview story exists for a set, the
+// identical gap section 8 above states for the affine case, generalised).
+// `TransformTarget::Layer` warps `rgbTiles` only -- a Pigment layer or one
+// carrying a mask is refused by name, `app/WarpMesh.hpp` section 6's own
+// "what is not here": both need the identical dual-image / hide-space
+// bridge `ops/DocumentTransform.hpp` already built for the AFFINE path, run
+// through a non-linear map instead of a `Mat3`, which is real, separate
+// machinery this track's time did not extend to. `TransformTarget::
+// SelectionPixels` warps the covered pixels exactly as the affine path does
+// (`cutThroughSelection()`/`copyThroughSelection()`, `warpRgbTiles()`, a
+// straight premultiplied `over` splice back) but -- named, not silent --
+// does **not** move the selection's own coverage: `ops::
+// transformSelectionCoverage()` has no warp equivalent here (`app/WarpMesh.hpp`
+// section 6), so `od.selection` keeps its pre-warp shape after a
+// `SelectionPixels` warp commits.
+enum class TransformMode { Affine, Warp };
+
 enum class TransformTarget { Layer, SelectionPixels, LayerSet };
 
 // One of the eight box handles, the rotation affordance, or a drag on the
@@ -556,6 +605,31 @@ class TransformSession {
   // `beginSelectionPixels()` and read by `commit()` and by the UI's preview
   // (it must not hide the source, since nothing is being removed from it).
   bool duplicating() const noexcept { return duplicate_; }
+
+  // --- Section 9: Warp -----------------------------------------------------
+
+  TransformMode mode() const noexcept { return mode_; }
+  const WarpMesh& warpMesh() const noexcept { return warp_; }
+
+  // Switches this session between Free Transform and Warp -- section 9. A
+  // no-op while no session is active. `gridN` is read only when entering
+  // Warp (or changing grid size while already in it); ignored when leaving.
+  void setWarpMode(bool warpOn, int gridN = 4) noexcept;
+
+  bool warpDragging() const noexcept { return warpDrag_.active; }
+
+  // Nearest control point to `cursor` within `radius`, or an invalid ref
+  // outside Warp mode or with no session active -- `app/WarpMesh.hpp`'s
+  // `hitTestWarpControl()`, supplied this session's own net.
+  WarpControlRef warpHitTest(Point2 cursor, float radius) const noexcept;
+
+  // Latches `ref` and a snapshot of the whole net as this drag's baseline --
+  // mirroring `beginDrag()`'s own baseline-plus-live-cursor discipline
+  // (section 6) so a multi-frame drag recomputes fresh each frame rather
+  // than accumulating a delta onto a delta.
+  void warpBeginDrag(WarpControlRef ref, Point2 startCursor) noexcept;
+  void warpUpdateDrag(Point2 curCursor) noexcept;
+  void warpEndDrag() noexcept;
 
   // Begins a transform of `doc.layers[layerIndex]`'s own pixels (and, at
   // commit, its mask). Refuses a locked layer or an out-of-range index by
@@ -735,6 +809,20 @@ class TransformSession {
     Mat3 base;
   };
   DragState drag_;
+
+  // Section 9. `mode_` and `warp_` are reset to their defaults by every
+  // `*this = TransformSession{}` a `begin*()`/`cancel()` already performs, so
+  // a fresh session always starts in `TransformMode::Affine` with no net.
+  TransformMode mode_ = TransformMode::Affine;
+  WarpMesh warp_;
+
+  struct WarpDragState {
+    bool active = false;
+    WarpControlRef ref;
+    Point2 start{};
+    WarpMesh base;
+  };
+  WarpDragState warpDrag_;
 };
 
 }  // namespace np
