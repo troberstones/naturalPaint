@@ -349,8 +349,8 @@ float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept {
 }
 
 float washAmount(float laid, float rate, float ceiling) noexcept {
-  if (!(laid < ceiling)) return laid;
-  return laid + std::min(rate, 1.0f) * (ceiling - laid);
+  const float strength = std::min(rate, 1.0f) * ceiling;
+  return strength > laid ? strength : laid;
 }
 
 PigmentTexel depositTexel(const PigmentTexel& dst, const Latent& pigment, float deltaMass,

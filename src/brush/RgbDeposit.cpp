@@ -6,7 +6,7 @@ namespace np {
 
 RgbDepositStep depositRgbTexel(const std::array<float, 4>& dst,
                                const std::array<float, 3>& straightLinearRgb, float strokeAlpha,
-                               float weight, float opacity, bool alphaLocked) noexcept {
+                               float weight, float opacity, bool alphaLocked, bool wash) noexcept {
   RgbDepositStep out;
   // The no-op answer, returned by every one of the four refusals below. `dst`
   // rather than something recomputed from it: a texel this dab does not change
@@ -32,8 +32,9 @@ RgbDepositStep depositRgbTexel(const std::array<float, 4>& dst,
   // Header §2. `a1` is the stroke's total after this dab, capped; `a` is the
   // composite alpha for which one source-over lands the total exactly there,
   // from the identity `1 - a1 = (1 - a0)(1 - a)`.
-  float a1 = a0 + weight * headroom;
+  float a1 = wash ? std::min(weight, 1.0f) * cap : a0 + weight * headroom;
   if (a1 > cap) a1 = cap;
+  if (wash && !(a1 > a0)) return out;  // no stronger than a dab already laid here
   float a = (a1 - a0) / headroom;
   // Algebraically `a <= 1` always, since `a1 <= 1`. Clamped anyway because the
   // subtraction and the division are each rounded and the *only* thing standing
@@ -73,7 +74,7 @@ RgbDepositStep depositRgbTexel(const std::array<float, 4>& dst,
 RgbDepositStep depositRgbTexelBlended(const std::array<float, 4>& dst0,
                                       const std::array<float, 3>& straightLinearRgb,
                                       BlendMode blend, float strokeAlpha, float weight,
-                                      float opacity, bool alphaLocked) noexcept {
+                                      float opacity, bool alphaLocked, bool wash) noexcept {
   RgbDepositStep out;
   // The no-op answer -- `dst0`, for the identical reason `depositRgbTexel()`
   // returns `dst` unchanged: a refused dab must be indistinguishable from one
@@ -95,8 +96,9 @@ RgbDepositStep depositRgbTexelBlended(const std::array<float, 4>& dst0,
   if (!(headroom > 0.0f)) return out;
   if (!(a0 < cap)) return out;
 
-  float a1 = a0 + weight * headroom;
+  float a1 = wash ? std::min(weight, 1.0f) * cap : a0 + weight * headroom;
   if (a1 > cap) a1 = cap;
+  if (wash && !(a1 > a0)) return out;  // no stronger than a dab already laid here
   float a = (a1 - a0) / headroom;
   if (a > 1.0f) a = 1.0f;
 
@@ -136,11 +138,12 @@ RgbDepositStep depositRgbTexelBlended(const std::array<float, 4>& dst0,
 }
 
 void RgbStroke::begin(const std::array<float, 3>& straightLinearRgb, float opacity,
-                      bool alphaLocked, BlendMode blend) noexcept {
+                      bool alphaLocked, BlendMode blend, bool wash) noexcept {
   ink_ = straightLinearRgb;
   opacity_ = std::clamp(opacity, 0.0f, 1.0f);
   alphaLocked_ = alphaLocked;
   blend_ = blend;
+  wash_ = wash;
   // A fresh accumulator, not a cleared one: assigning a default-constructed
   // store drops every `shared_ptr` slot and therefore every tile the previous
   // stroke held, which is `end()`'s free as well as this one's.
@@ -297,10 +300,10 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
                                                         : std::array<float, 4>{0.0f, 0.0f, 0.0f,
                                                                                0.0f});
             step = depositRgbTexelBlended(dst0Val, ink_, blend_, accumulated,
-                                          tip.flow * cov * sel, opacity_ * sel, alphaLocked_);
+                                          tip.flow * cov * sel, opacity_ * sel, alphaLocked_, wash_);
           } else {
             step = depositRgbTexel(before, ink_, accumulated, tip.flow * cov * sel,
-                                   opacity_ * sel, alphaLocked_);
+                                   opacity_ * sel, alphaLocked_, wash_);
           }
           // The ceiling, the transparent tail of the falloff, and a texel the
           // selection excluded all arrive here as `dabAlpha == 0`, and all three

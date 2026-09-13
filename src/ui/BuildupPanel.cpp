@@ -25,10 +25,14 @@ StrokeRoute activeRoute(AppState& st) {
 
 // What the closed field reads, so the band says which rules are live without
 // being opened -- `ui/TaperPanel`'s `compactLabel()` for the same reason. Off
-// the Pigment deposit it says so: an RGB layer is what File > New makes, and
-// switches that read "Saturate" over a stroke they cannot reach look broken.
+// the two deposit routes it says so: "Wash" over a stroke it cannot reach
+// looks broken.
+bool reachesRoute(StrokeRoute route) {
+  return route == StrokeRoute::CpuDeposit || route == StrokeRoute::RgbDeposit;
+}
+
 std::string compactLabel(const PigmentBuildup& b, StrokeRoute route) {
-  if (route != StrokeRoute::CpuDeposit) return "Off here";
+  if (!reachesRoute(route)) return "Off here";
   return b.mode == PigmentBuildupMode::Wash ? "Wash" : "Build-up";
 }
 
@@ -39,17 +43,13 @@ void drawBuildupControls(AppState& st) {
                                 st.stabiliserPrefs, st.pigmentBuildup);
   PigmentBuildup& b = st.pigmentBuildup;
   const StrokeRoute route = activeRoute(st);
-  const bool reaches = route == StrokeRoute::CpuDeposit;
+  const bool reaches = reachesRoute(route);
 
   ImGui::TextDisabled("How a stroke builds where it overlaps");
   ImGui::Spacing();
-  if (route == StrokeRoute::RgbDeposit) {
-    ImGui::TextUnformatted("This layer is RGB, where strokes already\n"
-                           "diminish on overlap and stop at Opacity.\n"
-                           "Build-up and Wash are for Pigment layers.");
-    ImGui::Spacing();
-  } else if (!reaches) {
-    ImGui::Text("No effect on this stroke (%s).\nBuild-up and Wash are for Pigment layers.",
+  if (!reaches) {
+    ImGui::Text("No effect on this stroke (%s).\nBuild-up and Wash are for brush strokes\n"
+                "on Pigment and RGB layers.",
                 strokeRouteName(route));
     ImGui::Spacing();
   }
@@ -66,11 +66,12 @@ void drawBuildupControls(AppState& st) {
     b.mode = PigmentBuildupMode::Wash;
     save(st);
   }
-  ImGui::SetItemTooltip("A stroke eases toward its Opacity instead of piling up, and meets the "
-                        "paint already on the layer once, as a single glaze.");
+  ImGui::SetItemTooltip("Each spot keeps the strongest dab the stroke laid there, so a stroke is "
+                        "no darker where it crosses itself. Load and Opacity set how dark one "
+                        "stroke is; a new stroke still layers on top.");
   if (wash) {
-    // Here as well as in Brush Settings: Wash is where Opacity matters on this
-    // route, and the options bar has no room for a field of its own.
+    // Here as well as in Brush Settings: in Wash, Opacity is how dark a stroke
+    // is, and the options bar has no room for a field of its own.
     ImGui::SetNextItemWidth(180.0f);
     ImGui::SliderFloat("Opacity", &st.brush.opacity, 0.0f, 1.0f, "%.2f");
   }

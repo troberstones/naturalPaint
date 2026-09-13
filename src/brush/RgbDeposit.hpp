@@ -496,9 +496,15 @@ struct RgbDepositStep {
 // arithmetic and every one of the four refusals above are IDENTICAL either
 // way, because none of them is a statement about where `a` ends up spent.
 // Only the last two lines -- what gets written for `premultiplied` -- differ.
+//
+// `wash` (brush/Deposit.hpp §1a) changes only how `A'` is formed: the
+// strongest dab rather than a total, `A' = max(A, min(weight, 1) * opacity)`.
+// `a` still lands `A'` exactly over what was there at pen-down, so a texel the
+// stroke crosses again with a dab no stronger than before is left untouched.
 RgbDepositStep depositRgbTexel(const std::array<float, 4>& dst,
                                const std::array<float, 3>& straightLinearRgb, float strokeAlpha,
-                               float weight, float opacity, bool alphaLocked = false) noexcept;
+                               float weight, float opacity, bool alphaLocked = false,
+                               bool wash = false) noexcept;
 
 // §2a's composite: the brush's own STROKE-level blend mode. `dst0` is the
 // texel LATCHED at this stroke's first touch -- never a live/intermediate
@@ -524,7 +530,8 @@ RgbDepositStep depositRgbTexel(const std::array<float, 4>& dst,
 RgbDepositStep depositRgbTexelBlended(const std::array<float, 4>& dst0,
                                       const std::array<float, 3>& straightLinearRgb,
                                       BlendMode blend, float strokeAlpha, float weight,
-                                      float opacity, bool alphaLocked = false) noexcept;
+                                      float opacity, bool alphaLocked = false,
+                                      bool wash = false) noexcept;
 
 // One RGB stroke in flight: the latched ink, and the accumulator that makes
 // `opacity` a per-stroke ceiling rather than a per-dab multiplier.
@@ -560,7 +567,8 @@ class RgbStroke {
   // and `app/PathConsumers.cpp`'s Stroke Path with Brush on an RGB layer
   // (`BrushTip::blend`'s own comment lists both, and the routes that do not).
   void begin(const std::array<float, 3>& straightLinearRgb, float opacity,
-            bool alphaLocked = false, BlendMode blend = BlendMode::Normal) noexcept;
+            bool alphaLocked = false, BlendMode blend = BlendMode::Normal,
+            bool wash = false) noexcept;
 
   bool active() const noexcept { return active_; }
 
@@ -630,6 +638,7 @@ class RgbStroke {
   bool active_ = false;
   bool alphaLocked_ = false;
   BlendMode blend_ = BlendMode::Normal;
+  bool wash_ = false;
   StrokeAlphaStore alpha_;
   // §2a/§3: `dst0`, latched at each touched texel's first dab this stroke.
   // Stays empty for the whole stroke when `blend_ == BlendMode::Normal`.

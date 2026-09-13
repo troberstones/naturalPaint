@@ -4,9 +4,9 @@
 
 namespace np {
 
-// ui/BuildupPanel -- how a pigment deposit builds up where a stroke overlaps
-// itself (`brush/Deposit.hpp` §1a): Build-up or Wash, on the brush Tool
-// Options bar.
+// ui/BuildupPanel -- how a brush stroke builds up where it overlaps itself
+// (`brush/Deposit.hpp` §1a), on Pigment and RGB layers: Build-up or Wash, on
+// the brush Tool Options bar.
 //
 // Global state, so it writes `stroke-preferences.txt` on every edit -- the
 // same contract `ui/StabiliserPanel` has, and the same reason: a setting being

@@ -742,16 +742,17 @@ inline constexpr float kMaxMass = 1.0f;
 //   * **`BuildUp`** -- §1's rule, every dab straight into the layer. The
 //     default, and bit for bit the arithmetic this route had before §1a.
 //
-//   * **`Wash`** -- Krita's indirect "Wash" mode on this route's quantities.
-//     The stroke keeps its own buffer, `s` per texel, and each dab eases it
-//     toward the stroke's opacity:
+//   * **`Wash`** -- a per-stroke buffer, `s` per texel, that keeps the
+//     STRONGEST dab the stroke has laid there rather than a total:
 //
-//         s' = s + min(dm, 1) * (opacity - s)      (only while s < opacity)
+//         s' = max(s, min(dm, 1) * opacity)
 //
-//     -- Krita's Alpha Darken, "creamy" variant. It approaches the ceiling
-//     rather than hitting it, so a soft tip keeps its profile; and what is
-//     left below the ceiling is a product of `(1 - rate)` terms, so dabs
-//     arriving in any order reach the same amount.
+//     So a stroke is exactly as dark where it crosses or turns back on itself
+//     as where it passes once, and a soft tip's own profile is the stroke's --
+//     Procreate's glazes, and Krita's Alpha Darken at full flow. Easing `s`
+//     toward opacity instead (Krita at partial flow) still darkens a crossing,
+//     which simply receives more dabs. `max` is order-independent and
+//     idempotent. Load and opacity together set how dark one stroke is.
 //
 //     The layer texel is then recomputed from the texel as it was at PEN-DOWN,
 //     as one deposit of `s`: `depositTexel(before, pigment, s, sel)`. The

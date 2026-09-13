@@ -1,6 +1,7 @@
 #include "app/selftest/Support.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <string>
 #include <utility>
@@ -10,19 +11,21 @@
 #include "app/LayerEditor.hpp"
 #include "app/StrokeSession.hpp"
 #include "brush/Deposit.hpp"
+#include "brush/RgbDeposit.hpp"
+#include "core/LayerOps.hpp"
 #include "paint/Palette.hpp"
 
 namespace np {
 
 // ---------------------------------------------------------------------------
 // brush/Deposit.hpp §1a -- how a pigment stroke builds up where it overlaps
-// itself: Build-up (every dab straight into the layer, the route's historical
-// rule) or Wash (a per-stroke buffer that eases toward the stroke's opacity,
-// applied to the layer as it was at pen-down).
+// itself, on the Pigment and RGB routes: Build-up (each route's historical
+// rule) or Wash (a per-stroke buffer holding the strongest dab laid at each
+// texel, applied over the layer as it was at pen-down).
 //
 // Reported from a tablet against Photoshop: "the overall buildup feels odd on
-// overlaps", and then, of a hard per-stroke clamp, "it feels unnatural". Wash
-// is Krita's indirect Wash mode on this route's quantities.
+// overlaps"; of a hard per-stroke clamp, "it feels unnatural"; and of Wash
+// easing toward opacity, that it "still builds up on overlapping strokes".
 // ---------------------------------------------------------------------------
 bool runPigmentBuildupTest() {
   bool ok = true;
@@ -75,34 +78,25 @@ bool runPigmentBuildupTest() {
   // 1. The Wash rule on its own
   // ======================================================================
   {
-    // Approaches, never clamps: after k dabs of rate r the amount is exactly
-    // the closed form, so a soft tip's lighter texels stay lighter rather than
-    // being flattened into a plateau with a cliff at its edge.
-    float s = 0.0f;
-    for (int k = 0; k < 6; ++k) s = washAmount(s, 0.18f, 0.4f);
-    const float closed = 0.4f * (1.0f - std::pow(0.82f, 6.0f));
-    std::printf("  [measured] six rate-0.18 dabs toward 0.4: %.6f, closed form %.6f\n", s,
-                closed);
-    check(std::fabs(s - closed) < 1.0e-5f && s < 0.4f - 0.1f,
-          "wash: an amount eases toward the ceiling by the closed form, and six dabs are "
-          "still well short of it -- no corner where a clamp would bite");
-
-    float many = 0.0f;
-    bool neverOver = true;
-    for (int k = 0; k < 200; ++k) {
-      many = washAmount(many, 0.9f, 0.4f);
-      if (many > 0.4f) neverOver = false;
-    }
-    check(neverOver && washAmount(0.0f, 5.0f, 0.4f) == 0.4f,
-          "wash: no number of dabs and no rate above one takes an amount past its ceiling");
-
-    // Order-independent, because what is left below the ceiling is a product
-    // of (1 - rate) terms. That is what lets a stroke's crossings and its
-    // passes arrive in any order and come out the same.
+    // The strongest dab, not a total: a spot crossed again by a dab no
+    // stronger than one already there does not change at all.
+    const float once = washAmount(0.0f, 0.18f, 0.4f);
+    float again = once;
+    for (int k = 0; k < 20; ++k) again = washAmount(again, 0.18f, 0.4f);
+    std::printf("  [measured] a rate-0.18 dab toward 0.4: %.6f once, %.6f after twenty more\n",
+                once, again);
+    check(once == std::min(0.18f, 1.0f) * 0.4f && again == once,
+          "wash: a spot crossed twenty more times by the same dab is exactly as dark as after "
+          "one -- nothing builds");
+    const float strong = washAmount(once, 0.5f, 0.4f);
+    check(strong == 0.5f * 0.4f && washAmount(strong, 0.18f, 0.4f) == strong,
+          "wash: a stronger dab raises a spot to its own strength, and a weaker one never "
+          "lowers it");
+    check(washAmount(0.0f, 5.0f, 0.4f) == 0.4f,
+          "wash: no rate above one takes a spot past the stroke's opacity");
     const float abc = washAmount(washAmount(washAmount(0.0f, 0.1f, 0.7f), 0.5f, 0.7f), 0.3f, 0.7f);
     const float cba = washAmount(washAmount(washAmount(0.0f, 0.3f, 0.7f), 0.5f, 0.7f), 0.1f, 0.7f);
-    check(std::fabs(abc - cba) < 1.0e-6f,
-          "wash: the same dabs in a different order reach the same amount");
+    check(abc == cba, "wash: the same dabs in any order reach the same amount, bit for bit");
   }
 
   // ======================================================================
@@ -189,14 +183,9 @@ bool runPigmentBuildupTest() {
   }
 
   // ======================================================================
-  // 4. Through the session: a self-crossing stroke, a second pass, the taper
+  // 4. Through the session, on both routes
   // ======================================================================
   {
-    struct Stroke {
-      PigmentBuildup buildup;
-      float opacity = 1.0f;
-      bool exitTaper = false;
-    };
     const auto brushFor = [](float opacity, float hardness, float diameter) {
       BrushState brush;
       brush.model.tip.diameterPx = diameter;
@@ -205,10 +194,23 @@ bool runPigmentBuildupTest() {
       brush.opacity = opacity;
       return brush;
     };
-    // The user's case: one X-shaped stroke of a soft brush, read at the
-    // crossing and at a point one pass covers.
-    const auto xStroke = [&](PigmentBuildup buildup, float opacity) {
-      OpenDocument od = makePigmentDoc(256, 256);
+    const auto makeRgbDoc = [](int32_t w, int32_t h) {
+      OpenDocument od = makeBlankOpenDocument(w, h, WorkingSpace{}, "buildup-rgb");
+      recordLayerEdit(od, addLayer(od.document, od.document.layers.size(), makeRgbLayer("RGB")));
+      return od;
+    };
+    // What a painter sees at one texel: mass on a Pigment layer, alpha on RGB.
+    const auto coverAt = [&](const Layer& layer, int32_t x, int32_t y) {
+      if (layer.pigmentTiles.has_value()) return texelAt(*layer.pigmentTiles, x, y).mass;
+      const Tile* t = layer.rgbTiles.has_value() ? layer.rgbTiles->find(tileCoordAt(PixelCoord{x, y}))
+                                                 : nullptr;
+      return t != nullptr ? t->readPixel(tileLocalOffset(PixelCoord{x, y}))[3] : 0.0f;
+    };
+    // The user's case: one zigzag stroke of a soft brush that crosses itself.
+    // Returns the darkest texel along a stretch one pass covers, and the
+    // crossing -- the crossing may not be darker than a single pass anywhere.
+    const auto xStroke = [&](bool rgb, PigmentBuildup buildup, float opacity) {
+      OpenDocument od = rgb ? makeRgbDoc(256, 256) : makePigmentDoc(256, 256);
       BrushState brush = brushFor(opacity, 0.3f, 40.0f);
       MixboxLut noLut;
       std::string error;
@@ -225,47 +227,65 @@ bool runPigmentBuildupTest() {
         }
       session.addPoint(40.0f, 216.0f);
       session.end();
-      const PigmentTileStore& store = *od.document.layers[1].pigmentTiles;
-      return std::make_pair(texelAt(store, 216, 128).mass, texelAt(store, 128, 128).mass);
+      const Layer& layer = od.document.layers[1];
+      float single = 0.0f;
+      for (int32_t y = 80; y <= 176; ++y) single = std::max(single, coverAt(layer, 216, y));
+      return std::make_pair(single, coverAt(layer, 128, 128));
     };
-    const auto [builtSingle, builtCross] = xStroke(PigmentBuildup{}, 1.0f);
-    const auto [washSingle, washCross] = xStroke(wash, 0.5f);
-    std::printf("  [measured] X stroke, single pass / crossing: build-up %.4f / %.4f, wash at "
-                "opacity 0.5 %.4f / %.4f\n",
-                builtSingle, builtCross, washSingle, washCross);
-    check(builtCross > 0.9f && washCross <= 0.5f + kF16Slack,
-          "a self-crossing stroke: build-up fills the paper at the crossing, wash stays under "
-          "the stroke's opacity");
-    check(washSingle > 0.0f && washSingle < washCross,
-          "...and wash still eases up where the stroke crosses itself rather than flattening "
-          "one pass and the crossing into the same plateau");
+    for (bool rgb : {false, true}) {
+      const auto [builtSingle, builtCross] = xStroke(rgb, PigmentBuildup{}, 1.0f);
+      const auto [washSingle, washCross] = xStroke(rgb, wash, 1.0f);
+      std::printf("  [measured] %s zigzag, darkest single pass / crossing: build-up %.4f / "
+                  "%.4f, wash %.4f / %.4f\n",
+                  rgb ? "RGB" : "Pigment", builtSingle, builtCross, washSingle, washCross);
+      check(builtCross > builtSingle + 0.1f,
+            rgb ? "RGB zigzag: build-up is darker where the stroke crosses itself"
+                : "Pigment zigzag: build-up is darker where the stroke crosses itself");
+      check(washSingle > 0.05f && washCross <= washSingle + kF16Slack,
+            rgb ? "RGB zigzag: wash is no darker at the crossing than a single pass"
+                : "Pigment zigzag: wash is no darker at the crossing than a single pass");
+    }
+    const auto [halfSingle, halfCross] = xStroke(false, wash, 0.5f);
+    std::printf("  [measured] Pigment zigzag, wash at opacity 0.5: %.4f / %.4f\n", halfSingle,
+                halfCross);
+    check(halfCross <= 0.5f * 0.18f + kF16Slack,
+          "wash: a stroke is never darker than its load times its opacity");
 
-    // ONE session for both passes, as the application holds it. Cleared per
-    // stroke, the second pass lays the same amount again on top of the first
-    // (mass doubles); a buffer carried over would start pass two part way to
-    // its ceiling and land noticeably more.
-    const auto passes = [&](int count) {
-      OpenDocument od = makePigmentDoc(256, 128);
-      BrushState brush = brushFor(0.4f, 1.0f, 24.0f);
+    // Separate strokes still layer, each by its OWN strength: the second pass
+    // is lighter than the first, so a buffer carried over from the first
+    // would lay the first stroke's amount again rather than its own.
+    const auto passes = [&](bool rgb) {
+      OpenDocument od = rgb ? makeRgbDoc(256, 128) : makePigmentDoc(256, 128);
       MixboxLut noLut;
       std::string error;
       StrokeSession session;
-      for (int p = 0; p < count; ++p) {
+      std::array<float, 3> after{};
+      const float opacities[2] = {0.8f, 0.4f};
+      for (int p = 0; p < 2; ++p) {
+        BrushState brush = brushFor(opacities[p], 1.0f, 24.0f);
         session.begin(od, 1, brushTipFor(brush, noLut, 1.0f), Tool::Brush, &error,
                       /*model=*/nullptr, DynamicInputs{}, /*clone=*/nullptr, StabiliserParams{},
                       1.0f, &brush.native, wash);
         for (int i = 0; i <= 12; ++i)
           session.addPoint(40.0f + static_cast<float>(i) * 8.0f, 64.0f);
         session.end();
+        after[p + 1] = coverAt(od.document.layers[1], 100, 64);
       }
-      return texelAt(*od.document.layers[1].pigmentTiles, 100, 64).mass;
+      return after;
     };
-    const float one = passes(1);
-    const float two = passes(2);
-    std::printf("  [measured] wash at opacity 0.4, one pass vs two: %.5f -> %.5f\n", one, two);
-    check(one > 0.05f && std::fabs(two - 2.0f * one) < 0.01f,
-          "wash: a second stroke glazes the same amount again on top of the first -- the "
-          "session starts each stroke with an empty buffer");
+    const auto pig = passes(false);
+    std::printf("  [measured] Pigment wash, stroke at opacity 0.8 then 0.4: %.5f -> %.5f\n",
+                pig[1], pig[2]);
+    check(pig[1] > 0.1f && std::fabs((pig[2] - pig[1]) - 0.5f * pig[1]) < 0.005f,
+          "wash: a second, lighter stroke glazes its own amount on top -- each stroke starts "
+          "with an empty buffer");
+    const auto rgbPasses = passes(true);
+    const float expectRgb = rgbPasses[1] + (1.0f - rgbPasses[1]) * 0.5f * rgbPasses[1];
+    std::printf("  [measured] RGB wash, stroke at opacity 0.8 then 0.4: alpha %.5f -> %.5f "
+                "(own amount over the first: %.5f)\n",
+                rgbPasses[1], rgbPasses[2], expectRgb);
+    check(rgbPasses[1] > 0.1f && std::fabs(rgbPasses[2] - expectRgb) < 0.005f,
+          "RGB wash: a second, lighter stroke composites its own amount over the first");
 
     // The exit taper's repaint puts the stroke's tiles back and replays it,
     // which for Wash means washing against the same pen-down picture again.
@@ -283,8 +303,8 @@ bool runPigmentBuildupTest() {
     const float taperedWorst = worstMass(*od.document.layers[1].pigmentTiles);
     std::printf("  [measured] wash with an exit taper, after the repaint: worst mass %.5f\n",
                 taperedWorst);
-    check(taperedWorst > 0.1f && taperedWorst <= 0.4f + kF16Slack,
-          "wash: the exit taper's repaint lays the stroke again under the same ceiling");
+    check(taperedWorst > 0.05f && taperedWorst <= 0.4f * 0.18f + kF16Slack,
+          "wash: the exit taper's repaint lays the stroke again at the same strength");
 
     // What the Opacity slider greys itself out by.
     const StrokeRoute pigment = strokeRouteFor(Tool::Brush, &od.document.layers[1]);
@@ -294,6 +314,31 @@ bool runPigmentBuildupTest() {
     check(opacityReachesRoute(StrokeRoute::RgbDeposit, PigmentBuildup{}) &&
               !opacityReachesRoute(StrokeRoute::Smudge, wash),
           "...and the other routes answer as the slider always did, whatever BUILDUP says");
+  }
+
+  // ======================================================================
+  // 5. The RGB texel rule
+  // ======================================================================
+  {
+    const std::array<float, 4> clear{0.0f, 0.0f, 0.0f, 0.0f};
+    const std::array<float, 3> ink{0.2f, 0.3f, 0.8f};
+    const RgbDepositStep first = depositRgbTexel(clear, ink, 0.0f, 0.3f, 1.0f, false, true);
+    const RgbDepositStep washAgain =
+        depositRgbTexel(first.premultiplied, ink, first.strokeAlpha, 0.3f, 1.0f, false, true);
+    const RgbDepositStep builtAgain =
+        depositRgbTexel(first.premultiplied, ink, first.strokeAlpha, 0.3f, 1.0f, false, false);
+    std::printf("  [measured] RGB texel, a weight-0.3 dab twice: stroke alpha %.4f wash, %.4f "
+                "build-up\n",
+                washAgain.dabAlpha > 0.0f ? washAgain.strokeAlpha : first.strokeAlpha,
+                builtAgain.strokeAlpha);
+    check(first.strokeAlpha == 0.3f && !(washAgain.dabAlpha > 0.0f) &&
+              builtAgain.strokeAlpha > first.strokeAlpha + 0.1f,
+          "RGB wash: the same dab again changes nothing, where build-up adds to it");
+    const RgbDepositStep stronger =
+        depositRgbTexel(first.premultiplied, ink, first.strokeAlpha, 0.6f, 1.0f, false, true);
+    check(stronger.strokeAlpha == 0.6f && std::fabs(stronger.premultiplied[3] - 0.6f) < 1.0e-5f,
+          "RGB wash: a stronger dab lands the texel exactly at its own strength over what was "
+          "there at pen-down");
   }
 
   std::printf("[selftest] pigment buildup %s\n", ok ? "PASS" : "FAIL");

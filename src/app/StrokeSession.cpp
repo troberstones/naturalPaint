@@ -1455,7 +1455,8 @@ void StrokeSession::beginRoutes(Layer& layer) {
   // pencil do not consult a brush's blend mode in Photoshop either
   // (`BrushTip::blend`'s own comment names this as the one reader).
   if (route_ == StrokeRoute::RgbDeposit)
-    rgb_.begin(tip_.linearRgb, resolvedOpacity_, layer.alphaLocked, tip_.blend);
+    rgb_.begin(tip_.linearRgb, resolvedOpacity_, layer.alphaLocked, tip_.blend,
+               pigmentBuildup_.mode == PigmentBuildupMode::Wash);
   else
     rgb_.end();
 
