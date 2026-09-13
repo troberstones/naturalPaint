@@ -1074,15 +1074,22 @@ already use.
 
 **View > Match Zoom**, enabled only while a split is active, keeps the
 companion at the focused pane's zoom and at the same *normalised position*
-of its own document — the document-space point at the pane's centre,
+of its own document — the document-space point at the pane's own centre,
 expressed as a fraction of that document's own width/height, matched on
-both sides regardless of how large either document is. Rotation and the two
-mirrors are **not** mirrored to the companion: its quad is always
+both sides regardless of how large either document or pane is. Rotation and
+the two mirrors are **not** mirrored to the companion: its quad is always
 axis-aligned, so there is no second `ViewTransform` for a rotated point to
-travel through. `app/SplitView.hpp`'s `matchZoomView()` is the whole
-mapping, and it collapses to one line per axis: the destination pan is the
-source pan scaled by the destination/source document size ratio, at the
-identical zoom.
+travel through. `app/SplitView.hpp` owns the whole mapping in two pure
+functions: `splitPaneOrigin()` is the one placement formula both the
+focused pane's own canvas block and the companion pane's block call —
+centred when the document at this zoom fits inside its pane, offset by pan
+alone once it does not — and `matchZoomView()` solves that same formula for
+the destination pan given both panes' on-screen sizes and both documents'
+pixel sizes, so the pane-centre document fraction comes out equal on both
+sides whether either document fits its pane or overflows it. It does *not*
+collapse to "pan scaled by the document size ratio" in general — that
+shortcut is only exact when both documents happen to fit their panes at
+the shared zoom.
 
 The divider is fixed at 50%; a draggable one is a follow-up. See
 `app/selftest/SplitView.cpp` for the pure hit-test/mapping proofs and the

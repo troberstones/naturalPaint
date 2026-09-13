@@ -17340,11 +17340,15 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // own comment warns about).
   if (st.documents.empty()) g_documentTextures.release();
 
-  // Track `split`: the focused document's own pixel size, captured here
-  // because `texW`/`texH` below are scoped to this window's Begin()/End()
-  // block and View > Match Zoom's mapping (app/SplitView.hpp) needs them
-  // again after that block closes, in the companion pane's own block.
+  // Track `split`: the focused document's own pixel size and its pane's own
+  // on-screen size, captured here because `texW`/`texH`/`avail` below are
+  // scoped to this window's Begin()/End() block and View > Match Zoom's
+  // mapping (app/SplitView.hpp's `matchZoomView()`) needs them again after
+  // that block closes, in the companion pane's own block. Both pane sizes
+  // matter to the mapping, not just both document sizes -- see that
+  // function's own header for why.
   float focusedTexW = 0.0f, focusedTexH = 0.0f;
+  Vec2 focusedAvail{};
 
   ImGui::SetNextWindowSize(canvasSize);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
@@ -17397,6 +17401,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const float rulerThickness = st.showRulers ? kRulerThickness : 0.0f;
     const ImVec2 avail(fullAvail.x - rulerThickness, fullAvail.y - rulerThickness);
     const ImVec2 paintOrigin(canvasPos.x + rulerThickness, canvasPos.y + rulerThickness);
+    focusedAvail = Vec2{avail.x, avail.y};
 
     // --- fit to window / 100% (PRD Q1) -- consumed here, not where the
     // menu item or key fired, because both need `avail`: the canvas
@@ -17434,10 +17439,16 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // as it did before this step -- the regression bar PLAN.md step 11
     // asks for. Mirror and rotation are layered on top of this quad's own
     // *centre* (`pivotScreen` below), not baked into `origin` itself.
+    //
+    // Track `split`: `origin` is now `splitPaneOrigin()`'s own placement
+    // (app/SplitView.hpp) rather than a second copy of it -- the companion
+    // pane's block calls the same function, and View > Match Zoom's mapping
+    // depends on both agreeing exactly. Bit-for-bit the same expression as
+    // before (`paintOrigin.x + margin + panX`, left-to-right, unchanged).
     const ImVec2 drawSize(texW * st.view.zoom, texH * st.view.zoom);
-    const ImVec2 origin(
-        paintOrigin.x + std::max(0.0f, (avail.x - drawSize.x) * 0.5f) + st.view.panX,
-        paintOrigin.y + std::max(0.0f, (avail.y - drawSize.y) * 0.5f) + st.view.panY);
+    const Vec2 originVec = splitPaneOrigin(Vec2{paintOrigin.x, paintOrigin.y},
+                                           Vec2{avail.x, avail.y}, texW, texH, st.view);
+    const ImVec2 origin(originVec.x, originVec.y);
 
     // One view matrix (PLAN.md Phase 2 step 11): mirror and rotation pivot
     // around the canvas's own centre -- the point zoom/pan alone would
@@ -23455,8 +23466,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // companion slot) means "fit and centre it once", the same 24 px-inset
       // arithmetic this pane always used, now stored rather than recomputed
       // every frame so it survives past this one fit.
+      const Vec2 paneSize{r.w, r.h};
       if (g_split.matchZoom) {
-        g_split.companionView = matchZoomView(st.view, focusedTexW, focusedTexH, dw, dh);
+        g_split.companionView =
+            matchZoomView(st.view, focusedAvail, focusedTexW, focusedTexH, paneSize, dw, dh);
       } else if (g_split.companionView.zoom <= 0.0f) {
         const float inset = 24.0f;
         const float fit = (dw > 0.0f && dh > 0.0f)
@@ -23467,15 +23480,15 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         g_split.companionView.panY = 0.0f;
       }
 
-      // The same drawSize/origin arithmetic the focused pane's own canvas
-      // block uses at identity rotation/mirror (this pane never rotates or
-      // mirrors its quad -- `matchZoomView()`'s own header says why) --
-      // centred when the document is smaller than the pane, offset by
-      // `panX`/`panY` from that centre otherwise, exactly like `st.view`'s.
+      // `splitPaneOrigin()` (app/SplitView.hpp) -- the SAME function the
+      // focused pane's own canvas block now calls -- at identity
+      // rotation/mirror (this pane never rotates or mirrors its quad --
+      // `matchZoomView()`'s own header says why).
       const float zoom = g_split.companionView.zoom;
       const ImVec2 drawSize(dw * zoom, dh * zoom);
-      const ImVec2 p0(r.x + std::max(0.0f, (r.w - drawSize.x) * 0.5f) + g_split.companionView.panX,
-                      r.y + std::max(0.0f, (r.h - drawSize.y) * 0.5f) + g_split.companionView.panY);
+      const Vec2 p0Vec =
+          splitPaneOrigin(Vec2{r.x, r.y}, paneSize, dw, dh, g_split.companionView);
+      const ImVec2 p0(p0Vec.x, p0Vec.y);
       const ImVec2 p1(p0.x + drawSize.x, p0.y + drawSize.y);
       if (drawSize.x > 0.0f && drawSize.y > 0.0f) {
         pdl->AddRectFilled(ImVec2(p0.x + 6, p0.y + 6), ImVec2(p1.x + 6, p1.y + 6),

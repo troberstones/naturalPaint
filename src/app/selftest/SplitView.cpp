@@ -30,10 +30,49 @@ bool runSplitViewTest() {
   };
 
   // -----------------------------------------------------------------------
-  // 1. matchZoomView -- pure, GPU-free arithmetic
+  // 1. splitPaneOrigin / matchZoomView -- pure, GPU-free arithmetic
   // -----------------------------------------------------------------------
-  std::printf("  -- 1. matchZoomView --\n");
+  //
+  // The pane-centre fraction below is derived by INVERTING the real
+  // placement function, `splitPaneOrigin()`, not by restating a closed-form
+  // formula in the test -- a prior version of this section hardcoded
+  // `0.5 - pan/(zoom*docSize)`, which is only the pane-centre point while
+  // the document fits inside its pane (`splitPaneOrigin()`'s margin > 0).
+  // Once the document is zoomed past its pane -- margin == 0, the ordinary
+  // zoomed-in case -- that formula is simply wrong, and `matchZoomView()`
+  // inherited the same mistake because it never saw either pane's size.
+  // Calling the shared function here means this check is blind to which
+  // case applies, exactly like the production code it verifies.
+  std::printf("  -- 1. splitPaneOrigin / matchZoomView --\n");
   {
+    auto centreFraction = [](Vec2 paneSize, float docW, float docH, const CanvasView& view) {
+      const Vec2 origin = splitPaneOrigin(Vec2{0.0f, 0.0f}, paneSize, docW, docH, view);
+      const float dx = (paneSize.x * 0.5f - origin.x) / view.zoom;
+      const float dy = (paneSize.y * 0.5f - origin.y) / view.zoom;
+      return Vec2{dx / docW, dy / docH};
+    };
+
+    // 1a. splitPaneOrigin() itself: centred when the document fits, offset
+    // by pan from `paneOrigin` alone (margin == 0) once it does not.
+    {
+      CanvasView fits;
+      fits.zoom = 1.0f;
+      const Vec2 o = splitPaneOrigin(Vec2{10.0f, 20.0f}, Vec2{800.0f, 600.0f}, 200.0f, 100.0f, fits);
+      check(o.x == 10.0f + (800.0f - 200.0f) * 0.5f && o.y == 20.0f + (600.0f - 100.0f) * 0.5f,
+            "a document smaller than its pane is centred, unpanned");
+
+      CanvasView zoomedIn;
+      zoomedIn.zoom = 3.0f;
+      zoomedIn.panX = -15.0f;
+      zoomedIn.panY = 5.0f;
+      check(zoomedIn.zoom * 200.0f > 150.0f && zoomedIn.zoom * 100.0f > 100.0f,
+            "fixture: this document at this zoom exceeds its (smaller) pane");
+      const Vec2 o2 =
+          splitPaneOrigin(Vec2{10.0f, 20.0f}, Vec2{150.0f, 100.0f}, 200.0f, 100.0f, zoomedIn);
+      check(o2.x == 10.0f + zoomedIn.panX && o2.y == 20.0f + zoomedIn.panY,
+            "a document larger than its pane has no margin -- pan is the whole offset");
+    }
+
     CanvasView src;
     src.zoom = 2.0f;
     src.panX = 30.0f;
@@ -41,42 +80,91 @@ bool runSplitViewTest() {
     src.rotation = 0.7f;
     src.mirrorX = true;
 
-    // Identity: same document size on both sides.
-    const CanvasView same = matchZoomView(src, 800.0f, 600.0f, 800.0f, 600.0f);
-    check(same.zoom == src.zoom && same.panX == src.panX && same.panY == src.panY,
-          "same-size documents: pan/zoom pass through exactly");
+    // 1b. Identity: same pane size AND same document size on both sides.
+    // Tolerance rather than `==`: the general mapping now divides by
+    // `zoom*docW` and multiplies back, which the old ratio-of-1.0 shortcut
+    // never had to do, so exactness is not guaranteed even here.
+    const Vec2 samePane{800.0f, 600.0f};
+    const CanvasView same = matchZoomView(src, samePane, 800.0f, 600.0f, samePane, 800.0f, 600.0f);
+    check(same.zoom == src.zoom && std::fabs(same.panX - src.panX) < 1e-3f &&
+              std::fabs(same.panY - src.panY) < 1e-3f,
+          "identical pane and document on both sides: pan/zoom pass through");
 
-    // Fixture check before trusting the mapped result on it.
-    const float srcW = 800.0f, srcH = 600.0f, dstW = 400.0f, dstH = 900.0f;
-    check(srcW != dstW && srcH != dstH, "fixture: the two documents differ in both dimensions");
+    // 1c. Both documents fit their panes (the case the old, pane-blind
+    // formula happened to get right).
+    {
+      const Vec2 srcPane{800.0f, 600.0f}, dstPane{500.0f, 500.0f};
+      const float srcW = 200.0f, srcH = 150.0f, dstW = 100.0f, dstH = 200.0f;
+      check(src.zoom * srcW <= srcPane.x && src.zoom * srcH <= srcPane.y &&
+                src.zoom * dstW <= dstPane.x && src.zoom * dstH <= dstPane.y,
+            "fixture 1c: both documents fit their panes at this zoom");
+      const CanvasView mapped = matchZoomView(src, srcPane, srcW, srcH, dstPane, dstW, dstH);
+      check(mapped.zoom == src.zoom, "the same zoom factor, not rescaled");
+      const Vec2 srcFrac = centreFraction(srcPane, srcW, srcH, src);
+      const Vec2 dstFrac = centreFraction(dstPane, dstW, dstH, mapped);
+      check(std::fabs(srcFrac.x - dstFrac.x) < 1e-4f && std::fabs(srcFrac.y - dstFrac.y) < 1e-4f,
+            "1c: the pane-centre document fraction is equal on both sides (both fit)");
+    }
 
-    const CanvasView mapped = matchZoomView(src, srcW, srcH, dstW, dstH);
-    check(mapped.zoom == src.zoom, "the same zoom factor, not rescaled");
-    check(mapped.panX == src.panX * (dstW / srcW), "panX scales by the width ratio (exact)");
-    check(mapped.panY == src.panY * (dstH / srcH), "panY scales by the height ratio (exact)");
+    // 1d. Both documents are zoomed PAST their panes, different sizes --
+    // the case the old formula silently mishandled.
+    {
+      CanvasView zoomedSrc = src;
+      zoomedSrc.zoom = 2.0f;
+      const Vec2 srcPane{300.0f, 200.0f}, dstPane{250.0f, 150.0f};
+      const float srcW = 1000.0f, srcH = 800.0f, dstW = 600.0f, dstH = 900.0f;
+      check(srcW != dstW && srcH != dstH, "fixture 1d: the two documents differ in both dimensions");
+      check(zoomedSrc.zoom * srcW > srcPane.x && zoomedSrc.zoom * srcH > srcPane.y &&
+                zoomedSrc.zoom * dstW > dstPane.x && zoomedSrc.zoom * dstH > dstPane.y,
+            "fixture 1d: both documents exceed their panes at this zoom");
+      const CanvasView mapped = matchZoomView(zoomedSrc, srcPane, srcW, srcH, dstPane, dstW, dstH);
+      check(mapped.zoom == zoomedSrc.zoom, "1d: the same zoom factor, not rescaled");
+      const Vec2 srcFrac = centreFraction(srcPane, srcW, srcH, zoomedSrc);
+      const Vec2 dstFrac = centreFraction(dstPane, dstW, dstH, mapped);
+      check(std::fabs(srcFrac.x - dstFrac.x) < 1e-4f && std::fabs(srcFrac.y - dstFrac.y) < 1e-4f,
+            "1d: the pane-centre document fraction is equal on both sides (both zoomed in)");
+    }
 
-    // The derivation's own check, not the formula restated: recompute the
-    // normalised centre fraction independently on each side and compare.
-    const float srcFracX = 0.5f - src.panX / (src.zoom * srcW);
-    const float dstFracX = 0.5f - mapped.panX / (mapped.zoom * dstW);
-    const float srcFracY = 0.5f - src.panY / (src.zoom * srcH);
-    const float dstFracY = 0.5f - mapped.panY / (mapped.zoom * dstH);
-    check(std::fabs(srcFracX - dstFracX) < 1e-6f, "the normalised centre X survives the mapping");
-    check(std::fabs(srcFracY - dstFracY) < 1e-6f, "the normalised centre Y survives the mapping");
+    // 1e. One document fits its pane, the other does not -- the mixed case.
+    {
+      CanvasView mixedSrc = src;
+      mixedSrc.zoom = 1.0f;
+      const Vec2 srcPane{800.0f, 600.0f}, dstPane{300.0f, 200.0f};
+      const float srcW = 200.0f, srcH = 150.0f, dstW = 1000.0f, dstH = 800.0f;
+      check(mixedSrc.zoom * srcW <= srcPane.x && mixedSrc.zoom * srcH <= srcPane.y,
+            "fixture 1e: the source document fits its pane");
+      check(mixedSrc.zoom * dstW > dstPane.x && mixedSrc.zoom * dstH > dstPane.y,
+            "fixture 1e: the destination document does not fit its pane");
+      const CanvasView mapped = matchZoomView(mixedSrc, srcPane, srcW, srcH, dstPane, dstW, dstH);
+      const Vec2 srcFrac = centreFraction(srcPane, srcW, srcH, mixedSrc);
+      const Vec2 dstFrac = centreFraction(dstPane, dstW, dstH, mapped);
+      check(std::fabs(srcFrac.x - dstFrac.x) < 1e-4f && std::fabs(srcFrac.y - dstFrac.y) < 1e-4f,
+            "1e: the pane-centre document fraction is equal on both sides (fits vs. does not)");
+    }
 
-    // Rotation/mirror: the companion never draws rotated or mirrored (its own
-    // quad is always axis-aligned), so these are simply carried over from
-    // `source` rather than transformed -- asserted here so a future change
-    // that started zeroing them, or rotating them, would go red.
-    check(mapped.rotation == src.rotation && mapped.mirrorX == src.mirrorX &&
-              mapped.mirrorY == src.mirrorY,
-          "every other CanvasView field is copied from source, untouched");
+    // 1f. Rotation/mirror: the companion never draws rotated or mirrored
+    // (its own quad is always axis-aligned), so these are simply carried
+    // over from `source` rather than transformed.
+    {
+      const Vec2 pane{800.0f, 600.0f};
+      const CanvasView mapped = matchZoomView(src, pane, 200.0f, 150.0f, pane, 300.0f, 250.0f);
+      check(mapped.rotation == src.rotation && mapped.mirrorX == src.mirrorX &&
+                mapped.mirrorY == src.mirrorY,
+            "every other CanvasView field is copied from source, untouched");
+    }
 
-    // Degenerate guard: a source with no extent has no "relative position"
-    // to preserve, so the function must not divide by zero.
-    const CanvasView guarded = matchZoomView(src, 0.0f, 100.0f, 50.0f, 50.0f);
-    check(guarded.zoom == src.zoom && guarded.panX == src.panX && guarded.panY == src.panY,
-          "a zero source dimension returns source unchanged");
+    // 1g. Degenerate guards: no document extent, and no zoom.
+    {
+      const Vec2 pane{800.0f, 600.0f};
+      const CanvasView guarded = matchZoomView(src, pane, 0.0f, 100.0f, pane, 50.0f, 50.0f);
+      check(guarded.zoom == src.zoom && guarded.panX == src.panX && guarded.panY == src.panY,
+            "a zero source dimension returns source unchanged");
+      CanvasView noZoom = src;
+      noZoom.zoom = 0.0f;
+      const CanvasView guarded2 = matchZoomView(noZoom, pane, 100.0f, 100.0f, pane, 50.0f, 50.0f);
+      check(guarded2.panX == noZoom.panX && guarded2.panY == noZoom.panY,
+            "a zero zoom returns source unchanged rather than dividing by it");
+    }
   }
 
   // -----------------------------------------------------------------------
