@@ -375,6 +375,7 @@ add_executable(naturalPaint
   brush/PencilDeposit.cpp
   brush/PigmentErase.cpp
   brush/PigmentSmudge.cpp
+  brush/QuickMaskPaint.cpp
   brush/RgbDeposit.cpp
   brush/RgbErase.cpp
   brush/Smudge.cpp

@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include "app/Command.hpp"
 #include "core/OpStack.hpp"
 #include "io/Json.hpp"
 
@@ -35,5 +36,17 @@ JsonValue opToJson(const Op& op, std::string* errorOut);
 // The inverse. False, with `*errorOut` naming what it could not read, for an
 // unknown kind id or a class this build cannot evaluate.
 bool opFromJson(const JsonValue& value, Op* out, std::string* errorOut);
+
+// --- the channel commands' encoders (PRD E11, E13; docs/automation.md §2.2)
+// ---------------------------------------------------------------------------
+//
+// Beside the readers in app/CommandsOpStack.cpp. `ui/MacPaintUI.cpp`'s two
+// Select menu dialogs and its CHANNELS panel build a `Command` through these
+// rather than a `JsonValue{}` literal, so a key renamed on one side is a key
+// visibly not renamed on the other.
+Command saveSelectionAsChannelCommand(std::string name);
+Command loadChannelAsSelectionCommand(std::string name);
+Command renameChannelCommand(std::string name, std::string newName);
+Command deleteChannelCommand(std::string name);
 
 }  // namespace np
