@@ -15704,6 +15704,13 @@ void drawPanelRail(AppState& st, const AtelierRect& canvas, bool* layoutChanged)
 }
 
 // The open flyout itself: one panel, floating over the canvas beside the rail.
+//
+// Its height is the panel's own `PanelLayout::flyoutHeightOf()` once the user
+// has dragged the bottom edge, and this default until then.
+constexpr float kFlyoutDefaultH = 420.0f;
+static_assert(kFlyoutMinHeight == kPanelMinHeight,
+              "a flyout and a docked panel share one floor");
+
 void drawFlyoutPanel(AppState& st, const AtelierRect& canvas, std::unique_ptr<PaintSim>& sim,
                      GpuContext& gpu, const MixboxLut& lut, bool* layoutChanged) {
   if (!st.flyoutOpen || canvas.empty()) return;
@@ -15714,10 +15721,19 @@ void drawFlyoutPanel(AppState& st, const AtelierRect& canvas, std::unique_ptr<Pa
     return;
   }
 
+  const ControlsSection section = st.flyoutSection;
   const float w = std::min(kRightColumnW, std::max(kPanelMinWidth, canvas.w - kRailW - 16.0f));
-  const float h = std::min(canvas.h - 16.0f, 420.0f);
+  const float maxH = canvas.h - 16.0f;
+  const float storedH = st.panels.flyoutHeightOf(section);
+  // Clamped at draw time without writing back, so a window made smaller and
+  // then larger again gives the flyout its dragged height back.
+  const float h = std::min(maxH, storedH > 0.0f ? storedH : kFlyoutDefaultH);
   if (w <= 0.0f || h <= 0.0f) return;
   const AtelierRect box{canvas.right() - kRailW - w - 4.0f, canvas.y + 8.0f, w, h};
+  // The resize edge sits just BELOW the panel, in a window of its own: the
+  // body child takes the hover for every pixel it covers, and shortening the
+  // body to make room scrolled a PATHS panel that fits at the default height.
+  const AtelierRect edge{box.x, box.bottom(), box.w, kDockSplitterThickness};
 
   ImGui::SetNextWindowPos(ImVec2(box.x, box.y));
   ImGui::SetNextWindowSize(ImVec2(box.w, box.h));
@@ -15735,7 +15751,7 @@ void drawFlyoutPanel(AppState& st, const AtelierRect& canvas, std::unique_ptr<Pa
     dl->AddRect(ImVec2(box.x, box.y), ImVec2(box.right(), box.bottom()), atelierToken(kRule), 0.0f,
                 0, kRuleThickness);
     const AtelierRect fbody =
-        drawPanelGrip(st, st.flyoutSection, box, /*collapsed=*/false, layoutChanged);
+        drawPanelGrip(st, section, box, /*collapsed=*/false, layoutChanged);
     ImGui::SetCursorScreenPos(ImVec2(fbody.x, fbody.y));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kWindowPaddingX, kWindowPaddingY));
@@ -15746,7 +15762,7 @@ void drawFlyoutPanel(AppState& st, const AtelierRect& canvas, std::unique_ptr<Pa
     if (fbodyOpen) {
       const AtelierRect inner{fbody.x, fbody.y, ImGui::GetContentRegionAvail().x,
                               ImGui::GetContentRegionAvail().y};
-      drawPanelBody(st, st.flyoutSection, sim, gpu, lut, inner, /*vertical=*/true);
+      drawPanelBody(st, section, sim, gpu, lut, inner, /*vertical=*/true);
       // Inside the child, not after `EndChild()`: a child window owns its own
       // draw list and renders after its parent's, so a wash added to the parent
       // would sit under everything this body just drew. That is the same trap
@@ -15758,6 +15774,35 @@ void drawFlyoutPanel(AppState& st, const AtelierRect& canvas, std::unique_ptr<Pa
     washCurrentWindowForModal();
   }
   ImGui::End();
+
+  // Drag the bottom edge to resize the flyout vertically. Nothing is drawn at
+  // rest; hovered or dragged, an accent rule lights up under the border.
+  ImGui::SetNextWindowPos(ImVec2(edge.x, edge.y));
+  ImGui::SetNextWindowSize(ImVec2(edge.w, edge.h));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+  const ImGuiWindowFlags edgeFlags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar |
+                                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground |
+                                     ImGuiWindowFlags_NoSavedSettings;
+  if (ImGui::Begin("##flyoutedge", nullptr, edgeFlags) && !modalDimActive()) {
+    ImGui::InvisibleButton("##grip", ImVec2(std::max(1.0f, edge.w), std::max(1.0f, edge.h)));
+    if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+      ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+      ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(edge.x, edge.y),
+                                                ImVec2(edge.right(), edge.y + kRuleThickness),
+                                                atelierToken(kAccent));
+    }
+    if (ImGui::IsItemActive()) {
+      const float dy = ImGui::GetIO().MouseDelta.y;
+      if (dy != 0.0f)
+        st.panels.setFlyoutHeight(section, std::min(std::max(kFlyoutMinHeight, maxH),
+                                                     std::max(kFlyoutMinHeight, h + dy)));
+    }
+    // Written on release, like a dock splitter: not a file write per frame.
+    if (ImGui::IsItemDeactivated()) *layoutChanged = true;
+  }
+  ImGui::End();
+  ImGui::PopStyleVar();
 }
 
 // The "PANELS" affordance and its popup: every panel, where it is, and a way

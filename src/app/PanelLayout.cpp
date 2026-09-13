@@ -668,6 +668,18 @@ void PanelLayout::setCollapsed(ControlsSection section, bool collapsed) {
   if (i < entries_.size()) entries_[i].collapsed = collapsed;
 }
 
+float PanelLayout::flyoutHeightOf(ControlsSection section) const noexcept {
+  const size_t i = indexOf(section);
+  return i < entries_.size() ? entries_[i].flyoutHeight : 0.0f;
+}
+
+void PanelLayout::setFlyoutHeight(ControlsSection section, float height) {
+  const size_t i = indexOf(section);
+  if (i >= entries_.size()) return;
+  if (!std::isfinite(height) || height < 0.0f) return;
+  entries_[i].flyoutHeight = (height == 0.0f) ? 0.0f : std::max(kFlyoutMinHeight, height);
+}
+
 void PanelLayout::moveUp(ControlsSection section) {
   const size_t i = indexOf(section);
   if (i >= entries_.size()) return;
@@ -727,6 +739,10 @@ PanelDockExtents PanelLayout::effectiveDockExtents() const {
 void PanelLayout::parse(const std::string& text) {
   std::vector<PanelEntry> parsed;
   std::vector<bool> seen(std::size(kKeyTable), false);
+  // By key-table row, applied once every entry exists: a `flyout` line may
+  // precede its panel's line, or name a panel the file never mentions.
+  std::vector<float> flyoutHeights(std::size(kKeyTable), 0.0f);
+  std::vector<bool> sawFlyout(std::size(kKeyTable), false);
   bool sawHeader = false;
 
   // Start from the defaults, so a file that mentions no `dock` lines at all --
@@ -783,6 +799,21 @@ void PanelLayout::parse(const std::string& text) {
         case PanelPlacement::Bottom: docks.bottom = extent; break;
         default: break;
       }
+      continue;
+    }
+
+    // --- flyout <key> <height> --------------------------------------------
+    if (tok1 == "flyout") {
+      std::string keyTok, heightTok, extra;
+      if (!(ls >> keyTok) || !(ls >> heightTok) || (ls >> extra)) continue;
+      ControlsSection section;
+      if (!controlsSectionFromKey(keyTok, &section)) continue;
+      float height = 0.0f;
+      if (!parseFinite(heightTok, &height) || height < 0.0f) continue;
+      const size_t row = rowOf(section);
+      if (row >= sawFlyout.size() || sawFlyout[row]) continue;  // duplicate: first wins
+      sawFlyout[row] = true;
+      flyoutHeights[row] = (height == 0.0f) ? 0.0f : std::max(kFlyoutMinHeight, height);
       continue;
     }
 
@@ -870,6 +901,10 @@ void PanelLayout::parse(const std::string& text) {
     if (row >= seen.size() || seen[row]) continue;
     parsed.push_back(defaultEntryFor(spec.section));
   }
+  for (PanelEntry& e : parsed) {
+    const size_t row = rowOf(e.section);
+    if (row < flyoutHeights.size()) e.flyoutHeight = flyoutHeights[row];
+  }
 
   entries_ = std::move(parsed);
   docks_ = docks;
@@ -907,6 +942,12 @@ std::string PanelLayout::serialize() const {
     out += e.collapsed ? " 1" : " 0";
     out += " " + std::to_string(e.stack);
     out += e.active ? " 1\n" : " 0\n";
+  }
+  for (const PanelEntry& e : entries_) {
+    if (e.flyoutHeight <= 0.0f) continue;
+    out += "flyout ";
+    out += controlsSectionKey(e.section);
+    out += " " + num(e.flyoutHeight) + "\n";
   }
   return out;
 }

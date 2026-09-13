@@ -104,6 +104,11 @@
 // In the example above COLOR and HISTOGRAM share stack `1`, so they are one
 // slot with two tabs, and COLOR is the one on top.
 //
+// `flyout <key> <height-px>` records a flyout the user resized, one line per
+// such panel. It is a separate line kind rather than an eighth `panel` field so
+// the field-count rules below stay intact, and so a build that predates it
+// skips the line instead of discarding the whole `panel` entry.
+//
 // ==========================================================================
 // Reading a version 2 file
 // ==========================================================================
@@ -260,6 +265,10 @@ struct PanelEntry {
   // set, which `PanelLayout` repairs rather than trusts. Meaningless, and
   // left true, for an unstacked panel.
   bool active = true;
+  // The height this panel's flyout was dragged to, in pixels. Zero means never
+  // dragged: the UI's default height applies. Kept across placement changes,
+  // like `weight`.
+  float flyoutHeight = 0.0f;
 };
 
 // The geometry of a slot -- its weight and its collapsed state -- is its FIRST
@@ -335,6 +344,10 @@ struct PanelDockExtents {
 inline constexpr float kDockMinWidth = 52.0f;
 inline constexpr float kDockMinHeight = 46.0f;
 
+// The floor a dragged flyout height is clamped to: a grip plus a sliver of
+// body, the same 72 px as ui/DockLayout.hpp's `kPanelMinHeight`.
+inline constexpr float kFlyoutMinHeight = 72.0f;
+
 // The ordered, always-complete model of every panel in the application.
 //
 // A freshly constructed instance already satisfies the exactly-once
@@ -404,6 +417,12 @@ class PanelLayout {
 
   void setWeight(ControlsSection section, float weight);
   void setCollapsed(ControlsSection section, bool collapsed);
+
+  // Zero when the flyout was never resized. The setter clamps a positive
+  // height to `kFlyoutMinHeight`, lets exactly zero through (back to the
+  // default), and refuses a negative or non-finite one.
+  float flyoutHeightOf(ControlsSection section) const noexcept;
+  void setFlyoutHeight(ControlsSection section, float height);
 
   // --- tab stacks ---------------------------------------------------------
 

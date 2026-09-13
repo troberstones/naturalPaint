@@ -867,9 +867,12 @@ measure_only=("${@:3}")
 #         everywhere else in this build, and this rectangle selects
 #         components.
 #
-#     All three share one crop, 1340x960 at (340, 370), so they are directly
+#     All three share one crop, 1500x1150 at (340, 180), so they are directly
 #     diffable against one another the way the three `gradient_*` canvas views
-#     are: same document, same frame, three states of one overlay.
+#     are: same document, same frame, three states of one overlay. The crop
+#     takes in the whole PATHS flyout on its right, which the demo opens; the
+#     earlier 1340x960 cut it off mid-panel and made its wrapped hint text look
+#     like it ran off the window.
 #
 #     Exact (0, 0), measured over 8 launches each with 7 comparisons per view
 #     against the batch's first -- 0 mismatched px at max channel diff 0 every
@@ -1199,7 +1202,7 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 #     canvas.
 #
 #     Same crop as `vector_shape`/`vector_components`/`vector_marquee`
-#     (340, 370, 1340, 960): all four are the same demo canvas at the same
+#     (340, 180, 1500, 1150): all four are the same demo canvas at the same
 #     zoom/pan, so they are directly diffable against each other by eye.
 #     `--vector-demo pendraw` places its three anchors in the canvas's empty
 #     top-right corner, clear of the blob and triangle those three views
@@ -1540,9 +1543,9 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 #   moment a suggestion, a lasso in progress or a box-select drag entered the
 #   crop.
 view_crop_x=(0 1916 920 0 0 0 900 1000 1830 1900 1900 40 480 40 480 480 390 390 40 40 40 0 0 0 1920 0 40 612 612 612 40 40 350 320 40 1916 1916 1916 340 340 340 0 0 440 440 440 0 1920 1920 0 0 1946 340 1200 1916 40 0 200 1192 1192 1912 1912 556 548 340 440 440 440 0 440 1400 0 1900 640 300 300 40)
-view_crop_y=(5 927 965 148 664 0 628 1000 158 166 1462 76 560 76 560 560 370 370 76 76 76 148 0 664 235 1370 76 232 232 136 76 76 350 420 76 940 940 940 370 370 370 76 76 540 540 540 930 235 176 76 76 950 370 200 565 76 230 300 188 188 176 176 164 40 175 540 540 540 148 540 95 664 660 302 300 300 76)
-view_crop_w=(1400 640 384 100 400 2560 700 900 100 660 660 1460 1100 1460 1100 1100 1110 1110 1400 1400 2240 100 900 400 600 90 1460 1336 1336 1336 1000 1000 1060 1220 2400 640 640 640 1340 1340 1340 1500 1500 1240 1240 1240 110 632 640 1500 1500 590 1340 630 620 1800 100 900 644 644 648 648 1444 1460 1250 1240 1240 1240 100 1140 1000 400 660 1280 1500 1500 1060)
-view_crop_h=(166 190 192 402 350 77 500 400 500 64 64 76 800 76 800 800 550 550 76 76 76 1240 77 350 280 120 76 1116 1116 1308 76 76 830 830 76 240 240 240 960 960 960 100 100 740 740 740 300 290 800 100 100 290 960 820 600 76 680 1160 840 840 580 580 1240 1540 1345 740 740 740 402 600 56 350 300 974 1040 1040 76)
+view_crop_y=(5 927 965 148 664 0 628 1000 158 166 1462 76 560 76 560 560 370 370 76 76 76 148 0 664 235 1370 76 232 232 136 76 76 350 420 76 940 940 940 180 180 180 76 76 540 540 540 930 235 176 76 76 950 180 200 565 76 230 300 188 188 176 176 164 40 175 540 540 540 148 540 95 664 660 302 300 300 76)
+view_crop_w=(1400 640 384 100 400 2560 700 900 100 660 660 1460 1100 1460 1100 1100 1110 1110 1400 1400 2240 100 900 400 600 90 1460 1336 1336 1336 1000 1000 1060 1220 2400 640 640 640 1500 1500 1500 1500 1500 1240 1240 1240 110 632 640 1500 1500 590 1500 630 620 1800 100 900 644 644 648 648 1444 1460 1250 1240 1240 1240 100 1140 1000 400 660 1280 1500 1500 1060)
+view_crop_h=(166 190 192 402 350 77 500 400 500 64 64 76 800 76 800 800 550 550 76 76 76 1240 77 350 280 120 76 1116 1116 1308 76 76 830 830 76 240 240 240 1150 1150 1150 100 100 740 740 740 300 290 800 100 100 290 1150 820 600 76 680 1160 840 840 580 580 1240 1540 1345 740 740 740 402 600 56 350 300 974 1040 1040 76)
 view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
