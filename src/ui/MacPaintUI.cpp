@@ -23441,7 +23441,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 
   // ------------------------------------------------- the unfocused pane
   //
-  // PRD **A5**'s second document, track `split`'s own view. No rulers, no
+  // PRD **A5**'s second document, with its own view. No rulers, no
   // guides, no navigator, no rotate and no painting -- only the focused pane
   // is an editor -- but it DOES carry its own zoom and pan now
   // (`g_split.companionView`), independent of the focused pane's `st.view`.

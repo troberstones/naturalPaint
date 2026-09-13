@@ -20,7 +20,7 @@ namespace np {
 Vec2 splitPaneOrigin(Vec2 paneOrigin, Vec2 paneSize, float docW, float docH,
                      const CanvasView& view) noexcept;
 
-// Track `split`, View > Match Zoom: given the focused pane's own view, both
+// View > Match Zoom: given the focused pane's own view, both
 // panes' on-screen sizes, and both documents' pixel sizes, the companion
 // pane's view that shows the SAME zoom factor and has the SAME document
 // point at ITS pane's own centre.
