@@ -644,9 +644,9 @@ BrushPreset presetFromDescriptor(
         ++result.dualBrushCadenceNotHonoured;
         result.notes.push_back(
             {p.name,
-             "Dual Brush's own spacing, scatter and count are not honoured -- its second tip is "
-             "stamped once, centred on every dab of the first, rather than scattered its own "
-             "number of times"});
+             "Dual Brush's own spacing, scatter and count are honoured by the brush on Pigment "
+             "and RGB layers; erasers and smudge still stamp its second tip once, centred on "
+             "every dab of the first"});
       }
     } else if (blendEnum.has_value()) {
       // A `BlnM` was read -- a real enumerated value, not absence -- and it is

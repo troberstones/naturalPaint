@@ -2223,6 +2223,15 @@ class StrokeSession {
   // The Dual Brush's two stroke masks (brush/Deposit.hpp §2d), on both deposit
   // routes; cleared with `wash_`.
   DualStroke dual_;
+  // Where the Dual Brush's own cadence has reached along the path (brush/
+  // Deposit.hpp §2d): off without a model, when each primary dab stamps the
+  // second tip at its own centre instead. Reset with `dual_`.
+  bool dualCadence_ = false;
+  PsScatter dualScatter_;
+  Vec2 dualLast_{};
+  bool haveDualLast_ = false;
+  float dualCarry_ = 0.0f;
+  size_t dualStamps_ = 0;
   PigmentTileStore washNothingBefore_;
   Vec2 cloneOffset_{};
   // --- the exit taper's repaint ------------------------------------------

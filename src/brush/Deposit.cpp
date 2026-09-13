@@ -356,21 +356,49 @@ float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept {
   return std::clamp(combineDualCoverage(tip.dualBlend, base, second), 0.0f, 1.0f);
 }
 
+void stampDualMask(DualStroke& dual, const BrushTip& second, Vec2 centre, int32_t canvasW,
+                   int32_t canvasH) {
+  const PixelBounds b = dabPixelBounds(second, centre, canvasW, canvasH);
+  if (b.empty()) return;
+  const TileCoord first = tileCoordAt(PixelCoord{b.x0, b.y0});
+  const TileCoord last = tileCoordAt(PixelCoord{b.x1, b.y1});
+  for (int32_t ty = first.y; ty <= last.y; ++ty) {
+    for (int32_t tx = first.x; tx <= last.x; ++tx) {
+      const TileCoord coord{tx, ty};
+      const PixelCoord org = tileOrigin(coord);
+      const int32_t x0 = std::max(b.x0, org.x);
+      const int32_t x1 = std::min(b.x1, org.x + kTileSize - 1);
+      const int32_t y0 = std::max(b.y0, org.y);
+      const int32_t y1 = std::min(b.y1, org.y + kTileSize - 1);
+      StrokeMassTile* tile = nullptr;
+      for (int32_t y = y0; y <= y1; ++y) {
+        const float dy = (static_cast<float>(y) + 0.5f) - centre.y;
+        for (int32_t x = x0; x <= x1; ++x) {
+          const float d = singleTipCoverage(second, (static_cast<float>(x) + 0.5f) - centre.x, dy);
+          if (!(d > 0.0f)) continue;
+          if (tile == nullptr) tile = &dual.second.getOrCreate(coord);
+          const PixelCoord local = tileLocalOffset(PixelCoord{x, y});
+          const float m = tile->at(local);
+          tile->set(local, m + d * (1.0f - m));
+        }
+      }
+    }
+  }
+}
+
 float dualStrokeCoverage(const BrushTip& tip, DualStroke& dual, DualStrokeTile& at,
                          TileCoord coord, PixelCoord local, float dx, float dy) {
   const float c = singleTipCoverage(tip, dx, dy);
   if (!(c > 0.0f)) return 0.0f;
-  if (at.primary == nullptr) {
+  if (!at.fetched) {
     at.primary = &dual.primary.getOrCreate(coord);
-    at.second = &dual.second.getOrCreate(coord);
+    at.second = dual.second.find(coord);
+    at.fetched = true;
   }
   const float p = at.primary->at(local);
   const float primary = p + c * (1.0f - p);
   at.primary->set(local, primary);
-  const float d = singleTipCoverage(*tip.dualTip, dx, dy);
-  const float s = at.second->at(local);
-  const float second = s + d * (1.0f - s);
-  at.second->set(local, second);
+  const float second = at.second != nullptr ? at.second->at(local) : 0.0f;
 
   const auto to8 = [](float v) { return std::round(std::clamp(v, 0.0f, 1.0f) * 255.0f) / 255.0f; };
   // `combineDualCoverage()` keeps the cookie cutter: an empty 8-bit primary

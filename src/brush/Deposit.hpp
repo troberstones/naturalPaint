@@ -481,21 +481,17 @@
 // dual brush loads no colour of its own in Photoshop, it only reshapes the
 // mark) and not `spacing`/`scatter` (see below).
 //
-// **The two tips are sampled at the SAME offset, `(dx, dy)` from one shared
-// dab centre.** That is exact for `Cnt 1` with no scatter -- Photoshop stamps
-// the second tip once, centred on the first, in that configuration, and this
-// is the identical answer. It is an approximation for anything else: a real
-// Dual Brush also has its OWN spacing, its own scatter and its own count
-// (`useScatter`/`Cnt `/`bothAxes`/`countDynamics`/`scatterDynamics` on the
-// descriptor), which would stamp the second tip several times per dab of the
-// first, jittered around it. None of that reaches this function -- there is
-// no per-dab loop here to multiply, `depositDab()` calls `dabCoverage()`
-// exactly once per texel per dab regardless of what the tip carries -- so
-// `io/AbrBrushes.cpp` reads those five keys only far enough to say, per
-// brush, that this gap exists (`AbrImportResult::dualBrushCadenceNotHonoured`)
-// rather than silently painting a smoother mark than Photoshop's Count and
-// Scatter would. Landing shape compositing correctly and saying plainly what
-// is not yet landed was chosen over landing all four pieces half working.
+// **Per dab, the two tips are sampled at the SAME offset** from one shared dab
+// centre -- `dabCoverage()`, which the preview, the erasers and smudge read.
+// The paint routes instead combine two STROKE masks (`dualStrokeCoverage()`),
+// and `app/StrokeSession` lays the second tip's stamps along the path at its
+// OWN spacing (`dualTip->spacing`), scatter (`useScatter`/`scatterDynamics`/
+// `bothAxes`) and count (`Cnt `). **Scatter is measured in the PRIMARY tip's
+// diameter** -- INFERRED: Photoshop describes it as spreading the second tips
+// "inside the shape of the initial brush", and Kyle's 1-2 px second tips at
+// 100% scatter would otherwise be a hairline down the middle of a 90 px mark.
+// Count jitter and a scatter Control are not read: 0 and Off on every one of
+// the 66 dual brushes in the four packs measured.
 //
 // **Combining is per-texel, on the coverage SCALAR, not on any RGBA notion of
 // blending.** A coverage value is already the one number `depositDab()` folds
@@ -834,7 +830,8 @@ struct DualStroke {
 // One tile of each, fetched lazily by `dualStrokeCoverage()`.
 struct DualStrokeTile {
   StrokeMassTile* primary = nullptr;
-  StrokeMassTile* second = nullptr;
+  const StrokeMassTile* second = nullptr;
+  bool fetched = false;
 };
 
 // The narrowest tip §2b will draw. `io/AbrBrushes.cpp`'s own clamp on an
@@ -1216,12 +1213,19 @@ float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept;
 // Brush") every dab combined to nothing. The stroke's primary mask saturates
 // after a few overlapping dabs, and that is what Photoshop's threshold sees.
 //
-// Each tip's coverage is unioned into its mask (`m + c(1 - m)`); both masks are
-// read at 8 bits, as Photoshop's stroke masks are INFERRED to be (a union that
-// only approaches 1 would never cross those thresholds); the dab lays its own
-// share `c / primary` of the combined mask. Requires `tip.dualTip != nullptr`.
+// The primary tip's coverage is unioned into `dual.primary` here; the second
+// tip's mask is whatever `stampDualMask()` has laid. Both are read at 8 bits,
+// as Photoshop's stroke masks are INFERRED to be (a union that only approaches
+// 1 would never cross those thresholds); the dab lays its own share
+// `c / primary` of the combined mask. Requires `tip.dualTip != nullptr`.
 float dualStrokeCoverage(const BrushTip& tip, DualStroke& dual, DualStrokeTile& at,
                          TileCoord coord, PixelCoord local, float dx, float dy);
+
+// Lays one stamp of the second tip into `dual.second`, unioned (`m + d(1 - m)`).
+// The caller places the stamps -- `app/StrokeSession` at the Dual Brush's own
+// spacing, scatter and count.
+void stampDualMask(DualStroke& dual, const BrushTip& second, Vec2 centre, int32_t canvasW,
+                   int32_t canvasH);
 
 // §1a: `dabCoverage()` for the tip swept from its centre to `centre + sweep`
 // -- at every texel, the coverage of the nearest position along that segment,

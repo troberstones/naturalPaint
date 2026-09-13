@@ -253,6 +253,10 @@ DepositCount recordDabAt(Layer& layer, const BrushTip& tip, Vec2 centre, int32_t
 // is `0` by the C++ standard for the signs this file ever produces -- "due
 // +x" -- so the first dab's perpendicular is due +y, exactly as deterministic
 // as every later dab's, rather than undefined.
+// Folded into the stroke seed for the Dual Brush's own stamps, so their scatter
+// draws are not the primary dabs' draws again. Any fixed odd 64-bit constant.
+constexpr uint64_t kDualStampSalt = 0xD1B54A32D192ED03ull;
+
 Vec2 applyPerDabScatter(Vec2 centre, const BrushTip& tip, uint64_t seed, uint32_t dabIndex,
                         float stepDx, float stepDy, uint32_t subIndex) noexcept {
   if (tip.scatter == 0.0f) return centre;  // the identity: no branch taken,
@@ -1492,6 +1496,9 @@ void StrokeSession::beginRoutes(Layer& layer) {
   // repaint comes back through here and must not find its ceiling spent.
   wash_ = WashStroke{};
   dual_ = DualStroke{};
+  haveDualLast_ = false;
+  dualCarry_ = 0.0f;
+  dualStamps_ = 0;
 
   if (route_ == StrokeRoute::PigmentErase)
     pigErase_.begin(resolvedOpacity_);
@@ -1855,6 +1862,8 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // `haveModel_` false leaves every dab reading `tip_` unmodified, same as a
   // null `model` here always has.
   haveModel_ = model != nullptr;
+  dualCadence_ = model != nullptr && model->dual.enabled;
+  if (dualCadence_) dualScatter_ = model->dual.scatter;
   if (haveModel_) {
     baseDiameterPx_ = model->tip.diameterPx;
     baseAngleDeg_ = model->tip.angleDeg;
@@ -2113,6 +2122,56 @@ void StrokeSession::depositPending(bool isEndFlush) {
     }
   }
 
+  // The Dual Brush's own cadence (brush/Deposit.hpp §2d), laid along this
+  // batch's stretch of path BEFORE its primary dabs read the mask, so a dab
+  // finds second-tip stamps ahead of it as well as behind.
+  const bool dualDeposit =
+      (route_ == StrokeRoute::CpuDeposit || route_ == StrokeRoute::RgbDeposit) &&
+      tip_.dualTip != nullptr;
+  if (dualDeposit && dualCadence_) {
+    if (!seedLatched_) {
+      seed_ = strokeSeedFromStart(pending_.front().pos.x, pending_.front().pos.y);
+      seedLatched_ = true;
+    }
+    const float spacing = std::max(tip_.dualTip->spacingPx(), 0.1f);
+    const int32_t count = std::clamp(dualScatter_.count, 1, 16);
+    // `applyPerDabScatter()` measures its offset in this tip's radius: the
+    // primary's, per §2d.
+    BrushTip scatterTip;
+    scatterTip.radius = haveModel_ ? baseDiameterPx_ * 0.5f : tip_.radius;
+    scatterTip.scatterBothAxes = dualScatter_.bothAxes;
+    const auto stampAt = [&](Vec2 pos, float dirX, float dirY) {
+      const auto index = static_cast<uint32_t>(dualStamps_++);
+      scatterTip.scatter = dualScatter_.enabled
+                               ? varianceOffset(dualScatter_.scatter, hardwareInputs_, 2.0f,
+                                                seed_ ^ kDualStampSalt, index, VarianceSite::Scatter)
+                               : 0.0f;
+      for (int32_t k = 0; k < count; ++k)
+        stampDualMask(dual_, *tip_.dualTip,
+                      applyPerDabScatter(pos, scatterTip, seed_ ^ kDualStampSalt, index, dirX, dirY,
+                                         static_cast<uint32_t>(k)),
+                      doc.width, doc.height);
+    };
+    for (const StrokeDab& p : pending_) {
+      if (!haveDualLast_) {
+        stampAt(p.pos, 0.0f, 0.0f);
+        dualLast_ = p.pos;
+        haveDualLast_ = true;
+        continue;
+      }
+      const float sx = p.pos.x - dualLast_.x;
+      const float sy = p.pos.y - dualLast_.y;
+      const float len = std::hypot(sx, sy);
+      if (len > 0.0f) {
+        float along = spacing - dualCarry_;
+        for (; along <= len; along += spacing)
+          stampAt(Vec2{dualLast_.x + sx * (along / len), dualLast_.y + sy * (along / len)}, sx, sy);
+        dualCarry_ = len - (along - spacing);
+      }
+      dualLast_ = p.pos;
+    }
+  }
+
   size_t frameTexels = 0;
   size_t dabIndexInFrame = 0;
   for (const StrokeDab& p : pending_) {
@@ -2342,6 +2401,11 @@ void StrokeSession::depositPending(bool isEndFlush) {
     for (int32_t subIndex = 0; subIndex < resolvedCount; ++subIndex) {
       const Vec2 centre = applyPerDabScatter(p.pos, dabTip, seed_, static_cast<uint32_t>(dabs_), dx,
                                              dy, static_cast<uint32_t>(subIndex));
+
+      // Without a model there is no cadence to read: the second tip is stamped
+      // at each primary dab's own centre.
+      if (dualDeposit && !dualCadence_)
+        stampDualMask(dual_, *dabTip.dualTip, centre, doc.width, doc.height);
 
       // The five routes differ in exactly this call, and each takes
       // `selection`. Everything around it -- the tile bookkeeping, the

@@ -479,12 +479,9 @@ int runAbrReport(const char* path) {
   }
   if (r.dualBrushCadenceNotHonoured > 0) {
     std::printf(
-        "\n**%zu of %zu brushes have a Dual Brush whose own spacing/scatter/count is not "
-        "honoured.**\n"
-        "Their second tip DOES paint, composited by Multiply, Overlay, Color Burn\n"
-        "or Hard Mix -- but it is stamped once, centred on every dab of the first,\n"
-        "rather than scattered its own number of times. These brushes will read\n"
-        "less granular than Photoshop's even with the second tip's shape correct.\n",
+        "\n**%zu of %zu brushes have a Dual Brush with its own spacing/scatter/count.**\n"
+        "The brush honours it on Pigment and RGB layers. Erasers and smudge still\n"
+        "stamp the second tip once, centred on every dab of the first.\n",
         r.dualBrushCadenceNotHonoured, r.presets.size());
   }
   return 0;
