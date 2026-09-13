@@ -104,6 +104,13 @@ bool flatsAcceptSuggestion(Layer& layer, const FlatEvaluation& e, int index) {
   return flatsBridgeStroke(layer, e.suggestions[index], false);
 }
 
+int flatsAcceptAllSuggestions(Layer& layer, const FlatEvaluation& e) {
+  int accepted = 0;
+  for (size_t i = 0; i < e.suggestions.size(); ++i)
+    if (flatsAcceptSuggestion(layer, e, static_cast<int>(i))) ++accepted;
+  return accepted;
+}
+
 int flatsClusterSmall(Layer& layer, const FlatEvaluation& e, int maxArea) {
   const std::vector<FlatMergePair> pairs = flatClusterSmall(e, maxArea);
   for (FlatMergePair p : pairs) {

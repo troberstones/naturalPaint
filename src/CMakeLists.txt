@@ -271,6 +271,8 @@ set(NP_SELFTEST_SOURCES
   app/selftest/ZoomToSelection.cpp
   # naturalPaint --version.
   app/selftest/Version.cpp
+  # docs/shortcuts.md §1.1's six Flats keys.
+  app/selftest/FlatsKeys.cpp
 )
 
 add_executable(naturalPaint

@@ -6784,4 +6784,13 @@ bool runWarpMeshTest();
 // app/selftest/Version.cpp.
 bool runVersionTest();
 
+// docs/shortcuts.md §1.1: the six Flats-scoped keys (Y/⇧K/⇧U/⇧B/⇧V pick a
+// FLATS TOOLS palette cell, ⇧Return accepts every pending gap) -- each
+// chord resolves only under Flats scope in the real keymaps/default.json,
+// each tool-selection action picks the same FlatsTool the palette cell does
+// through the identical toggle rule, and accept-all accepts every pending
+// gap through the same per-gap path. Headless and GPU-free. See
+// app/selftest/FlatsKeys.cpp.
+bool runFlatsKeysTest();
+
 }  // namespace np

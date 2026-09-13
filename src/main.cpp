@@ -4336,6 +4336,9 @@ int main(int argc, char** argv) {
     // `naturalPaint --version`: app/Version's versionString() format.
     // Headless and GPU-free.
     const bool versionOk = np::runVersionTest();
+    // docs/shortcuts.md §1.1: the six Flats-scoped keys. Headless and
+    // GPU-free.
+    const bool flatsKeysOk = np::runFlatsKeysTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4410,7 +4413,7 @@ int main(int argc, char** argv) {
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
                     nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
                     pasteCommandsOk && commandsFillOk && zoomToSelectionOk && warpMeshOk &&
-                    versionOk;
+                    versionOk && flatsKeysOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -5566,6 +5569,18 @@ int main(int argc, char** argv) {
         else if (action == "flats_next_gap") st.flatsAction = np::FlatsAction::NextGap;
         else if (action == "flats_accept_gap") st.flatsAction = np::FlatsAction::AcceptGap;
         else if (action == "flats_cluster_small") st.flatsAction = np::FlatsAction::ClusterSmall;
+        else if (action == "flats_accept_all_gaps") st.flatsAction = np::FlatsAction::AcceptAllGaps;
+        // docs/shortcuts.md §1.1: Y/⇧K/⇧U/⇧B/⇧V pick a FLATS TOOLS palette
+        // cell instead of raising a one-shot `FlatsAction` -- see
+        // `app/ToolSwitch`'s `flatsToolForKeyAction()`/`toggleFlatsTool()`,
+        // the same mapping and the same toggle-on-reselect the palette cell
+        // itself uses, mirroring `toolFromSelectAction()`/`setActiveTool()`
+        // just above for the ordinary tool letters.
+        else if (const std::optional<np::FlatsTool> pickedFlatsTool =
+                     action ? np::flatsToolForKeyAction(*action) : std::nullopt;
+                 pickedFlatsTool.has_value()) {
+          np::toggleFlatsTool(st, *pickedFlatsTool);
+        }
         // PLAN.md Phase 2 step 11 ("View controls", PRD Q1-Q4). Fit/100%/
         // zoom-in/zoom-out are request flags because they need the canvas
         // window's actual on-screen size, which only exists inside

@@ -321,6 +321,19 @@ bool setFlatsTool(AppState& st, FlatsTool next) noexcept {
   return true;
 }
 
+bool toggleFlatsTool(AppState& st, FlatsTool next) noexcept {
+  return setFlatsTool(st, st.flatsTool == next ? FlatsTool::None : next);
+}
+
+std::optional<FlatsTool> flatsToolForKeyAction(std::string_view action) noexcept {
+  if (action == "flats_tool_shape_fill") return FlatsTool::ShapeFill;
+  if (action == "flats_tool_group") return FlatsTool::Group;
+  if (action == "flats_tool_draw_merge") return FlatsTool::DrawMerge;
+  if (action == "flats_tool_bridge_pen") return FlatsTool::BridgePen;
+  if (action == "flats_tool_select_edits") return FlatsTool::SelectEdits;
+  return std::nullopt;
+}
+
 bool flatsToolIsActive(const AppState& st) {
   // **The PICK decides, not the selected layer.**
   //

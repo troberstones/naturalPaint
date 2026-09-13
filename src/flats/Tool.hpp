@@ -59,6 +59,14 @@ bool flatsBridgeStroke(Layer& layer, const FlatPolyline& pts, bool erase);
 // `Return`: accept suggestion `index` of `e.suggestions` as a bridge stroke.
 bool flatsAcceptSuggestion(Layer& layer, const FlatEvaluation& e, int index);
 
+// `⇧Return`: accept every pending suggestion in `e`, each through
+// `flatsAcceptSuggestion()` above -- the same per-gap path, not a second one.
+// Safe to loop over the same `e` for every index: each call only reads
+// `e.suggestions[index]`, never anything the previous call changed. Returns
+// how many were accepted; the caller records this as ONE undo step
+// regardless of the count.
+int flatsAcceptAllSuggestions(Layer& layer, const FlatEvaluation& e);
+
 // Layer > Cluster small fills: every small open-bordered fill merges into
 // its neighbour, recorded as anchor-point merge pairs. Returns how many.
 int flatsClusterSmall(Layer& layer, const FlatEvaluation& e, int maxArea);

@@ -14614,7 +14614,12 @@ bool flatsToolButton(AppState& st, const FlatsToolRow& row, float cellSize, bool
   // Clicking the lit cell puts the tool down, which is the one place this
   // differs from TOOLS on purpose: there is always an active `Tool`, and
   // there is deliberately no active `FlatsTool` most of the time.
-  if (clicked) setFlatsTool(st, selected ? FlatsTool::None : row.tool);
+  //
+  // `toggleFlatsTool()` (app/ToolSwitch) is the same call the six Flats
+  // tool-selection keys make (main.cpp's key handler) -- one toggle
+  // decision, so a key and this cell cannot disagree about what picking a
+  // tool means.
+  if (clicked) toggleFlatsTool(st, row.tool);
   ImGui::PopID();
   return clicked;
 }
@@ -14692,6 +14697,11 @@ void drawFlatsToolsSection(AppState& st) {
   ImGui::BeginDisabled(st.flatsGapFocus < 0);
   if (ImGui::SmallButton("BRIDGE IT")) st.flatsAction = FlatsAction::AcceptGap;
   ImGui::EndDisabled();
+  ImGui::SameLine();
+  // Unlike BRIDGE IT, this does not need a focused suggestion -- it acts on
+  // every one of them -- so it stays enabled whenever the outer
+  // `suggestions == 0` guard does, not the inner `flatsGapFocus` one.
+  if (ImGui::SmallButton("ACCEPT ALL")) st.flatsAction = FlatsAction::AcceptAllGaps;
   ImGui::EndDisabled();
   if (suggestions == 0)
     textDisabledWrapped(eval ? "No gaps proposed." : "--");
@@ -20350,6 +20360,19 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                 g_strokeRefusal = "clustered " + std::to_string(n) + " small fill(s) into their neighbours.";
               } else {
                 g_strokeRefusal = "no small open-bordered fills to cluster.";
+              }
+              break;
+            }
+            case FlatsAction::AcceptAllGaps: {
+              // One `recordEdit()` call for however many gaps this accepts --
+              // ⇧Return is one undo step, not one per gap.
+              const int n = flatsAcceptAllSuggestions(*flayer, *eval);
+              if (n > 0) {
+                fod->recordEdit("flats accept all gaps", EditKind::Content);
+                st.flatsGapFocus = -1;
+                g_strokeRefusal.clear();
+              } else {
+                g_strokeRefusal = "Shift-Return accepts every pending gap: there are none to accept.";
               }
               break;
             }
