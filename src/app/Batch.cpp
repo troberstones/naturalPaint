@@ -138,6 +138,13 @@ constexpr PixelUnitParam kPixelUnitParams[] = {
     {"move_region", "x"},         {"move_region", "y"},
     {"resize_region", "x"},          {"resize_region", "y"},
     {"resize_region", "rect_width"}, {"resize_region", "rect_height"},
+    // Reach wave, track `zoom`: `filter_highpass`'s `sigma` and
+    // `filter_local_contrast`'s `radius` reuse names already in this table
+    // (`filter_gaussian_blur`'s sigma, `filter_unsharp_mask`'s radius) for the
+    // identical reason -- both are a Gaussian blur's own sigma, in document
+    // texels.
+    {"filter_highpass", "sigma"},
+    {"filter_local_contrast", "radius"},
 };
 
 // "filter_gaussian_blur's sigma" for every pixel-unit parameter `action`

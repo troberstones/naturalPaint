@@ -221,15 +221,20 @@ bool runMenuModelTest() {
   // 100 -> 108: PRD M9's `PasteInto` and `PasteAsNewDocument`, PRD D26's
   // `Fill`, `Stroke` and `DefinePattern`, and PRD E11/E12's
   // `SaveSelectionAsChannel`, `LoadChannelAsSelection` and `ToggleQuickMask`.
-  check(kMenuActionCount == 108,
-        "ids: exactly 108 actions -- the original 41-item extraction plus D1/D2's "
+  // 108 -> 112 in the reach wave's `zoom` track: PRD Q1's `ZoomToSelection`
+  // and PRD D22/reachability-audit C1's `Highpass`, `LocalContrast` and
+  // `LensCorrect` -- counted the same way, off `MenuAction`'s enumerators in
+  // the merged header (113 including `Count`), never by adding 4 to 108.
+  check(kMenuActionCount == 112,
+        "ids: exactly 112 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
         "dialog, Brush Settings, the crop pair, Pigment, Batch, Inpaint, D8's "
         "make-tileable pair, the 3x3 repeat preview, the region export/show pair, "
-        "Paste Into / Paste as New Document, Fill/Stroke/Define Pattern and the "
-        "save/load channel and quick-mask trio, so an item lost in a later edit "
-        "fails here");
+        "Paste Into / Paste as New Document, Fill/Stroke/Define Pattern, the "
+        "save/load channel and quick-mask trio, and Zoom to Selection/Highpass/"
+        "Local Contrast/Lens Correction, so an item lost in a later edit fails "
+        "here");
 
   {
     std::set<MenuAction> seen;
@@ -756,12 +761,17 @@ bool runMenuModelTest() {
     // 33 -> 34: PRD M9's Paste Into, Shift+Opt+Cmd+V -- verified free (Cmd+V
     // is plain Paste's), checked free in keymaps/default.json before being
     // claimed. Paste as New Document claims nothing, matching Photoshop.
-    check(claimed == 34,
-          "keys: exactly 34 chords are claimed -- D1/D2's ten, the eleven that came "
+    // 34 -> 35, reach wave track `zoom`: PRD Q1's Zoom to Selection,
+    // Cmd+Opt+0 -- checked free of both keymaps/default.json and every other
+    // claimed chord before being taken (neither had ever bound Cmd+Alt+0).
+    // Highpass/Local Contrast/Lens Correction claim nothing, matching
+    // Photoshop's own arrangement for its Filter menu.
+    check(claimed == 35,
+          "keys: exactly 35 chords are claimed -- D1/D2's ten, the eleven that came "
           "before them, Free Transform's Cmd+T, ResetView's Shift+Cmd+0, "
-          "Adjustments' ten and Paste Into's Shift+Opt+Cmd+V. Pinned, because claiming "
-          "one more silently takes that key away from SDL and from "
-          "keymaps/default.json");
+          "Adjustments' ten, Paste Into's Shift+Opt+Cmd+V and Zoom to Selection's "
+          "Cmd+Opt+0. Pinned, because claiming one more silently takes that key away "
+          "from SDL and from keymaps/default.json");
   }
 
   {
