@@ -284,6 +284,9 @@ const MenuItemSpec* specTable() {
     set(MenuAction::Highpass, "Highpass...", "");
     set(MenuAction::LocalContrast, "Local Contrast...", "");
     set(MenuAction::LensCorrect, "Lens Correction...", "");
+    // PRD D11. No key equivalent, same reason as the
+    // three above.
+    set(MenuAction::DustScratches, "Dust & Scratches...", "");
 
     // --- Image ----------------------------------------------------------
     set(MenuAction::ImageSize, "Image Size...", "");
@@ -343,6 +346,9 @@ const MenuItemSpec* specTable() {
     set(MenuAction::AdjustAutoColor, "Auto Colour", "Shift+Cmd+B",
         MenuKeyEquivalent{'b', kMenuModCmd | kMenuModShift, "adjust_auto_color"});
     set(MenuAction::AdjustEqualize, "Equalize", "");
+    // PRD D12. No key equivalent: docs/shortcuts.md
+    // assigns none.
+    set(MenuAction::AdjustShadowsHighlights, "Shadows/Highlights...", "");
     return true;
   }();
   (void)built;
@@ -581,6 +587,8 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::AdjustAutoColor: return "AdjustAutoColor";
     case MenuAction::AdjustEqualize: return "AdjustEqualize";
     case MenuAction::Warp: return "Warp";
+    case MenuAction::DustScratches: return "DustScratches";
+    case MenuAction::AdjustShadowsHighlights: return "AdjustShadowsHighlights";
     case MenuAction::Count: break;
   }
   // Not a fallback string: reaching this means an enumerator was added without
@@ -781,6 +789,10 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::LocalContrast:
     case MenuAction::LensCorrect:
     case MenuAction::Batch:
+    // Each rewrites the active layer's own texels or
+    // opens a modal, the identical seat as the rows just above.
+    case MenuAction::DustScratches:
+    case MenuAction::AdjustShadowsHighlights:
     case MenuAction::Count:
       return true;
   }
@@ -893,6 +905,14 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     case MenuAction::Fill:
     case MenuAction::Stroke:
     case MenuAction::DefinePattern:
+      return MenuEffect::Deferred;
+
+    // Each opens a modal (ui/DustScratchesDialog.hpp,
+    // ui/ShadowsHighlightsDialog.hpp), the identical reason as every dialog
+    // above -- listed explicitly rather than left to `default:` below so a
+    // native menu callback is never asked to open one directly.
+    case MenuAction::DustScratches:
+    case MenuAction::AdjustShadowsHighlights:
       return MenuEffect::Deferred;
 
     default:
@@ -1182,6 +1202,10 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
       adjust.children.push_back(item(MenuAction::AdjustAutoContrast, ctx.hasDocument));
       adjust.children.push_back(item(MenuAction::AdjustAutoColor, ctx.hasDocument));
       adjust.children.push_back(item(MenuAction::AdjustEqualize, ctx.hasDocument));
+      // PRD D12: Photoshop's own placement, appended
+      // rather than grouped with the tonal controls above -- see
+      // MenuAction::AdjustShadowsHighlights's own comment.
+      adjust.children.push_back(item(MenuAction::AdjustShadowsHighlights, ctx.hasDocument));
       image.children.push_back(std::move(adjust));
     }
     bar.push_back(std::move(image));
@@ -1322,6 +1346,8 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     // Local Contrast set apart, a tonal op rather than a blur-based one.
     flt.push_back(filterItem(MenuAction::Highpass));
     flt.push_back(filterItem(MenuAction::LocalContrast));
+    // PRD D11: the median-gated despeckle.
+    flt.push_back(filterItem(MenuAction::DustScratches));
     // Set apart, and the separator is the point: the eight above are filters
     // BOUNDED by the selection, and this one FILLS it (ops/Inpaint.hpp
     // section 1). It is also the only one whose enable predicate asks a

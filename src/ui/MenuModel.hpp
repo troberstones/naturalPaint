@@ -457,6 +457,16 @@ enum class MenuAction : uint16_t {
   // submenu to put it in" reason `FreeTransform`'s own comment gives.
   Warp,
 
+  // PRD D11/D12: ops/Filters.hpp sections 11-12.
+  // `DustScratches` sits in the Filter menu beside Median
+  // (ui/DustScratchesDialog.hpp); `AdjustShadowsHighlights` sits in
+  // Image > Adjustments, Photoshop's own placement
+  // (ui/ShadowsHighlightsDialog.hpp) -- both appended here rather than
+  // beside their logical siblings above, since this enum is a shared
+  // registration point every P2 track edits concurrently.
+  DustScratches,
+  AdjustShadowsHighlights,
+
   Count,
 };
 
