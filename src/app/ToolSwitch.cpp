@@ -325,6 +325,17 @@ bool toggleFlatsTool(AppState& st, FlatsTool next) noexcept {
   return setFlatsTool(st, st.flatsTool == next ? FlatsTool::None : next);
 }
 
+std::optional<FlatsAction> flatsActionForKeyAction(std::string_view action) noexcept {
+  if (action == "flats_delete_fill") return FlatsAction::DeleteFill;
+  if (action == "flats_merge_pair") return FlatsAction::MergePair;
+  if (action == "flats_prev_gap") return FlatsAction::PrevGap;
+  if (action == "flats_next_gap") return FlatsAction::NextGap;
+  if (action == "flats_accept_gap") return FlatsAction::AcceptGap;
+  if (action == "flats_cluster_small") return FlatsAction::ClusterSmall;
+  if (action == "flats_accept_all_gaps") return FlatsAction::AcceptAllGaps;
+  return std::nullopt;
+}
+
 std::optional<FlatsTool> flatsToolForKeyAction(std::string_view action) noexcept {
   if (action == "flats_tool_shape_fill") return FlatsTool::ShapeFill;
   if (action == "flats_tool_group") return FlatsTool::Group;

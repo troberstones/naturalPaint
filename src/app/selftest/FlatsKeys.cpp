@@ -1,5 +1,7 @@
 #include "app/selftest/Support.hpp"
 
+#include <utility>
+
 #include "app/ToolSwitch.hpp"
 #include "flats/Tool.hpp"
 
@@ -123,6 +125,30 @@ bool runFlatsKeysTest() {
     check(e.suggestions.empty(), "fixture: nothing pending");
     check(flatsAcceptAllSuggestions(layer, e) == 0 && layer.flats.edits.bridges.empty(),
           "accept-all with nothing pending accepts nothing and records no bridge");
+  }
+
+  std::printf("  -- the one-shot Flats keys' action table --\n");
+  {
+    const std::pair<const char*, FlatsAction> kTable[] = {
+        {"flats_delete_fill", FlatsAction::DeleteFill},
+        {"flats_merge_pair", FlatsAction::MergePair},
+        {"flats_prev_gap", FlatsAction::PrevGap},
+        {"flats_next_gap", FlatsAction::NextGap},
+        {"flats_accept_gap", FlatsAction::AcceptGap},
+        {"flats_cluster_small", FlatsAction::ClusterSmall},
+        {"flats_accept_all_gaps", FlatsAction::AcceptAllGaps},
+    };
+    bool allMapped = true;
+    for (const auto& [name, expected] : kTable) {
+      const std::optional<FlatsAction> got = flatsActionForKeyAction(name);
+      if (!got || *got != expected) {
+        std::printf("    %s mapped wrongly\n", name);
+        allMapped = false;
+      }
+    }
+    check(allMapped, "each one-shot Flats key action maps to its own FlatsAction");
+    check(!flatsActionForKeyAction("flats_tool_group") && !flatsActionForKeyAction("brush"),
+          "a tool-picking or unrelated action raises no one-shot FlatsAction");
   }
 
   std::printf("[selftest] flats keys %s\n", ok ? "PASS" : "FAIL");

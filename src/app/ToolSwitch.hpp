@@ -290,6 +290,10 @@ bool toggleFlatsTool(AppState& st, FlatsTool next) noexcept;
 // read the same answer rather than two that can drift apart.
 std::optional<FlatsTool> flatsToolForKeyAction(std::string_view action) noexcept;
 
+// The one-shot Flats keys' action strings, for the same reason: main.cpp and the
+// selftest read one table. A tool-picking action is not in it.
+std::optional<FlatsAction> flatsActionForKeyAction(std::string_view action) noexcept;
+
 // **Is the flatting tool the active tool right now?**
 //
 // The tool state is EXCLUSIVE: at any instant either a regular tool is

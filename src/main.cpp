@@ -5587,13 +5587,9 @@ int main(int argc, char** argv) {
         else if (action == "screenshot") st.requestScreenshot = true;
         // ADR-0009: the flatting keys, scoped to a Flats layer in the keymap
         // and consumed by ui/MacPaintUI where the cursor's texel is known.
-        else if (action == "flats_delete_fill") st.flatsAction = np::FlatsAction::DeleteFill;
-        else if (action == "flats_merge_pair") st.flatsAction = np::FlatsAction::MergePair;
-        else if (action == "flats_prev_gap") st.flatsAction = np::FlatsAction::PrevGap;
-        else if (action == "flats_next_gap") st.flatsAction = np::FlatsAction::NextGap;
-        else if (action == "flats_accept_gap") st.flatsAction = np::FlatsAction::AcceptGap;
-        else if (action == "flats_cluster_small") st.flatsAction = np::FlatsAction::ClusterSmall;
-        else if (action == "flats_accept_all_gaps") st.flatsAction = np::FlatsAction::AcceptAllGaps;
+        else if (const std::optional<np::FlatsAction> flatsKeyAction =
+                     action ? np::flatsActionForKeyAction(*action) : std::nullopt)
+          st.flatsAction = *flatsKeyAction;
         // docs/shortcuts.md §1.1: Y/⇧K/⇧U/⇧B/⇧V pick a FLATS TOOLS palette
         // cell instead of raising a one-shot `FlatsAction` -- see
         // `app/ToolSwitch`'s `flatsToolForKeyAction()`/`toggleFlatsTool()`,
