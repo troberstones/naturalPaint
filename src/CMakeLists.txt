@@ -32,6 +32,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/GimpBrush.cpp
   app/selftest/Variance.cpp
   app/selftest/CommandsPatterns.cpp
+  app/selftest/CommandsFill.cpp
   app/selftest/CoverageBlend.cpp
   app/selftest/PaperTexture.cpp
   app/selftest/DabLibrary.cpp
@@ -278,6 +279,7 @@ add_executable(naturalPaint
   app/BatchDialog.cpp
   app/Command.cpp
   app/CommandCoverage.cpp
+  app/CommandsFill.cpp
   app/CommandsImage.cpp
   app/CommandsLayers.cpp
   app/CommandsOpStack.cpp
@@ -475,6 +477,7 @@ add_executable(naturalPaint
   ops/Feather.cpp
   ops/Filters.cpp
   ops/FloodFill.cpp
+  ops/Fill.cpp
   ops/Gradient.cpp
   ops/Inpaint.cpp
   ops/Lens.cpp
@@ -506,6 +509,7 @@ add_executable(naturalPaint
   ui/AtelierLayout.cpp
   ui/DockLayout.cpp
   ui/AtelierChrome.cpp
+  ui/FillDialog.cpp
   ui/MenuModel.cpp
   ui/NewDocumentDialog.cpp
   ui/ToolCursor.cpp

@@ -4271,6 +4271,8 @@ int main(int argc, char** argv) {
     const bool appIconOk = np::runAppIconTest();
     // PRD M9: Paste Into and Paste as New Document. Headless and GPU-free.
     const bool pasteCommandsOk = np::runPasteCommandsTest();
+    // PRD D26: `fill` and `stroke`.
+    const bool commandsFillOk = np::runCommandsFillTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4343,7 +4345,7 @@ int main(int argc, char** argv) {
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
                     nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
-                    pasteCommandsOk;
+                    pasteCommandsOk && commandsFillOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

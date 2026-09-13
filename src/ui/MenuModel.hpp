@@ -189,6 +189,16 @@ enum class MenuAction : uint16_t {
   InvertSelection,
   ClearCanvas,
 
+  // PRD D26: fill and stroke a selection or layer with colour,
+  // pattern or gradient, plus Define Pattern -- `app/CommandsPatterns.cpp`'s
+  // `define_pattern` had a command and no menu item at all until this track's
+  // dialog gave it one. Sit here, after Edit's other document edits, rather
+  // than between Cut/Copy and the selection items: neither is a clipboard nor
+  // a selection operation, and Photoshop places both under Edit too.
+  Fill,
+  Stroke,
+  DefinePattern,
+
   // --- Layer --------------------------------------------------------------
   LayerCommandItem,     // family: param = index into app::allLayerCommands()
   LayerSetCommandItem,  // family: param = index into core::allLayerSetCommands()

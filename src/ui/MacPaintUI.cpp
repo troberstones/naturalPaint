@@ -9,6 +9,7 @@
 #include "ui/DabPicker.hpp"
 #include "ui/DynamicsMatrixPanel.hpp"
 #include "ui/FileDialog.hpp"
+#include "ui/FillDialog.hpp"
 #include "ui/Dialog.hpp"
 #include "ui/LabelledControl.hpp"
 #include "ui/AtelierLayout.hpp"
@@ -13110,6 +13111,12 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
       st.requestClear = true;
       break;
 
+    // PRD D26: ui/FillDialog.hpp's three modals -- each of
+    // these sets a flag only, for `MenuEffect::Deferred`'s own reason.
+    case MenuAction::Fill:           requestFillDialog();          break;
+    case MenuAction::Stroke:         requestStrokeDialog();        break;
+    case MenuAction::DefinePattern:  requestDefinePatternDialog(); break;
+
     // --- Layer ------------------------------------------------------------
     case MenuAction::LayerCommandItem: {
       const std::vector<LayerCommand>& commands = allLayerCommands();
@@ -16403,6 +16410,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // docs/reachability-audit.md C5 (PRD E4/E8/E9): the Select menu's five
   // refine dialogs, same placement rule again.
   drawSelectMenuDialogs(st);
+  // PRD D26: Fill, Stroke and Define Pattern, same placement
+  // rule again (ui/FillDialog.hpp).
+  drawFillDialog(st);
+  drawStrokeDialog(st);
+  drawDefinePatternDialog(st);
 
   // ------------------------------------------------------------ the bands
   //

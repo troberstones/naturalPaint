@@ -212,10 +212,11 @@ bool runMenuBasicsTest() {
       size_t pickable = 0;
       for (const MenuNode& n : edit->children)
         if (n.kind == MenuNodeKind::Command || n.kind == MenuNodeKind::Check) ++pickable;
-      check(pickable == 16,
-            "Edit holds exactly sixteen pickable rows -- the eleven D1/D2 additions, "
-            "Clear Canvas, Free Transform, the numeric Transform dialog, and PRD M9's "
-            "Paste Into / Paste as New Document, no more and no fewer");
+      check(pickable == 19,
+            "Edit holds exactly nineteen pickable rows -- the eleven D1/D2 additions, "
+            "Clear Canvas, Free Transform, the numeric Transform dialog, PRD M9's "
+            "Paste Into / Paste as New Document and PRD D26's Fill/Stroke/Define Pattern, "
+            "no more and no fewer");
     }
   }
 
