@@ -104,6 +104,12 @@ CommandCoverage coverageFor(MenuAction action) {
     case MenuAction::Paste:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "as Cut -- and what it pastes is whatever the clipboard holds at replay time, which is the definition of a step that is not reproducible"};
+    case MenuAction::PasteInto:
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "as Paste -- the pasted content is still whatever the clipboard holds at replay time"};
+    case MenuAction::PasteAsNewDocument:
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "as Paste, and it creates a document besides -- the session owns which documents exist (see NewDocument above)"};
     case MenuAction::DeleteSelection:
       // Registered as `delete_selection`. The blocker this row states was
       // "how a step names the selection it acted through", and the answer is

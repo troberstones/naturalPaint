@@ -1350,6 +1350,12 @@ struct AppState {
   bool requestCopyMerged = false;
   bool requestCut = false;
   bool requestPaste = false;
+  // PRD M9 (track `paste`): Paste Into and Paste as New Document. Session
+  // state for the identical reason `requestPaste` is -- the clipboard is
+  // process state, and Paste as New Document also touches `st.documents`,
+  // which a native menu callback has no safe way to reach either.
+  bool requestPasteInto = false;
+  bool requestPasteAsNewDocument = false;
   bool requestDeleteSelection = false;
 
   // Image > Crop to Selection and Image > Trim to Content

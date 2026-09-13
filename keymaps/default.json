@@ -31,6 +31,7 @@
     { "key": "C", "mods": ["Cmd", "Shift"], "action": "copy_merged" },
     { "key": "X", "mods": ["Cmd"], "action": "cut" },
     { "key": "V", "mods": ["Cmd"], "action": "paste" },
+    { "key": "V", "mods": ["Cmd", "Shift", "Alt"], "action": "paste_into" },
     { "key": "Backspace", "action": "delete_selection" },
     { "key": "Delete", "action": "delete_selection" },
 

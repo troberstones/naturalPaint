@@ -218,13 +218,17 @@ bool runMenuModelTest() {
   // (View > Show Frames and Slices, `AppState::showRegions`) -- counted the
   // same way, off `MenuAction`'s enumerators in the merged header (101
   // including `Count`), never by adding 2 to 98.
-  check(kMenuActionCount == 100,
-        "ids: exactly 100 actions -- the original 41-item extraction plus D1/D2's "
+  // 100 -> 102: PRD M9 (track `paste`), `PasteInto` and `PasteAsNewDocument`,
+  // beside `Paste` in the Edit menu -- counted the same way, off `MenuAction`'s
+  // enumerators in this header (103 including `Count`).
+  check(kMenuActionCount == 102,
+        "ids: exactly 102 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
         "dialog, Brush Settings, the crop pair, Pigment, Batch, Inpaint, D8's "
-        "make-tileable pair, the 3x3 repeat preview and the region export/show "
-        "pair, so an item lost in a later edit fails here");
+        "make-tileable pair, the 3x3 repeat preview, the region export/show pair "
+        "and Paste Into / Paste as New Document, so an item lost in a later edit "
+        "fails here");
 
   {
     std::set<MenuAction> seen;
@@ -748,11 +752,15 @@ bool runMenuModelTest() {
     // Photoshop's own, each verified free in keymaps/default.json before being
     // taken. Ten of the nineteen items claim nothing, which is also
     // Photoshop's arrangement.
-    check(claimed == 33,
-          "keys: exactly 33 chords are claimed -- D1/D2's ten, the eleven that came "
-          "before them, Free Transform's Cmd+T, ResetView's Shift+Cmd+0 and "
-          "Adjustments' ten. Pinned, because claiming one more silently takes that "
-          "key away from SDL and from keymaps/default.json");
+    // 33 -> 34: PRD M9's Paste Into, Shift+Opt+Cmd+V -- verified free (Cmd+V
+    // is plain Paste's), checked free in keymaps/default.json before being
+    // claimed. Paste as New Document claims nothing, matching Photoshop.
+    check(claimed == 34,
+          "keys: exactly 34 chords are claimed -- D1/D2's ten, the eleven that came "
+          "before them, Free Transform's Cmd+T, ResetView's Shift+Cmd+0, "
+          "Adjustments' ten and Paste Into's Shift+Opt+Cmd+V. Pinned, because claiming "
+          "one more silently takes that key away from SDL and from "
+          "keymaps/default.json");
   }
 
   {

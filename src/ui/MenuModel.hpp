@@ -176,6 +176,14 @@ enum class MenuAction : uint16_t {
   Copy,
   CopyMerged,
   Paste,
+  // PRD M9 (track `paste`), Photoshop's own two: Paste Into pastes the
+  // clipboard as a new layer masked by the active selection, centred on its
+  // bounds; Paste as New Document opens a document sized to the clipboard's
+  // content. Both are session state exactly as `Paste` above is
+  // (app/CommandCoverage.cpp), and both sit right beside it for the same
+  // reason `DeleteSelection` sits beside `Cut`.
+  PasteInto,
+  PasteAsNewDocument,
   DeleteSelection,
   SelectAll,
   Deselect,
