@@ -82,6 +82,16 @@ bool runZoomToSelectionTest() {
     check(withMargin.zoom < noMargin.zoom,
           "margin: a positive margin fits the selection at a SMALLER zoom than no margin at "
           "all -- the effective viewport shrank by exactly the margin the caller asked for");
+
+    // Exact values on each limiting axis, so dropping either axis's margin shows:
+    // 400x100 wants (800-80)/400 = 1.8 wide; 200x200 wants (600-80)/200 = 2.6 tall.
+    const ZoomToSelectionFit wide =
+        fitZoomToSelection(100.0f, 250.0f, 500.0f, 350.0f, texW, texH, view, paintOrigin, avail,
+                          40.0f);
+    check(near(wide.zoom, 1.8f, 1e-4f),
+          "margin: a width-limited fit leaves exactly the margin on both sides (zoom 1.8)");
+    check(near(withMargin.zoom, 2.6f, 1e-4f),
+          "margin: a height-limited fit leaves exactly the margin top and bottom (zoom 2.6)");
   }
 
   // ==========================================================================

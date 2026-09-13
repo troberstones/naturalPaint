@@ -3,6 +3,8 @@
 #include <chrono>
 #include <cstring>
 
+#include "app/Command.hpp"
+#include "app/FilterCommandsExtra.hpp"
 #include "app/FilterOps.hpp"
 #include "ui/DocumentTexture.hpp"
 #include "ui/MenuModel.hpp"
@@ -852,6 +854,41 @@ bool runFilterMenuTest() {
               localRefused.refusal == PixelOpRefusal::NoRgbStore,
           "refuse: both new filters refuse a Pigment layer with the SAME "
           "PixelOpRefusal::NoRgbStore the rest of this menu uses");
+  }
+
+  std::printf("  -- K. the dialogs' encoders reach the same pixels as the appliers --\n");
+  {
+    // The three dialogs send these encoders; a hand-built command proves only the reader.
+    OpenDocument hpApplier = makeFilterMenuDocument("highpass encoder a");
+    OpenDocument hpCommand = makeFilterMenuDocument("highpass encoder b");
+    applyHighpass(hpApplier, 6.0f);
+    check(applyCommand(hpCommand, highpassCommand(6.0f)).ok &&
+              tilesExactlyEqual(*hpCommand.document.layers[0].rgbTiles,
+                                *hpApplier.document.layers[0].rgbTiles),
+          "highpass: highpassCommand() replays bit-identical to applyHighpass()");
+
+    LocalContrastParams lcp;
+    lcp.blur.kind = BlurKind::Gaussian;
+    lcp.blur.sigma = 20.0f;
+    lcp.amount = 0.5f;
+    OpenDocument lcApplier = makeFilterMenuDocument("local contrast encoder a");
+    OpenDocument lcCommand = makeFilterMenuDocument("local contrast encoder b");
+    applyLocalContrast(lcApplier, lcp);
+    check(applyCommand(lcCommand, localContrastCommand(lcp)).ok &&
+              tilesExactlyEqual(*lcCommand.document.layers[0].rgbTiles,
+                                *lcApplier.document.layers[0].rgbTiles),
+          "local contrast: localContrastCommand() replays bit-identical to applyLocalContrast()");
+
+    LensParams lp;
+    lp.k1 = 0.05f;
+    lp.caRed = 0.002f;
+    OpenDocument lensApplier = makeFilterMenuDocument("lens encoder a");
+    OpenDocument lensCommand = makeFilterMenuDocument("lens encoder b");
+    applyLensCorrect(lensApplier, lp);
+    check(applyCommand(lensCommand, lensCorrectCommand(lp)).ok &&
+              tilesExactlyEqual(*lensCommand.document.layers[0].rgbTiles,
+                                *lensApplier.document.layers[0].rgbTiles),
+          "lens correction: lensCorrectCommand() replays bit-identical to applyLensCorrect()");
   }
 
   std::printf("[selftest] filter menu %s\n", ok ? "PASS" : "FAIL");
