@@ -2319,23 +2319,11 @@ class StrokeSession {
   int32_t baseCount_ = 1;
   Variance countVariance_;
 
-  // Transfer FLOW's own resolved multiplier (Part 2, `PsTransfer::flow`) --
-  // latched ONCE at `begin()`, from `hardwareInputs` and a fixed placeholder
-  // seed (`begin()`'s own comment says why: there is no real stroke position
-  // yet), and applied to `tip_.flow` fresh every dab in `depositPending()`
-  // rather than baked into `tip_.flow` here. Baking it in would not survive
-  // `setTip()` rebuilding `tip_` from a fresh, Transfer-unaware
-  // `brushTipFor()` call on the stroke's very next frame -- `depositPending()`
-  // 's own comment on this member has the full argument. Defaults to 1.0f,
-  // the multiplicative identity, so a session with no model or an inert
-  // Transfer Flow Variance reads `tip_.flow` completely unmodified.
-  //
-  // Transfer OPACITY has no equivalent member: it is a per-stroke CEILING,
-  // latched directly into `rgb_`/`erase_`/`pigErase_`'s own accumulators at
-  // `begin()` (their `*_.begin()` calls take the resolved value directly),
-  // which is immune to `setTip()` by construction -- `setTip()` never touches
-  // any of those three objects, only `tip_`.
-  float transferFlowMul_ = 1.0f;
+  // Transfer Flow (`PsTransfer::flow`), copied out with the Variance objects
+  // above and resolved per dab in `depositPending()`. Transfer Opacity has no
+  // member: it is a per-stroke ceiling, latched into the routes' own
+  // accumulators at `begin()`.
+  Variance transferFlowVariance_;
 
   // The hardware sample `begin()`/`setTip()` latched -- see either's own
   // comment. Read by the per-dab loop below to resolve a

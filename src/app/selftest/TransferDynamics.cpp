@@ -1,6 +1,8 @@
 #include "app/selftest/Support.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <vector>
 
 #include "app/StrokeSession.hpp"
 #include "brush/RgbDeposit.hpp"
@@ -10,11 +12,9 @@ namespace np {
 // ---------------------------------------------------------------------------
 // Part 2 of the Phase C brief: Transfer Opacity/Flow (`PsTransfer::opacity`/
 // `.flow`, `opVr`/`prVr`, `useAheadDynamics` on for 69 of 101 presets).
-// Latched ONCE at pen-down -- Opacity into `rgb_`/`erase_`/`pigErase_`'s own
-// accumulator members directly, Flow into `StrokeSession::transferFlowMul_`,
-// applied fresh every dab -- see `StrokeSession::begin()`'s own comment for
-// why the two are latched differently and `depositPending()`'s for why Flow
-// specifically has to be.
+// Opacity is latched ONCE at pen-down into `rgb_`/`erase_`/`pigErase_`'s own
+// accumulator members; Flow is resolved per dab in `depositPending()` --
+// `StrokeSession::begin()`'s own comment says why the two differ.
 //
 // Two claims:
 //
@@ -252,12 +252,12 @@ bool runTransferDynamicsTest() {
     modelFull.transfer.flow.control = VarianceControl::PenPressure;
     DynamicInputs fullPressure;
     fullPressure.hasPressure = true;
-    fullPressure.pressure = 1.0f;  // transferFlowMul_ = 1.0 -> dabTip.flow = 1.0
+    fullPressure.pressure = 1.0f;  // flow Variance resolves to 1.0 -> dabTip.flow = 1.0
 
     BrushModel modelHalf = modelFull;
     DynamicInputs halfPressure;
     halfPressure.hasPressure = true;
-    halfPressure.pressure = 0.5f;  // transferFlowMul_ = 0.5 -> dabTip.flow = 0.5
+    halfPressure.pressure = 0.5f;  // flow Variance resolves to 0.5 -> dabTip.flow = 0.5
 
     auto [odFull, sFull] = paint(tip, &modelFull, fullPressure);
     auto [odHalf, sHalf] = paint(tip, &modelHalf, halfPressure);
@@ -271,13 +271,85 @@ bool runTransferDynamicsTest() {
                 static_cast<double>(aFull), static_cast<double>(aHalf));
 
     check(aFull == 1.0f,
-          "transfer: flow -- PenPressure 1.0 resolves transferFlowMul_ to 1.0, so every fresh "
+          "transfer: flow -- PenPressure 1.0 resolves Flow to 1.0, so every fresh "
           "dab's weight (flow*coverage) is exactly 1.0 across its own flat core");
     check(aHalf == 0.5f,
-          "transfer: flow -- PenPressure 0.5 resolves transferFlowMul_ to 0.5, halving every "
+          "transfer: flow -- PenPressure 0.5 resolves Flow to 0.5, halving every "
           "dab's weight to exactly 0.5, at zero tolerance");
     check(aFull != aHalf,
           "transfer: flow -- restated as the measured claim: a real prVr changes painted flow");
+  }
+
+  // ==========================================================================
+  // 4. Flow is resolved per dab: within ONE stroke, falling pressure thins the
+  //    dabs and Flow Jitter differs from dab to dab
+  // ==========================================================================
+  {
+    // Dabs 96 px apart on a 48 px hard disc, so each dab is its own run of
+    // painted texels along the row and that run's peak is the dab's flow.
+    BrushTip tip = baseTip(/*opacity=*/1.0f, /*flow=*/1.0f);
+    tip.spacing = 4.0f;
+    const auto row = static_cast<int32_t>(kScanY);
+    auto dabPeaks = [&](const TileStore& store) {
+      std::vector<float> peaks;
+      float run = 0.0f;
+      for (int32_t x = 0; x < 512; ++x) {
+        const Tile* tile = store.find(tileCoordAt(PixelCoord{x, row}));
+        const float a =
+            tile != nullptr ? tile->readPixel(tileLocalOffset(PixelCoord{x, row}))[3] : 0.0f;
+        if (a > 0.0f) {
+          run = std::max(run, a);
+        } else if (run > 0.0f) {
+          peaks.push_back(run);
+          run = 0.0f;
+        }
+      }
+      if (run > 0.0f) peaks.push_back(run);
+      return peaks;
+    };
+    auto strokePeaks = [&](const BrushModel& model, bool pressureFalls) {
+      OpenDocument od = makeDoc(512, 512);
+      StrokeSession s;
+      std::string err;
+      DynamicInputs penDown;
+      penDown.hasPressure = true;
+      penDown.pressure = 1.0f;
+      if (s.begin(od, 1, tip, Tool::Brush, &err, &model, penDown)) {
+        for (int i = 0; i < 16; ++i) {
+          StrokeSample sample;
+          sample.pos = Vec2{20.0f + 30.0f * static_cast<float>(i), kScanY};
+          sample.pressure = pressureFalls ? 1.0f - 0.05f * static_cast<float>(i) : 1.0f;
+          s.addSample(sample);
+        }
+        s.end();
+      }
+      return dabPeaks(*od.document.layers[1].rgbTiles);
+    };
+    auto printPeaks = [](const char* label, const std::vector<float>& peaks) {
+      std::printf("  [measured] %s dab flows:", label);
+      for (float v : peaks) std::printf(" %.3f", static_cast<double>(v));
+      std::printf("\n");
+    };
+
+    BrushModel pressureModel = makeModel();
+    pressureModel.transfer.flow.control = VarianceControl::PenPressure;
+    const std::vector<float> falling = strokePeaks(pressureModel, true);
+    printPeaks("pen pressure 1.00 -> 0.25", falling);
+    bool decreasing = falling.size() >= 3;
+    for (size_t i = 1; decreasing && i < falling.size(); ++i)
+      decreasing = falling[i] < falling[i - 1];
+    check(decreasing && falling.front() - falling.back() > 0.3f,
+          "transfer: flow -- pressure falling along one stroke thins each later dab, not just "
+          "the pen-down reading");
+
+    BrushModel jitterModel = makeModel();
+    jitterModel.transfer.flow.jitter = 1.0f;
+    const std::vector<float> jittered = strokePeaks(jitterModel, false);
+    printPeaks("Flow Jitter 100%", jittered);
+    check(jittered.size() >= 3 &&
+              std::any_of(jittered.begin(), jittered.end(),
+                          [&](float v) { return v != jittered.front(); }),
+          "transfer: flow -- Flow Jitter draws a different flow for each dab of one stroke");
   }
 
   std::printf("[selftest] transfer dynamics %s\n", ok ? "PASS" : "FAIL");

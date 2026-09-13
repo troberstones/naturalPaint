@@ -185,7 +185,7 @@ void printPanelCoverage(const AbrImportResult& r) {
       {"Texture", 0, 0, ""},
       {"Dual Brush", 0, 0, ""},
       {"Color Dynamics", 0, 0, "read; no engine target"},
-      {"Transfer", 0, 0, "read; flow/opacity not yet applied"},
+      {"Transfer", 0, 0, "flow per dab; opacity once per stroke, at pen-down"},
       {"Blend mode (Md )", 0, 0, "read; the stroke still composites Normal"},
       {"Noise", 0, 0, "refused: no published formula"},
       {"Wet Edges", 0, 0, "refused: not implemented"},
@@ -214,7 +214,7 @@ void printPanelCoverage(const AbrImportResult& r) {
     if (m.texture.enabled) ++rows[kTexture].requested;
     if (m.dual.enabled) ++rows[kDual].requested;
     if (m.color.enabled) ++rows[kColor].requested;
-    if (m.transfer.enabled) ++rows[kTransfer].requested;
+    if (m.transfer.enabled) { ++rows[kTransfer].requested; ++rows[kTransfer].rendered; }
     if (!m.options.blendMode.empty() && m.options.blendMode != "Nrml")
       ++rows[kBlend].requested;
     if (m.noise) ++rows[kNoise].requested;

@@ -1751,48 +1751,16 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // where both are in hand, which is the same place the route was.
   label_ = route == StrokeRoute::MaskPaint ? "mask stroke" : strokeEditLabel(tool);
 
-  // Transfer Opacity/Flow (Part 2, `PsTransfer::opacity`/`.flow`), resolved
-  // HERE -- before any of the four `*_.begin()` calls below read
-  // `tip.opacity`, and before this function's own `if (haveModel_)` block
-  // further down that copies the rest of the model's Variance objects. That
-  // block runs AFTER these three calls (it always has -- see its own
-  // comment), and Opacity is a per-STROKE ceiling that gets latched into
-  // `rgb_`/`erase_`/`pigErase_`/`tonal_`'s own members at exactly this point
-  // (brush/RgbDeposit.hpp §2, brush/RgbErase.hpp §2, brush/PigmentErase.hpp
-  // §2, brush/TonalBrush.hpp §3) -- there is no second chance to apply it once
-  // those calls have run.
-  // Moving the whole model-copying block earlier was the other option this
-  // task's own brief named; resolving inline here is the smaller change,
-  // because nothing else in that block needs to run before those three
-  // calls, only this.
-  //
-  // Flow has no single latch point the way Opacity does -- `BrushTip::flow`
-  // is read fresh out of `tip_` every dab, by whichever route is running, so
-  // there is nothing to bake the resolved value INTO here that would survive
-  // `setTip()` rebuilding `tip_` from a fresh (Transfer-unaware)
-  // `brushTipFor()` call on the stroke's very next frame. Its resolution
-  // therefore lives in `transferFlowMul_` (a per-stroke CONSTANT, computed
-  // once here) and is applied to `tip_.flow` fresh every dab in
-  // `depositPending()` -- see that loop's own comment for the full argument.
-  //
-  // **No real stroke position exists yet here.** `begin()`'s own signature
-  // has no x/y -- the identical reason `seed_` below is latched from the
-  // stroke's first DAB position rather than here. So a Control-driven
-  // Opacity/Flow Jitter (a brush whose `opVr`/`prVr` reads PenPressure, say)
-  // sees `hardwareInputs` -- this frame's hardware sample, the only one
-  // available -- but the JITTER component draws from a FIXED placeholder
-  // seed (`0`) and a fixed dab index (`0`), never a real per-stroke random
-  // draw. This is a PRE-EXISTING limitation of resolving anything at
-  // `begin()`-time (nothing latched here has ever had real randomness to
-  // draw from -- the ink and the erase/deposit ceiling already had exactly
-  // this limitation before Transfer existed), not a new gap Transfer
-  // introduces. Named plainly rather than left to be discovered, this
-  // codebase's standing rule for a divergence.
+  // Transfer Opacity (`PsTransfer::opacity`), resolved HERE, before the
+  // `*_.begin()` calls below latch it as each route's per-stroke ceiling
+  // (brush/RgbDeposit.hpp §2). Photoshop varies it per dab, but a ceiling that
+  // moves mid-stroke has no meaning in these accumulators, so it is read once
+  // from the pen-down sample. No stroke position exists yet to seed a jitter
+  // draw, so it draws from a fixed placeholder seed rather than one derived from
+  // anything in scope that would look like per-stroke variation without being
+  // any. Transfer Flow has neither constraint and is resolved per dab in
+  // `depositPending()`.
   const bool haveTransferModel = model != nullptr;
-  // The fixed placeholder this comment names. `0` rather than something
-  // derived from `layerIndex`/`tool`/anything else in scope: those are not
-  // positions either, and a seed built from them would look like real
-  // per-stroke variation without being any.
   constexpr uint64_t kTransferSeed = 0;
   const float resolvedOpacity =
       haveTransferModel
@@ -1800,10 +1768,6 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
                           VarianceSite::Opacity) *
                 tip.opacity
           : tip.opacity;
-  transferFlowMul_ = haveTransferModel
-                         ? varianceScale(model->transfer.flow, hardwareInputs, kTransferSeed, 0,
-                                        VarianceSite::Flow)
-                         : 1.0f;
 
   resolvedOpacity_ = resolvedOpacity;
   // brush/Deposit.hpp §1a. The rules come from the caller (a global setting);
@@ -1882,6 +1846,7 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
     // outlives the stroke).
     baseCount_ = model->scatter.count;
     countVariance_ = model->scatter.countJitter;
+    transferFlowVariance_ = model->transfer.flow;
   }
   hardwareInputs_ = hardwareInputs;
   seed_ = 0;
@@ -2236,14 +2201,6 @@ void StrokeSession::depositPending(bool isEndFlush) {
     // outright, from `baseDiameterPx_`/`baseAngleDeg_`/`baseRoundness_` and
     // this dab's own resolution.
     BrushTip dabTip = tip_;
-    // Transfer FLOW (Part 2): `transferFlowMul_` is a per-STROKE constant,
-    // resolved once at `begin()` -- see that function's own comment on why
-    // it lives here as a multiplier applied fresh every dab, rather than
-    // baked once into `tip_.flow` there. Identity (`* 1.0f`, bit-exact for
-    // every finite float) whenever there is no model or the model's
-    // Transfer Flow Variance is inert, which is what keeps this a no-op for
-    // every brush this codebase already paints with.
-    dabTip.flow = tip_.flow * transferFlowMul_;
 
     // **Size, Angle, Roundness and Scatter are resolved HERE, per dab, in
     // exactly one `varianceScale()`/`varianceOffset()` call each -- never a
@@ -2323,6 +2280,10 @@ void StrokeSession::depositPending(bool isEndFlush) {
       // is exactly `span * jitter` at `span == 2.0`.
       dabTip.scatter = varianceOffset(scatterVariance_, local, 2.0f, seed_, dabIndex,
                                       VarianceSite::Scatter);
+      // Transfer Flow, per dab for the same reason as Size: a Flow on Pen
+      // Pressure thins as the pen lifts, and Flow Jitter differs dab to dab.
+      dabTip.flow = tip_.flow * varianceScale(transferFlowVariance_, local, seed_, dabIndex,
+                                              VarianceSite::Flow);
 
       // Scatter COUNT (Part 1, `PsScatter::count`/`countJitter`): a
       // MULTIPLICATIVE resolution, the same shape Size and Roundness use

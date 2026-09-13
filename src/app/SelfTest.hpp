@@ -5790,15 +5790,15 @@ bool runStrokePreviewTest();
 bool runPressureFeelTest();
 
 // Phase C Part 2: Transfer Opacity/Flow (`PsTransfer::opacity`/`.flow`,
-// `opVr`/`prVr`), latched once at `StrokeSession::begin()` -- Opacity
-// directly into the RGB deposit/erase accumulators, Flow into
-// `transferFlowMul_`, applied fresh every dab. Asserts a stroke with an
+// `opVr`/`prVr`) -- Opacity latched once at `StrokeSession::begin()` into
+// the RGB deposit/erase accumulators, Flow resolved per dab. Asserts a stroke with an
 // inert Transfer Variance paints bit-identically to no model at all (dab/
 // texel counts, tile set AND the stored pixel), and that a real, hand-built
 // `opVr`/`prVr` with a `PenPressure` control measurably -- and, at a single
 // non-overlapping hard-disc dab's own centre, EXACTLY -- changes the stored
 // alpha (1.0 unscaled vs 0.5 halved, for both Opacity's ceiling and Flow's
-// weight). Pure CPU, no document window, no GPU.
+// weight), and that one stroke's Flow follows the pen's pressure and its
+// jitter dab by dab. Pure CPU, no document window, no GPU.
 bool runTransferDynamicsTest();
 
 // Phase C Part 3 (bounded investigation): `blendModeFromPsToolOptions()`
