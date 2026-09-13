@@ -378,6 +378,107 @@ void TransformSession::updateDrag(Point2 curCursor, bool shiftHeld, bool optionH
 
 void TransformSession::endDrag() noexcept { drag_.active = false; }
 
+// --------------------------------------------------------------------------
+// Warp (header section 9)
+// --------------------------------------------------------------------------
+
+void TransformSession::setWarpMode(bool warpOn, int gridN) noexcept {
+  if (!active_) return;
+  if (warpOn) {
+    if (mode_ == TransformMode::Warp) {
+      // Already warping: a grid-size change re-fits the existing shape
+      // rather than re-baking `pending_`, which would throw the bend away.
+      if (gridN != warp_.n()) warp_ = warp_.refit(gridN);
+      return;
+    }
+    // Bake the accumulated affine into the warp's starting net -- header
+    // section 9. `WarpMesh::flat()` reproduces `sourceBounds_` exactly;
+    // mapping every control point through `pending_` carries over whatever
+    // the user had already dragged.
+    WarpMesh flat = WarpMesh::flat(sourceBounds_, gridN);
+    const int side = flat.pointsPerSide();
+    for (int row = 0; row < side; ++row) {
+      for (int col = 0; col < side; ++col) {
+        flat.setAt(row, col, mat3MapPoint(pending_, flat.at(row, col)));
+      }
+    }
+    warp_ = std::move(flat);
+    mode_ = TransformMode::Warp;
+  } else {
+    // Section 9: the net is discarded, not collapsed into an approximating
+    // matrix -- there is generally no single affine map that reproduces a
+    // bent surface, and guessing one would silently lose the bend with no
+    // way for the user to tell.
+    mode_ = TransformMode::Affine;
+    warp_ = WarpMesh{};
+    warpDrag_ = WarpDragState{};
+  }
+}
+
+WarpControlRef TransformSession::warpHitTest(Point2 cursor, float radius) const noexcept {
+  if (!active_ || mode_ != TransformMode::Warp) return WarpControlRef{};
+  return hitTestWarpControl(warp_, cursor, radius);
+}
+
+void TransformSession::warpBeginDrag(WarpControlRef ref, Point2 startCursor) noexcept {
+  if (!active_ || mode_ != TransformMode::Warp || !ref.valid) return;
+  warpDrag_.active = true;
+  warpDrag_.ref = ref;
+  warpDrag_.start = startCursor;
+  warpDrag_.base = warp_;
+}
+
+void TransformSession::warpUpdateDrag(Point2 curCursor) noexcept {
+  if (!warpDrag_.active) return;
+  // Recomputed fresh from the drag's own baseline every frame -- section 6's
+  // discipline, applied here too, so a multi-frame drag never accumulates a
+  // delta onto a delta.
+  const Point2 delta{curCursor.x - warpDrag_.start.x, curCursor.y - warpDrag_.start.y};
+  warp_ = warpDrag_.base;
+  warp_.dragControl(warpDrag_.ref, delta);
+}
+
+void TransformSession::warpEndDrag() noexcept { warpDrag_.active = false; }
+
+// Mirrors commit()'s own Warp branch below, read-only: same refusals, same
+// warpRgbTiles()/cutThroughSelection()/compositeStoreOverRegion() sequence,
+// but writing into `*out` (a copy) instead of `od.document`.
+bool TransformSession::previewWarpDocument(const OpenDocument& od, ResampleKernel kernel,
+                                           Document* out) const {
+  if (out == nullptr || !active_ || mode_ != TransformMode::Warp) return false;
+  if (target_ == TransformTarget::LayerSet || duplicate_) return false;
+  if (layerIndex_ >= od.document.layers.size() ||
+      od.document.layers[layerIndex_].id != layerId_)
+    return false;
+  const Layer& layer = od.document.layers[layerIndex_];
+  if (layer.locked || layer.kind == LayerKind::Pigment || !layer.rgbTiles.has_value())
+    return false;
+  if (target_ == TransformTarget::Layer && layer.mask.has_value()) return false;
+
+  const DocumentRegion dstRegion = warpedRegion(warp_, warpChordSubdivisions(warp_));
+  if (dstRegion.empty()) return false;
+
+  std::string err;
+  if (target_ == TransformTarget::Layer) {
+    TileStore newRgb;
+    if (!warpRgbTiles(*layer.rgbTiles, warp_, dstRegion, kernel, &newRgb, &err)) return false;
+    *out = od.document;
+    *out->layers[layerIndex_].rgbTiles = std::move(newRgb);
+    return true;
+  }
+
+  // SelectionPixels: cut a copy of the layer, never the real one.
+  Layer cutCopy = layer;
+  Clipboard clip = cutThroughSelection(cutCopy, &selectionSnapshot_);
+  if (clip.empty() || !clip.rgbTiles.has_value()) return false;
+  TileStore moved;
+  if (!warpRgbTiles(*clip.rgbTiles, warp_, dstRegion, kernel, &moved, &err)) return false;
+  compositeStoreOverRegion(moved, dstRegion, &*cutCopy.rgbTiles);
+  *out = od.document;
+  out->layers[layerIndex_].rgbTiles = std::move(cutCopy.rgbTiles);
+  return true;
+}
+
 void TransformSession::cancel() noexcept { *this = TransformSession{}; }
 
 TransformBeginResult TransformSession::beginLayer(OpenDocument& od, size_t layerIndex,
@@ -619,6 +720,124 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
     out.error = "transform commit refused: the layer this transform began on is no longer at "
                 "that position in the stack -- it was deleted, reordered or merged, or the "
                 "document was undone past it. Press Escape to discard the transform.";
+    return out;
+  }
+
+  // Header section 9: Warp branches off here, before the affine identity
+  // check below (a warp net has no single `pending_` to compare against
+  // identity -- `WarpMesh::isIdentity()` is its own, separate no-op test,
+  // applied inside `warpRgbTiles()`'s fast path rather than here).
+  if (mode_ == TransformMode::Warp) {
+    if (target_ == TransformTarget::LayerSet) {
+      out.error = "warp commit refused: a set of layers has no per-member live-preview story "
+                  "(app/TransformSession.hpp section 9, and section 8's identical gap for the "
+                  "affine case) -- warp one layer or one selection at a time.";
+      return out;
+    }
+    if (duplicate_) {
+      out.error = "warp commit refused: Option-drag duplicate is not built for Warp mode -- "
+                  "commit the duplicate as an ordinary Free Transform, or duplicate the layer or "
+                  "selection first and warp the copy.";
+      return out;
+    }
+    if (layerIndex_ >= od.document.layers.size()) {
+      out.error = "warp commit refused: the target layer no longer exists.";
+      return out;
+    }
+    Layer& layer = od.document.layers[layerIndex_];
+    if (layer.locked) {
+      out.error = "warp commit refused: " + layerLabel(od.document, layerIndex_) +
+                  " is locked. Unlock it first.";
+      return out;
+    }
+    if (layer.kind == LayerKind::Pigment || !layer.rgbTiles.has_value()) {
+      out.error = "warp commit refused: " + layerLabel(od.document, layerIndex_) +
+                  " -- warping a Pigment layer needs the identical mass-weighted, lobe-free-"
+                  "kernel bridge ops/DocumentTransform.hpp already built for the AFFINE path, run "
+                  "through a non-linear map instead of a Mat3 (app/WarpMesh.hpp); that "
+                  "is real, separate machinery this track's time did not extend to. A layer with "
+                  "no RGB pixels (Text, Group, Adjustment, Strokes, Flats, Media) has nothing for "
+                  "a warp to resample either.";
+      return out;
+    }
+    if (target_ == TransformTarget::Layer && layer.mask.has_value()) {
+      out.error = "warp commit refused: " + layerLabel(od.document, layerIndex_) +
+                  " carries a mask. Warping it needs the identical hide-space bridge "
+                  "ops/DocumentTransform.hpp's transformMaskTiles() already built for the affine "
+                  "path, run through this session's non-linear map instead of a Mat3 -- unbuilt "
+                  "for the same reason as the Pigment refusal above. Remove the mask, or use "
+                  "Free Transform instead.";
+      return out;
+    }
+    const int subdivisions = warpChordSubdivisions(warp_);
+    const DocumentRegion dstRegion = warpedRegion(warp_, subdivisions);
+    if (dstRegion.empty()) {
+      out.error = "warp commit refused: this net collapses the target to zero pixels. Nothing "
+                  "was changed.";
+      return out;
+    }
+    const bool identity = warp_.isIdentity();
+
+    if (target_ == TransformTarget::Layer) {
+      TileStore newRgb;
+      if (!warpRgbTiles(*layer.rgbTiles, warp_, dstRegion, params.pixels.kernel, &newRgb,
+                        &out.error))
+        return out;
+      *layer.rgbTiles = std::move(newRgb);
+      const std::string label = "warp layer";
+      od.recordEdit(label, EditKind::Structural);
+      active_ = false;
+      out.ok = true;
+      out.editLabel = label;
+      out.exact = identity ? ExactRemap::Identity : ExactRemap::None;
+      out.reconstructionPasses = identity ? 0 : 1;
+      return out;
+    }
+
+    // --- TransformTarget::SelectionPixels, warped -------------------------
+    Clipboard clip = cutThroughSelection(layer, &selectionSnapshot_);
+    if (clip.empty() || !clip.rgbTiles.has_value()) {
+      out.error = "warp commit refused: the selection covers no pixels on this layer. Nothing "
+                  "was changed.";
+      return out;
+    }
+    TileStore moved;
+    std::string err;
+    if (!warpRgbTiles(*clip.rgbTiles, warp_, dstRegion, params.pixels.kernel, &moved, &err)) {
+      // Unreachable in practice (the same regions and net that already
+      // produced a non-empty dstRegion above), but restore what
+      // cutThroughSelection() removed rather than leave a hole, matching the
+      // affine path's own recovery just below.
+      compositeStoreOverRegion(*clip.rgbTiles, sourceBounds_, &*layer.rgbTiles);
+      out.error = "warp commit refused: " + err + " The cut content was restored in place.";
+      return out;
+    }
+    compositeStoreOverRegion(moved, dstRegion, &*layer.rgbTiles);
+
+    // The selection moves with the pixels, same net and regions -- the warp
+    // sibling of the affine path's `transformSelectionCoverage()` call above.
+    const std::optional<Selection> beforeSelection = od.selection;
+    Selection movedSelection;
+    std::string selErr;
+    const bool selectionMoved = warpSelectionCoverage(
+        selectionSnapshot_, sourceBounds_, warp_, dstRegion, params.pixels.kernel,
+        &movedSelection, &selErr);
+    if (selectionMoved) od.selection = movedSelection;
+
+    const std::string label = "warp selection";
+    od.recordEdit(label, EditKind::Structural);
+    // `od.selection` is outside `core::History` (app/DocumentLifecycle.hpp);
+    // this is what lets ordinary Undo/Redo put it back too, keyed by the
+    // entry this recordEdit() just pushed.
+    if (selectionMoved) {
+      od.warpSelectionUndo.push_back({od.history.entries()[od.history.cursor()].serial,
+                                      beforeSelection, od.selection});
+    }
+    active_ = false;
+    out.ok = true;
+    out.editLabel = label;
+    out.exact = identity ? ExactRemap::Identity : ExactRemap::None;
+    out.reconstructionPasses = identity ? 0 : 1;
     return out;
   }
 

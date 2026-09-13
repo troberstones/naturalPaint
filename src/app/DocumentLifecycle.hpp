@@ -298,6 +298,18 @@ struct OpenDocument {
   // a different state.
   std::vector<std::optional<Selection>> refineUndoStack;
 
+  // A `SelectionPixels` warp moves `selection` in the SAME `recordEdit()` as
+  // the pixel change -- unlike a refine, one atomic act, so ordinary
+  // Undo/Redo should restore it too. `core::History` still excludes
+  // `selection`, so this keys before/after by the entry's own serial;
+  // `ui::moveHistoryCursor()` looks it up when the cursor crosses it.
+  struct WarpSelectionUndo {
+    uint64_t serial = 0;
+    std::optional<Selection> before;
+    std::optional<Selection> after;
+  };
+  std::vector<WarpSelectionUndo> warpSelectionUndo;
+
   // PRD E12. `std::nullopt` outside quick mask; engaged while the mode is
   // live. Session state for `selection`'s own reason -- a paintable overlay
   // with no `core::History` entry and no file representation -- and per

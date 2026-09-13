@@ -6764,4 +6764,16 @@ bool runCommandsFillTest();
 // `kViewZoomMin`). Headless and GPU-free. See app/selftest/ZoomToSelection.cpp.
 bool runZoomToSelectionTest();
 
+// PRD D23: `app/WarpMesh` (the N x N bicubic Bezier lattice) and
+// `app/TransformSession`'s Warp mode built on it -- flat() reproducing a
+// rectangle exactly, anchor-drags carrying their tangent handles, the
+// chord-error tessellation bound on a strongly bent net, a corner drag
+// landing its texel where evaluate() predicts, an interior texel matching
+// evaluate() within the resample kernel's own tolerance, a SelectionPixels
+// warp leaving every texel outside the moved box bit-identical, cancel
+// leaving the document untouched, one undo restoring it, and an affine
+// net's grid-size re-fit being exact. Headless and GPU-free -- nothing here
+// touches ui/. See app/selftest/WarpMesh.cpp.
+bool runWarpMeshTest();
+
 }  // namespace np

@@ -229,6 +229,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/TransformPreviewTexture.cpp
   app/selftest/TransformSession.cpp
   app/selftest/TransformLayerSet.cpp
+  app/selftest/WarpMesh.cpp
   app/selftest/FramePacing.cpp
   app/selftest/GradientTool.cpp
   app/selftest/MaskTarget.cpp
@@ -316,6 +317,7 @@ add_executable(naturalPaint
   app/SelectionDrag.cpp
   app/LayerEditor.cpp
   app/TransformSession.cpp
+  app/WarpMesh.cpp
   app/MoveTool.cpp
   app/PasteCommands.cpp
   app/ToolSwitch.cpp

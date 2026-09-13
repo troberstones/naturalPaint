@@ -1730,6 +1730,9 @@ int main(int argc, char** argv) {
   // `--transform-demo 1` alone (no pen demo) is the `transform_stack`
   // golden case.
   int transformDemoLayer = -1;
+  // `--transform-demo warp`: the literal token in the layer-index slot,
+  // checked before `std::atoi` so "warp" cannot silently parse as index 0.
+  bool transformDemoWarp = false;
   bool demoDocument = false;
   bool pigmentStrokeDemo = false;
   bool pigmentStrokeDemoMix = true;
@@ -2465,8 +2468,12 @@ int main(int argc, char** argv) {
       journalEnabled = false;
     } else if (a == "--transform-demo") {
       transformDemo = true;
-      if (i + 1 < argc && argv[i + 1][0] != '-')
+      if (i + 1 < argc && std::string(argv[i + 1]) == "warp") {
+        transformDemoWarp = true;
+        ++i;
+      } else if (i + 1 < argc && argv[i + 1][0] != '-') {
         transformDemoLayer = std::atoi(argv[++i]);
+      }
     } else if (a == "--ui-multiselect-demo") {
       // PLAN.md Phase 5 step 11 / PRD C12, C13, C15: press the multi-selection's
       // own set commands. See runUiMultiSelectDemo().
@@ -4281,6 +4288,9 @@ int main(int argc, char** argv) {
     const bool commandsFillOk = np::runCommandsFillTest();
     // PRD Q1 (P0): View > Zoom to Selection.
     const bool zoomToSelectionOk = np::runZoomToSelectionTest();
+    // PRD D23: app/WarpMesh's bicubic lattice and app/TransformSession's Warp
+    // mode built on it. Headless and GPU-free.
+    const bool warpMeshOk = np::runWarpMeshTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4354,7 +4364,7 @@ int main(int argc, char** argv) {
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
                     nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
-                    pasteCommandsOk && commandsFillOk && zoomToSelectionOk;
+                    pasteCommandsOk && commandsFillOk && zoomToSelectionOk && warpMeshOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -4999,6 +5009,10 @@ int main(int argc, char** argv) {
         np::setActiveLayer(*od, static_cast<size_t>(transformDemoLayer));
     }
     st.requestFreeTransform = true;
+    if (transformDemoWarp) {
+      st.requestWarp = true;
+      st.requestWarpDemoBend = true;
+    }
   }
 
   // After all of them, and the only fixture that is not meant to be combined

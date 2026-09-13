@@ -445,6 +445,13 @@ enum class MenuAction : uint16_t {
   AdjustAutoColor,
   AdjustEqualize,
 
+  // PRD D23, track `warp`: a Free Transform <-> Warp TOGGLE on the live
+  // session (app/TransformSession.hpp section 9), not a second gesture --
+  // same enable predicate as `FreeTransform` (`ctx.hasEditableLayer`), and
+  // it sits beside it in the Edit menu for the identical "no Transform
+  // submenu to put it in" reason `FreeTransform`'s own comment gives.
+  Warp,
+
   Count,
 };
 

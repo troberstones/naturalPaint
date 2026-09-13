@@ -95,6 +95,10 @@ const MenuItemSpec* specTable() {
     // keymaps/default.json, which this item does not have).
     set(MenuAction::NumericTransform, "Transform...", "");
 
+    // PRD D23: no chord of its own, matching `NumericTransform`'s own
+    // two-argument `set()` just above.
+    set(MenuAction::Warp, "Warp", "");
+
     // D2: the other nine. Chords are `keymaps/default.json`'s own, already
     // shipped and already resolving through main.cpp's dispatch -- this is
     // the menu catching up to keys that worked all along, not a new binding.
@@ -566,6 +570,7 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::AdjustAutoContrast: return "AdjustAutoContrast";
     case MenuAction::AdjustAutoColor: return "AdjustAutoColor";
     case MenuAction::AdjustEqualize: return "AdjustEqualize";
+    case MenuAction::Warp: return "Warp";
     case MenuAction::Count: break;
   }
   // Not a fallback string: reaching this means an enumerator was added without
@@ -642,6 +647,14 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
 
     // The recent-documents list itself is a preferences file.
     case MenuAction::ClearRecentMenu:
+      return false;
+
+    // PRD D23: a Free Transform <-> Warp TOGGLE of the SAME live session
+    // (app/TransformSession.hpp section 9) -- the opposite of `FreeTransform`
+    // just above, which starts a fresh one. Ending the transform to service
+    // this action would cancel the very session it is meant to switch the
+    // shape of.
+    case MenuAction::Warp:
       return false;
 
     // --- Everything else ends it ------------------------------------------
@@ -985,6 +998,9 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     // Same predicate, same reasoning as FreeTransform just above -- the
     // numeric dialog begins the identical session, just from typed fields.
     e.push_back(item(MenuAction::NumericTransform, ctx.hasEditableLayer));
+    // Same predicate again (PRD D23): a toggle of the SAME session
+    // FreeTransform starts, so it needs exactly what starting one needs.
+    e.push_back(item(MenuAction::Warp, ctx.hasEditableLayer));
     e.push_back(separator());
     e.push_back(item(MenuAction::Cut, ctx.hasEditableLayer));
     e.push_back(item(MenuAction::Copy, ctx.hasActiveLayer));

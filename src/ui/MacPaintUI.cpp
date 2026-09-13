@@ -10001,6 +10001,7 @@ class FilterPreviewTexture {
   std::vector<Retired> retired_;
 };
 FilterPreviewTexture g_filterPreviewTexture;
+FilterPreviewTexture g_warpPreviewTexture;  // track `warp`'s own instance; see warpPreviewViewFor()
 
 // Same shape as `FilterPreviewTexture` above -- fresh-on-resize, retire not
 // release, re-upload keyed on a caller generation rather than a revision this
@@ -10177,6 +10178,45 @@ WGPUTextureView filterPreviewViewFor(GpuContext& gpu, const OpenDocument& active
   Document previewDoc = activeDoc.document;
   previewDoc.layers[g_filterPreview.layerIndex].rgbTiles = g_filterPreview.tiles;
   return g_filterPreviewTexture.viewFor(gpu, previewDoc, g_filterPreview.generation);
+}
+
+// Track `warp`'s follow-up: pixels bend with the grid while dragging, not
+// just the wireframe. Reuses `FilterPreviewTexture`'s shape (own instance --
+// transform and a filter dialog are never both live, but sharing the slot
+// would still be the wrong coupling) and `previewWarpDocument()` for the
+// pixels. Recomputed at most every `kWarpPreviewThrottleSeconds` while
+// dragging, always once more on release -- cost measured in the commit
+// message.
+WGPUTextureView warpPreviewViewFor(GpuContext& gpu, const OpenDocument& activeDoc,
+                                   TransformSession& transform) {
+  if (!transform.active() || transform.mode() != TransformMode::Warp) return nullptr;
+  if (transform.documentId() != activeDoc.id) return nullptr;
+
+  constexpr double kWarpPreviewThrottleSeconds = 0.05;
+  struct Cache {
+    bool valid = false;
+    bool wasDragging = false;
+    double lastComputeTime = -1e18;
+    uint64_t generation = 0;
+    Document doc;
+  };
+  static Cache cache;
+  const bool dragging = transform.warpDragging();
+  const bool dragReleased = cache.wasDragging && !dragging;
+  const double now = ImGui::GetTime();
+  const bool due = !cache.valid || !dragging || dragReleased ||
+                   (now - cache.lastComputeTime) >= kWarpPreviewThrottleSeconds;
+  cache.wasDragging = dragging;
+  if (due) {
+    Document previewDoc;
+    cache.valid = transform.previewWarpDocument(activeDoc, ResampleKernel::CatmullRom, &previewDoc);
+    if (cache.valid) {
+      cache.doc = std::move(previewDoc);
+      ++cache.generation;
+    }
+    cache.lastComputeTime = now;
+  }
+  return cache.valid ? g_warpPreviewTexture.viewFor(gpu, cache.doc, cache.generation) : nullptr;
 }
 
 // Shared by all four dialogs below, called on every frame their OWN
@@ -13195,7 +13235,22 @@ void moveHistoryCursor(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext&
                        OpenDocument& od, int direction) {
   settleWetPaintBeforeHistoryMove(st, sim, gpu, od);
   History& h = od.history;
+  // `OpenDocument::warpSelectionUndo` rides along with the entry it moved
+  // in, by serial. `direction` is always +/-1 here (a History-panel jump
+  // goes through `install()` instead), so at most one boundary is crossed.
+  const uint64_t fromSerial = h.entries()[h.cursor()].serial;
   installHistoryCursor(od, historyPanelClick(h, historySerialForRow(h, h.cursor() + direction)));
+  const uint64_t toSerial = h.entries()[h.cursor()].serial;
+  for (const OpenDocument::WarpSelectionUndo& u : od.warpSelectionUndo) {
+    if (direction < 0 && u.serial == fromSerial) {
+      od.selection = u.before;
+      break;
+    }
+    if (direction > 0 && u.serial == toSerial) {
+      od.selection = u.after;
+      break;
+    }
+  }
 
   // A live Text session survives undo/redo on purpose -- a typing burst IS a
   // history entry, so Cmd+Z during a session is the user undoing their own
@@ -13577,6 +13632,11 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
       break;
     case MenuAction::NumericTransform:
       g_numericTransformRequested = true;
+      break;
+    // PRD D23: same "needs the live document" reason as FreeTransform just
+    // above -- see AppState::requestWarp's own comment.
+    case MenuAction::Warp:
+      st.requestWarp = true;
       break;
     case MenuAction::Cut:
       st.requestCut = true;
@@ -17656,6 +17716,54 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
 
+    // --- Warp (Edit > Warp, PRD D23) -----------------------------------------
+    //
+    // A Free Transform <-> Warp toggle on the same live session. Fresh
+    // session mirrors `requestFreeTransform`'s single-layer path above; no
+    // LayerSet path here since `commit()` refuses a LayerSet warp by name.
+    if (st.requestWarp) {
+      st.requestWarp = false;
+      OpenDocument* od = st.documents.active();
+      const bool liveHere =
+          st.transform.active() && od != nullptr && st.transform.documentId() == od->id;
+      if (!liveHere) {
+        const std::optional<size_t> li = od != nullptr ? activeLayerIndex(*od) : std::nullopt;
+        if (od == nullptr || !li) {
+          g_docStatus = "Warp needs an open document with a layer.";
+        } else {
+          const TransformBeginResult began =
+              od->selection ? st.transform.beginSelectionPixels(*od, *od->selection, *li)
+                            : st.transform.beginLayer(*od, *li);
+          if (!began.ok) g_docStatus = began.error;
+          if (began.ok) {
+            enterTransformTool(st);
+            beginTransformPreview(st, gpu);
+            st.transform.setWarpMode(true, st.warpGridN);
+          }
+        }
+      } else if (st.transform.mode() == TransformMode::Affine) {
+        st.transform.setWarpMode(true, st.warpGridN);
+      } else {
+        st.transform.setWarpMode(false);  // discards the net, not an approximating matrix
+      }
+    }
+
+    // `--transform-demo warp` only: bends the net `requestWarp` above just built.
+    if (st.requestWarpDemoBend) {
+      st.requestWarpDemoBend = false;
+      if (st.transform.mode() == TransformMode::Warp) {
+        const WarpMesh& mesh = st.transform.warpMesh();
+        const int n = mesh.n();
+        const WarpControlRef center{true, 3 * (n / 2), 3 * (n / 2)};
+        const float bend =
+            std::min(static_cast<float>(mesh.bounds().width), static_cast<float>(mesh.bounds().height)) *
+            0.15f;
+        st.transform.warpBeginDrag(center, Point2{0.0f, 0.0f});
+        st.transform.warpUpdateDrag(Point2{bend, -bend});
+        st.transform.warpEndDrag();
+      }
+    }
+
     // ===== Tool::Move -- BEGIN: last frame's pen-up, and the nudge =========
     //
     // Serviced HERE, above the composite decision, for the reason
@@ -17919,6 +18027,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // yields to a filter preview (rarer, and already committed to winning
       // above) and otherwise replaces the real canvas until toggled off.
       if (documentView == nullptr) documentView = channelViewFor(gpu, *activeDocument);
+      // Track `warp`'s live pixel preview: a whole-canvas composite with the
+      // target already bent -- a warp has no quad, this IS its picture.
+      // Falls through to the wireframe-only arrangement below on a refusal.
+      if (documentView == nullptr && transformOnThisDoc)
+        documentView = warpPreviewViewFor(gpu, *activeDocument, st.transform);
       if (documentView == nullptr && transformOnThisDoc && views.valid) {
         // The transformed layer is hidden in this composite. Its pixels are
         // drawn by the gizmo block's quad instead, at the position the drag
@@ -18035,7 +18148,25 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       const float rotateReachDoc = kTransformRotateReachPx / zoom;
 
       // ---- input, claimed before any tool sees it -------------------------
-      if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+      //
+      // Warp claims the same mouse the affine gizmo does, through its own
+      // parallel `warp*()` session methods rather than teaching
+      // `TransformHandle` a control-net index (it names 8 box handles plus
+      // rotate, not a 13x13 lattice point). Commit/cancel need no branch:
+      // `TransformSession` already dispatches on `mode()` internally.
+      if (st.transform.mode() == TransformMode::Warp) {
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+          const WarpControlRef grabbed = st.transform.warpHitTest(Point2{tx, ty}, handleRadiusDoc);
+          if (grabbed.valid) st.transform.warpBeginDrag(grabbed, Point2{tx, ty});
+        }
+        if (st.transform.warpDragging()) {
+          if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            st.transform.warpUpdateDrag(Point2{tx, ty});
+          } else {
+            st.transform.warpEndDrag();
+          }
+        }
+      } else if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         const TransformHandle grabbed = st.transform.hitTest(
             Point2{tx, ty}, handleRadiusDoc, rotateReachDoc);
         // A click on nothing is NOT a commit and NOT a cancel -- it is
@@ -18048,7 +18179,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // arm, which is what finally made that sentence true.
         if (grabbed != TransformHandle::None) st.transform.beginDrag(grabbed, Point2{tx, ty});
       }
-      if (st.transform.dragging()) {
+      if (st.transform.mode() == TransformMode::Affine && st.transform.dragging()) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
           // Modifiers read live, per frame, not latched at grab time -- so
           // Shift pressed half way through a corner drag starts constraining
@@ -21656,7 +21787,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // live preview at its new position -- strictly more information than
       // the wireframe box alone gave, which is the bar this step sets, not a
       // claim that the drag view is pixel-identical to Photoshop's.
-      if (g_transformPreview.view() != nullptr)
+      // Warp's own live pixels come from `warpPreviewViewFor()`'s whole-canvas
+      // composite (`documentView`, above), not this four-corner quad -- a
+      // non-affine net has no four corners to draw one at.
+      if (st.transform.mode() == TransformMode::Affine && g_transformPreview.view() != nullptr)
         addCanvasQuad(dl, g_transformPreview.view(), tl, tr, br, bl);
 
       // --- the layers ABOVE the transformed one, back in front -------------
@@ -21708,7 +21842,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // there. The box goes with them: without handles it is a marquee-
       // coloured rectangle around the picture with no meaning of its own, and
       // the moving pixels themselves are already the feedback.
-      if (!g_moveDragging) {
+      if (!g_moveDragging && st.transform.mode() == TransformMode::Affine) {
         // ===== Tool::Move -- END ==========================================
         dl->AddLine(tl, tr, line, kRuleThickness);
         dl->AddLine(tr, br, line, kRuleThickness);
@@ -21733,6 +21867,45 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         const ImVec2 rot = toScr(h.rotate);
         dl->AddCircleFilled(rot, r, atelierToken(kCanvasPaper));
         dl->AddCircle(rot, r, line, 0, 1.0f);
+      } else if (!g_moveDragging && st.transform.mode() == TransformMode::Warp) {
+        // The lattice grid in place of the affine box: (n+1) curved iso-lines
+        // each direction, a fixed cosmetic subdivision (this is chrome, not
+        // the commit rasteriser). Anchors reuse the square glyph above;
+        // handles are small discs, same square/disc vocabulary as the rotate
+        // handle.
+        const WarpMesh& mesh = st.transform.warpMesh();
+        const int n = mesh.n();
+        constexpr int kGizmoSubdivisions = 10;
+        auto drawIsoline = [&](bool alongU, int fixedIndex) {
+          Point2 prev = alongU ? mesh.evaluate(0.0f, static_cast<float>(fixedIndex))
+                               : mesh.evaluate(static_cast<float>(fixedIndex), 0.0f);
+          const int steps = n * kGizmoSubdivisions;
+          for (int k = 1; k <= steps; ++k) {
+            const float t = static_cast<float>(n) * static_cast<float>(k) / steps;
+            const Point2 cur = alongU ? mesh.evaluate(t, static_cast<float>(fixedIndex))
+                                      : mesh.evaluate(static_cast<float>(fixedIndex), t);
+            dl->AddLine(toScr(prev), toScr(cur), line, kRuleThickness);
+            prev = cur;
+          }
+        };
+        for (int j = 0; j <= n; ++j) drawIsoline(true, j);
+        for (int i = 0; i <= n; ++i) drawIsoline(false, i);
+
+        const float r = kTransformHandleDrawPx * 0.5f;
+        const int side = mesh.pointsPerSide();
+        for (int row = 0; row < side; ++row) {
+          for (int col = 0; col < side; ++col) {
+            const ImVec2 c = toScr(mesh.at(row, col));
+            if (WarpControlRef{true, row, col}.isAnchor()) {
+              dl->AddRectFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r),
+                                atelierToken(kCanvasPaper));
+              dl->AddRect(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), line, 0.0f, 0, 1.0f);
+            } else {
+              dl->AddCircleFilled(c, r * 0.6f, atelierToken(kCanvasPaper));
+              dl->AddCircle(c, r * 0.6f, line, 0, 1.0f);
+            }
+          }
+        }
       }
     }
 

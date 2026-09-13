@@ -221,19 +221,17 @@ bool runMenuModelTest() {
   // 100 -> 108: PRD M9's `PasteInto` and `PasteAsNewDocument`, PRD D26's
   // `Fill`, `Stroke` and `DefinePattern`, and PRD E11/E12's
   // `SaveSelectionAsChannel`, `LoadChannelAsSelection` and `ToggleQuickMask`.
-  // 108 -> 112: PRD Q1's `ZoomToSelection`
-  // and PRD D22/reachability-audit C1's `Highpass`, `LocalContrast` and
-  // `LensCorrect` -- counted the same way, off `MenuAction`'s enumerators in
-  // the merged header (113 including `Count`), never by adding 4 to 108.
-  check(kMenuActionCount == 112,
-        "ids: exactly 112 actions -- the original 41-item extraction plus D1/D2's "
+  // 108 -> 113: PRD Q1's `ZoomToSelection`, PRD D22/reachability-audit C1's
+  // `Highpass`, `LocalContrast` and `LensCorrect`, and PRD D23's `Warp`.
+  check(kMenuActionCount == 113,
+        "ids: exactly 113 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
         "dialog, Brush Settings, the crop pair, Pigment, Batch, Inpaint, D8's "
         "make-tileable pair, the 3x3 repeat preview, the region export/show pair, "
         "Paste Into / Paste as New Document, Fill/Stroke/Define Pattern, the "
-        "save/load channel and quick-mask trio, and Zoom to Selection/Highpass/"
-        "Local Contrast/Lens Correction, so an item lost in a later edit fails "
+        "save/load channel and quick-mask trio, Zoom to Selection/Highpass/Local "
+        "Contrast/Lens Correction, and Warp, so an item lost in a later edit fails "
         "here");
 
   {

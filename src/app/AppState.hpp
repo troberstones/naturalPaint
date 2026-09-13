@@ -1692,6 +1692,18 @@ struct AppState {
   // `DropOutcome::transformableLayer`.
   bool requestFreeTransform = false;
 
+  // **Warp** (Edit > Warp, PRD D23): a Free Transform <-> Warp toggle,
+  // serviced beside `requestFreeTransform` since a native menu callback has
+  // no live document to decide on. `warpGridN` is the options row's 3/4/5
+  // choice, a plain field since it means nothing without the toggle.
+  bool requestWarp = false;
+  int warpGridN = 4;
+
+  // `--transform-demo warp` only: bends one control point after `requestWarp`
+  // above switches a fresh session into Warp, so `--screenshot` shows a
+  // visibly bent net rather than a flat grid indistinguishable from a box.
+  bool requestWarpDemoBend = false;
+
   // **Image > Adjustments** (app/AdjustmentOps.hpp): which adjustment the next
   // frame should service, and `None` the rest of the time. Serviced and
   // cleared by `ui/MacPaintUI.cpp`'s adjustment block, which either opens that

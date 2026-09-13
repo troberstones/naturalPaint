@@ -1035,6 +1035,46 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
   ImGui::SameLine(0.0f, 8.0f);
   ImGui::TextUnformatted(toolName(st.brush.tool));
 
+  // --- Warp's grid-size choice and the Free Transform <-> Warp toggle ------
+  //
+  // The palette is pinned to `Tool::Move` while a transform is live, which
+  // has no options of its own -- drawn for both modes so the grid choice is
+  // settable before the user switches into Warp.
+  if (st.transform.active()) {
+    bandSeparator();
+    capsLabel("GRID");
+    ImGui::SameLine();
+    pushAtelierMono();
+    const bool warping = st.transform.mode() == TransformMode::Warp;
+    const int current = warping ? st.transform.warpMesh().n() : st.warpGridN;
+    for (int n = 3; n <= 5; ++n) {
+      if (n != 3) ImGui::SameLine(0.0f, 4.0f);
+      char label[8];
+      std::snprintf(label, sizeof(label), "%dx%d", n, n);
+      const bool selected = current == n;
+      if (selected)
+        ImGui::PushStyleColor(ImGuiCol_Button,
+                              ImGui::ColorConvertU32ToFloat4(atelierToken(kAccent)));
+      if (ImGui::SmallButton(label)) {
+        st.warpGridN = n;
+        if (warping) st.transform.setWarpMode(true, n);  // re-fits the live net in place
+      }
+      if (selected) ImGui::PopStyleColor();
+      ImGui::SetItemTooltip("%dx%d control cells for the next Warp -- PRD D23's own choice, "
+                            "3, 4 (the default) or 5.",
+                            n, n);
+    }
+    popAtelierMono();
+
+    bandSeparator();
+    // Same request `Edit > Warp` raises -- one code path, not a second bit.
+    if (ImGui::SmallButton(warping ? "Free Transform" : "Warp")) st.requestWarp = true;
+    ImGui::SetItemTooltip(warping
+                             ? "Back to the affine box (the bent net is discarded, not "
+                               "collapsed into an approximating matrix)."
+                             : "Bend this transform into a lattice instead of a box.");
+  }
+
   // --- the eyedropper's own two options (PRD Q10, P0) ---------------------
   //
   // **The first tool in this band to have options of its own.** Everything
