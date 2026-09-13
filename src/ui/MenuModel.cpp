@@ -121,6 +121,13 @@ const MenuItemSpec* specTable() {
     set(MenuAction::ClearCanvas, "Clear Canvas", "Cmd+K",
         MenuKeyEquivalent{'k', kMenuModCmd, "clear_canvas"});
 
+    // PRD D26 (track `fill`): no key equivalent for any of the three --
+    // `docs/shortcuts.md` assigns none, and claiming a chord from a native
+    // menu consumes it before SDL sees it, not a thing to do speculatively.
+    set(MenuAction::Fill, "Fill...", "");
+    set(MenuAction::Stroke, "Stroke...", "");
+    set(MenuAction::DefinePattern, "Define Pattern...", "");
+
     family(MenuAction::LayerCommandItem);
     family(MenuAction::LayerSetCommandItem);
 
@@ -450,6 +457,9 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::Reselect: return "Reselect";
     case MenuAction::InvertSelection: return "InvertSelection";
     case MenuAction::ClearCanvas: return "ClearCanvas";
+    case MenuAction::Fill: return "Fill";
+    case MenuAction::Stroke: return "Stroke";
+    case MenuAction::DefinePattern: return "DefinePattern";
     case MenuAction::LayerCommandItem: return "LayerCommandItem";
     case MenuAction::LayerSetCommandItem: return "LayerSetCommandItem";
     case MenuAction::SelectGrow: return "SelectGrow";
@@ -638,6 +648,9 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::Reselect:
     case MenuAction::InvertSelection:
     case MenuAction::ClearCanvas:
+    case MenuAction::Fill:
+    case MenuAction::Stroke:
+    case MenuAction::DefinePattern:
     case MenuAction::LayerCommandItem:
     case MenuAction::LayerSetCommandItem:
     case MenuAction::SelectGrow:
@@ -788,6 +801,14 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     case MenuAction::SelectLuminanceRange:
       return MenuEffect::Deferred;
 
+    // PRD D26 (track `fill`): Fill, Stroke and Define Pattern each open a
+    // modal (`ui/FillDialog.hpp`), for the identical ID-stack reason as every
+    // dialog above.
+    case MenuAction::Fill:
+    case MenuAction::Stroke:
+    case MenuAction::DefinePattern:
+      return MenuEffect::Deferred;
+
     default:
       return MenuEffect::Inline;
   }
@@ -915,6 +936,22 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     e.push_back(item(MenuAction::Deselect, ctx.hasSelection));
     e.push_back(item(MenuAction::Reselect, ctx.hasLastDeselected));
     e.push_back(item(MenuAction::InvertSelection, ctx.hasSelection));
+    e.push_back(separator());
+    // PRD D26 (track `fill`): Fill, Stroke and Define Pattern all read the
+    // active layer's RGB tiles, so they share the Filter menu's own predicate
+    // and refusal sentence -- `ctx.filterLayerUsable`/`ctx.filterRefusalNote`,
+    // that menu's own comment argues why one gate serves every pixel op that
+    // asks the identical question.
+    {
+      auto fillMenuItem = [&](MenuAction action) {
+        MenuNode n = item(action, ctx.filterLayerUsable);
+        if (!ctx.filterLayerUsable) n.tooltip = ctx.filterRefusalNote;
+        return n;
+      };
+      e.push_back(fillMenuItem(MenuAction::Fill));
+      e.push_back(fillMenuItem(MenuAction::Stroke));
+      e.push_back(fillMenuItem(MenuAction::DefinePattern));
+    }
     e.push_back(separator());
     e.push_back(item(MenuAction::ClearCanvas));
     bar.push_back(std::move(edit));

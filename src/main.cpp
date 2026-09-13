@@ -4269,6 +4269,8 @@ int main(int argc, char** argv) {
     const bool strokeInputOk = np::runStrokeInputTest();
     const bool pointerQueueOk = np::runPointerQueueTest();
     const bool appIconOk = np::runAppIconTest();
+    // PRD D26 (track `fill`): `fill` and `stroke`.
+    const bool commandsFillOk = np::runCommandsFillTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4340,7 +4342,8 @@ int main(int argc, char** argv) {
                     penToolOk && pathOpsOk && pathBooleanOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
-                    nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk;
+                    nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
+                    commandsFillOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

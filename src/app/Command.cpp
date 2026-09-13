@@ -1,6 +1,7 @@
 #include "app/Command.hpp"
 
 #include "app/CommandSupport.hpp"
+#include "app/CommandsFill.hpp"
 #include "app/Recorder.hpp"
 
 namespace np {
@@ -18,6 +19,8 @@ const std::vector<CommandSpec>& table() {
     registerOpStackCommands(&rows);
     registerPatternCommands(&rows);
     registerRegionCommands(&rows);
+    // PRD D26 (track `fill`): `fill` and `stroke`.
+    registerFillCommands(&rows);
     return rows;
   }();
   return kTable;

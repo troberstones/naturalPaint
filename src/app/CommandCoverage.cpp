@@ -340,6 +340,12 @@ CommandCoverage coverageFor(MenuAction action) {
       return {CommandCoverageKind::Registered, "adjust_auto_color", nullptr};
     case MenuAction::AdjustEqualize:
       return {CommandCoverageKind::Registered, "adjust_equalize", nullptr};
+    case MenuAction::Fill:
+      return {CommandCoverageKind::Registered, "fill", nullptr};
+    case MenuAction::Stroke:
+      return {CommandCoverageKind::Registered, "stroke", nullptr};
+    case MenuAction::DefinePattern:
+      return {CommandCoverageKind::Registered, "define_pattern", nullptr};
     case MenuAction::Count:
       // Not an action: the enum's own size marker.
       return {CommandCoverageKind::NotRecordable, nullptr, "the enum's count marker, not an action"};

@@ -6708,4 +6708,13 @@ bool runPointerQueueTest();
 // byte for byte, reaches SDL unchanged, and the window accepted it.
 bool runAppIconTest();
 
+// PRD D26 (track `fill`): `fill` and `stroke`, through `ops/Fill`'s one
+// engine -- inside/outside a selection and its antialiased edge, no-selection
+// whole-layer fill, blend and opacity arithmetic, a gradient's endpoint
+// colours and angle, a pattern's tiling origin, stroke width and
+// Inside/Center/Outside on a known rectangle, the refusals, and a recorded
+// `fill` replaying to the same texels as the direct call. See
+// app/selftest/CommandsFill.cpp.
+bool runCommandsFillTest();
+
 }  // namespace np
