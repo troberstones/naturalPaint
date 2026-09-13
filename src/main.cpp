@@ -3225,6 +3225,9 @@ int main(int argc, char** argv) {
     // both promoted into core/Path so Curve mode and the SMOOTH button share
     // one implementation. Headless and GPU-free; writes no files.
     const bool pathOpsOk = np::runPathOpsTest();
+    // core/PathBoolean -- the region booleans behind the PATHS panel's
+    // UNITE/INTERSECT/SUBTRACT/EXCLUDE and PSD's Intersect.
+    const bool pathBooleanOk = np::runPathBooleanTest();
     // The PATHS panel (docs/path-editing-plan.md section 4): its registration
     // in three of the four tables a section must appear in, that every verb
     // button greys on its own `pathOpCanRun()` answer, that
@@ -4334,7 +4337,7 @@ int main(int argc, char** argv) {
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk && dialogModuleOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
-                    penToolOk && pathOpsOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
+                    penToolOk && pathOpsOk && pathBooleanOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
                     nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk;

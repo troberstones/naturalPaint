@@ -158,6 +158,16 @@ enum class PathOp {
   DeleteAnchor,
   MakeCompound,
   ReleaseCompound,
+  // Region booleans over two or more selected shapes (Shape mode). The
+  // earliest shape in the layer survives, keeping its paint, with the result;
+  // the rest are erased. SUBTRACT removes every later shape from the earliest.
+  // An empty result erases them all rather than refusing, so greying never
+  // has to run the boolean every frame. The result is polygonal -- see
+  // core/PathBoolean.hpp.
+  Unite,
+  Intersect,
+  Subtract,
+  Exclude,
 };
 
 // Would `op` run against this selection? Returns `PathOpRefusal::None` when

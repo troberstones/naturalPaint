@@ -14476,6 +14476,23 @@ void drawPathsSection(AppState& st, const MixboxLut& lut) {
              "Break a compound path back into one shape per subpath. The parts arrive "
              "selected.");
 
+  flatsCapsLabel("COMBINE");
+  verbButton("UNITE", PathOp::Unite,
+             "Merge the selected shapes into one outline covering all of them. The first "
+             "shape in the layer keeps its paint; curves become straight segments.");
+  ImGui::SameLine();
+  verbButton("INTERSECT", PathOp::Intersect,
+             "Keep only the area every selected shape covers. The first shape in the layer "
+             "keeps its paint; curves become straight segments.");
+  verbButton("SUBTRACT", PathOp::Subtract,
+             "Cut every later selected shape out of the first one in the layer. Curves "
+             "become straight segments.");
+  ImGui::SameLine();
+  verbButton("EXCLUDE", PathOp::Exclude,
+             "Keep the area covered by an odd number of the selected shapes, so overlaps "
+             "become holes. The first shape in the layer keeps its paint; curves become "
+             "straight segments.");
+
   ImGui::BeginDisabled(!live);
   flatsCapsLabel("RULE");
   ImGui::SameLine();

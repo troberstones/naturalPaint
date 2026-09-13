@@ -1180,6 +1180,7 @@ void appendPsdVectorMask(const ParsedLayer& pl, int32_t docWidth, int32_t docHei
                        "; the layer imports with no mask from it.");
     return;
   }
+  for (const std::string& w : composed.warnings) warnings.push_back(named + ": vector mask: " + w);
   if (pathIsEmpty(composed.path)) return;
 
   // Hide this layer's own extent, then reveal the path -- the vector-mask

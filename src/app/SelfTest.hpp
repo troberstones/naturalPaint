@@ -6252,6 +6252,11 @@ bool runSvgImportTest();
 // `AppState`. See app/selftest/PathOps.cpp.
 bool runPathOpsTest();
 
+// core/PathBoolean -- union/intersect/difference/xor over two filled regions,
+// against hand-computed areas and intersection points, with rasterised
+// coverage as a second oracle that does not share the area function.
+bool runPathBooleanTest();
+
 // The PATHS panel (docs/path-editing-plan.md section 4) -- `app/PathsPanel`
 // plus the two `PathEditState` transitions the panel needs and the canvas did
 // not.

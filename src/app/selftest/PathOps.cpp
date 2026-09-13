@@ -1,6 +1,7 @@
 #include "app/selftest/Support.hpp"
 
 #include "app/PathOps.hpp"
+#include "core/PathBoolean.hpp"
 
 namespace np {
 
@@ -515,7 +516,8 @@ bool runPathOpsTest() {
     const PathOp kOps[] = {PathOp::Close,        PathOp::Open,         PathOp::Join,
                            PathOp::Reverse,      PathOp::Smooth,       PathOp::Corner,
                            PathOp::Break,        PathOp::InsertAnchor, PathOp::DeleteAnchor,
-                           PathOp::MakeCompound, PathOp::ReleaseCompound};
+                           PathOp::MakeCompound, PathOp::ReleaseCompound, PathOp::Unite,
+                           PathOp::Intersect,    PathOp::Subtract,     PathOp::Exclude};
     bool allNamed = true;
     for (PathOp op : kOps) {
       const char* n = pathOpEditName(op);
@@ -555,6 +557,79 @@ bool runPathOpsTest() {
           "a refused verb leaves the geometry untouched -- checked by content hash, not by "
           "eye");
   }
+
+  // =======================================================================
+  // 11. UNITE / INTERSECT / SUBTRACT / EXCLUDE
+  // =======================================================================
+  //
+  // A=[0,10]^2 (id 1, red) and B=[5,15]x[0,5] (id 2, blue) overlap in a 5x5
+  // square. A minus B is 75 and B minus A is 25, so SUBTRACT's direction is
+  // visible in the area alone.
+  {
+    auto squareShape = [&](uint64_t id, float x0, float y0, float x1, float y1, float red) {
+      VectorShape s;
+      s.id = id;
+      s.fill.on = true;
+      s.fill.rgba[0] = red;
+      s.fill.rgba[1] = 0.0f;
+      s.fill.rgba[2] = 1.0f - red;
+      s.fill.rgba[3] = 1.0f;
+      SubPath sub;
+      sub.closed = true;
+      for (const PathPoint& p : {PathPoint{x0, y0}, PathPoint{x1, y0}, PathPoint{x1, y1},
+                                  PathPoint{x0, y1}})
+        sub.anchors.push_back(anchor(p, p, p));
+      s.path.subpaths.push_back(sub);
+      return s;
+    };
+    auto pair = [&] {
+      return std::vector<VectorShape>{squareShape(1, 0, 0, 10, 10, 1.0f),
+                                      squareShape(2, 5, 0, 15, 5, 0.0f)};
+    };
+    auto areaAfter = [&](PathOp op, PathSelection sel, PathOpResult* r) {
+      std::vector<VectorShape> shapes = pair();
+      *r = runPathOp(op, &shapes, &nextId, sel);
+      return std::make_pair(shapes, shapes.empty() ? 0.0 : pathBooleanArea(shapes[0].path));
+    };
+
+    PathOpResult r;
+    auto [united, unitedArea] = areaAfter(PathOp::Unite, shapeSel({1, 2}), &r);
+    check(r.changed && united.size() == 1 && united[0].id == 1 && near(unitedArea, 125.0, 1e-3) &&
+              r.erasedShapes == std::vector<uint64_t>{2},
+          "UNITE leaves shape 1 alone in the layer, area 100 + 50 - 25 = 125, and reports "
+          "shape 2 erased");
+    check(united.size() == 1 && united[0].fill.rgba[0] == 1.0f && r.discardedShapeStyle,
+          "UNITE keeps the earliest shape's paint and says the other's was dropped");
+
+    // Selection order reversed on purpose: the earliest in the LAYER is kept.
+    auto [minus, minusArea] = areaAfter(PathOp::Subtract, shapeSel({2, 1}), &r);
+    std::printf("  [measured] subtract area %.4f (A-B is 75, B-A would be 25)\n", minusArea);
+    check(minus.size() == 1 && minus[0].id == 1 && near(minusArea, 75.0, 1e-3),
+          "SUBTRACT cuts the later shape out of the earliest: area 75, not B-A's 25");
+
+    auto [both, bothArea] = areaAfter(PathOp::Intersect, shapeSel({1, 2}), &r);
+    check(both.size() == 1 && near(bothArea, 25.0, 1e-3), "INTERSECT keeps the 5x5 overlap, 25");
+
+    auto [odd, oddArea] = areaAfter(PathOp::Exclude, shapeSel({1, 2}), &r);
+    check(odd.size() == 1 && near(oddArea, 100.0, 1e-3),
+          "EXCLUDE keeps what one shape covers: 75 + 25 = 100");
+
+    std::vector<VectorShape> apart = {squareShape(1, 0, 0, 10, 10, 1.0f),
+                                      squareShape(2, 20, 0, 30, 10, 0.0f)};
+    r = runPathOp(PathOp::Intersect, &apart, &nextId, shapeSel({1, 2}));
+    std::vector<uint64_t> erased = r.erasedShapes;
+    std::sort(erased.begin(), erased.end());
+    check(r.changed && apart.empty() && erased == std::vector<uint64_t>{1, 2},
+          "INTERSECT of disjoint shapes erases both and reports both -- an empty result "
+          "is not a refusal");
+
+    const std::vector<VectorShape> two = pair();
+    check(pathOpCanRun(PathOp::Unite, two, shapeSel({1})) == PathOpRefusal::NeedsTwoShapes &&
+              pathOpCanRun(PathOp::Subtract, two, componentSel({ComponentRef{1, 0, 0}, ComponentRef{2, 0, 0}})) ==
+                  PathOpRefusal::WrongSelectMode,
+          "the booleans refuse one shape (NeedsTwoShapes) and Component mode (WrongSelectMode)");
+  }
+
 
   return ok;
 }
