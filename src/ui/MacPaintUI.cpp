@@ -6533,6 +6533,31 @@ std::vector<uint16_t> packQuickMaskOverlayHalf(const QuickMask& mask, int32_t wi
   return halves;
 }
 
+// PRD E13's single-channel view: `channel`'s coverage as a full-canvas
+// grayscale image, R=G=B=coverage and alpha opaque -- this REPLACES the
+// canvas (ui/MacPaintUI.cpp substitutes it for the real document texture),
+// unlike the overlay above it which tints on top of the real picture. A
+// straightforward per-texel loop through `channelCoverageAt()` rather than
+// the tile-shortcut the overlay uses: this runs once per toggle or per
+// document edit, not once per dab of a live stroke, so there is no budget
+// this needs to earn back.
+std::vector<uint16_t> packChannelViewHalf(const AlphaChannel& channel, int32_t width,
+                                          int32_t height) {
+  std::vector<uint16_t> halves(static_cast<size_t>(width) * height * 4);
+  const uint16_t opaque = floatToHalf(1.0f);
+  for (int32_t y = 0; y < height; ++y) {
+    for (int32_t x = 0; x < width; ++x) {
+      const uint16_t gray = floatToHalf(channelCoverageAt(channel, PixelCoord{x, y}));
+      const size_t i = (static_cast<size_t>(y) * width + x) * 4;
+      halves[i + 0] = gray;
+      halves[i + 1] = gray;
+      halves[i + 2] = gray;
+      halves[i + 3] = opaque;
+    }
+  }
+  return halves;
+}
+
 // ---------------------------------------------------------------------------
 // The Select menu's dialog -> engine boundary (docs/reachability-audit.md C5;
 // PRD E4/E8/E9). Declared in ui/MacPaintUI.hpp and defined here, external
@@ -7347,6 +7372,18 @@ void drawChannelsSection(AppState& st) {
                           "this channel's coverage. Same as double-clicking the row.");
       ImGui::SameLine();
       if (ImGui::SmallButton("Delete")) deleteIdx = row.index;
+
+      // PRD E13's single-channel view: a solo toggle, not a stack of
+      // checkboxes -- the canvas has one picture on it, so viewing channel B
+      // replaces channel A rather than adding to it. Toggling the currently
+      // viewed row off shows the canvas normally again.
+      ImGui::SameLine();
+      const bool viewingThisRow = od->viewedChannelName.has_value() &&
+                                  *od->viewedChannelName == row.name;
+      if (ImGui::SmallButton(viewingThisRow ? "Viewing" : "View"))
+        od->viewedChannelName = toggleChannelView(od->viewedChannelName, row.name);
+      ImGui::SetItemTooltip("Show this channel as a grayscale view of the canvas -- a way to "
+                          "inspect it, not an edit. Click again to go back to the normal view.");
 
       if (selected == row.index) {
         std::snprintf(renameBuf, sizeof(renameBuf), "%s", row.name.c_str());
@@ -10028,6 +10065,83 @@ WGPUTextureView quickMaskOverlayViewFor(GpuContext& gpu, const OpenDocument& act
       static_cast<uint64_t>(activeDoc.id) * 1000003ull + activeDoc.quickMaskRevision;
   return g_quickMaskOverlayTexture.viewFor(gpu, *activeDoc.quickMask, activeDoc.document.width,
                                            activeDoc.document.height, generation);
+}
+
+// PRD E13's single-channel view. Same shape again -- fresh-on-resize, retire
+// not release, re-upload keyed on a caller generation -- but this one needs
+// no dedicated revision counter the way the quick-mask overlay does:
+// `Document::channels` IS document data (this file's own E11 section above),
+// so any edit that could change it already bumps `OpenDocument::revision`,
+// the same counter `ui/DocumentTexture.hpp`'s own cache is keyed on. Keying
+// on it here too means an edit that touches nothing about the viewed channel
+// still forces a re-upload -- over-invalidating, never under -- which is the
+// same trade `ui/DocumentTexture.hpp`'s viewport margin makes on purpose.
+class ChannelViewTexture {
+ public:
+  WGPUTextureView viewFor(GpuContext& gpu, const AlphaChannel& channel, int32_t width,
+                          int32_t height, uint64_t generation) {
+    if (width <= 0 || height <= 0) return nullptr;
+    const bool freshTexture = texture_ == nullptr || width != width_ || height != height_;
+    if (freshTexture) {
+      if (texture_ != nullptr) retired_.push_back(Retired{texture_, view_});
+      WGPUTextureDescriptor td = {};
+      td.label = sv("channel view");
+      td.dimension = WGPUTextureDimension_2D;
+      td.size = {static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1};
+      td.format = WGPUTextureFormat_RGBA16Float;
+      td.mipLevelCount = 1;
+      td.sampleCount = 1;
+      td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+      texture_ = wgpuDeviceCreateTexture(gpu.device, &td);
+      view_ = wgpuTextureCreateView(texture_, nullptr);
+      width_ = width;
+      height_ = height;
+      uploaded_ = 0;
+    }
+    if (freshTexture || generation != uploaded_) {
+      const std::vector<uint16_t> halves = packChannelViewHalf(channel, width_, height_);
+      WGPUTexelCopyTextureInfo dst = {};
+      dst.texture = texture_;
+      dst.mipLevel = 0;
+      dst.aspect = WGPUTextureAspect_All;
+      WGPUTexelCopyBufferLayout layout = {};
+      layout.bytesPerRow = static_cast<uint32_t>(width_) * 4u * sizeof(uint16_t);
+      layout.rowsPerImage = static_cast<uint32_t>(height_);
+      const WGPUExtent3D extent = {static_cast<uint32_t>(width_), static_cast<uint32_t>(height_),
+                                   1};
+      wgpuQueueWriteTexture(gpu.queue, &dst, halves.data(), halves.size() * sizeof(uint16_t),
+                            &layout, &extent);
+      uploaded_ = generation;
+    }
+    return view_;
+  }
+
+ private:
+  struct Retired {
+    WGPUTexture texture = nullptr;
+    WGPUTextureView view = nullptr;
+  };
+  WGPUTexture texture_ = nullptr;
+  WGPUTextureView view_ = nullptr;
+  int32_t width_ = 0;
+  int32_t height_ = 0;
+  uint64_t uploaded_ = 0;
+  std::vector<Retired> retired_;
+};
+ChannelViewTexture g_channelViewTexture;
+
+// `nullptr` when `activeDoc` has no viewed channel, or when `viewedChannelName`
+// no longer names one -- a rename or a delete while a view is engaged is not
+// an error here, it is `OpenDocument::viewedChannelName`'s own documented
+// fallback, and this is the one place that fallback actually takes effect.
+WGPUTextureView channelViewFor(GpuContext& gpu, const OpenDocument& activeDoc) {
+  if (!activeDoc.viewedChannelName.has_value()) return nullptr;
+  const AlphaChannel* channel = findChannel(activeDoc.document, *activeDoc.viewedChannelName);
+  if (channel == nullptr) return nullptr;
+  const uint64_t generation =
+      static_cast<uint64_t>(activeDoc.id) * 1000003ull + activeDoc.revision;
+  return g_channelViewTexture.viewFor(gpu, *channel, activeDoc.document.width,
+                                      activeDoc.document.height, generation);
 }
 
 // The canvas draw code's one hook into all of this: `nullptr` when nothing
@@ -17733,6 +17847,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // `g_filterPreview` the very frame their popup stops being open, before
       // this code runs again.
       documentView = filterPreviewViewFor(gpu, *activeDocument);
+      // PRD E13's single-channel view, next in line: an inspection toggle
+      // from the CHANNELS panel, not tied to any modal dialog, so it only
+      // yields to a filter preview (rarer, and already committed to winning
+      // above) and otherwise replaces the real canvas until toggled off.
+      if (documentView == nullptr) documentView = channelViewFor(gpu, *activeDocument);
       if (documentView == nullptr && transformOnThisDoc && views.valid) {
         // The transformed layer is hidden in this composite. Its pixels are
         // drawn by the gizmo block's quad instead, at the position the drag

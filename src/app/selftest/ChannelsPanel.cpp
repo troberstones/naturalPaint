@@ -1,7 +1,9 @@
 #include "app/selftest/Support.hpp"
 
 #include "app/ChannelsPanel.hpp"
+#include "core/Half.hpp"
 #include "core/SelectionMask.hpp"
+#include "ui/MacPaintUI.hpp"
 
 namespace np {
 
@@ -38,6 +40,38 @@ bool runChannelsPanelTest() {
           "channels panel: a named row reads its name verbatim");
     check(channelRowText(rows[2]) == "(unnamed channel)",
           "channels panel: an empty name reads a placeholder, not nothing");
+  }
+
+  // PRD E13's single-channel view: the solo-toggle decision, and the packer
+  // that turns a viewed channel into a grayscale image.
+  {
+    check(toggleChannelView(std::nullopt, "Mask") == std::optional<std::string>("Mask"),
+          "channel view: clicking View on an unviewed row starts viewing it");
+    check(toggleChannelView(std::optional<std::string>("Mask"), "Mask") == std::nullopt,
+          "channel view: clicking View again on the row already viewed turns it off");
+    check(toggleChannelView(std::optional<std::string>("Mask"), "Other") ==
+              std::optional<std::string>("Other"),
+          "channel view: clicking a different row's View replaces, rather than adding to, "
+          "the one already viewed");
+  }
+
+  {
+    const AlphaChannel channel = channelFromSelection(selectRectangle(2, 2, 4, 4), "Mask");
+    const std::vector<uint16_t> halves = packChannelViewHalf(channel, 8, 8);
+    check(halves.size() == 8u * 8u * 4u, "channel view: one RGBA half-float quad per texel");
+
+    const size_t insideIdx = (static_cast<size_t>(3) * 8 + 3) * 4;  // inside the 2..4 square
+    check(halfToFloat(halves[insideIdx + 0]) == 1.0f &&
+              halfToFloat(halves[insideIdx + 1]) == 1.0f &&
+              halfToFloat(halves[insideIdx + 2]) == 1.0f && halfToFloat(halves[insideIdx + 3]) == 1.0f,
+          "channel view: full coverage reads back as opaque white, not merely non-zero");
+
+    const size_t outsideIdx = (static_cast<size_t>(0) * 8 + 0) * 4;  // outside the square
+    check(halfToFloat(halves[outsideIdx + 0]) == 0.0f &&
+              halfToFloat(halves[outsideIdx + 1]) == 0.0f &&
+              halfToFloat(halves[outsideIdx + 2]) == 0.0f && halfToFloat(halves[outsideIdx + 3]) == 1.0f,
+          "channel view: no coverage reads back as opaque black -- alpha stays 1.0 either way, "
+          "since this replaces the canvas rather than tinting it");
   }
 
   return ok;

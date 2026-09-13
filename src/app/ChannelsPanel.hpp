@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -38,5 +39,15 @@ std::vector<ChannelsPanelRow> channelsPanelRows(const Document& doc);
 // The name, or `(unnamed channel)` for the empty one -- this build never
 // creates one, but a hand-edited or legacy `.npaint` might.
 std::string channelRowText(const ChannelsPanelRow& row);
+
+// PRD E13's row toggle, pulled out of the chrome so `--selftest` can check
+// it: what `OpenDocument::viewedChannelName` should become when the "View"
+// button on `channelName`'s row is clicked, given its current value. A solo
+// toggle, not a checkbox -- the canvas shows one picture, so clicking the
+// row already being viewed goes back to `std::nullopt` (the normal canvas)
+// and clicking any other row replaces whichever channel was being viewed
+// rather than adding to it.
+std::optional<std::string> toggleChannelView(const std::optional<std::string>& current,
+                                             const std::string& channelName);
 
 }  // namespace np

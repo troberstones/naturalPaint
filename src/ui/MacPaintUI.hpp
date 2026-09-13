@@ -681,4 +681,12 @@ void toggleQuickMask(OpenDocument& od);
 std::vector<uint16_t> packQuickMaskOverlayHalf(const QuickMask& mask, int32_t width,
                                                int32_t height);
 
+// PRD E13's single-channel view: one `AlphaChannel`'s coverage as a grayscale
+// image the size of the document -- R=G=B=coverage, alpha opaque, so it
+// REPLACES the canvas rather than tinting it the way the quick-mask overlay
+// above does. Pure CPU for the same reason as `packQuickMaskOverlayHalf()`:
+// `app/selftest` can prove the texel math without a window.
+std::vector<uint16_t> packChannelViewHalf(const AlphaChannel& channel, int32_t width,
+                                          int32_t height);
+
 }  // namespace np

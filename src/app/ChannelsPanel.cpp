@@ -18,4 +18,10 @@ std::string channelRowText(const ChannelsPanelRow& row) {
   return row.name.empty() ? "(unnamed channel)" : row.name;
 }
 
+std::optional<std::string> toggleChannelView(const std::optional<std::string>& current,
+                                             const std::string& channelName) {
+  if (current.has_value() && *current == channelName) return std::nullopt;
+  return channelName;
+}
+
 }  // namespace np

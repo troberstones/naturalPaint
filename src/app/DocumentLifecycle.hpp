@@ -314,6 +314,22 @@ struct OpenDocument {
   // when a stroke actually deposited something, not every frame.
   uint64_t quickMaskRevision = 0;
 
+  // PRD E13's single-channel view: the CHANNELS panel's row toggle, by name
+  // rather than index so a rename doesn't need to chase it and a delete can't
+  // leave it pointing at the wrong channel. `std::nullopt` shows the canvas
+  // normally. By NAME rather than a stored index for the same reason
+  // `loadChannelAsSelection()` takes one: `findChannel()` is the one lookup
+  // every reader already goes through, so a channel that gets renamed while
+  // being viewed simply stops matching (falls back to the normal canvas)
+  // instead of this field having to be kept in step with every command that
+  // touches `Document::channels`.
+  //
+  // Session state, not document data, for the same reason `quickMask` is:
+  // which channel a user happens to be inspecting is not part of the
+  // document and must not follow it into `core::History` or the file, and it
+  // must not leak from one open document into another's.
+  std::optional<std::string> viewedChannelName;
+
   // Bumped whenever `selection` changes. ui/MacPaintUI caches the selection's
   // drawn bounds against this, and PaintSim's GPU coverage upload is keyed on
   // it too -- both are expensive enough that "has it changed?" needs an O(1)
