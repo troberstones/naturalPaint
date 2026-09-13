@@ -1,97 +1,65 @@
 #include "io/PsdVectorPath.hpp"
 
-#include <algorithm>
 #include <string>
+#include <utility>
 #include <vector>
 
-#include "core/PathFlatten.hpp"  // pathTightBounds()
+#include "core/PathBoolean.hpp"
 
 // io/PsdVectorCompose -- step 2 of docs/psd-vector-shapes.md: fold a
-// `PsdPathStream`'s per-subpath boolean operations into the one thing this
-// codebase can draw, a single compound `Path` with a single `FillRule`.
+// `PsdPathStream`'s per-subpath boolean operations into one `Path`.
 //
-// Four decisions this file makes, each forced by a case the wire format
-// allows and the header's own table does not spell out completely:
+// Two routes to the same region. The EXACT one folds the subpaths left to
+// right with core/PathBoolean, which is Photoshop's own meaning and handles
+// all four operations, but flattens curves. The SHORTCUT is one compound path
+// with one fill rule (subtracted subpaths reversed under NonZero, or EvenOdd
+// for all-Exclude), which keeps every curve editable but is only right when
+// each subtracted region sits on exactly one layer of fill. So every layer the
+// shortcut can express is also folded exactly, and the shortcut is kept only
+// when the two regions match.
 //
-// 1. Subpath 0's operation is never read. An operation describes how a NEW
-//    subpath combines with what has already been accumulated, and nothing
-//    precedes the first one -- so whatever the file wrote there (every
-//    sample seen is `Union`, but nothing guarantees that) describes no real
-//    combination. A first subpath that happened to read `Subtract` would,
-//    taken literally, subtract from an empty accumulator and vanish -- a
-//    normal filled shape imported as nothing. So subpath 0 always folds in
-//    UNREVERSED, and it never casts a vote in the family decision below.
+// Decisions the wire format forces:
 //
-// 2. `MergeWithPrevious` (-1) is Photoshop's marker for "the second and
-//    later subpaths of one drawn figure" -- a letter and its counter, one
-//    shape, two subpaths. The counter's hole is already present as opposite
-//    winding in the geometry, not as a boolean relationship to referee, so a
-//    merged subpath casts no vote of its own either: it inherits the
-//    resolved operation of the subpath immediately before it (chained, so a
-//    run of several merges all resolve to whatever real operation started
-//    the chain) and is reversed, or not, exactly as that operation would be.
-//
-// 3. An empty stream composes to an empty, `ok = true` path (nothing to
-//    refuse). A single subpath is just subpath 0's case above: always
-//    Union, always unreversed, regardless of what its own `op` or
-//    `opKnown` says, because there is nothing for it to combine with. A
-//    non-first subpath whose `opKnown` is false refuses the WHOLE layer by
-//    name (rather than guessing Union or dropping the subpath silently) --
-//    this module's whole reason to exist is refusing rather than guessing.
-//
-// 4. `sawOpenSubPath` changes nothing here, and this is DECIDED, not merely
-//    unexamined. Two consumers see this geometry, and both already do the
-//    right thing with an open subpath, so there is no case where a warning
-//    would be reporting a real divergence from Photoshop:
-//      - `core/PathRaster.cpp` fills a contour as though it were closed
-//        regardless of its own `closed` flag ("An open contour is filled as
-//        if closed"), matching SVG's rule and Photoshop's own for filling an
-//        open subpath.
-//      - `core/PathStroke.cpp` genuinely honours `SubPath::closed`: read, not
-//        assumed -- its edge/join loop takes `edges = closed ? n : n - 1` and
-//        `joins = closed ? edges : edges - 1`, then caps the two open ends
-//        instead of joining across a seam, and `core/PathFlatten.cpp` carries
-//        `SubPath::closed` into `FlatContour::closed` unchanged on the way
-//        there. An open subpath's stroke genuinely does not close, which is
-//        the one thing a stroke of an open path must not do.
-//    So an open subpath composes exactly like a closed one for BOTH of this
-//    module's callers, and a warning here would have nothing true to say.
+// 1. Subpath 0's operation is never read: nothing precedes it to combine
+//    with, and a literal Subtract there would import a filled shape as nothing.
+// 2. `MergeWithPrevious` marks the later subpaths of one drawn figure (a
+//    letter and its counter). It joins its predecessor's group as authored
+//    winding and inherits that group's operation; it is never an operation of
+//    its own.
+// 3. A non-first subpath with an unrecognised operation code refuses the
+//    whole layer by name rather than guessing.
+// 4. `sawOpenSubPath` changes nothing: core/PathRaster fills an open contour
+//    as closed and core/PathStroke caps it, which is what Photoshop does too.
 namespace np {
 
 namespace {
 
-// Tight bounds of one subpath in isolation -- exact for the curve itself
-// (`pathTightBounds()`'s own guarantee), not for the control-point hull
-// around it. Swapping this in for the old control-point bound can only
-// SHRINK the boxes the heuristic below compares, so it can only shrink the
-// false-positive set; a real double-coverage (boxes both grow and still
-// overlap) is still caught, because a curve's tight bounds are themselves a
-// subset of its control-point hull.
-PathBounds subPathTightBounds(const SubPath& sub) {
-  Path single;
-  single.subpaths.push_back(sub);
-  return pathTightBounds(single);
+// Below this many square document pixels, the shortcut and the exact fold are
+// the same region up to flattening noise.
+constexpr double kSameRegionArea = 0.25;
+
+PathBooleanOp booleanFor(PsdPathOp op) {
+  switch (op) {
+    case PsdPathOp::Subtract: return PathBooleanOp::Difference;
+    case PsdPathOp::Intersect: return PathBooleanOp::Intersect;
+    case PsdPathOp::Exclude: return PathBooleanOp::Xor;
+    case PsdPathOp::Union:
+    case PsdPathOp::MergeWithPrevious: break;
+  }
+  return PathBooleanOp::Union;
 }
 
-// The rectangle intersection of two bounds, `valid == false` when they don't
-// overlap (or either input doesn't). Shared by the pairwise checks below so
-// "does A overlap B" and "does C overlap the region where A and B overlap"
-// are the same primitive.
-PathBounds intersectBounds(const PathBounds& a, const PathBounds& b) {
-  PathBounds r;
-  if (!a.valid || !b.valid) return r;
-  const float minX = std::max(a.minX, b.minX);
-  const float minY = std::max(a.minY, b.minY);
-  const float maxX = std::min(a.maxX, b.maxX);
-  const float maxY = std::min(a.maxY, b.maxY);
-  if (minX < maxX && minY < maxY) {
-    r.valid = true;
-    r.minX = minX;
-    r.minY = minY;
-    r.maxX = maxX;
-    r.maxY = maxY;
+Path foldExactly(const PsdPathStream& stream, const std::vector<PsdPathOp>& effective) {
+  std::vector<std::pair<PsdPathOp, Path>> groups;
+  for (size_t i = 0; i < stream.subpaths.size(); ++i) {
+    if (i == 0 || stream.subpaths[i].op != PsdPathOp::MergeWithPrevious)
+      groups.push_back({effective[i], Path{}});
+    groups.back().second.subpaths.push_back(stream.subpaths[i].sub);
   }
-  return r;
+  Path acc = std::move(groups[0].second);
+  for (size_t g = 1; g < groups.size(); ++g)
+    acc = pathBoolean(booleanFor(groups[g].first), acc, groups[g].second);
+  return acc;
 }
 
 }  // namespace
@@ -99,46 +67,28 @@ PathBounds intersectBounds(const PathBounds& a, const PathBounds& b) {
 PsdComposedPath composePsdSubPaths(const PsdPathStream& stream) {
   PsdComposedPath result;
   const size_t n = stream.subpaths.size();
-
-  // Decision 3, empty case: nothing to draw and nothing to refuse. A
-  // default-constructed `Path` has no subpaths, so `pathIsFinite()` and
-  // `pathIsEmpty()` are both true of it vacuously.
   if (n == 0) {
     result.ok = true;
     return result;
   }
 
-  // Resolve every subpath's EFFECTIVE operation: decisions 1 and 2 above,
-  // applied in one forward pass so a chain of several `MergeWithPrevious`
-  // subpaths all resolve to whatever real operation started the chain.
   std::vector<PsdPathOp> effective(n);
-  effective[0] = PsdPathOp::Union;  // Decision 1 -- never actually voted on.
-
-  bool unknownOpSeen = false;
-  int16_t unknownRaw = 0;
+  effective[0] = PsdPathOp::Union;  // decision 1
   for (size_t i = 1; i < n; ++i) {
     const PsdSubPath& s = stream.subpaths[i];
     if (s.op == PsdPathOp::MergeWithPrevious) {
-      effective[i] = effective[i - 1];
+      effective[i] = effective[i - 1];  // decision 2, chained
     } else if (!s.opKnown) {
-      unknownOpSeen = true;
-      unknownRaw = s.rawOp;
-      effective[i] = PsdPathOp::Union;  // Placeholder; refused below anyway.
+      result.ok = false;
+      result.refusal = "a subpath's path operation code (" + std::to_string(s.rawOp) +
+                        ") matches none of PSD's four booleans or merge-with-previous, so "
+                        "this layer can't be composed";
+      return result;
     } else {
       effective[i] = s.op;
     }
   }
 
-  if (unknownOpSeen) {
-    result.ok = false;
-    result.refusal = "a subpath's path operation code (" + std::to_string(unknownRaw) +
-                      ") matches none of PSD's four booleans or merge-with-previous, so "
-                      "this layer can't be composed";
-    return result;
-  }
-
-  // The vote: subpaths 1..n-1 only -- subpath 0 is decision 1's neutral base
-  // and never contributes an operation to referee.
   bool sawUnion = false, sawSubtract = false, sawExclude = false, sawIntersect = false;
   for (size_t i = 1; i < n; ++i) {
     switch (effective[i]) {
@@ -146,91 +96,43 @@ PsdComposedPath composePsdSubPaths(const PsdPathStream& stream) {
       case PsdPathOp::Subtract: sawSubtract = true; break;
       case PsdPathOp::Exclude: sawExclude = true; break;
       case PsdPathOp::Intersect: sawIntersect = true; break;
-      case PsdPathOp::MergeWithPrevious: break;  // Resolved away above.
+      case PsdPathOp::MergeWithPrevious: break;
     }
   }
-
-  if (sawIntersect) {
-    result.ok = false;
-    result.refusal = "this layer uses Intersect, which no single fill rule over reversed "
-                      "subpaths can express";
-    return result;
-  }
-  if (sawExclude && (sawSubtract || sawUnion)) {
-    result.ok = false;
-    result.refusal = "this layer mixes Exclude with Union/Subtract on one path, and only "
-                      "one fill rule can apply to it";
-    return result;
-  }
-
-  // What remains is exactly the header's two sound families: all-Union
-  // (trivially including "no votes at all", i.e. a single subpath), or
-  // Union+Subtract; or, separately, all-Exclude.
-  const bool allExclude = sawExclude;
-  result.path.rule = allExclude ? FillRule::EvenOdd : FillRule::NonZero;
-
-  for (size_t i = 0; i < n; ++i) {
-    SubPath sub = stream.subpaths[i].sub;
-    // EvenOdd's XOR does not care about winding direction, so a reversal
-    // would change nothing except which side of each edge is "outside" --
-    // Subtract only needs reversing under NonZero, where winding sign is
-    // the thing that cancels a hole into existence.
-    if (!allExclude && effective[i] == PsdPathOp::Subtract) reverseSubPath(sub);
-    result.path.subpaths.push_back(std::move(sub));
-  }
+  const bool mixedExclude = sawExclude && (sawSubtract || sawUnion);
   result.ok = true;
 
-  // Soundness heuristic, Union+Subtract only. Reversal is exact wherever a
-  // subtracted region is covered by exactly one layer of Union coverage; it
-  // OVER-subtracts (nonzero winding cancels twice and un-cancels) wherever
-  // that region is covered TWICE -- by two overlapping Union pieces
-  // underneath it, or by a second Subtract subpath overlapping it. Telling
-  // that apart exactly is the boolean-ops pass this codebase does not have;
-  // this is a cheap, CONSERVATIVE stand-in using each subpath's TIGHT bounds
-  // (exact for the curve, not its control-point hull -- `pathTightBounds()`'s
-  // own guarantee), so it still can warn on a layer that in fact renders fine
-  // (boxes touch, curves don't -- axis-aligned rectangles, which dominate
-  // real files, have none of that slack left), but it never misses a real
-  // double-coverage: tight bounds are a SUBSET of control-point bounds, so
-  // shrinking the boxes can only shrink the false-positive set, never hide a
-  // genuine overlap.
-  if (sawSubtract) {
-    std::vector<PathBounds> unionBoxes, subtractBoxes;
+  if (!sawIntersect && !mixedExclude) {
+    Path shortcut;
+    shortcut.rule = sawExclude ? FillRule::EvenOdd : FillRule::NonZero;
     for (size_t i = 0; i < n; ++i) {
-      const PathBounds b = subPathTightBounds(stream.subpaths[i].sub);
-      if (effective[i] == PsdPathOp::Subtract)
-        subtractBoxes.push_back(b);
-      else
-        unionBoxes.push_back(b);
+      SubPath sub = stream.subpaths[i].sub;
+      // EvenOdd ignores winding; under NonZero the reversal is what cancels.
+      if (!sawExclude && effective[i] == PsdPathOp::Subtract) reverseSubPath(sub);
+      shortcut.subpaths.push_back(std::move(sub));
     }
-    bool doubledCoverage = false;
-    for (size_t i = 0; i < unionBoxes.size() && !doubledCoverage; ++i) {
-      for (size_t j = i + 1; j < unionBoxes.size() && !doubledCoverage; ++j) {
-        const PathBounds overlap = intersectBounds(unionBoxes[i], unionBoxes[j]);
-        if (!overlap.valid) continue;
-        for (const PathBounds& hole : subtractBoxes) {
-          if (intersectBounds(overlap, hole).valid) {
-            doubledCoverage = true;
-            break;
-          }
-        }
-      }
+    if (n == 1) {
+      result.path = std::move(shortcut);
+      return result;
     }
-    for (size_t i = 0; i < subtractBoxes.size() && !doubledCoverage; ++i) {
-      for (size_t j = i + 1; j < subtractBoxes.size() && !doubledCoverage; ++j) {
-        if (intersectBounds(subtractBoxes[i], subtractBoxes[j]).valid) doubledCoverage = true;
-      }
+    Path exact = foldExactly(stream, effective);
+    if (pathBooleanArea(pathBoolean(PathBooleanOp::Xor, shortcut, exact)) <= kSameRegionArea) {
+      result.path = std::move(shortcut);
+      return result;
     }
-
-    if (doubledCoverage) {
-      result.warnings.push_back(
-          "this layer's Union+Subtract may not match Photoshop exactly: a subtracted "
-          "region appears to be covered more than once (by overlapping fill pieces, or "
-          "by another subtracted region), which can make winding reversal re-fill part "
-          "of a hole");
-    }
+    result.path = std::move(exact);
+    result.warnings.push_back(
+        "a single fill rule over this layer's subpaths would not match Photoshop (a "
+        "subtracted or excluded region is not covered exactly once by the fill beneath it), "
+        "so its outline was computed exactly and its curves import as straight segments");
+    return result;
   }
 
+  result.path = foldExactly(stream, effective);
+  result.warnings.push_back(
+      std::string(sawIntersect ? "this layer uses Intersect"
+                               : "this layer mixes Exclude with Union/Subtract") +
+      ", so its outline was computed exactly and its curves import as straight segments");
   return result;
 }
 

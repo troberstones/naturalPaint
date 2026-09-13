@@ -14476,6 +14476,33 @@ void drawPathsSection(AppState& st, const MixboxLut& lut) {
              "Break a compound path back into one shape per subpath. The parts arrive "
              "selected.");
 
+  // The booleans continue the COMPOUND/RELEASE row -- all six combine
+  // shapes -- and wrap only where the panel is too narrow, so they cost the
+  // panel one row rather than a section.
+  auto sameLineIfFits = [](const char* label) {
+    const float w =
+        ImGui::CalcTextSize(label, nullptr, true).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    ImGui::SameLine();
+    if (ImGui::GetContentRegionAvail().x < w) ImGui::NewLine();
+  };
+  sameLineIfFits("UNITE");
+  verbButton("UNITE", PathOp::Unite,
+             "Merge the selected shapes into one outline covering all of them. The first "
+             "shape in the layer keeps its paint; curves become straight segments.");
+  sameLineIfFits("INTERSECT");
+  verbButton("INTERSECT", PathOp::Intersect,
+             "Keep only the area every selected shape covers. The first shape in the layer "
+             "keeps its paint; curves become straight segments.");
+  sameLineIfFits("SUBTRACT");
+  verbButton("SUBTRACT", PathOp::Subtract,
+             "Cut every later selected shape out of the first one in the layer. Curves "
+             "become straight segments.");
+  sameLineIfFits("EXCLUDE");
+  verbButton("EXCLUDE", PathOp::Exclude,
+             "Keep the area covered by an odd number of the selected shapes, so overlaps "
+             "become holes. The first shape in the layer keeps its paint; curves become "
+             "straight segments.");
+
   ImGui::BeginDisabled(!live);
   flatsCapsLabel("RULE");
   ImGui::SameLine();

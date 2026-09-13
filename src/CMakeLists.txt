@@ -233,6 +233,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/CropTool.cpp
   app/selftest/PathRaster.cpp
   app/selftest/SvgImport.cpp
+  app/selftest/PathBoolean.cpp
   app/selftest/PathOps.cpp
   app/selftest/PathsPanel.cpp
   app/selftest/PenTool.cpp
@@ -403,6 +404,7 @@ add_executable(naturalPaint
   core/Merge.cpp
   core/OpStack.cpp
   core/Path.cpp
+  core/PathBoolean.cpp
   core/PathFlatten.cpp
   core/PathRaster.cpp
   core/PathStroke.cpp

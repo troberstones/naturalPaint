@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/Path.hpp"
@@ -175,25 +176,43 @@ bool runPsdVectorComposeTest() {
   }
 
   // ==========================================================================
-  std::printf("  -- D. Refusals: Intersect, and Exclude mixed with Union --\n");
+  std::printf("  -- D. Intersect, and Exclude mixed with Union, compose exactly --\n");
   // ==========================================================================
   {
     PsdPathStream stream;
     stream.subpaths.push_back(makeSubPath(squareSubPath(0, 0, 10, 10), PsdPathOp::Union));
     stream.subpaths.push_back(makeSubPath(squareSubPath(5, 5, 15, 15), PsdPathOp::Intersect));
     const PsdComposedPath composed = composePsdSubPaths(stream);
-    check(!composed.ok, "D1: a layer using Intersect refuses (ok == false)");
-    check(contains(composed.refusal, "Intersect"), "D1: the refusal names Intersect");
+    const std::vector<float> img = rasterizeToImage(composed.path, 16, 16);
+    std::printf("  [measured] intersect area %.4f\n", sumOf(img));
+    check(composed.ok && std::fabs(sumOf(img) - 25.0) < 0.05,
+          "D1: Union then Intersect of [0,10]^2 and [5,15]^2 imports the 5x5 overlap, area 25");
+    check(sampleAt(img, 16, 16, 7, 7) > 0.99f && sampleAt(img, 16, 16, 2, 2) < 0.01f &&
+              sampleAt(img, 16, 16, 12, 12) < 0.01f,
+          "D1: the overlap is FILLED, and what only one square covers is EMPTY");
+    bool named = false;
+    for (const std::string& w : composed.warnings)
+      if (contains(w, "Intersect") && contains(w, "straight segments")) named = true;
+    check(named, "D1: a warning names Intersect and says its curves became straight segments");
   }
   {
+    // (A xor B) union C = 150 + 100 = 250.
     PsdPathStream stream;
     stream.subpaths.push_back(makeSubPath(squareSubPath(0, 0, 10, 10), PsdPathOp::Union));
     stream.subpaths.push_back(makeSubPath(squareSubPath(5, 5, 15, 15), PsdPathOp::Exclude));
     stream.subpaths.push_back(makeSubPath(squareSubPath(20, 20, 30, 30), PsdPathOp::Union));
     const PsdComposedPath composed = composePsdSubPaths(stream);
-    check(!composed.ok, "D2: a layer mixing Exclude with Union refuses (ok == false)");
-    check(contains(composed.refusal, "Exclude") && contains(composed.refusal, "Union"),
-          "D2: the refusal names both operations that can't share a path");
+    const std::vector<float> img = rasterizeToImage(composed.path, 31, 31);
+    std::printf("  [measured] exclude-then-union area %.4f\n", sumOf(img));
+    check(composed.ok && std::fabs(sumOf(img) - 250.0) < 0.05,
+          "D2: Union, Exclude, Union folds left to right: (A xor B) + C = 250");
+    check(sampleAt(img, 31, 31, 7, 7) < 0.01f && sampleAt(img, 31, 31, 2, 2) > 0.99f &&
+              sampleAt(img, 31, 31, 25, 25) > 0.99f,
+          "D2: the excluded overlap is EMPTY; A's own part and C are FILLED");
+    bool named = false;
+    for (const std::string& w : composed.warnings)
+      if (contains(w, "Exclude")) named = true;
+    check(named, "D2: a warning names the Exclude mix");
   }
 
   // ==========================================================================
@@ -376,87 +395,107 @@ bool runPsdVectorComposeTest() {
           "H2: rasterised area matches pi*r^2 within 1%");
   }
 
-  // --- I. The soundness heuristic actually fires, and stays quiet ---------
+  // --- I. The one-fill-rule shortcut is checked exactly ------------------
   //
-  // Reversal turns Subtract into a hole exactly where the subtracted region
-  // sits on ONE layer of Union coverage. Where it sits on two, nonzero
-  // winding cancels twice and re-fills part of the hole. Detecting that
-  // exactly needs the boolean-ops pass this codebase does not have, so the
-  // module warns from control-point bounding boxes -- conservative, so it may
-  // warn on a layer that in fact renders fine, and never misses a real one.
-  //
-  // A warning path with no fixture is a warning nobody has ever seen. These
-  // two assertions are what make it a behaviour rather than a comment.
+  // Each unsound fixture is paired with the same subpaths hand-built into the
+  // shortcut's compound, proving the shortcut really does draw it wrong -- so
+  // a pass means the check caught something, not that nothing was there.
+  auto shortcutOf = [](std::vector<std::pair<SubPath, bool>> subs) {
+    Path p;
+    for (auto& [sub, subtract] : subs) {
+      if (subtract) reverseSubPath(sub);
+      p.subpaths.push_back(sub);
+    }
+    return p;
+  };
+  auto warnedExact = [](const PsdComposedPath& c) {
+    for (const std::string& w : c.warnings)
+      if (contains(w, "computed exactly")) return true;
+    return false;
+  };
   {
-    // Two Union squares that overlap, and a Subtract square sitting on the
-    // overlap: the unsound case.
+    // A hole on TWO layers of fill: union 6000, minus 200 = 5800.
     PsdPathStream stream;
     stream.subpaths.push_back(makeSubPath(squareSubPath(0, 0, 60, 60), PsdPathOp::Union));
     stream.subpaths.push_back(makeSubPath(squareSubPath(40, 0, 100, 60), PsdPathOp::Union));
     stream.subpaths.push_back(makeSubPath(squareSubPath(45, 20, 55, 40), PsdPathOp::Subtract));
     const PsdComposedPath composed = composePsdSubPaths(stream);
-    check(composed.ok, "I1: a doubly-covered subtraction still composes -- it is a warning, "
-                       "not a refusal");
-    bool warned = false;
-    for (const std::string& w : composed.warnings)
-      if (w.find("covered more than once") != std::string::npos) warned = true;
-    check(warned, "I1: and it WARNS that the hole may not match Photoshop, naming the cause");
-
-    // Proof the warning is about double coverage and not about the word
-    // Subtract: one Union square with a nested hole is the sound case.
-    PsdPathStream sound;
-    sound.subpaths.push_back(makeSubPath(squareSubPath(0, 0, 60, 60), PsdPathOp::Union));
-    sound.subpaths.push_back(makeSubPath(squareSubPath(20, 20, 40, 40), PsdPathOp::Subtract));
-    const PsdComposedPath soundComposed = composePsdSubPaths(sound);
-    bool quiet = true;
-    for (const std::string& w : soundComposed.warnings)
-      if (w.find("covered more than once") != std::string::npos) quiet = false;
-    check(soundComposed.ok && quiet,
-          "I2: a plain nested hole -- one fill, one subtraction -- warns about nothing");
+    const std::vector<float> img = rasterizeToImage(composed.path, 100, 60);
+    const Path naive = shortcutOf({{squareSubPath(0, 0, 60, 60), false},
+                                   {squareSubPath(40, 0, 100, 60), false},
+                                   {squareSubPath(45, 20, 55, 40), true}});
+    std::printf("  [measured] doubly covered: area %.3f, hole %.4f, shortcut's hole %.4f\n",
+                sumOf(img), sampleAt(img, 100, 60, 50, 30),
+                sampleAt(rasterizeToImage(naive, 100, 60), 100, 60, 50, 30));
+    check(sampleAt(rasterizeToImage(naive, 100, 60), 100, 60, 50, 30) > 0.99f,
+          "I1 premise: the shortcut compound re-fills a hole that sits on two fills");
+    check(composed.ok && sampleAt(img, 100, 60, 50, 30) < 0.01f &&
+              std::fabs(sumOf(img) - 5800.0) < 0.1,
+          "I1: the import leaves that hole EMPTY, area 6000 - 200 = 5800");
+    check(warnedExact(composed), "I1: and warns that the outline was computed exactly");
   }
-
-  // ==========================================================================
-  std::printf("  -- J. Tight bounds narrow the heuristic: two curves whose HANDLES\n");
-  std::printf("        overlap but whose actual curves do not -- no warning --\n");
-  // ==========================================================================
   {
-    // Two closed subpaths, each one cubic S-curve (handles swung +-100 off a
-    // straight chord) plus a straight return edge. `y(t) = 300(1-t)t(1-2t)`
-    // for a chord at y=0 with handles at +-100 peaks at |y| = 300 * t(1-2t)(1-t)
-    // evaluated at the derivative's root t = (6 - sqrt(12))/12 ~= 0.2113,
-    // giving |y| ~= 28.87 -- the curve never gets close to the +-100 its own
-    // handles reach. Two such curves, chords at y=0 and y=85, have CONTROL
-    // bounds y=[-100,100] and y=[-15,185] (they overlap in [-15,100]) but
-    // TIGHT bounds y=[-28.87,28.87] and y=[56.13,113.87] (a ~27-unit gap: they
-    // do not overlap at all).
-    auto sCurveSubPath = [](float chordY) {
-      SubPath sub;
-      sub.closed = true;
-      Anchor a0, a1;
-      a0.pt = a0.in = PathPoint{0.0f, chordY};
-      a0.out = PathPoint{0.0f, chordY + 100.0f};
-      a1.pt = a1.out = PathPoint{100.0f, chordY};
-      a1.in = PathPoint{100.0f, chordY - 100.0f};
-      sub.anchors = {a0, a1};
-      return sub;
-    };
-
+    // A subtraction over NO fill: a bounding-box test has nothing to compare
+    // it with, and the shortcut paints the reversed square solid.
     PsdPathStream stream;
-    stream.subpaths.push_back(makeSubPath(sCurveSubPath(0.0f), PsdPathOp::Union));
-    stream.subpaths.push_back(makeSubPath(sCurveSubPath(85.0f), PsdPathOp::Union));
-    // Sits inside the CONTROL-bounds overlap [-15,100] but nowhere near either
-    // curve's true tight bounds -- the old, control-point heuristic would have
-    // warned here; measured area below is the proof it no longer does.
-    stream.subpaths.push_back(makeSubPath(squareSubPath(45, 40, 55, 50), PsdPathOp::Subtract));
-
+    stream.subpaths.push_back(makeSubPath(squareSubPath(0, 0, 40, 40), PsdPathOp::Union));
+    stream.subpaths.push_back(makeSubPath(squareSubPath(60, 60, 80, 80), PsdPathOp::Subtract));
     const PsdComposedPath composed = composePsdSubPaths(stream);
-    check(composed.ok, "J1: composes (ok) -- a warning here is advisory, never a refusal");
-    bool warnedNarrow = false;
-    for (const std::string& w : composed.warnings)
-      if (w.find("covered more than once") != std::string::npos) warnedNarrow = true;
-    check(!warnedNarrow,
-          "J2: tight bounds see the two curves' control-hull overlap does not survive contact "
-          "with the actual curves, so the double-coverage warning does NOT fire here");
+    const std::vector<float> img = rasterizeToImage(composed.path, 80, 80);
+    const Path naive =
+        shortcutOf({{squareSubPath(0, 0, 40, 40), false}, {squareSubPath(60, 60, 80, 80), true}});
+    check(sampleAt(rasterizeToImage(naive, 80, 80), 80, 80, 70, 70) > 0.99f,
+          "I2 premise: the shortcut fills a subtracted square that has no fill beneath it");
+    check(composed.ok && sampleAt(img, 80, 80, 70, 70) < 0.01f &&
+              std::fabs(sumOf(img) - 1600.0) < 0.1 && warnedExact(composed),
+          "I2: the import leaves it EMPTY (area 1600) and warns");
+  }
+  {
+    // A hole authored with the OPPOSITE winding: the shortcut's reversal turns
+    // it back into fill.
+    SubPath reversedHole = squareSubPath(40, 40, 60, 60);
+    reverseSubPath(reversedHole);
+    PsdPathStream stream;
+    stream.subpaths.push_back(makeSubPath(squareSubPath(0, 0, 100, 100), PsdPathOp::Union));
+    stream.subpaths.push_back(makeSubPath(reversedHole, PsdPathOp::Subtract));
+    const PsdComposedPath composed = composePsdSubPaths(stream);
+    const std::vector<float> img = rasterizeToImage(composed.path, 100, 100);
+    const Path naive =
+        shortcutOf({{squareSubPath(0, 0, 100, 100), false}, {reversedHole, true}});
+    check(sampleAt(rasterizeToImage(naive, 100, 100), 100, 100, 50, 50) > 0.99f,
+          "I3 premise: the shortcut fills a subtracted hole authored with opposite winding");
+    check(composed.ok && sampleAt(img, 100, 100, 50, 50) < 0.01f &&
+              std::fabs(sumOf(img) - 9600.0) < 0.1 && warnedExact(composed),
+          "I3: the import leaves it EMPTY (area 10000 - 400 = 9600) and warns");
+  }
+  {
+    // The sound case keeps the shortcut, and with it the curves: a circular
+    // hole inside a square comes back with its handles, and no warning.
+    SubPath hole;
+    hole.closed = true;
+    const float k = 0.5522847498f * 20.0f;
+    const PathPoint pts[4] = {{50, 30}, {30, 50}, {10, 30}, {30, 10}};
+    const PathPoint tan[4] = {{0, k}, {-k, 0}, {0, -k}, {k, 0}};
+    for (int j = 0; j < 4; ++j) {
+      Anchor a;
+      a.pt = pts[j];
+      a.in = {pts[j].x - tan[j].x, pts[j].y - tan[j].y};
+      a.out = {pts[j].x + tan[j].x, pts[j].y + tan[j].y};
+      hole.anchors.push_back(a);
+    }
+    PsdPathStream stream;
+    stream.subpaths.push_back(makeSubPath(squareSubPath(0, 0, 60, 60), PsdPathOp::Union));
+    stream.subpaths.push_back(makeSubPath(hole, PsdPathOp::Subtract));
+    const PsdComposedPath composed = composePsdSubPaths(stream);
+    const bool curved = composed.path.subpaths.size() == 2 &&
+                        composed.path.subpaths[1].anchors.size() == 4 &&
+                        (composed.path.subpaths[1].anchors[0].in.x !=
+                             composed.path.subpaths[1].anchors[0].pt.x ||
+                         composed.path.subpaths[1].anchors[0].in.y !=
+                             composed.path.subpaths[1].anchors[0].pt.y);
+    check(composed.ok && composed.warnings.empty() && curved,
+          "I4: a circular hole in one fill keeps the curve-preserving compound, and warns of "
+          "nothing");
   }
 
   // ==========================================================================

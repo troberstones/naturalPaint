@@ -16,8 +16,7 @@
 //
 // Two stages, deliberately separate because they fail differently. Decoding is
 // byte work on untrusted input and either parses or does not; composing is a
-// modelling decision -- PSD has four boolean operations and this codebase has
-// no boolean path ops at all -- and one of the four cannot be honoured.
+// modelling decision -- how PSD's four boolean operations become one path.
 namespace np {
 
 // The block payload after the 8-byte header: `version` then `flags`, both
@@ -120,20 +119,14 @@ struct PsdComposedPath {
   std::vector<std::string> warnings;
 };
 
-// Folds `stream` into one `Path`.
+// Folds `stream` into one `Path`, honouring all four PSD operations.
 //
-// naturalPaint has one fill rule per path and no boolean path operations
-// (app/PathOps' eleven verbs are `Close`..`MakeCompound`; none is union or
-// subtract). That is enough for three of PSD's four operations:
-//
-//   all Union            -> one compound path, NonZero
-//   Union + Subtract     -> compound path, NonZero, subtracted subpaths
-//                           REVERSED (the font and SVG hole convention)
-//   all Exclude          -> compound path, EvenOdd -- exclude *is* XOR
-//   any Intersect        -> nothing here expresses it: REFUSE by name
-//
-// A layer mixing Exclude with the others is refused for the same reason: the
-// two rules cannot both apply to one path.
+// Where one compound path with one fill rule draws the same region as the
+// exact boolean fold -- Union/Subtract with every hole on one layer of fill,
+// or all-Exclude -- that compound is returned and its curves survive.
+// Otherwise (Intersect, Exclude mixed with the others, or a subtracted region
+// covered other than once) the exact fold is returned, polygonal, with a
+// warning saying so. Only an unrecognised operation code refuses.
 PsdComposedPath composePsdSubPaths(const PsdPathStream& stream);
 
 }  // namespace np

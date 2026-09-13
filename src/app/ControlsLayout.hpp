@@ -182,10 +182,10 @@ enum class ControlsSection {
   // layer kind -- the "named next consumer" the paragraph above promised, and
   // so the second member of that family rather than a new pattern.
   //
-  // What it holds that nothing else does: `app/PathOps`' eleven verbs (close,
-  // open, join, reverse, compound, release, smooth, corner, break, insert,
-  // delete) and `app/PathConsumers`' three (path to selection, fill it,
-  // stroke it). The consumers were built, selftested and listed in
+  // What it holds that nothing else does: `app/PathOps`' fifteen verbs (close,
+  // open, join, reverse, compound, release, unite, intersect, subtract,
+  // exclude, smooth, corner, break, insert, delete) and `app/PathConsumers`'
+  // three (path to selection, fill it, stroke it). The consumers were built, selftested and listed in
   // docs/vector-editing.md section 8 under "not on screen yet", with this
   // panel named as their home; this is where they stop being unreachable.
   //
