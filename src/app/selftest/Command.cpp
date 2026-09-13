@@ -432,19 +432,24 @@ bool runCommandTest() {
     // channel-match refusal under an unsaved live marquee
     // (app/Recorder.hpp §4), is exactly the protection each of them needs, even
     // though neither fits the flag's textbook description ("absent means whole
-    // canvas") the way `crop_to_selection` also does not. A fourth has to be
-    // looked at by a human who has thought about it, the same as this literal
-    // always asked of the first three.
+    // canvas") the way `crop_to_selection` also does not.
+    //
+    // **A fourth joined at `content_aware_fill`**
+    // (`contentAwareFillUnavailable()`), for `filter_inpaint`'s own reason --
+    // ops/PatchMatch's hole is the selection, so an absent one is the
+    // identical hard refusal. Named by a human who read the code, the same as
+    // the first three were.
     for (const std::string& id : boundedWithoutTheBridge)
       std::printf("      bounded outside the pixel bridge: %s\n", id.c_str());
-    bool exactlyTheThree = boundedWithoutTheBridge.size() == 3;
-    for (const char* id : {"crop_to_selection", "filter_inpaint", "delete_selection"})
-      exactlyTheThree = exactlyTheThree && std::find(boundedWithoutTheBridge.begin(),
-                                                     boundedWithoutTheBridge.end(),
-                                                     std::string(id)) != boundedWithoutTheBridge.end();
-    check(exactlyTheThree,
-          "bounded: exactly three rows are bounded outside the pixel bridge, and they are the "
-          "crop, the inpaint and the delete");
+    bool exactlyFour = boundedWithoutTheBridge.size() == 4;
+    for (const char* id :
+        {"crop_to_selection", "filter_inpaint", "delete_selection", "content_aware_fill"})
+      exactlyFour = exactlyFour && std::find(boundedWithoutTheBridge.begin(),
+                                             boundedWithoutTheBridge.end(),
+                                             std::string(id)) != boundedWithoutTheBridge.end();
+    check(exactlyFour,
+          "bounded: exactly four rows are bounded outside the pixel bridge, and they are the "
+          "crop, the inpaint, the delete and the content-aware fill");
 
     // The by-name half, in both directions, because a structural rule that
     // happened to be vacuous -- no row bounded at all -- would pass everything
@@ -471,10 +476,13 @@ bool runCommandTest() {
     // `delete_selection` above: it is not merely unbounded by an absent
     // selection, it refuses outright under a PRESENT one
     // (`offsetRefusalFor()`'s `SelectionActive`), so "absent means whole
-    // canvas" was never a reading this op could have.
+    // canvas" was never a reading this op could have. Track `repair`'s
+    // `seam_heal` joins it for the identical reason --
+    // `seamHealRefusalFor()` refuses the same way.
     check(!boundedById("flatten_image") && !boundedById("image_size") &&
               !boundedById("canvas_size") && !boundedById("trim_to_content") &&
-              !boundedById("numeric_transform") && !boundedById("filter_offset"),
+              !boundedById("numeric_transform") && !boundedById("filter_offset") &&
+              !boundedById("seam_heal"),
           "bounded: the whole-document ops are NOT bounded by the selection");
 
     // The commands that operate ON the selection are not bounded BY it. The

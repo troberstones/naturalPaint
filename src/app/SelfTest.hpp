@@ -1027,6 +1027,22 @@ bool runFiltersExtTest();
 // exactly that constant to the f16 store's own floor, and a horizontal ramp
 // filling as a monotone ramp rather than as a puddle of its rim's mean.
 bool runInpaintTest();
+
+// ops/PatchMatch and Edit > Content-Aware Fill (PRD D7's second half).
+// Headless and GPU-free. Same hole-not-bound inversion Inpaint's own section
+// asserts, plus what is specific to a search rather than a solve: same seed
+// twice is bit-identical, a different seed can differ, no accepted match's
+// source patch overlaps the hole (checked from outside the engine via its
+// own NNF instrumentation), and a periodic texture's fill continues the
+// period.
+bool runPatchMatchTest();
+
+// ops/SeamHeal and Filter > Seam Heal (PRD D8's missing third piece).
+// Headless and GPU-free. Both offsets are pure addressing changes, so the
+// property asserted is exactness outside the two bands, not merely
+// plausibility inside them.
+bool runSeamHealTest();
+
 // ---------------------------------------------------------------------------
 // PRD D8 / PLAN.md phase 9 ("Tile it"): the two make-tileable pixel ops
 // ---------------------------------------------------------------------------

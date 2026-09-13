@@ -278,6 +278,60 @@ FilterOpResult previewInpaint(const OpenDocument& doc, int32_t radius, TileStore
   return computePixelFilter(doc, inpaintTiles, inpaintParamsFor(doc, radius), previewOut);
 }
 
+namespace {
+
+// The one expression that fills in `PatchMatchParams::hole` -- the identical
+// reason `inpaintParamsFor()` is a single named function above: the engine's
+// hole and `compositeFilterResult()`'s selection must be the SAME object.
+PatchMatchParams contentAwareFillParamsFor(const OpenDocument& doc,
+                                           const ContentAwareFillRequest& request) {
+  PatchMatchParams params;
+  params.hole = doc.selection.has_value() ? &*doc.selection : nullptr;
+  params.patchRadius = request.patchRadius;
+  params.iterations = request.iterations;
+  params.pyramidLevels = request.pyramidLevels;
+  params.seed = request.seed;
+  return params;
+}
+
+// `patchMatchTiles()`'s fifth parameter (the NNF instrumentation) has a
+// default argument, which is invisible through a function POINTER --
+// `applyPixelFilter()`/`computePixelFilter()` call `engine` with exactly four
+// arguments, so `Engine` has to deduce a four-argument type. This trampoline
+// is that type.
+bool patchMatchTilesForBridge(const TileStore& src, const PixelRect& outRect,
+                              const PatchMatchParams& p, TileStore* dst) {
+  return patchMatchTiles(src, outRect, p, dst);
+}
+
+}  // namespace
+
+PixelOpRefusal contentAwareFillRefusal(const OpenDocument& doc) {
+  const PixelOpRefusal layer = pixelOpRefusalFor(activeLayerOf(doc));
+  if (layer != PixelOpRefusal::None) return layer;
+  const Selection* hole = doc.selection.has_value() ? &*doc.selection : nullptr;
+  if (hole == nullptr || selectionSelectsNothing(*hole)) return PixelOpRefusal::NoSelection;
+  return PixelOpRefusal::None;
+}
+
+FilterOpResult applyContentAwareFill(OpenDocument& doc, const ContentAwareFillRequest& request) {
+  FilterOpResult result;
+  result.refusal = contentAwareFillRefusal(doc);
+  if (result.refusal != PixelOpRefusal::None) return result;
+  return applyPixelFilter(doc, patchMatchTilesForBridge, contentAwareFillParamsFor(doc, request),
+                          "content-aware fill");
+}
+
+FilterOpResult previewContentAwareFill(const OpenDocument& doc,
+                                       const ContentAwareFillRequest& request,
+                                       TileStore* previewOut) {
+  FilterOpResult result;
+  result.refusal = contentAwareFillRefusal(doc);
+  if (result.refusal != PixelOpRefusal::None) return result;
+  return computePixelFilter(doc, patchMatchTilesForBridge, contentAwareFillParamsFor(doc, request),
+                            previewOut);
+}
+
 // --------------------------------------------------------------------------
 // PRD D8: the two make-tileable ops
 // --------------------------------------------------------------------------
@@ -360,6 +414,43 @@ FilterOpResult previewOffset(const OpenDocument& doc, const OffsetRequest& reque
   result.refusal = offsetRefusalFor(doc);
   if (result.refusal != PixelOpRefusal::None) return result;
   return computePixelFilter(doc, offsetTiles, offsetParamsFor(doc, request), previewOut);
+}
+
+namespace {
+
+SeamHealParams seamHealParamsFor(const OpenDocument& doc, const SeamHealRequest& request) {
+  SeamHealParams params;
+  params.wrapRect = canvasRectOf(doc);
+  params.bandWidth = request.bandWidth;
+  params.patchRadius = request.patchRadius;
+  params.iterations = request.iterations;
+  params.pyramidLevels = request.pyramidLevels;
+  params.seed = request.seed;
+  return params;
+}
+
+}  // namespace
+
+PixelOpRefusal seamHealRefusalFor(const OpenDocument& doc) noexcept {
+  const PixelOpRefusal layer = pixelOpRefusalFor(activeLayerOf(doc));
+  if (layer != PixelOpRefusal::None) return layer;
+  if (doc.selection.has_value()) return PixelOpRefusal::SelectionActive;
+  return PixelOpRefusal::None;
+}
+
+FilterOpResult applySeamHeal(OpenDocument& doc, const SeamHealRequest& request) {
+  FilterOpResult result;
+  result.refusal = seamHealRefusalFor(doc);
+  if (result.refusal != PixelOpRefusal::None) return result;
+  return applyPixelFilter(doc, seamHealTiles, seamHealParamsFor(doc, request), "seam heal");
+}
+
+FilterOpResult previewSeamHeal(const OpenDocument& doc, const SeamHealRequest& request,
+                               TileStore* previewOut) {
+  FilterOpResult result;
+  result.refusal = seamHealRefusalFor(doc);
+  if (result.refusal != PixelOpRefusal::None) return result;
+  return computePixelFilter(doc, seamHealTiles, seamHealParamsFor(doc, request), previewOut);
 }
 
 FilterOpResult applyLensCorrect(OpenDocument& doc, LensParams params) {

@@ -155,6 +155,11 @@ constexpr PixelUnitParam kPixelUnitParams[] = {
     // gets above.
     {"filter_dust_scratches", "radius"},
     {"filter_shadows_highlights", "radius"},
+    // PatchMatch and seam heal: `patch_radius`/`band_width` are window sizes in
+    // document texels; `iterations`, `pyramid_levels` and `seed` are counts.
+    {"content_aware_fill", "patch_radius"},
+    {"seam_heal", "band_width"},
+    {"seam_heal", "patch_radius"},
 };
 
 // "filter_gaussian_blur's sigma" for every pixel-unit parameter `action`

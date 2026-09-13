@@ -294,8 +294,21 @@ CommandCoverage coverageFor(MenuAction action) {
       // as the second bounded exception (beside `crop_to_selection`) in
       // app/selftest/Command.cpp section H.
       return {CommandCoverageKind::Registered, "filter_inpaint", nullptr};
+    case MenuAction::ContentAwareFill:
+      // PRD D7's second half, track `repair`. Same inverted-selection
+      // reasoning as `Inpaint` just above -- `content_aware_fill` is
+      // `selectionBounded` for the identical reason: the recorder's channel-
+      // match rule is the protection this op needs against a live, unsaved
+      // marquee even though "absent means whole canvas" does not literally
+      // describe it.
+      return {CommandCoverageKind::Registered, "content_aware_fill", nullptr};
     case MenuAction::RemoveLightingGradient:
       return {CommandCoverageKind::Registered, "filter_remove_lighting_gradient", nullptr};
+    case MenuAction::SeamHeal:
+      // PRD D8, track `repair`. NOT `selectionBounded`, for `Offset`'s own
+      // reason just below: `seamHealRefusalFor()` refuses outright under ANY
+      // live selection.
+      return {CommandCoverageKind::Registered, "seam_heal", nullptr};
     case MenuAction::Offset:
       // `dx`/`dy` are recorded as `dx_fraction`/`dy_fraction` -- a FRACTION of
       // the canvas, not the texels `offsetByHalf()` resolves them to -- because

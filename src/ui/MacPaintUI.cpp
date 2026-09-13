@@ -12,6 +12,7 @@
 #include "ui/FillDialog.hpp"
 #include "ui/FilterDialogsExtra.hpp"
 #include "ui/DustScratchesDialog.hpp"
+#include "ui/RepairDialogs.hpp"
 #include "ui/ShadowsHighlightsDialog.hpp"
 #include "ui/Dialog.hpp"
 #include "ui/LabelledControl.hpp"
@@ -13861,6 +13862,9 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     case MenuAction::LensCorrect:   requestLensCorrectDialog();   break;
     // PRD D11: ui/DustScratchesDialog.hpp.
     case MenuAction::DustScratches: requestDustScratchesDialog(); break;
+    // PRD D7 second half and D8: ui/RepairDialogs.hpp.
+    case MenuAction::ContentAwareFill: requestContentAwareFillDialog(); break;
+    case MenuAction::SeamHeal:         requestSeamHealDialog();         break;
 
     // --- Image ----------------------------------------------------------
     case MenuAction::ImageSize:  g_imageSizeRequested = true;  break;
@@ -17004,6 +17008,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // PRD D11: ui/DustScratchesDialog.hpp, same placement
   // rule again.
   drawDustScratchesDialog(st);
+  // PRD D7 second half and D8: ui/RepairDialogs.hpp, same placement rule.
+  drawContentAwareFillDialog(st);
+  drawSeamHealDialog(st);
   drawAdjustmentDialogs(st);
   // PRD D24: the gradient tool's own stop editor, opened from the options
   // bar's swatch rather than a menu -- same placement rule again, so it

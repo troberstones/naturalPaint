@@ -3112,6 +3112,12 @@ int main(int argc, char** argv) {
     // app/SelfTest.hpp's comment on runInpaintTest() for why that inversion is
     // asserted from both ends. Also headless and GPU-free.
     const bool inpaintOk = np::runInpaintTest();
+    // PRD D7's second half: ops/PatchMatch and Edit > Content-Aware Fill.
+    // Also headless and GPU-free.
+    const bool patchMatchOk = np::runPatchMatchTest();
+    // PRD D8's missing third piece: ops/SeamHeal and Filter > Seam Heal.
+    // Also headless and GPU-free.
+    const bool seamHealOk = np::runSeamHealTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD E1, E2, M1): core/SelectionMask's
     // uint8 coverage store, its antialiased rectangle constructor, and the
     // coverage-weighted clear. Also headless and GPU-free -- pure CPU tile
@@ -4330,7 +4336,7 @@ int main(int argc, char** argv) {
                     gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
                     textShaperOk && vectorLayerOk && vectorGradientOk && textContentOk &&
                     transformPreviewTextureOk &&
-                    transformCompositeSplitOk && packBitsOk && psdWriteOk && psdBlendKeysOk && psdExportOk && psdLayerSectionOk && psdLayerExtrasOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && inpaintOk && curveEditOk &&
+                    transformCompositeSplitOk && packBitsOk && psdWriteOk && psdBlendKeysOk && psdExportOk && psdLayerSectionOk && psdLayerExtrasOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && inpaintOk && patchMatchOk && seamHealOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
                     multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk &&
                     userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&

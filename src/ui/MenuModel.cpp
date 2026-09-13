@@ -142,6 +142,9 @@ const MenuItemSpec* specTable() {
     set(MenuAction::Fill, "Fill...", "");
     set(MenuAction::Stroke, "Stroke...", "");
     set(MenuAction::DefinePattern, "Define Pattern...", "");
+    // Track `repair`, PRD D7's second half. No key equivalent, the identical
+    // reason.
+    set(MenuAction::ContentAwareFill, "Content-Aware Fill...", "");
 
     family(MenuAction::LayerCommandItem);
     family(MenuAction::LayerSetCommandItem);
@@ -279,6 +282,9 @@ const MenuItemSpec* specTable() {
     // before SDL sees it -- not a thing to claim speculatively.
     set(MenuAction::RemoveLightingGradient, "Remove Lighting Gradient...", "");
     set(MenuAction::Offset, "Offset...", "");
+    // Track `repair`, PRD D8's missing third piece. No key equivalent, the
+    // identical reason.
+    set(MenuAction::SeamHeal, "Seam Heal...", "");
     // No key equivalents, same reason as the two
     // above: `docs/shortcuts.md` assigns none of these three.
     set(MenuAction::Highpass, "Highpass...", "");
@@ -558,8 +564,10 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::Median: return "Median";
     case MenuAction::MotionBlur: return "MotionBlur";
     case MenuAction::Inpaint: return "Inpaint";
+    case MenuAction::ContentAwareFill: return "ContentAwareFill";
     case MenuAction::RemoveLightingGradient: return "RemoveLightingGradient";
     case MenuAction::Offset: return "Offset";
+    case MenuAction::SeamHeal: return "SeamHeal";
     case MenuAction::Highpass: return "Highpass";
     case MenuAction::LocalContrast: return "LocalContrast";
     case MenuAction::LensCorrect: return "LensCorrect";
@@ -781,8 +789,10 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     // over documents. All four are the default answer, and the default is what
     // `-Wswitch` made someone look at rather than inherit.
     case MenuAction::Inpaint:
+    case MenuAction::ContentAwareFill:
     case MenuAction::RemoveLightingGradient:
     case MenuAction::Offset:
+    case MenuAction::SeamHeal:
     // The same seat as GaussianBlur above -- each
     // rewrites the active layer's own texels.
     case MenuAction::Highpass:
@@ -849,9 +859,12 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     case MenuAction::Median:
     case MenuAction::MotionBlur:
     case MenuAction::Inpaint:
-    // PRD D8's two, for the identical reason -- each opens a modal.
+    // two (PRD D7 second half, D8), for the identical
+    // reason -- each opens a modal (ui/RepairDialogs.hpp).
+    case MenuAction::ContentAwareFill:
     case MenuAction::RemoveLightingGradient:
     case MenuAction::Offset:
+    case MenuAction::SeamHeal:
     // The identical reason -- each opens a modal
     // (ui/FilterDialogsExtra.hpp).
     case MenuAction::Highpass:
@@ -1082,6 +1095,22 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
       e.push_back(fillMenuItem(MenuAction::Fill));
       e.push_back(fillMenuItem(MenuAction::Stroke));
       e.push_back(fillMenuItem(MenuAction::DefinePattern));
+    }
+    e.push_back(separator());
+    // PRD D7's second half (ops/PatchMatch.hpp): same selection-is-the-hole
+    // shape as Filter > Inpaint, so the identical second-question enable
+    // predicate and tooltip apply -- see that item's own comment in the
+    // Filter menu below.
+    {
+      const bool usable = ctx.filterLayerUsable && ctx.hasEngagedSelection;
+      MenuNode n = item(MenuAction::ContentAwareFill, usable);
+      if (!ctx.filterLayerUsable) {
+        n.tooltip = ctx.filterRefusalNote;
+      } else if (!ctx.hasEngagedSelection) {
+        n.tooltip = "Content-Aware Fill synthesises the SELECTED texels from the surrounding "
+                    "texture. Select the area to remove first.";
+      }
+      e.push_back(std::move(n));
     }
     e.push_back(separator());
     e.push_back(item(MenuAction::ClearCanvas));
@@ -1374,6 +1403,12 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     flt.push_back(separator());
     flt.push_back(filterItem(MenuAction::RemoveLightingGradient));
     flt.push_back(filterItem(MenuAction::Offset));
+    // Make-tileable's missing third piece (PRD D8, ops/SeamHeal.hpp). Shares
+    // Offset's own predicate -- `seamHealRefusalFor()` refuses outright under
+    // ANY live selection, the identical reason `offsetRefusalFor()` does, so
+    // there is no second question to ask before the click the way Inpaint's
+    // item has.
+    flt.push_back(filterItem(MenuAction::SeamHeal));
     // PRD D22. Set apart from D8's make-tileable pair
     // above it -- a geometric correction, not a tiling workflow step -- but
     // sharing their enable predicate: `lensCorrectTiles()` is bounded by the

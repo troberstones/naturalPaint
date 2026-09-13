@@ -223,18 +223,20 @@ bool runMenuModelTest() {
   // `SaveSelectionAsChannel`, `LoadChannelAsSelection` and `ToggleQuickMask`.
   // 108 -> 113: PRD Q1's `ZoomToSelection`, PRD D22/reachability-audit C1's
   // `Highpass`, `LocalContrast` and `LensCorrect`, and PRD D23's `Warp`.
-  // 113 -> 117: SplitView and MatchZoom (View), DustScratches (Filter) and
-  // AdjustShadowsHighlights (Image > Adjustments), counted off the enum.
-  check(kMenuActionCount == 117,
-        "ids: exactly 117 actions -- the original 41-item extraction plus D1/D2's "
+  // 113 -> 119: SplitView and MatchZoom (View), DustScratches (Filter),
+  // AdjustShadowsHighlights (Image > Adjustments), ContentAwareFill (Edit) and
+  // SeamHeal (Filter), counted off the enum.
+  check(kMenuActionCount == 119,
+        "ids: exactly 119 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
         "dialog, Brush Settings, the crop pair, Pigment, Batch, Inpaint, D8's "
         "make-tileable pair, the 3x3 repeat preview, the region export/show pair, "
         "Paste Into / Paste as New Document, Fill/Stroke/Define Pattern, the "
         "save/load channel and quick-mask trio, Zoom to Selection/Highpass/Local "
-        "Contrast/Lens Correction, Warp, Split View/Match Zoom, and Dust & "
-        "Scratches/Shadows-Highlights, so an item lost in a later edit fails here");
+        "Contrast/Lens Correction, Warp, Split View/Match Zoom, Dust & "
+        "Scratches/Shadows-Highlights and Content-Aware Fill/Seam Heal, so an item "
+        "lost in a later edit fails here");
 
   {
     std::set<MenuAction> seen;
