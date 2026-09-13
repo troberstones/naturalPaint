@@ -10,7 +10,9 @@
 #include "ops/Filters.hpp"
 #include "ops/Inpaint.hpp"
 #include "ops/Lens.hpp"
+#include "ops/LensBlur.hpp"
 #include "ops/PatchMatch.hpp"
+#include "ops/RadialBlur.hpp"
 #include "ops/SeamHeal.hpp"
 
 // app/FilterOps -- the wiring bridge for the Filter and Image menus
@@ -236,6 +238,18 @@ FilterOpResult applyShadowsHighlights(OpenDocument& doc, const ShadowsHighlights
 FilterOpResult previewShadowsHighlights(const OpenDocument& doc,
                                         const ShadowsHighlightsParams& params,
                                         TileStore* previewOut);
+
+// Radial (spin/zoom) and lens blur.
+FilterOpResult applyRadialBlur(OpenDocument& doc, const RadialBlurParams& params);
+FilterOpResult previewRadialBlur(const OpenDocument& doc, const RadialBlurParams& params,
+                                 TileStore* previewOut);
+FilterOpResult applyLensBlur(OpenDocument& doc, const LensBlurParams& params);
+FilterOpResult previewLensBlur(const OpenDocument& doc, const LensBlurParams& params,
+                               TileStore* previewOut);
+
+// The canvas centre in document texels. The dialog seeds from it and the
+// command reader fills an absent centre from it, so the two cannot disagree.
+PixelCoord defaultBlurCenter(const OpenDocument& doc) noexcept;
 
 // ==========================================================================
 // Inpaint, and the one place this header's own selection rule is inverted

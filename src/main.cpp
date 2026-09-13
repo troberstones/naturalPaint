@@ -3148,6 +3148,12 @@ int main(int argc, char** argv) {
     // runFiltersExtTest() for the shape of the argument. Also headless and
     // GPU-free.
     const bool filtersExtOk = np::runFiltersExtTest();
+    // docs/operations.md §2.2: Radial/Spin+Zoom blur and Lens blur --
+    // two more filters extending the same set, each with its own engine file
+    // (ops/RadialBlur.hpp, ops/LensBlur.hpp) rather than growing ops/Filters.
+    // See app/SelfTest.hpp's own comment on runBlurFiltersTest(). Also
+    // headless and GPU-free.
+    const bool blurFiltersOk = np::runBlurFiltersTest();
     // PLAN.md "Phase 8 -- Repair it" (PRD D7, first half): ops/Inpaint's
     // diffusion fill and the Filter > Inpaint command. The one op here whose
     // selection is the HOLE rather than a bound on the result -- see
@@ -4380,7 +4386,7 @@ int main(int argc, char** argv) {
                     gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
                     textShaperOk && vectorLayerOk && vectorGradientOk && textContentOk &&
                     transformPreviewTextureOk &&
-                    transformCompositeSplitOk && packBitsOk && psdWriteOk && psdBlendKeysOk && psdExportOk && psdLayerSectionOk && psdLayerExtrasOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && inpaintOk && patchMatchOk && seamHealOk && curveEditOk &&
+                    transformCompositeSplitOk && packBitsOk && psdWriteOk && psdBlendKeysOk && psdExportOk && psdLayerSectionOk && psdLayerExtrasOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && blurFiltersOk && inpaintOk && patchMatchOk && seamHealOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
                     multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk &&
                     userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&

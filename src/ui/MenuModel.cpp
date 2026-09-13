@@ -293,6 +293,8 @@ const MenuItemSpec* specTable() {
     // PRD D11. No key equivalent, same reason as the
     // three above.
     set(MenuAction::DustScratches, "Dust & Scratches...", "");
+    set(MenuAction::RadialBlur, "Radial Blur...", "");
+    set(MenuAction::LensBlur, "Lens Blur...", "");
 
     // --- Image ----------------------------------------------------------
     set(MenuAction::ImageSize, "Image Size...", "");
@@ -571,6 +573,8 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::Highpass: return "Highpass";
     case MenuAction::LocalContrast: return "LocalContrast";
     case MenuAction::LensCorrect: return "LensCorrect";
+    case MenuAction::RadialBlur: return "RadialBlur";
+    case MenuAction::LensBlur: return "LensBlur";
     case MenuAction::ImageSize: return "ImageSize";
     case MenuAction::CanvasSize: return "CanvasSize";
     case MenuAction::CropToSelection: return "CropToSelection";
@@ -798,6 +802,10 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::Highpass:
     case MenuAction::LocalContrast:
     case MenuAction::LensCorrect:
+    // Radial and Lens Blur, the same seat as GaussianBlur above -- each
+    // rewrites the active layer's own texels.
+    case MenuAction::RadialBlur:
+    case MenuAction::LensBlur:
     case MenuAction::Batch:
     // Each rewrites the active layer's own texels or
     // opens a modal, the identical seat as the rows just above.
@@ -870,6 +878,9 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     case MenuAction::Highpass:
     case MenuAction::LocalContrast:
     case MenuAction::LensCorrect:
+    // The identical reason -- each opens a modal (ui/BlurDialogsExtra.hpp).
+    case MenuAction::RadialBlur:
+    case MenuAction::LensBlur:
     case MenuAction::ImageSize:
     case MenuAction::CanvasSize:
     // Image > Adjustments' four dialogs, for the identical reason: opening one
@@ -1377,6 +1388,9 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     flt.push_back(filterItem(MenuAction::LocalContrast));
     // PRD D11: the median-gated despeckle.
     flt.push_back(filterItem(MenuAction::DustScratches));
+    // Beside the blur family; Lens Blur is not directional like Motion Blur.
+    flt.push_back(filterItem(MenuAction::RadialBlur));
+    flt.push_back(filterItem(MenuAction::LensBlur));
     // Set apart, and the separator is the point: the eight above are filters
     // BOUNDED by the selection, and this one FILLS it (ops/Inpaint.hpp
     // section 1). It is also the only one whose enable predicate asks a

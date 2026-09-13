@@ -281,6 +281,27 @@ std::vector<ImageCommandFixture> imageCommandFixtures() {
     p.set("angle_radians", num(0.5));
     add("filter_motion_blur", p);
   }
+  // docs/operations.md §2.2. Centre inside the fixture's own
+  // content band (8..48) and selection (4..52), so the aperture/sweep has
+  // real, non-flat content to change.
+  {
+    JsonValue p = JsonValue::object();
+    p.set("method", JsonValue::string("spin"));
+    p.set("center_x", num(28.0));
+    p.set("center_y", num(26.0));
+    p.set("amount", num(20.0));
+    p.set("samples", num(6));
+    add("filter_radial_blur", p);
+  }
+  {
+    JsonValue p = JsonValue::object();
+    p.set("radius", num(6));
+    p.set("blade_count", num(6));
+    p.set("blade_rotation_radians", num(0.2));
+    p.set("highlight_threshold", num(0.5));
+    p.set("highlight_boost", num(0.3));
+    add("filter_lens_blur", p);
+  }
   {
     JsonValue p = JsonValue::object();
     p.set("radius", num(4));

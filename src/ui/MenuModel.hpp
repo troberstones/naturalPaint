@@ -375,6 +375,13 @@ enum class MenuAction : uint16_t {
   LocalContrast,
   LensCorrect,
 
+  // docs/operations.md §2.2: Radial/Spin+Zoom blur
+  // (ops/RadialBlur.hpp) and Lens blur (ops/LensBlur.hpp), the same wiring
+  // shape as the three above -- app/FilterOps.hpp's `applyRadialBlur`/
+  // `applyLensBlur` and their `preview*` twins.
+  RadialBlur,
+  LensBlur,
+
   // --- Image ------------------------------------------------------------
   //
   // ops/DocumentTransform, Photoshop-style: geometry that changes the
@@ -466,9 +473,7 @@ enum class MenuAction : uint16_t {
   // `DustScratches` sits in the Filter menu beside Median
   // (ui/DustScratchesDialog.hpp); `AdjustShadowsHighlights` sits in
   // Image > Adjustments, Photoshop's own placement
-  // (ui/ShadowsHighlightsDialog.hpp) -- both appended here rather than
-  // beside their logical siblings above, since this enum is a shared
-  // registration point every P2 track edits concurrently.
+  // (ui/ShadowsHighlightsDialog.hpp).
   DustScratches,
   AdjustShadowsHighlights,
 

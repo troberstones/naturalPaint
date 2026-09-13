@@ -97,6 +97,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/FilterMenu.cpp
   app/selftest/Filters.cpp
   app/selftest/FiltersExt.cpp
+  app/selftest/BlurFilters.cpp
   app/selftest/FloodFill.cpp
   app/selftest/FloodFillOptions.cpp
   app/selftest/Fonts.cpp
@@ -498,11 +499,13 @@ add_executable(naturalPaint
   ops/PatchMatch.cpp
   ops/SeamHeal.cpp
   ops/Lens.cpp
+  ops/LensBlur.cpp
   ops/MonoOps.cpp
   ops/Pattern.cpp
   ops/PointOpTiles.cpp
   ops/PointOps.cpp
   ops/Poisson.cpp
+  ops/RadialBlur.cpp
   ops/Resample.cpp
   ops/Roi.cpp
   ops/ToneOps.cpp
@@ -541,6 +544,7 @@ add_executable(naturalPaint
   ui/ShadowsHighlightsDialog.cpp
   ui/RepairDialogs.cpp
   app/Version.cpp
+  ui/BlurDialogsExtra.cpp
 )
 
 # NP_SELFTEST's two halves: the 236 section TUs, and the guard main.cpp's

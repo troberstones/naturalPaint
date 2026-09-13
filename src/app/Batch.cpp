@@ -160,6 +160,12 @@ constexpr PixelUnitParam kPixelUnitParams[] = {
     {"content_aware_fill", "patch_radius"},
     {"seam_heal", "band_width"},
     {"seam_heal", "patch_radius"},
+    // Radial blur's centre is an absolute document position, like
+    // `fill_with_pattern`'s origin; lens `radius` is a length. Angles,
+    // thresholds, gains, sweeps and tap counts mean the same at any size.
+    {"filter_radial_blur", "center_x"},
+    {"filter_radial_blur", "center_y"},
+    {"filter_lens_blur", "radius"},
 };
 
 // "filter_gaussian_blur's sigma" for every pixel-unit parameter `action`

@@ -1007,6 +1007,11 @@ bool runFiltersTest();
 // on both axes at once. Also headless and GPU-free.
 bool runFiltersExtTest();
 
+// docs/operations.md §2.2: Radial/Spin+Zoom blur (ops/RadialBlur.hpp)
+// and Lens blur (ops/LensBlur.hpp), and their app/FilterOps.hpp/Command
+// wiring. Also headless and GPU-free.
+bool runBlurFiltersTest();
+
 // ops/Inpaint and Filter > Inpaint (PLAN.md "Phase 8 -- Repair it"; PRD D7's
 // first half, the diffusion one). Headless and GPU-free.
 //
