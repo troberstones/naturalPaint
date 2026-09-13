@@ -6642,4 +6642,8 @@ bool runPigmentBuildupTest();
 // byte for byte, reaches SDL unchanged, and the window accepted it.
 bool runAppIconTest();
 
+// Photoshop's Build-up: a held pen keeps laying dabs at the nib, on a clock, and
+// only for a brush with `BrushModel::airbrush` on.
+bool runAirbrushBuildUpTest();
+
 }  // namespace np

@@ -215,17 +215,15 @@ struct BrushModel {
   PsTransfer transfer;
   PsToolOptions options;
 
-  // The checkbox tail of Photoshop's panel. All four are parsed and none is
-  // applied; each is refused for its own stated reason in io/AbrBrushes.cpp.
+  // The checkbox tail of Photoshop's panel. All four are parsed; Build-up is
+  // applied and the rest are refused for their own stated reasons in
+  // io/AbrBrushes.cpp.
   bool noise = false;     // `Nose`, on for 14 of 101
   bool wetEdges = false;  // `Wtdg`, on for 0 of 101
-  // `Rpt `, on for 50 of 101. **Believed to be Build-up (airbrush) by
-  // elimination** against Photoshop's checkbox tail -- `Nose` is Noise, `Wtdg`
-  // is Wet Edges, `protectTexture` is Protect Texture and `smoothing` lives in
-  // `toolOptions`, which leaves Build-up as the one unaccounted for. That is
-  // inference, not a reading, and it is exactly the shape of guess that
-  // produced the `AbrControl` 6/7 defect. Do not ship a behaviour change on
-  // it: open a named brush in Photoshop and read the panel first.
+  // `Rpt `, on for 50 of 101: Build-up (airbrush). Named by elimination against
+  // Photoshop's checkbox tail, then read off a named brush: Kyle's Soft Pastel
+  // shows Build-up on in Photoshop's panel and carries `Rpt ` true. Applied by
+  // `StrokeSession::airbrushTick()`.
   bool airbrush = false;
   bool brushPose = false;  // `useBrushPose`, on for 0 of 101
 

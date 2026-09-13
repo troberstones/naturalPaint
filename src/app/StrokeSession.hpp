@@ -1631,6 +1631,13 @@ BrushPreset presetFromBrush(std::string name, const BrushState& brush);
 // a brush picked from nothing cannot have drifted from it.
 bool brushIsEdited(const BrushState& brush);
 
+// Build-up's rate. INFERRED: Photoshop exposes no rate for it, so this is chosen
+// to build a faint tip to solid over about a second of holding still.
+inline constexpr float kAirbrushDabsPerSecond = 30.0f;
+// The most dabs one `airbrushTick()` lays: a stalled frame adds a few dabs,
+// not the whole stall's worth piled on one spot.
+inline constexpr uint64_t kAirbrushMaxDabsPerTick = 8;
+
 // One stroke, from pen-down to pen-up.
 //
 // Deliberately shaped like the block in `ui/MacPaintUI.cpp` that already feeds
@@ -1977,6 +1984,14 @@ class StrokeSession {
   // tile set, distance-spaced dabs as usual.
   const std::vector<TileCoord>& tick(uint64_t nowNs);
 
+  // Photoshop's Build-up (`BrushModel::airbrush`). Once per frame while the pen
+  // is down, whether or not it moved -- a tablet held still keeps reporting
+  // samples, so this cannot wait for a frame that fed none. Lays one dab at the
+  // nib for every `1 / kAirbrushDabsPerSecond` elapsed on `nowNs`'s clock, so a
+  // held pen piles paint up. The first call only starts the clock; a no-op for a
+  // brush without Build-up or before the stroke has a position.
+  const std::vector<TileCoord>& airbrushTick(uint64_t nowNs);
+
   // Pen-up. Walks the final segment `addPoint()` always holds back (see
   // `StrokePath::flush()`), deposits it, records **exactly one** history entry
   // when the stroke deposited anything, and ends the session. Returns the
@@ -2014,6 +2029,8 @@ class StrokeSession {
   // internals a caller has no other way to see. 0.0f before any dab has
   // ever been deposited by this session.
   float lastDabRadius() const noexcept { return lastDabRadius_; }
+  // The most recently deposited dab's resolved angle, for the same reason.
+  float lastDabAngle() const noexcept { return lastDabAngle_; }
 
   // The "show string" overlay's own read of the resolved setting and the
   // live nib -- `ui/StabiliserPanel.cpp` draws from this, not from
@@ -2063,6 +2080,7 @@ class StrokeSession {
   // end of `depositPending()`'s per-dab loop, after the floor has been
   // applied.
   float lastDabRadius_ = 0.0f;
+  float lastDabAngle_ = 0.0f;
   std::string label_;
   // Latched at `begin()`, compared against on every frame. See `begin()`.
   StrokeRoute route_ = StrokeRoute::None;
@@ -2324,6 +2342,18 @@ class StrokeSession {
   // member: it is a per-stroke ceiling, latched into the routes' own
   // accumulators at `begin()`.
   Variance transferFlowVariance_;
+
+  // Build-up, latched at `begin()`; the clock `airbrushTick()` runs on (0 until
+  // its first call); and the nib it lays at, the last sample the stabiliser
+  // handed the path.
+  bool airbrush_ = false;
+  uint64_t airbrushLastNs_ = 0;
+  StrokeSample nib_;
+  bool haveNib_ = false;
+  // The heading of the last dab that moved, kept by a dab laid where the last
+  // one was: `dynamicDirection(0, 0)` would snap a Direction-controlled angle
+  // to 0 every time a held pen laid one.
+  float lastDirection_ = 0.0f;
 
   // The hardware sample `begin()`/`setTip()` latched -- see either's own
   // comment. Read by the per-dab loop below to resolve a

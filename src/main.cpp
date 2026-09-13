@@ -4266,6 +4266,7 @@ int main(int argc, char** argv) {
     const bool pigmentBuildupOk =
         !wanted("runPigmentBuildupTest") || np::runPigmentBuildupTest();
     const bool appIconOk = !wanted("runAppIconTest") || np::runAppIconTest();
+    const bool airbrushBuildUpOk = !wanted("runAirbrushBuildUpTest") || np::runAirbrushBuildUpTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4336,7 +4337,7 @@ int main(int argc, char** argv) {
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
                     nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
-                    stabiliserOk && brushTaperOk && pigmentBuildupOk;
+                    stabiliserOk && brushTaperOk && pigmentBuildupOk && airbrushBuildUpOk;
     if (!selfTestOnly.empty()) {
       std::printf("[selftest] --selftest-only \"%s\": %d section(s) run\n", selfTestOnly.c_str(),
                   selfTestSelected);

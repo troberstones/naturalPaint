@@ -189,7 +189,7 @@ void printPanelCoverage(const AbrImportResult& r) {
       {"Blend mode (Md )", 0, 0, "read; the stroke still composites Normal"},
       {"Noise", 0, 0, "refused: no published formula"},
       {"Wet Edges", 0, 0, "refused: not implemented"},
-      {"Build-up (Rpt )", 0, 0, "refused: INFERRED meaning, and time-based"},
+      {"Build-up (Rpt )", 0, 0, "dabs keep landing while the pen is held; rate INFERRED"},
       {"Brush Pose", 0, 0, "refused: not implemented"},
   };
   enum { kTip, kShape, kScatter, kCount, kTexture, kDual, kColor, kTransfer,
@@ -219,7 +219,7 @@ void printPanelCoverage(const AbrImportResult& r) {
       ++rows[kBlend].requested;
     if (m.noise) ++rows[kNoise].requested;
     if (m.wetEdges) ++rows[kWet].requested;
-    if (m.airbrush) ++rows[kAir].requested;
+    if (m.airbrush) { ++rows[kAir].requested; ++rows[kAir].rendered; }
     if (m.brushPose) ++rows[kPose].requested;
   }
   // The Dual Brush is the one panel whose rendered count the import already

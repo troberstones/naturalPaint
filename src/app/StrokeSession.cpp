@@ -1831,6 +1831,9 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // null `model` here always has.
   haveModel_ = model != nullptr;
   dualCadence_ = model != nullptr && model->dual.enabled;
+  airbrush_ = model != nullptr && model->airbrush;
+  airbrushLastNs_ = 0;
+  haveNib_ = false;
   if (dualCadence_) dualScatter_ = model->dual.scatter;
   if (haveModel_) {
     baseDiameterPx_ = model->tip.diameterPx;
@@ -1856,6 +1859,7 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   havePrevDab_ = false;
   distanceTravelled_ = 0.0f;
   initialDirection_ = 0.0f;
+  lastDirection_ = 0.0f;
   initialDirectionLatched_ = false;
   // `smoothPressure()`'s own per-stroke state -- see its header comment on
   // why leaking the previous stroke's last smoothed pressure into this one
@@ -1965,6 +1969,7 @@ void StrokeSession::replayWithExitTaper() {
   havePrevDab_ = false;
   distanceTravelled_ = 0.0f;
   initialDirection_ = 0.0f;
+  lastDirection_ = 0.0f;
   initialDirectionLatched_ = false;
   smoothedPressure_ = 0.0f;
   pressureSmoothLatched_ = false;
@@ -2184,7 +2189,7 @@ void StrokeSession::depositPending(bool isEndFlush) {
     // null for the identical reason those are: nothing below reads
     // `initialDirection_` in that case, and a member write nobody reads
     // cannot change what gets deposited.
-    if (havePrevDab_ && !initialDirectionLatched_) {
+    if (havePrevDab_ && stepDist > 0.0f && !initialDirectionLatched_) {
       initialDirection_ = dynamicDirection(dx, dy);
       initialDirectionLatched_ = true;
     }
@@ -2259,7 +2264,8 @@ void StrokeSession::depositPending(bool isEndFlush) {
       local.fade = dynamicFade(distanceTravelled_);
       local.noise = dynamicNoiseAt(seed_, distanceTravelled_);
       local.random = dynamicRandomDraw(seed_, static_cast<uint32_t>(dabs_));
-      local.direction = dynamicDirection(dx, dy);
+      local.direction = stepDist > 0.0f || !havePrevDab_ ? dynamicDirection(dx, dy) : lastDirection_;
+      lastDirection_ = local.direction;
       local.initialDirection = initialDirection_;
 
       const auto dabIndex = static_cast<uint32_t>(dabs_);
@@ -2329,6 +2335,7 @@ void StrokeSession::depositPending(bool isEndFlush) {
     // is no second, pixel-space floor left to apply downstream of it --
     // `BrushTip::sizeFloorPx` (and this exact `std::max()` call) is gone.
     lastDabRadius_ = dabTip.radius;
+    lastDabAngle_ = dabTip.angle;
 
     // One deposit dispatch per SUB-DAB -- `resolvedCount` of them, all at
     // this ONE nominal position `p`. Each sub-dab draws its OWN scatter
@@ -2488,6 +2495,8 @@ const std::vector<TileCoord>& StrokeSession::addSample(const StrokeSample& sampl
   // `path_` whenever the resolved setting is Off.
   StrokeSample smoothed;
   stabiliser_.addSample(sample, smoothed);
+  nib_ = smoothed;
+  haveNib_ = true;
   path_.addPoint(smoothed, taperedSpacingPx(), pending_);
   depositPending();
 
@@ -2503,7 +2512,26 @@ const std::vector<TileCoord>& StrokeSession::tick(uint64_t nowNs) {
   if (doc_ == nullptr) return frameTiles_;
   StrokeSample smoothed;
   if (!stabiliser_.tick(nowNs, smoothed)) return frameTiles_;
+  nib_ = smoothed;
   path_.addPoint(smoothed, taperedSpacingPx(), pending_);
+  depositPending();
+  if (!frameTiles_.empty()) ++doc_->revision;
+  return frameTiles_;
+}
+
+const std::vector<TileCoord>& StrokeSession::airbrushTick(uint64_t nowNs) {
+  frameTiles_.clear();
+  if (doc_ == nullptr || !airbrush_ || !haveNib_) return frameTiles_;
+  if (airbrushLastNs_ == 0 || nowNs < airbrushLastNs_) {
+    airbrushLastNs_ = nowNs;
+    return frameTiles_;
+  }
+  const auto intervalNs = static_cast<uint64_t>(1'000'000'000.0 / kAirbrushDabsPerSecond);
+  uint64_t due = (nowNs - airbrushLastNs_) / intervalNs;
+  if (due == 0) return frameTiles_;
+  airbrushLastNs_ = due > kAirbrushMaxDabsPerTick ? nowNs : airbrushLastNs_ + due * intervalNs;
+  due = std::min<uint64_t>(due, kAirbrushMaxDabsPerTick);
+  for (uint64_t i = 0; i < due; ++i) pending_.push_back(nib_);
   depositPending();
   if (!frameTiles_.empty()) ++doc_->revision;
   return frameTiles_;

@@ -20508,6 +20508,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // two different clocks -- which `brush/Stabiliser.cpp`'s own comment
         // on `prevRealTsNs_` is the other half of this fix for.
         if (fedThisFrame == 0) g_stroke.tick(SDL_GetTicksNS());
+        // Build-up, every frame the pen is down (`StrokeSession::airbrushTick()`).
+        g_stroke.airbrushTick(SDL_GetTicksNS());
 
         // "Show string": the nib-to-pointer line, and the pulled-string
         // circle, drawn while painting only.

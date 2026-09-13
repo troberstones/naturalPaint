@@ -259,6 +259,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/PigmentBuildup.cpp
   ui/BuildupPanel.cpp
   app/selftest/AppIcon.cpp
+  app/selftest/AirbrushBuildUp.cpp
 )
 
 add_executable(naturalPaint
