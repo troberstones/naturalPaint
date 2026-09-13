@@ -274,7 +274,8 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
           // input bit-identical when grain is off, so adding it changes
           // nothing for a brush that has not turned it on.
           // Flow included (brush/Grain.hpp's `grainWeightAt()`).
-          const float cov = grainWeightAt(tip.grain, rawCov, tip.flow, x, y);
+          const float cov = wash_ ? grainWashWeightAt(tip.grain, rawCov, tip.flow, x, y)
+                                  : grainWeightAt(tip.grain, rawCov, tip.flow, x, y);
           if (!(cov > 0.0f)) continue;  // a grain peak too tall for this pressure
           const float sel = selection != nullptr ? selectionTileCoverage(cover, local) : 1.0f;
           if (!(sel > 0.0f)) continue;

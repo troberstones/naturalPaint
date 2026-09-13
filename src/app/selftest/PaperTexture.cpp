@@ -322,6 +322,68 @@ bool runPaperTextureTest() {
           "paper/weight: every other blend is exactly flow times its grain coverage");
   }
 
+  {
+    // Wash keeps the strongest dab, so a flow-scaled Height weight left
+    // low-flow grain as a faint glaze. Low flow must open more paper while the
+    // specks keep the tip's strength -- on both routes.
+    GrainParams paper;
+    paper.enabled = true;
+    paper.blend = CoverageBlend::Height;
+    paper.depth = 0.3f;
+    paper.field = makeChecker(8, 8);
+    const auto washDisc = [&](bool rgbRoute, float flow) {
+      BrushTip t;
+      t.radius = 20.0f;
+      t.hardness = 1.0f;
+      t.flow = flow;
+      t.grain = paper;
+      TileStore rgbStore;
+      RgbStroke rgb;
+      rgb.begin({1.0f, 1.0f, 1.0f}, 1.0f, false, BlendMode::Normal, /*wash=*/true);
+      PigmentTileStore pigStore;
+      PigmentTileStore nothingBefore;
+      WashStroke wash;
+      wash.before = &nothingBefore;
+      for (int k = 0; k < 4; ++k) {
+        if (rgbRoute)
+          rgb.depositDab(rgbStore, t, Vec2{64.0f, 64.0f}, 128, 128, nullptr, nullptr);
+        else
+          depositDab(pigStore, t, Vec2{64.0f, 64.0f}, 128, 128, nullptr, nullptr,
+                     PigmentBuildup{PigmentBuildupMode::Wash, 1.0f}, &wash);
+      }
+      int empty = 0;
+      float strongest = 0.0f;
+      for (int32_t y = 52; y < 76; ++y)
+        for (int32_t x = 52; x < 76; ++x) {
+          const PixelCoord pc{x, y};
+          float v = 0.0f;
+          if (rgbRoute) {
+            if (const Tile* tl = rgbStore.find(tileCoordAt(pc))) v = tl->readPixel(tileLocalOffset(pc))[3];
+          } else if (const PigmentTile* tl = pigStore.find(tileCoordAt(pc))) {
+            v = tl->readTexel(tileLocalOffset(pc)).mass;
+          }
+          empty += v == 0.0f;
+          strongest = std::max(strongest, v);
+        }
+      return std::make_pair(empty, strongest);
+    };
+    for (const bool rgbRoute : {false, true}) {
+      const auto [emptyFull, strongFull] = washDisc(rgbRoute, 1.0f);
+      const auto [emptyLow, strongLow] = washDisc(rgbRoute, 0.25f);
+      std::printf("    [measured] %s wash, Height depth 0.3: empty %d -> %d of 576, strongest %.3f -> "
+                  "%.3f (flow 1 -> 0.25)\n",
+                  rgbRoute ? "RGB" : "Pigment", emptyFull, emptyLow, strongFull, strongLow);
+      check(emptyLow > emptyFull && strongLow >= 0.9f * strongFull && strongFull > 0.0f,
+            rgbRoute ? "paper/wash: RGB, low flow opens the paper and the specks keep their strength"
+                     : "paper/wash: Pigment, low flow opens the paper and the specks keep their strength");
+    }
+    GrainParams other = paper;
+    other.blend = CoverageBlend::Subtract;
+    check(grainWashWeightAt(other, 0.6f, 0.3f, 3, 5) == grainWeightAt(other, 0.6f, 0.3f, 3, 5) &&
+              grainWashWeightAt(paper, 0.6f, 0.0f, 3, 5) == grainWeightAt(paper, 0.6f, 0.0f, 3, 5),
+          "paper/wash: every other blend, and zero flow, keep the Build-up weight");
+  }
+
   // ======================================================================
   std::printf("  -- D. the RGB deposit route, which had NO grain call at all --\n");
   // ======================================================================

@@ -343,6 +343,15 @@ float grainCoverageAt(const GrainParams& params, float coverage, int32_t x, int3
 float grainWeightAt(const GrainParams& params, float coverage, float flow, int32_t x,
                     int32_t y) noexcept;
 
+// The weight a Wash stroke keeps (brush/Deposit.hpp §1a). For Height, flow only
+// decides how far into the paper the tip reaches and the kept strength is the
+// tip's own: `grainWeightAt() / flow`. Wash keeps the strongest dab rather than
+// summing, so a flow-scaled weight left low-flow grain as a faint glaze that
+// never builds to the specks a Photoshop stroke shows. Every other blend, and
+// Build-up, keeps `grainWeightAt()`.
+float grainWashWeightAt(const GrainParams& params, float coverage, float flow, int32_t x,
+                        int32_t y) noexcept;
+
 // Whether two `GrainParams` describe the same paper. Bit equality throughout,
 // not a tolerance -- `brush/Library.hpp`'s `presetMatches()` convention
 // (every field here arrives from a slider or from a preset load, so two that

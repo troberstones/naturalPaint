@@ -1141,7 +1141,10 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // Scatter Count (`PsScatter::count`/`countJitter`) is wired too, in
   // `app/StrokeSession.cpp`'s `depositPending()` -- a per-DAB resolution, so
   // it belongs beside Size/Angle/Roundness/Scatter there rather than here.
-  tip.flow = brush.native.load;
+  // Photoshop's own Flow (`toolOptions/flow`) scales the load: imported and
+  // never applied until now, so an Art Markers preset at Flow 15% painted at
+  // full flow. 1 for every brush that is not imported.
+  tip.flow = brush.native.load * model.options.flow;
   // Straight through, unscaled: there is no per-dab Grain dynamic in either
   // the matrix or the model.
   tip.opacity = brush.opacity;

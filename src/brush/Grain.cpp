@@ -132,6 +132,13 @@ float grainWeightAt(const GrainParams& params, float coverage, float flow, int32
   return flow * grainCoverageAt(params, coverage, x, y);
 }
 
+float grainWashWeightAt(const GrainParams& params, float coverage, float flow, int32_t x,
+                        int32_t y) noexcept {
+  const float w = grainWeightAt(params, coverage, flow, x, y);
+  if (params.enabled && params.blend == CoverageBlend::Height && flow > 0.0f) return w / flow;
+  return w;
+}
+
 bool grainParamsEqual(const GrainParams& a, const GrainParams& b) noexcept {
   // `field` is compared by POINTER, not by content. Two presets holding the
   // same decoded paper hold the same `shared_ptr`, because the importer

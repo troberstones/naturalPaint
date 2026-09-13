@@ -602,7 +602,8 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
           // line a no-op for every brush that has not turned grain on.
           // Flow included: `grainWeightAt()` (Height subtracts the paper from
           // flow times coverage, not from coverage alone).
-          const float cov = grainWeightAt(tip.grain, rawCov, tip.flow, x, y);
+          const float cov = washing ? grainWashWeightAt(tip.grain, rawCov, tip.flow, x, y)
+                                    : grainWeightAt(tip.grain, rawCov, tip.flow, x, y);
           if (!(cov > 0.0f)) continue;  // a grain peak too tall for this pressure
 
           const float sel = selection != nullptr ? selectionTileCoverage(cover, local) : 1.0f;

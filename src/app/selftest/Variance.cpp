@@ -104,10 +104,18 @@ bool runVarianceTest() {
           "variance: a tilt control on a device with no tilt resolves to 1.0, not 0.0");
 
     // A pen that DOES report tilt must still be driven by it -- the fix must
-    // not be "ignore tilt".
+    // not be "ignore tilt". Photoshop's axis is how upright the pen is, so a
+    // lean of 0.25 is 0.75 of the size.
     const float pen = varianceScale(tiltSize, penInputs(1.0f, 0.25f, 0.0f), kSeed, 0,
                                     VarianceSite::Size);
-    check(nearf(pen, 0.25f, 1e-6f), "variance: a device that DOES report tilt is still driven by it");
+    check(nearf(pen, 0.75f, 1e-6f), "variance: a device that DOES report tilt is still driven by it");
+    // "Rough Rowdy" with the pen held upright painted 1 px dots.
+    check(nearf(varianceScale(tiltSize, penInputs(1.0f, 0.0f, 0.0f), kSeed, 0, VarianceSite::Size),
+                1.0f, 1e-6f) &&
+              nearf(varianceScale(tiltSize, penInputs(1.0f, 1.0f, 0.0f), kSeed, 0,
+                                  VarianceSite::Size),
+                    0.0f, 1e-6f),
+          "variance: Pen Tilt is full size with the pen upright and the minimum laid flat");
 
     Variance barrel = tiltSize;
     barrel.control = VarianceControl::Rotation;

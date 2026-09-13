@@ -6,6 +6,14 @@
 namespace np {
 namespace {
 
+// **Photoshop's Pen Tilt is read as how UPRIGHT the pen is**, 1 held straight up
+// and 0 laid flat -- the opposite of `DynamicInputs::tilt`, which is the lean.
+// INFERRED, not published: Adobe's Tilt Scale "is applied to the height of the
+// brush" as the pen tilts, so upright is the untilted brush; and read as lean,
+// "Rough Rowdy" (Size on Pen Tilt, minimum 0) painted a row of 1 px dots with a
+// pen near upright.
+float penTiltAltitude(float lean) noexcept { return 1.0f - std::clamp(lean, 0.0f, 1.0f); }
+
 // The per-dab, per-site draw. `dynamicRandomDraw()` is already the stroke's
 // deterministic random stream (brush/Dynamics.hpp) -- pure in (seed, index)
 // and replayable, which is the property a re-rendered stroke needs. Mixing the
@@ -42,7 +50,7 @@ float controlAxis(const Variance& v, const DynamicInputs& in, uint32_t dabIndex)
     case VarianceControl::PenPressure:
       return in.hasPressure ? std::clamp(in.pressure, 0.0f, 1.0f) : 1.0f;
     case VarianceControl::PenTilt:
-      return in.hasTilt ? std::clamp(in.tilt, 0.0f, 1.0f) : 1.0f;
+      return in.hasTilt ? penTiltAltitude(in.tilt) : 1.0f;
     case VarianceControl::StylusWheel:
       return 1.0f;  // no SDL axis reports an airbrush wheel; see the header
     case VarianceControl::Rotation:
@@ -119,7 +127,7 @@ float varianceOffset(const Variance& v, const DynamicInputs& in, float span, uin
       if (in.hasPressure) base = span * std::clamp(in.pressure, 0.0f, 1.0f);
       break;
     case VarianceControl::PenTilt:
-      if (in.hasTilt) base = span * std::clamp(in.tilt, 0.0f, 1.0f);
+      if (in.hasTilt) base = span * penTiltAltitude(in.tilt);
       break;
     case VarianceControl::Rotation:
       if (in.hasBarrel) base = span * std::clamp(in.barrel, 0.0f, 1.0f);
