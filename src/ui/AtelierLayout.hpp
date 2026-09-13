@@ -457,7 +457,7 @@ constexpr float kMinPaneH = kNavigatorMaxH + 2.0f * kNavigatorInset;
 AtelierPanes atelierSplitPanes(const AtelierRect& canvas, AtelierSplit split);
 
 // Which pane a screen point falls in: 0 or 1, or -1 for the divider or
-// outside both rects entirely. Track `split`'s own primitive for routing a
+// outside both rects entirely. The split view's own primitive for routing a
 // click before it reaches a tool -- built on `AtelierRect::contains()`
 // rather than a second hand-rolled bounds check, so it agrees with
 // `atelierSplitPanes()`'s own tiling by construction.

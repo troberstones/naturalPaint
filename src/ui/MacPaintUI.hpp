@@ -182,7 +182,7 @@ void setDocumentStatusLine(std::string status);
 // `setLayersPanelSelection()`'s comment exists to prevent.
 void setSplitArrangement(AtelierSplit mode);
 
-// Track `split`: View > Split View and View > Match Zoom, reachable from a
+// View > Split View and View > Match Zoom, reachable from a
 // bound key exactly as the menu items reach them
 // (`ui::toggleSplitView()`/`g_split.matchZoom`, both ui/MacPaintUI.cpp) --
 // `keymaps/default.json` binds no chord to either action string today, so

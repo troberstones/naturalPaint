@@ -8,7 +8,7 @@
 #include "ui/AtelierChrome.hpp"
 #include "ui/AtelierLayout.hpp"
 
-// Track `split`: View > Split View / Match Zoom.
+// View > Split View / Match Zoom.
 //
 // Pane geometry itself (`atelierSplitPanes()` tiles the canvas with no
 // overlap) and the pane/companion repair rules (a closed companion is

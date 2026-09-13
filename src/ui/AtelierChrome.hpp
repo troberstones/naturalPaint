@@ -387,7 +387,7 @@ void drawAtelierRules(const AtelierBands& bands);
 // So the state is small: the arrangement, the companion's id, and which of the
 // two panes currently holds the active document.
 //
-// Track `split` adds the two fields below. `AppState::view` stays the
+// Split view adds the two fields below. `AppState::view` stays the
 // FOCUSED pane's view (unchanged meaning, unchanged type: the ~116 readers
 // across `ui/MacPaintUI.cpp` that read `st.view` for "the" canvas need no
 // change, since the focused pane is by construction the active document).

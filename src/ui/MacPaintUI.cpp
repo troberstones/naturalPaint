@@ -17355,7 +17355,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // own comment warns about).
   if (st.documents.empty()) g_documentTextures.release();
 
-  // Track `split`: the focused document's own pixel size and its pane's own
+  // the focused document's own pixel size and its pane's own
   // on-screen size, captured here because `texW`/`texH`/`avail` below are
   // scoped to this window's Begin()/End() block and View > Match Zoom's
   // mapping (app/SplitView.hpp's `matchZoomView()`) needs them again after
@@ -17455,7 +17455,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // asks for. Mirror and rotation are layered on top of this quad's own
     // *centre* (`pivotScreen` below), not baked into `origin` itself.
     //
-    // Track `split`: `origin` is now `splitPaneOrigin()`'s own placement
+    // `origin` is now `splitPaneOrigin()`'s own placement
     // (app/SplitView.hpp) rather than a second copy of it -- the companion
     // pane's block calls the same function, and View > Match Zoom's mapping
     // depends on both agreeing exactly. Bit-for-bit the same expression as
@@ -23970,7 +23970,7 @@ void setDocumentStatusLine(std::string status) { g_docStatus = std::move(status)
 // written here.
 void setSplitArrangement(AtelierSplit mode) { g_split.mode = mode; }
 
-// Track `split`. `toggleSplitView()` (ui/AtelierChrome.cpp) is the same
+// `toggleSplitView()` (ui/AtelierChrome.cpp) is the same
 // refuse-or-flip function `--selftest` drives directly against a bare
 // `AtelierSplitState`; the status line is the empty string on success, so
 // this only ever writes something worth reading.

@@ -202,10 +202,24 @@ bool runShadowsHighlightsTest() {
 
   std::printf("  -- F. the encoder replays bit-identical to the applier --\n");
   {
+    // Distinct amounts, so an encoder that swapped or dropped one cannot replay identically.
+    ShadowsHighlightsParams q = p;
+    q.shadows = 0.6f;
+    q.highlights = 1.4f;
+    ShadowsHighlightsParams swapped = q;
+    swapped.shadows = q.highlights;
+    swapped.highlights = q.shadows;
+    OpenDocument swapA = makeShadowsHighlightsDocument("sh swap a");
+    OpenDocument swapB = makeShadowsHighlightsDocument("sh swap b");
+    applyShadowsHighlights(swapA, q);
+    applyShadowsHighlights(swapB, swapped);
+    check(!tilesExactlyEqual(*swapA.document.layers[0].rgbTiles, *swapB.document.layers[0].rgbTiles),
+          "fixture: swapping the shadows and highlights amounts changes the result");
+
     OpenDocument applier = makeShadowsHighlightsDocument("sh encoder a");
     OpenDocument viaCommand = makeShadowsHighlightsDocument("sh encoder b");
-    applyShadowsHighlights(applier, p);
-    const CommandResult r = applyCommand(viaCommand, shadowsHighlightsCommand(p));
+    applyShadowsHighlights(applier, q);
+    const CommandResult r = applyCommand(viaCommand, shadowsHighlightsCommand(q));
     check(r.ok && tilesExactlyEqual(*viaCommand.document.layers[0].rgbTiles,
                                     *applier.document.layers[0].rgbTiles),
           "shadowsHighlightsCommand() replays bit-identical to applyShadowsHighlights()");

@@ -559,7 +559,7 @@ AtelierPaneDocuments atelierPaneDocuments(DocumentSession& session,
   AtelierPaneDocuments out;
   if (state.focusedPane != 0 && state.focusedPane != 1) state.focusedPane = 0;
 
-  // Track `split`: whenever this function hands `state.companion` a document
+  // whenever this function hands `state.companion` a document
   // it was not already showing, the companion's OWN zoom/pan is stale -- it
   // belonged to whatever used to be there, or to nothing. `companionView`'s
   // own comment names the sentinel this resets it to; a focus swap

@@ -241,7 +241,7 @@ const MenuItemSpec* specTable() {
     set(MenuAction::Snap, "Snap", "Cmd+Shift+;",
         MenuKeyEquivalent{';', kMenuModCmd | kMenuModShift, "toggle_snapping"});
 
-    // Track `split`. No key equivalent: `keymaps/default.json` binds no
+    // No key equivalent: `keymaps/default.json` binds no
     // chord to either `split_view` action string, on the same "not
     // speculatively" reasoning `BrushSettings` below already states, so
     // claiming one from a native menu here would consume a chord nothing
@@ -629,7 +629,7 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::Grid:
     case MenuAction::ShowRegions:
     case MenuAction::Snap:
-    // Track `split`: `g_split` and its `CanvasView`s, not `OpenDocument`.
+    // `g_split` and its `CanvasView`s, not `OpenDocument`.
     case MenuAction::SplitView:
     case MenuAction::MatchZoom:
     // Merged in from main 2026-09-10 and classified here because `-Wswitch`

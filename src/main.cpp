@@ -1789,7 +1789,7 @@ int main(int argc, char** argv) {
   bool uiLayerDemoClip = true;
   bool splitDemo = false;
   np::AtelierSplit splitDemoMode = np::AtelierSplit::Columns;
-  // Track `split`: also exercise View > Match Zoom in the same screenshot.
+  // also exercise View > Match Zoom in the same screenshot.
   bool splitDemoMatchZoom = false;
   const char* uiMergeDemo = nullptr;
   const char* uiMultiSelectDemo = nullptr;
@@ -2459,7 +2459,7 @@ int main(int argc, char** argv) {
       splitDemo = true;
       // Two independent optional tokens, either order: `rows` picks the
       // arrangement (see above), `match-zoom` also turns on View > Match
-      // Zoom (track `split`) before the first frame -- `setSplitMatchZoom()`
+      // Zoom before the first frame -- `setSplitMatchZoom()`
       // is `setSplitArrangement()`'s own reason, restated: no click exists
       // yet for `--screenshot` to have replayed.
       for (int taken = 0; taken < 2 && i + 1 < argc; ++taken) {
@@ -5676,7 +5676,7 @@ int main(int argc, char** argv) {
         else if (action == "toggle_guides") st.showGuides = !st.showGuides;
         else if (action == "toggle_snapping") st.snappingEnabled = !st.snappingEnabled;
         else if (action == "toggle_grid") st.showGrid = !st.showGrid;
-        // Track `split`: View > Split View / Match Zoom's action strings, for
+        // View > Split View / Match Zoom's action strings, for
         // a keymap that binds them -- `keymaps/default.json` ships neither
         // bound (ui/MenuModel.cpp's own note on why), so this is reachable
         // only from the View menu today.

@@ -294,7 +294,7 @@ enum class MenuAction : uint16_t {
   // after switching away", not the only way to see them.
   ShowRegions,
   Snap,
-  // Track `split`. `SplitView` refuses (a status line, no state change) with
+  // `SplitView` refuses (a status line, no state change) with
   // fewer than two open documents; `MatchZoom` is enabled only while a split
   // is active. app/CommandCoverage.cpp: both NotRecordable, session state.
   SplitView,
