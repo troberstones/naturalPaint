@@ -6776,8 +6776,10 @@ bool runZoomToSelectionTest();
 // touches ui/. See app/selftest/WarpMesh.cpp.
 bool runWarpMeshTest();
 
-// View > Split View and Match Zoom: the match-zoom mapping, the pane hit-test,
-// the toggle's refusal, the companion view's reset and focus swap. Headless.
+// View > Split View and Match Zoom: pane placement and the match-zoom solve
+// (checked by inverting the placement, with documents that fit, overflow, or
+// one of each), the pane hit-test, the toggle's refusal, the companion view's
+// reset and focus swap. Headless.
 bool runSplitViewTest();
 
 // Filter > Dust & Scratches (PRD D11): median gated by a threshold. Headless.
