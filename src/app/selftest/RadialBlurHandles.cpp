@@ -110,9 +110,17 @@ bool runRadialBlurHandlesTest() {
     check(p.centerX == 123.0f && p.centerY == 456.0f,
           "centre: follows the pointer to the texel under it");
 
-    const Vec2 off{5.0f, -4.0f};
-    const Vec2 s = radialBlurHandleShape(p, busy).center;
-    drag = beginRadialBlurHandleDrag(RadialBlurHandle::Center, p, busy, Vec2{s.x + off.x, s.y + off.y});
+    // Grabbed 2 texels right and 2 up of the centre: inside the pick radius, and
+    // past whole-texel rounding on both axes, so dropping either offset shows.
+    const RadialBlurHandleShape shape = radialBlurHandleShape(p, busy);
+    const Vec2 s = shape.center;
+    const Vec2 grab = busy.toScreen(Vec2{p.centerX + 2.0f, p.centerY - 2.0f});
+    const Vec2 off{grab.x - s.x, grab.y - s.y};
+    check(radialBlurHandleAt(shape, grab) == RadialBlurHandle::Center,
+          "centre fixture: the off-centre grab is still a press on the centre handle");
+    drag = beginRadialBlurHandleDrag(RadialBlurHandle::Center, p, busy, grab);
+    check(std::fabs(drag.grabOffset.x + 2.0f) < 1e-3f && std::fabs(drag.grabOffset.y - 2.0f) < 1e-3f,
+          "centre fixture: the grab offset is 2 texels on each axis");
     const Vec2 target = busy.toScreen(Vec2{500.0f, 77.0f});
     updateRadialBlurHandleDrag(drag, busy, Vec2{target.x + off.x, target.y + off.y}, docW, docH, &p);
     check(p.centerX == 500.0f && p.centerY == 77.0f,
