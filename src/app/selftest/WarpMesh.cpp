@@ -521,6 +521,34 @@ bool runWarpMeshTest() {
           "several controls in range: the hit test picks the nearest, not the last scanned");
   }
 
+  // --- 16. The committed selection is the warped shape, not the old box ------
+  {
+    // Case 11's interior drag keeps the warped shape inside the original box,
+    // so the old selection would pass it. Pulling a corner out does not.
+    OpenDocument od = makeBlankOpenDocument(64, 64, WorkingSpace{});
+    for (int32_t y = 16; y < 48; ++y)
+      for (int32_t x = 16; x < 48; ++x)
+        od.document.layers[0].rgbTiles->getOrCreate(tileCoordAt(PixelCoord{x, y}))
+            .writePixel(tileLocalOffset(PixelCoord{x, y}), {0.6f, 0.3f, 0.2f, 1.0f});
+    od.recordEdit("fixture", EditKind::Content);
+    od.selection = selectRectangle(16.0f, 16.0f, 32.0f, 32.0f);
+    check(selectionCoverageAt(&*od.selection, PixelCoord{11, 11}) < 0.05f,
+          "corner-pull fixture: (11, 11) starts outside the selection");
+
+    TransformSession session;
+    const TransformBeginResult began = session.beginSelectionPixels(od, *od.selection, 0);
+    check(began.ok, "corner-pull fixture: beginSelectionPixels() succeeds");
+    session.setWarpMode(true, 3);
+    session.warpBeginDrag(WarpControlRef{true, 0, 0}, Point2{0.0f, 0.0f});
+    session.warpUpdateDrag(Point2{-8.0f, -8.0f});
+    session.warpEndDrag();
+    const TransformCommitResult done = session.commit(od);
+    check(done.ok, "corner-pull: commit succeeds");
+    check(done.ok && od.selection.has_value() &&
+              selectionCoverageAt(&*od.selection, PixelCoord{11, 11}) > 0.5f,
+          "corner-pull: the committed selection follows the corner out to (11, 11)");
+  }
+
   std::printf("[selftest] warp mesh %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }
