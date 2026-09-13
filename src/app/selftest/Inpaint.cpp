@@ -530,11 +530,19 @@ bool runInpaintTest() {
       ctx.hasDocument = true;
       ctx.filterLayerUsable = true;
       ctx.hasEngagedSelection = true;
-      const MenuNode* withSelection =
-          inpaintFindMenuAction(buildMenuModel(ctx), MenuAction::Inpaint);
+      // Named, not inline: `buildMenuModel()` returns its tree BY VALUE, and
+      // a pointer `inpaintFindMenuAction()` hands back into a temporary would
+      // dangle the moment this statement ended -- a pre-existing bug this
+      // track found only because something upstream of it in the same
+      // process happened to reuse the freed block differently. Binding the
+      // tree to a name keeps it alive for both checks below, the same way
+      // `withoutSelection`'s own tree needs to.
+      const std::vector<MenuNode> menuWithSelection = buildMenuModel(ctx);
+      const MenuNode* withSelection = inpaintFindMenuAction(menuWithSelection, MenuAction::Inpaint);
       ctx.hasEngagedSelection = false;
+      const std::vector<MenuNode> menuWithoutSelection = buildMenuModel(ctx);
       const MenuNode* withoutSelection =
-          inpaintFindMenuAction(buildMenuModel(ctx), MenuAction::Inpaint);
+          inpaintFindMenuAction(menuWithoutSelection, MenuAction::Inpaint);
       check(withSelection != nullptr && withSelection->enabled,
             "menu: Filter > Inpaint is in the built tree and enabled on a usable layer with a "
             "selection");

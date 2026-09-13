@@ -3961,6 +3961,17 @@ bool runActionsPanelTest();
 //
 // Headless, GPU-free, filesystem-free.
 bool runCommandsOpStackTest();
+// app/ChannelsPanel (PRD E13): the CHANNELS dock tab's row mapping --
+// model-order rows keyed by `Document::channels`' own index, and the
+// name-or-placeholder text a row reads. Headless, GPU-free.
+bool runChannelsPanelTest();
+// PRD E12, the app-level half of quick mask: `toggleQuickMask()`
+// (ui/MacPaintUI.hpp) and brush/QuickMaskPaint's dab arithmetic. The engine
+// underneath (core::QuickMask, quickMaskFromSelection/selectionFromQuickMask/
+// paintQuickMask) is already proven by runChannelsTest(); this is the wiring
+// on top of it and the brush/eraser arithmetic a real stroke feeds it.
+// Headless, GPU-free.
+bool runQuickMaskPaintTest();
 // app/CommandsImage -- the command rows for everything that changes pixels or
 // the document's own geometry (docs/automation-plan.md step 1): the Filter
 // menu's seven, Image > Adjustments' nineteen including its four auto solvers,

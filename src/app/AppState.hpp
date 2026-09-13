@@ -1346,6 +1346,10 @@ struct AppState {
   bool requestDeselect = false;
   bool requestReselect = false;
   bool requestInvertSelection = false;
+  // PRD E12: the `Q` keymap action and `MenuAction::ToggleQuickMask` share
+  // this one flag, exactly as the rows above already share theirs between a
+  // key and a menu item.
+  bool requestToggleQuickMask = false;
   bool requestCopy = false;
   bool requestCopyMerged = false;
   bool requestCut = false;
@@ -1497,6 +1501,14 @@ struct AppState {
   // pen-up -- see MacPaintUI.cpp.
   StrokePath strokePath;
   std::vector<Vec2> pendingDabs;
+
+  // PRD E12's own arc-length emitter, kept separate from `strokePath` above
+  // rather than shared: pen-up there flushes into `applyDabsToOilSegment()`
+  // (ui/MacPaintUI.cpp), which a quick-mask stroke must never reach, and a
+  // shared `bool strokeActive` would make that call fire for one anyway.
+  StrokePath quickMaskStrokePath;
+  bool quickMaskStrokeActive = false;
+
   // The most recent dab position, carried across render frames. Oil's
   // contact/velocity/transfer pipeline still runs inside PaintSim::frame()
   // (see PaintSim.hpp's depositDab() comment) and needs a genuine segment --

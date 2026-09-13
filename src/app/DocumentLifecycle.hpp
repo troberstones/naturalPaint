@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 
+#include "core/Channels.hpp"
 #include "core/Document.hpp"
 #include "core/History.hpp"
 #include "core/LayerOps.hpp"
@@ -296,6 +297,38 @@ struct OpenDocument {
   // empty-but-engaged selection, which core/SelectionMask.hpp is explicit is
   // a different state.
   std::vector<std::optional<Selection>> refineUndoStack;
+
+  // PRD E12. `std::nullopt` outside quick mask; engaged while the mode is
+  // live. Session state for `selection`'s own reason -- a paintable overlay
+  // with no `core::History` entry and no file representation -- and per
+  // `OpenDocument` rather than a single global by construction, which is
+  // what keeps switching or closing documents from leaking one document's
+  // live mask into another's.
+  std::optional<QuickMask> quickMask;
+
+  // Bumped whenever `quickMask`'s content changes (entering, painting, or
+  // erasing) -- the same "has it changed?" question `selectionRevision`
+  // answers for `selection`, needed here too because painting into the
+  // overlay does not touch `selection` at all while quick mask is engaged.
+  // ui/MacPaintUI's overlay texture is keyed on this so it re-uploads only
+  // when a stroke actually deposited something, not every frame.
+  uint64_t quickMaskRevision = 0;
+
+  // PRD E13's single-channel view: the CHANNELS panel's row toggle, by name
+  // rather than index so a rename doesn't need to chase it and a delete can't
+  // leave it pointing at the wrong channel. `std::nullopt` shows the canvas
+  // normally. By NAME rather than a stored index for the same reason
+  // `loadChannelAsSelection()` takes one: `findChannel()` is the one lookup
+  // every reader already goes through, so a channel that gets renamed while
+  // being viewed simply stops matching (falls back to the normal canvas)
+  // instead of this field having to be kept in step with every command that
+  // touches `Document::channels`.
+  //
+  // Session state, not document data, for the same reason `quickMask` is:
+  // which channel a user happens to be inspecting is not part of the
+  // document and must not follow it into `core::History` or the file, and it
+  // must not leak from one open document into another's.
+  std::optional<std::string> viewedChannelName;
 
   // Bumped whenever `selection` changes. ui/MacPaintUI caches the selection's
   // drawn bounds against this, and PaintSim's GPU coverage upload is keyed on

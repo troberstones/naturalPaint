@@ -34,6 +34,7 @@ constexpr KeyRow kKeyTable[] = {
     {ControlsSection::Layers, "layers"},
     {ControlsSection::History, "history"},
     {ControlsSection::Comps, "comps"},
+    {ControlsSection::Channels, "channels"},
     {ControlsSection::Actions, "actions"},
     {ControlsSection::FlatsSegmentation, "flats_segmentation"},
     {ControlsSection::Grade, "grade"},

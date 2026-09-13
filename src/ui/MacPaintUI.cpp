@@ -41,6 +41,8 @@
 #include "app/Command.hpp"
 #include "app/CommandsImage.hpp"
 #include "app/CommandsLayers.hpp"
+#include "app/CommandsOpStack.hpp"
+#include "app/ChannelsPanel.hpp"
 #include "app/CompPanel.hpp"
 #include "app/CropTool.hpp"  // Tool::Crop, both modes
 #include "app/RegionTool.hpp"  // Tool::Frame, Tool::Slice
@@ -83,6 +85,7 @@
 #include "app/WheelInput.hpp"
 #include "app/ZoomAndSize.hpp"
 #include "color/LutBake.hpp"  // kMaxCurvePointsPerChannel
+#include "core/Half.hpp"
 #include "core/Histogram.hpp"
 #include "core/LayerCompOps.hpp"
 #include "core/LayerOps.hpp"
@@ -99,6 +102,7 @@
 #include "io/ExportStates.hpp"
 #include "io/GradientPresetFile.hpp"
 #include "brush/BrushModelFields.hpp"
+#include "brush/QuickMaskPaint.hpp"
 #include "ui/BrushFieldPresentation.hpp"
 #include "ui/BrushSettingsWindow.hpp"
 #include "ui/CanvasQuad.hpp"
@@ -6455,6 +6459,107 @@ void installSelection(OpenDocument& od, std::optional<Selection> selection) {
 
 }  // namespace
 
+// PRD E12: enter/leave quick mask. External linkage and declared in
+// ui/MacPaintUI.hpp for `installSelection()`'s own reason -- `app/selftest`
+// calls this directly, since it cannot open a window to press Q in.
+//
+// Session-only both ways: entering and leaving call `installSelection()`
+// itself or write `OpenDocument::quickMask` alone, neither of which is
+// `recordEdit()`, so this never appends a history entry -- PRD E12's own
+// requirement that leaving must not look like a layer edit.
+void toggleQuickMask(OpenDocument& od) {
+  if (od.quickMask.has_value()) {
+    installSelection(od, selectionFromQuickMask(*od.quickMask));
+    od.quickMask.reset();
+  } else {
+    od.quickMask = quickMaskFromSelection(od.selection.has_value() ? &*od.selection : nullptr);
+    // Suspended, not deselected: a stale `od.selection` left standing while
+    // the mask is what the user is actually editing would let another
+    // command read it mid-session and double-restrict against a marquee
+    // nothing on screen shows any more. Bumps `selectionRevision` directly
+    // rather than through `installSelection()`, which would also set
+    // `lastDeselected` -- entering quick mask is not a Deselect, and Reselect
+    // (Cmd+Shift+D) should not arm on it.
+    od.selection.reset();
+    ++od.selectionRevision;
+    ++od.quickMaskRevision;
+  }
+}
+
+// PRD E12's overlay tint: 50% red where the quick mask does NOT cover, fading
+// to transparent where it does -- straight-alpha RGBA16Float, the same format
+// `compositeDocumentStraightHalf()` produces, so it draws through the
+// identical `addCanvasQuad()` pipeline with no new shader or blend state
+// (ui/MacPaintUI.cpp's `QuickMaskOverlayTexture` uploads exactly this). RGB is
+// a constant (1,0,0); only alpha, `(1 - coverage) * 0.5`, varies per texel.
+// core/Channels.hpp's own `QuickMask` comment leaves "the overlay's colour
+// and opacity" to this layer on purpose, so the packing lives here.
+//
+// Fills the whole buffer with the constant "nothing painted here" pixel
+// first, then overwrites only the texels an allocated `SelectionTile`
+// actually covers -- `core::Selection`'s own rule that an absent tile reads
+// as 0.0 coverage, so this is `quickMaskCoverageAt()` inlined at tile
+// granularity rather than a texel-by-texel call into it, which would repeat
+// the same tile lookup for every one of a tile's 16384 texels.
+//
+// External linkage (declared in ui/MacPaintUI.hpp) purely so `app/selftest`
+// can prove this packing directly -- it takes no GPU or ImGui type, unlike
+// the texture built on top of it, which `--selftest` never exercises because
+// it never opens a window.
+std::vector<uint16_t> packQuickMaskOverlayHalf(const QuickMask& mask, int32_t width,
+                                               int32_t height) {
+  const uint16_t red = floatToHalf(1.0f);
+  const uint16_t zero = floatToHalf(0.0f);
+  const uint16_t defaultAlpha = floatToHalf(0.5f);  // coverage 0.0 -> alpha 0.5
+  std::vector<uint16_t> halves(static_cast<size_t>(width) * height * 4);
+  for (size_t t = 0; t < halves.size(); t += 4) {
+    halves[t + 0] = red;
+    halves[t + 1] = zero;
+    halves[t + 2] = zero;
+    halves[t + 3] = defaultAlpha;
+  }
+  for (const auto& [coord, tile] : mask.coverage.tiles) {
+    const PixelCoord origin = tileOrigin(coord);
+    for (int32_t ly = 0; ly < kTileSize; ++ly) {
+      const int32_t y = origin.y + ly;
+      if (y < 0 || y >= height) continue;
+      for (int32_t lx = 0; lx < kTileSize; ++lx) {
+        const int32_t x = origin.x + lx;
+        if (x < 0 || x >= width) continue;
+        const float coverage = tile.coverageAt(PixelCoord{lx, ly});
+        const float alpha = (1.0f - coverage) * 0.5f;
+        halves[(static_cast<size_t>(y) * width + x) * 4 + 3] = floatToHalf(alpha);
+      }
+    }
+  }
+  return halves;
+}
+
+// PRD E13's single-channel view: `channel`'s coverage as a full-canvas
+// grayscale image, R=G=B=coverage and alpha opaque -- this REPLACES the
+// canvas (ui/MacPaintUI.cpp substitutes it for the real document texture),
+// unlike the overlay above it which tints on top of the real picture. A
+// straightforward per-texel loop through `channelCoverageAt()` rather than
+// the tile-shortcut the overlay uses: this runs once per toggle or per
+// document edit, not once per dab of a live stroke, so there is no budget
+// this needs to earn back.
+std::vector<uint16_t> packChannelViewHalf(const AlphaChannel& channel, int32_t width,
+                                          int32_t height) {
+  std::vector<uint16_t> halves(static_cast<size_t>(width) * height * 4);
+  const uint16_t opaque = floatToHalf(1.0f);
+  for (int32_t y = 0; y < height; ++y) {
+    for (int32_t x = 0; x < width; ++x) {
+      const uint16_t gray = floatToHalf(channelCoverageAt(channel, PixelCoord{x, y}));
+      const size_t i = (static_cast<size_t>(y) * width + x) * 4;
+      halves[i + 0] = gray;
+      halves[i + 1] = gray;
+      halves[i + 2] = gray;
+      halves[i + 3] = opaque;
+    }
+  }
+  return halves;
+}
+
 // ---------------------------------------------------------------------------
 // The Select menu's dialog -> engine boundary (docs/reachability-audit.md C5;
 // PRD E4/E8/E9). Declared in ui/MacPaintUI.hpp and defined here, external
@@ -7197,6 +7302,116 @@ void drawCompsSection(AppState& st) {
   }
 }
 
+// ------------------------------------------------------ The CHANNELS panel
+//
+// PRD E11, E13. The chrome only -- row order and row text are
+// app/ChannelsPanel's, for app/CompPanel.hpp's own reason. Every verb goes
+// through `applyCommand()` directly (the four commands in
+// app/CommandsOpStack.cpp), matching this file's other document-editing
+// panels rather than `runLayerGesture()`/`runActiveLayerSetter()`: none of
+// the four is a `LayerCommand` or an active-layer setter.
+std::string g_channelsError;
+
+// Set below, at the Select menu's own dialogs (docs/reachability-audit.md
+// C5's route) -- forward-declared so the panel's "+ Save Selection" button
+// can open the identical popup rather than growing a second name-entry UI.
+extern bool g_saveSelectionAsChannelRequested;
+
+void drawChannelsSection(AppState& st) {
+  OpenDocument* od = st.documents.active();
+  if (od == nullptr) {
+    ImGui::TextDisabled("No document open.");
+    return;
+  }
+
+  std::string& lastError = g_channelsError;
+  static size_t selected = 0;
+  static char renameBuf[128] = "";
+
+  auto run = [&](const Command& cmd) {
+    const CommandResult r = applyCommand(*od, cmd);
+    lastError = r.ok ? std::string() : r.status;
+    return r.ok;
+  };
+
+  const std::vector<ChannelsPanelRow> rows = channelsPanelRows(od->document);
+  if (selected >= rows.size()) selected = rows.empty() ? 0 : rows.size() - 1;
+
+  textDisabledWrapped("%zu channel(s) -- named alpha coverage saved in this document", rows.size());
+
+  {
+    const bool usable = od->selection.has_value();
+    ImGui::BeginDisabled(!usable);
+    if (ImGui::SmallButton("+ Save Selection")) g_saveSelectionAsChannelRequested = true;
+    ImGui::EndDisabled();
+    if (!usable)
+      ImGui::SetItemTooltip("Nothing is selected, so there is no coverage to save.");
+  }
+
+  // Deferred, like drawCompsSection()'s own restore/remove/moveUp/moveDown:
+  // an action taken from inside the row loop is applied after it, never
+  // during, so a delete cannot invalidate the row the loop is still on.
+  size_t loadIdx = rows.size(), deleteIdx = rows.size();
+
+  constexpr int kChannelsVisibleRows = 4;
+  const float rowH = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetFrameHeightWithSpacing();
+  const float childH =
+      std::max(rowH, static_cast<float>(std::min(rows.size(),
+                                                 static_cast<size_t>(kChannelsVisibleRows))) *
+                         rowH) +
+      2.0f * ImGui::GetStyle().WindowPadding.y;
+
+  if (ImGui::BeginChild("##channelsrows", ImVec2(0.0f, childH), true)) {
+    for (const ChannelsPanelRow& row : rows) {
+      ImGui::PushID(static_cast<int>(row.index));
+      if (ImGui::Selectable(channelRowText(row).c_str(), selected == row.index))
+        selected = row.index;
+      if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+        loadIdx = row.index;
+      ImGui::Indent();
+      if (ImGui::SmallButton("Load")) loadIdx = row.index;
+      ImGui::SetItemTooltip("Load Channel as Selection: replaces the active selection with "
+                          "this channel's coverage. Same as double-clicking the row.");
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Delete")) deleteIdx = row.index;
+
+      // PRD E13's single-channel view: a solo toggle, not a stack of
+      // checkboxes -- the canvas has one picture on it, so viewing channel B
+      // replaces channel A rather than adding to it. Toggling the currently
+      // viewed row off shows the canvas normally again.
+      ImGui::SameLine();
+      const bool viewingThisRow = od->viewedChannelName.has_value() &&
+                                  *od->viewedChannelName == row.name;
+      if (ImGui::SmallButton(viewingThisRow ? "Viewing" : "View"))
+        od->viewedChannelName = toggleChannelView(od->viewedChannelName, row.name);
+      ImGui::SetItemTooltip("Show this channel as a grayscale view of the canvas -- a way to "
+                          "inspect it, not an edit. Click again to go back to the normal view.");
+
+      if (selected == row.index) {
+        std::snprintf(renameBuf, sizeof(renameBuf), "%s", row.name.c_str());
+        if (ctlInputText("Channel name", renameBuf, sizeof(renameBuf),
+                         ImGuiInputTextFlags_EnterReturnsTrue))
+          run(renameChannelCommand(row.name, renameBuf));
+      }
+      ImGui::Unindent();
+      ImGui::PopID();
+    }
+  }
+  ImGui::EndChild();
+
+  if (loadIdx < rows.size()) {
+    run(loadChannelAsSelectionCommand(rows[loadIdx].name));
+  } else if (deleteIdx < rows.size()) {
+    run(deleteChannelCommand(rows[deleteIdx].name));
+  }
+
+  if (!lastError.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 120, 110, 255));
+    ImGui::TextWrapped("%s", lastError.c_str());
+    ImGui::PopStyleColor();
+    if (ImGui::SmallButton("Dismiss##channelserror")) lastError.clear();
+  }
+}
 
 // ------------------------------------------------------- The ACTIONS panel
 //
@@ -9778,6 +9993,159 @@ class FilterPreviewTexture {
 };
 FilterPreviewTexture g_filterPreviewTexture;
 
+// Same shape as `FilterPreviewTexture` above -- fresh-on-resize, retire not
+// release, re-upload keyed on a caller generation rather than a revision this
+// overlay has no document-wide counter for. A single global rather than one
+// per `OpenDocument`: at most one document is ever the active canvas a frame
+// draws, so there is never more than one of these on screen at once, and
+// `quickMaskOverlayViewFor()` folds the document's own id into the generation
+// it passes in, so switching to a different document with its own live quick
+// mask forces a re-upload instead of showing the previous document's texels
+// for one frame.
+class QuickMaskOverlayTexture {
+ public:
+  WGPUTextureView viewFor(GpuContext& gpu, const QuickMask& mask, int32_t width, int32_t height,
+                          uint64_t generation) {
+    if (width <= 0 || height <= 0) return nullptr;
+    const bool freshTexture = texture_ == nullptr || width != width_ || height != height_;
+    if (freshTexture) {
+      if (texture_ != nullptr) retired_.push_back(Retired{texture_, view_});
+      WGPUTextureDescriptor td = {};
+      td.label = sv("quick mask overlay");
+      td.dimension = WGPUTextureDimension_2D;
+      td.size = {static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1};
+      td.format = WGPUTextureFormat_RGBA16Float;
+      td.mipLevelCount = 1;
+      td.sampleCount = 1;
+      td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+      texture_ = wgpuDeviceCreateTexture(gpu.device, &td);
+      view_ = wgpuTextureCreateView(texture_, nullptr);
+      width_ = width;
+      height_ = height;
+      uploaded_ = 0;
+    }
+    if (freshTexture || generation != uploaded_) {
+      const std::vector<uint16_t> halves = packQuickMaskOverlayHalf(mask, width_, height_);
+      WGPUTexelCopyTextureInfo dst = {};
+      dst.texture = texture_;
+      dst.mipLevel = 0;
+      dst.aspect = WGPUTextureAspect_All;
+      WGPUTexelCopyBufferLayout layout = {};
+      layout.bytesPerRow = static_cast<uint32_t>(width_) * 4u * sizeof(uint16_t);
+      layout.rowsPerImage = static_cast<uint32_t>(height_);
+      const WGPUExtent3D extent = {static_cast<uint32_t>(width_), static_cast<uint32_t>(height_),
+                                   1};
+      wgpuQueueWriteTexture(gpu.queue, &dst, halves.data(), halves.size() * sizeof(uint16_t),
+                            &layout, &extent);
+      uploaded_ = generation;
+    }
+    return view_;
+  }
+
+ private:
+  struct Retired {
+    WGPUTexture texture = nullptr;
+    WGPUTextureView view = nullptr;
+  };
+  WGPUTexture texture_ = nullptr;
+  WGPUTextureView view_ = nullptr;
+  int32_t width_ = 0;
+  int32_t height_ = 0;
+  uint64_t uploaded_ = 0;
+  std::vector<Retired> retired_;
+};
+QuickMaskOverlayTexture g_quickMaskOverlayTexture;
+
+// `nullptr` when `activeDoc` has no live quick mask, otherwise the overlay
+// view to draw on top of the real canvas quad. The generation folds in
+// `activeDoc.id` (`ui/DocumentTexture.hpp`'s own style of combining two
+// numbers into a cache key) so a document switch always re-uploads rather
+// than risking a stale document's texels for a frame.
+WGPUTextureView quickMaskOverlayViewFor(GpuContext& gpu, const OpenDocument& activeDoc) {
+  if (!activeDoc.quickMask.has_value()) return nullptr;
+  const uint64_t generation =
+      static_cast<uint64_t>(activeDoc.id) * 1000003ull + activeDoc.quickMaskRevision;
+  return g_quickMaskOverlayTexture.viewFor(gpu, *activeDoc.quickMask, activeDoc.document.width,
+                                           activeDoc.document.height, generation);
+}
+
+// PRD E13's single-channel view. Same shape again -- fresh-on-resize, retire
+// not release, re-upload keyed on a caller generation -- but this one needs
+// no dedicated revision counter the way the quick-mask overlay does:
+// `Document::channels` IS document data (this file's own E11 section above),
+// so any edit that could change it already bumps `OpenDocument::revision`,
+// the same counter `ui/DocumentTexture.hpp`'s own cache is keyed on. Keying
+// on it here too means an edit that touches nothing about the viewed channel
+// still forces a re-upload -- over-invalidating, never under -- which is the
+// same trade `ui/DocumentTexture.hpp`'s viewport margin makes on purpose.
+class ChannelViewTexture {
+ public:
+  WGPUTextureView viewFor(GpuContext& gpu, const AlphaChannel& channel, int32_t width,
+                          int32_t height, uint64_t generation) {
+    if (width <= 0 || height <= 0) return nullptr;
+    const bool freshTexture = texture_ == nullptr || width != width_ || height != height_;
+    if (freshTexture) {
+      if (texture_ != nullptr) retired_.push_back(Retired{texture_, view_});
+      WGPUTextureDescriptor td = {};
+      td.label = sv("channel view");
+      td.dimension = WGPUTextureDimension_2D;
+      td.size = {static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1};
+      td.format = WGPUTextureFormat_RGBA16Float;
+      td.mipLevelCount = 1;
+      td.sampleCount = 1;
+      td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+      texture_ = wgpuDeviceCreateTexture(gpu.device, &td);
+      view_ = wgpuTextureCreateView(texture_, nullptr);
+      width_ = width;
+      height_ = height;
+      uploaded_ = 0;
+    }
+    if (freshTexture || generation != uploaded_) {
+      const std::vector<uint16_t> halves = packChannelViewHalf(channel, width_, height_);
+      WGPUTexelCopyTextureInfo dst = {};
+      dst.texture = texture_;
+      dst.mipLevel = 0;
+      dst.aspect = WGPUTextureAspect_All;
+      WGPUTexelCopyBufferLayout layout = {};
+      layout.bytesPerRow = static_cast<uint32_t>(width_) * 4u * sizeof(uint16_t);
+      layout.rowsPerImage = static_cast<uint32_t>(height_);
+      const WGPUExtent3D extent = {static_cast<uint32_t>(width_), static_cast<uint32_t>(height_),
+                                   1};
+      wgpuQueueWriteTexture(gpu.queue, &dst, halves.data(), halves.size() * sizeof(uint16_t),
+                            &layout, &extent);
+      uploaded_ = generation;
+    }
+    return view_;
+  }
+
+ private:
+  struct Retired {
+    WGPUTexture texture = nullptr;
+    WGPUTextureView view = nullptr;
+  };
+  WGPUTexture texture_ = nullptr;
+  WGPUTextureView view_ = nullptr;
+  int32_t width_ = 0;
+  int32_t height_ = 0;
+  uint64_t uploaded_ = 0;
+  std::vector<Retired> retired_;
+};
+ChannelViewTexture g_channelViewTexture;
+
+// `nullptr` when `activeDoc` has no viewed channel, or when `viewedChannelName`
+// no longer names one -- a rename or a delete while a view is engaged is not
+// an error here, it is `OpenDocument::viewedChannelName`'s own documented
+// fallback, and this is the one place that fallback actually takes effect.
+WGPUTextureView channelViewFor(GpuContext& gpu, const OpenDocument& activeDoc) {
+  if (!activeDoc.viewedChannelName.has_value()) return nullptr;
+  const AlphaChannel* channel = findChannel(activeDoc.document, *activeDoc.viewedChannelName);
+  if (channel == nullptr) return nullptr;
+  const uint64_t generation =
+      static_cast<uint64_t>(activeDoc.id) * 1000003ull + activeDoc.revision;
+  return g_channelViewTexture.viewFor(gpu, *channel, activeDoc.document.width,
+                                      activeDoc.document.height, generation);
+}
+
 // The canvas draw code's one hook into all of this: `nullptr` when nothing
 // has an active preview for `activeDoc`, otherwise the view to draw INSTEAD
 // of `g_documentTextures`' real one.
@@ -12197,6 +12565,9 @@ bool g_selectShrinkRequested = false;
 bool g_selectFeatherRequested = false;
 bool g_selectColourRangeRequested = false;
 bool g_selectLuminanceRangeRequested = false;
+// PRD E11, same route.
+bool g_saveSelectionAsChannelRequested = false;
+bool g_loadChannelAsSelectionRequested = false;
 
 // The shape Grow, Shrink and Feather share: a title, a one-line explanation
 // of what THIS op's radius means (grow/shrink move an edge; feather softens
@@ -12375,6 +12746,116 @@ void drawSelectLuminanceRangeDialog(AppState& st) {
   endDialog();
 }
 
+// Save Selection as Channel (PRD E11). Through `applyCommand()` directly --
+// docs/automation.md §2.3's boundary is `applyCommand()` itself, and this
+// dialog's outcome (a channel may come back uniquified, §5's own warning) is
+// not the pixel-op three-way `runPixelCommand()` translates, so a bespoke
+// footer reads the `CommandResult` rather than routing through it.
+void drawSaveSelectionAsChannelDialog(AppState& st) {
+  static char nameBuf[128] = "Alpha";
+  static std::string error;
+
+  if (g_saveSelectionAsChannelRequested) {
+    g_saveSelectionAsChannelRequested = false;
+    error.clear();
+    ImGui::OpenPopup("Save Selection as Channel");
+  }
+  if (!beginDialog("Save Selection as Channel")) return;
+
+  dialogText("Saves the active selection into this document as a named alpha channel -- "
+             "document data, unlike the marquee itself, so it survives a save and reload "
+             "(core/Channels.hpp).");
+  ImGui::Spacing();
+  dialogInputText("Name", nameBuf, sizeof(nameBuf), ImGuiInputTextFlags_EnterReturnsTrue);
+
+  OpenDocument* od = st.documents.active();
+  const bool usable = od != nullptr && od->selection.has_value();
+  if (od == nullptr) dialogHint("No document is open.");
+  else if (!usable) dialogHint("Nothing is selected, so there is no coverage to save.");
+  if (!error.empty()) dialogStatusLine(DialogStatus::Error, error);
+
+  DialogFooter footer;
+  footer.commit = "Save";
+  footer.commitEnabled = usable && nameBuf[0] != '\0';
+  switch (dialogFooter(footer)) {
+    case DialogAction::Commit: {
+      const CommandResult r = applyCommand(*od, saveSelectionAsChannelCommand(nameBuf));
+      if (!r.ok) {
+        error = r.status;
+      } else {
+        // May differ from what was typed (§5's uniquify-on-collision warning)
+        // -- said here, on `g_docStatus`'s own "OK: ... / ! warning"
+        // convention, since this dialog is closing and a warning line drawn
+        // inside it will not still be on screen for the user to read.
+        g_docStatus = r.status;
+        for (const std::string& w : r.warnings) g_docStatus += "\n! " + w;
+        ImGui::CloseCurrentPopup();
+      }
+      break;
+    }
+    case DialogAction::Cancel:
+      ImGui::CloseCurrentPopup();
+      break;
+    default:
+      break;
+  }
+  endDialog();
+}
+
+// Load Channel as Selection (PRD E11): a plain list, since a document's
+// channels are usually few and a name is what identifies one to a user (never
+// an index, docs/automation.md §3.2).
+void drawLoadChannelAsSelectionDialog(AppState& st) {
+  static int selected = 0;
+  static std::string error;
+
+  if (g_loadChannelAsSelectionRequested) {
+    g_loadChannelAsSelectionRequested = false;
+    error.clear();
+    selected = 0;
+    ImGui::OpenPopup("Load Channel as Selection");
+  }
+  if (!beginDialog("Load Channel as Selection")) return;
+
+  OpenDocument* od = st.documents.active();
+  const std::vector<AlphaChannel>* channels = od != nullptr ? &od->document.channels : nullptr;
+  const bool usable = channels != nullptr && !channels->empty();
+
+  dialogText("Replaces the active selection with a channel saved earlier by Save Selection as "
+             "Channel.");
+  ImGui::Spacing();
+  if (!usable) {
+    dialogHint(od == nullptr ? "No document is open."
+                             : "This document has no saved channels yet.");
+  } else {
+    if (selected >= static_cast<int>(channels->size())) selected = 0;
+    std::vector<const char*> names;
+    names.reserve(channels->size());
+    for (const AlphaChannel& c : *channels) names.push_back(c.name.c_str());
+    dialogCombo("Channel", &selected, names.data(), static_cast<int>(names.size()));
+  }
+  if (!error.empty()) dialogStatusLine(DialogStatus::Error, error);
+
+  DialogFooter footer;
+  footer.commit = "Load";
+  footer.commitEnabled = usable;
+  switch (dialogFooter(footer)) {
+    case DialogAction::Commit: {
+      const CommandResult r =
+          applyCommand(*od, loadChannelAsSelectionCommand((*channels)[static_cast<size_t>(selected)].name));
+      if (!r.ok) error = r.status;
+      else ImGui::CloseCurrentPopup();
+      break;
+    }
+    case DialogAction::Cancel:
+      ImGui::CloseCurrentPopup();
+      break;
+    default:
+      break;
+  }
+  endDialog();
+}
+
 // The five dialogs together, called once a frame from the same place
 // drawExportAsDialog() &c. are: outside BeginMainMenuBar()/EndMainMenuBar(),
 // because a popup opened from a menu item has to begin outside the menu
@@ -12400,6 +12881,8 @@ void drawSelectMenuDialogs(AppState& st) {
   drawRefineRadiusDialog(st, featherDlg, &g_selectFeatherRequested);
   drawSelectColourRangeDialog(st);
   drawSelectLuminanceRangeDialog(st);
+  drawSaveSelectionAsChannelDialog(st);
+  drawLoadChannelAsSelectionDialog(st);
 }
 
 MenuFamilyEntry familyEntry(std::string label, bool enabled, bool checked,
@@ -12617,6 +13100,8 @@ MenuContext menuContextFromState(AppState& st) {
     ctx.hasEngagedSelection = selectRefineEnabled(*doc);
     ctx.hasRgbSource = selectRangeEnabled(*doc);
     ctx.hasRefineUndo = selectUndoRefineEnabled(*doc);
+    ctx.hasChannels = !doc->document.channels.empty();
+    ctx.quickMaskActive = doc->quickMask.has_value();
   }
 
   // --- Medium / Goodies ---------------------------------------------------
@@ -13165,6 +13650,24 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     // queued native-menu action (see undoLastRefine()'s own comment).
     case MenuAction::SelectUndoRefine:
       if (doc != nullptr) undoLastRefine(*doc);
+      break;
+
+    // PRD E11. Deferred for the identical reason the five refines above are:
+    // each opens a small modal, and `ImGui::OpenPopup()` cannot be called
+    // from a native menu's AppKit callback.
+    case MenuAction::SaveSelectionAsChannel:
+      g_saveSelectionAsChannelRequested = true;
+      break;
+    case MenuAction::LoadChannelAsSelection:
+      g_loadChannelAsSelectionRequested = true;
+      break;
+
+    // PRD E12. The same request flag the `Q` keymap action sets
+    // (AppState::requestToggleQuickMask) -- one place applies it, drawUI()'s
+    // per-frame block below, so a menu click and a keypress cannot disagree
+    // about what toggling means.
+    case MenuAction::ToggleQuickMask:
+      st.requestToggleQuickMask = true;
       break;
 
     // --- Medium / Goodies -------------------------------------------------
@@ -14800,6 +15303,7 @@ void drawPanelBody(AppState& st, ControlsSection section, std::unique_ptr<PaintS
     case ControlsSection::History:      drawHistorySection(st, sim, gpu); break;
     // PLAN.md Phase 5 step 12 ("Layer comps ...", PRD C14).
     case ControlsSection::Comps:        drawCompsSection(st); break;
+    case ControlsSection::Channels:     drawChannelsSection(st); break;
     // docs/automation-plan.md step 7 / PRD P1, P5.
     case ControlsSection::Actions:      drawActionsSection(st); break;
     case ControlsSection::FlatsSegmentation: drawFlatsSegmentationSection(st); break;
@@ -17374,6 +17878,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // `g_filterPreview` the very frame their popup stops being open, before
       // this code runs again.
       documentView = filterPreviewViewFor(gpu, *activeDocument);
+      // PRD E13's single-channel view, next in line: an inspection toggle
+      // from the CHANNELS panel, not tied to any modal dialog, so it only
+      // yields to a filter preview (rarer, and already committed to winning
+      // above) and otherwise replaces the real canvas until toggled off.
+      if (documentView == nullptr) documentView = channelViewFor(gpu, *activeDocument);
       if (documentView == nullptr && transformOnThisDoc && views.valid) {
         // The transformed layer is hidden in this composite. Its pixels are
         // drawn by the gizmo block's quad instead, at the position the drag
@@ -17383,6 +17892,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
       if (documentView == nullptr)
         documentView = g_documentTextures.viewFor(gpu, *activeDocument, nullptr, &docViewport);
+      // PRD E12's tint: a second quad over the same corners, drawn only when
+      // this document has a live quick mask. Straight-alpha "over" is already
+      // `addCanvasQuad()`'s blend state, so the translucent red layer
+      // composites correctly with no new pipeline or bind group.
+      const WGPUTextureView quickMaskView = quickMaskOverlayViewFor(gpu, *activeDocument);
       // Once per copy (PRD D8). The nine share one texture and one revision
       // cache, so the repeats cost nine quads and no second composite -- this
       // is a view of the pixels, not nine of them.
@@ -17390,6 +17904,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         ImVec2 c[4];
         tileQuad(tiles[t], c);
         addCanvasQuad(dl, documentView, c[0], c[1], c[2], c[3]);
+        if (quickMaskView != nullptr) addCanvasQuad(dl, quickMaskView, c[0], c[1], c[2], c[3]);
       }
     }
     // T5, reversed: no border around a canvas that was never drawn.
@@ -18033,6 +18548,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (st.requestInvertSelection && od != nullptr && od->selection.has_value())
         installSelection(*od, invertSelection(*od->selection, od->document.width,
                                               od->document.height));
+      // PRD E12: `Q` and the Select menu's check item both land here.
+      if (st.requestToggleQuickMask && od != nullptr) toggleQuickMask(*od);
 
       const Selection* sel =
           (od != nullptr && od->selection.has_value()) ? &*od->selection : nullptr;
@@ -18176,6 +18693,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       st.requestDeselect = false;
       st.requestReselect = false;
       st.requestInvertSelection = false;
+      st.requestToggleQuickMask = false;
       st.requestCopy = false;
       st.requestCopyMerged = false;
       st.requestCut = false;
@@ -20307,11 +20825,23 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // solver, exactly `app/ToolSurface`'s `toolActsWithoutDocument()` (which
     // this predicate must keep agreeing with) says for Brush/Water/Dry
     // Brush now that PaintSim no longer stands with nothing open.
+    // PRD E12. Computed here, ahead of `paintTool`, so it can gate that leaf
+    // predicate too and not only `strokeTool` below -- this file's own
+    // documented failure mode a few lines up is exactly "gating only the
+    // derived predicate reroutes a stroke", and Brush is in BOTH `paintTool`
+    // (the solver) and `strokeTool` (the layer), so leaving either one
+    // untouched would let a Brush stroke leak into it the moment quick mask
+    // is engaged. Eraser is never in `paintTool`, so this term is a no-op
+    // there and only matters for Brush.
+    const bool quickMaskTool = (st.brush.tool == Tool::Brush || st.brush.tool == Tool::Eraser) &&
+                               !transformActive && st.documents.active() != nullptr &&
+                               st.documents.active()->quickMask.has_value();
     // `!flatsToolOwnsCanvas` on all three: these are the flags that deposit,
     // and a flatting tool being active has to mean they do not. Without this
     // the palette says DELETE and a drag lays down paint, which is the
     // "two tools active at once" this whole revision is about.
-    const bool paintTool = !flatsToolOwnsCanvas && (st.brush.tool == Tool::Brush ||
+    const bool paintTool = !flatsToolOwnsCanvas && !quickMaskTool &&
+                           (st.brush.tool == Tool::Brush ||
                             st.brush.tool == Tool::Water ||
                             st.brush.tool == Tool::DryBrush) &&
                            !transformActive && st.documents.active() != nullptr;
@@ -20409,8 +20939,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // `!cloneAnchoring` term is the one thing the derived predicate cannot know:
     // an Option-click that sets the clone source must not also start a stroke,
     // which is a property of the GESTURE rather than of the tool.
+    // `!quickMaskTool`: PRD E12's redirect owns Brush/Eraser while a quick
+    // mask is engaged, and gating this derived predicate is safe here only
+    // because `paintTool` above carries the identical term -- neither of the
+    // two branches this feeds can leak the stroke into the other.
     const bool strokeTool =
-        toolBeginsStroke(st.brush.tool) && !transformActive && !cloneAnchoring;
+        toolBeginsStroke(st.brush.tool) && !transformActive && !cloneAnchoring && !quickMaskTool;
     const bool inside = tx >= 0 && ty >= 0 && tx < texW && ty < texH;
     const bool down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
     if (cloneTool && hovered && inside && !panning && !rotating && !sizingHeld &&
@@ -20518,7 +21052,31 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const Layer* strokeTarget = strokeDoc != nullptr ? activeLayerOf(*strokeDoc) : nullptr;
     const StrokeRoute route = strokeRouteFor(st.brush.tool, strokeTarget);
 
-    if (strokeTool && down && hovered && inside && !panning && !rotating && !sizingHeld &&
+    if (quickMaskTool && down && hovered && inside && !panning && !rotating && !sizingHeld &&
+        !st.pendingGuide.has_value()) {
+      // PRD E12. Not `app::StrokeSession` -- brush/QuickMaskPaint.hpp's own
+      // header argues why: a quick mask has no Layer, no history entry and
+      // no revision, so `StrokeSession::begin()`'s `strokeRouteWritesLayer()`
+      // gate would refuse it outright rather than answer a question it does
+      // not have. This reuses the arc-length emitter the solver route below
+      // does (`AppState::quickMaskStrokePath`, a dab stream with neutral
+      // axes), not `g_stroke`'s own.
+      st.paintingThisFrame = true;
+      if (!st.quickMaskStrokeActive) {
+        st.quickMaskStrokePath.reset();
+        st.quickMaskStrokeActive = true;
+      }
+      const BrushTip tip = brushTipFor(st.brush, lut, DynamicInputs{});
+      std::vector<Vec2> dabs;
+      st.quickMaskStrokePath.addPoint(tx, ty, std::max(tip.spacingPx(), 0.1f), dabs);
+      const bool erase = st.brush.tool == Tool::Eraser;
+      for (const Vec2& dab : dabs)
+        paintQuickMaskDab(*strokeDoc->quickMask, tip, dab, strokeDoc->document.width,
+                          strokeDoc->document.height, erase);
+      if (!dabs.empty()) ++strokeDoc->quickMaskRevision;
+      st.lastX = tx;
+      st.lastY = ty;
+    } else if (strokeTool && down && hovered && inside && !panning && !rotating && !sizingHeld &&
         !st.pendingGuide.has_value() && strokeRouteWritesLayer(route)) {
       // **The pen reaches a Layer.** app/StrokeSession section 4 said this was
       // "a missing decision rather than missing plumbing", and the decision it
@@ -20885,6 +21443,23 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         applyDabsToOilSegment();
       }
       st.strokeActive = false;
+      // PRD E12's pen-up: the quick-mask stroke's own tail segment, its own
+      // flag -- see AppState::quickMaskStrokeActive on why this is not the
+      // oil route's `strokeActive` above.
+      if (st.quickMaskStrokeActive) {
+        OpenDocument* qmDoc = st.documents.active();
+        if (qmDoc != nullptr && qmDoc->quickMask.has_value()) {
+          const BrushTip tip = brushTipFor(st.brush, lut, DynamicInputs{});
+          std::vector<Vec2> tailDabs;
+          st.quickMaskStrokePath.flush(std::max(tip.spacingPx(), 0.1f), tailDabs);
+          const bool erase = st.brush.tool == Tool::Eraser;
+          for (const Vec2& dab : tailDabs)
+            paintQuickMaskDab(*qmDoc->quickMask, tip, dab, qmDoc->document.width,
+                              qmDoc->document.height, erase);
+          if (!tailDabs.empty()) ++qmDoc->quickMaskRevision;
+        }
+        st.quickMaskStrokeActive = false;
+      }
       // The CPU route's pen-up. Separate from `strokeActive`, which is the
       // solver's flag: the two routes never run at once (the route is decided
       // per frame and one branch above is taken), but a stroke that began on

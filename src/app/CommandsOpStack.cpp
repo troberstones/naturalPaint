@@ -782,6 +782,85 @@ CommandResult doLoadChannelAsSelection(OpenDocument& doc, const JsonValue& param
   return selectionChanged("load channel as selection: \"" + name + "\"");
 }
 
+// --- rename and delete (PRD E13's CHANNELS panel) -------------------------
+//
+// By NAME, never index (docs/automation.md §3.2): `Document::channels` has no
+// stable index the way a layer at least keeps `Layer::id` for, and a channel
+// is document data crossing into an action file the same way a layer is.
+
+std::string readNewChannelName(const JsonValue& params, const char* commandId, std::string* out) {
+  const JsonValue* name = params.find("new_name");
+  if (name == nullptr || !name->isString() || name->asString().empty())
+    return std::string("refused: ") + commandId + " needs a \"new_name\".";
+  *out = name->asString();
+  return {};
+}
+
+std::string renameChannelUnavailable(const OpenDocument& doc, const JsonValue& params) {
+  std::string name;
+  std::string why = readChannelName(params, "rename_channel", &name);
+  if (!why.empty()) return why;
+  std::string newName;
+  why = readNewChannelName(params, "rename_channel", &newName);
+  if (!why.empty()) return why;
+  if (findChannel(doc.document, name) == nullptr)
+    return "refused: this document has no channel named \"" + name + "\".";
+  // Identity is refused rather than run silently -- docs/automation.md §3's
+  // "a silent no-op is the failure this feature exists to have" -- and a
+  // collision is refused rather than uniquified, unlike Save: renaming names
+  // an EXISTING channel by its current identity, so "already taken" cannot
+  // be resolved by minting a second name the way a fresh save can.
+  if (newName == name)
+    return "refused: \"" + newName + "\" is already this channel's name.";
+  if (findChannel(doc.document, newName) != nullptr)
+    return "refused: this document already has a channel named \"" + newName + "\".";
+  return {};
+}
+
+CommandResult doRenameChannel(OpenDocument& doc, const JsonValue& params) {
+  std::string name;
+  std::string why = readChannelName(params, "rename_channel", &name);
+  if (!why.empty()) return commandRefused(why);
+  std::string newName;
+  why = readNewChannelName(params, "rename_channel", &newName);
+  if (!why.empty()) return commandRefused(why);
+  AlphaChannel* channel = findChannelForWrite(doc.document, name);
+  if (channel == nullptr)
+    return commandRefused("refused: this document has no channel named \"" + name + "\".");
+  channel->name = newName;
+  doc.recordEdit("rename channel", EditKind::Structural);
+  CommandResult r;
+  r.ok = true;
+  r.status = "rename channel: \"" + name + "\" -> \"" + newName + "\"";
+  return r;
+}
+
+std::string deleteChannelUnavailable(const OpenDocument& doc, const JsonValue& params) {
+  std::string name;
+  const std::string why = readChannelName(params, "delete_channel", &name);
+  if (!why.empty()) return why;
+  if (findChannel(doc.document, name) == nullptr)
+    return "refused: this document has no channel named \"" + name + "\".";
+  return {};
+}
+
+CommandResult doDeleteChannel(OpenDocument& doc, const JsonValue& params) {
+  std::string name;
+  const std::string why = readChannelName(params, "delete_channel", &name);
+  if (!why.empty()) return commandRefused(why);
+  std::vector<AlphaChannel>& channels = doc.document.channels;
+  const auto it = std::find_if(channels.begin(), channels.end(),
+                               [&](const AlphaChannel& c) { return c.name == name; });
+  if (it == channels.end())
+    return commandRefused("refused: this document has no channel named \"" + name + "\".");
+  channels.erase(it);
+  doc.recordEdit("delete channel", EditKind::Structural);
+  CommandResult r;
+  r.ok = true;
+  r.status = "delete channel: \"" + name + "\"";
+  return r;
+}
+
 // --- the five refine adapters (§4) ---------------------------------------
 
 // The app-side twin of `ui::installRefinedSelection()`: push what is being
@@ -990,6 +1069,51 @@ CommandResult doSelectLuminanceRange(OpenDocument& doc, const JsonValue& params)
 
 }  // namespace
 
+// --- the channel encoders, beside the readers above (docs/automation.md §2.2)
+// ---------------------------------------------------------------------------
+//
+// External linkage and declared in app/CommandsOpStack.hpp, unlike the
+// appliers above: the UI builds a `Command` from a typed name/pair, not from a
+// `JsonValue` literal, and app/CommandsImage.hpp argues why that has to live
+// beside the reader rather than at the dialog's own call site.
+
+Command saveSelectionAsChannelCommand(std::string name) {
+  JsonValue p = JsonValue::object();
+  p.set("channel", JsonValue::string(std::move(name)));
+  Command c;
+  c.id = "save_selection_as_channel";
+  c.params = std::move(p);
+  return c;
+}
+
+Command loadChannelAsSelectionCommand(std::string name) {
+  JsonValue p = JsonValue::object();
+  p.set("channel", JsonValue::string(std::move(name)));
+  Command c;
+  c.id = "load_channel_as_selection";
+  c.params = std::move(p);
+  return c;
+}
+
+Command renameChannelCommand(std::string name, std::string newName) {
+  JsonValue p = JsonValue::object();
+  p.set("channel", JsonValue::string(std::move(name)));
+  p.set("new_name", JsonValue::string(std::move(newName)));
+  Command c;
+  c.id = "rename_channel";
+  c.params = std::move(p);
+  return c;
+}
+
+Command deleteChannelCommand(std::string name) {
+  JsonValue p = JsonValue::object();
+  p.set("channel", JsonValue::string(std::move(name)));
+  Command c;
+  c.id = "delete_channel";
+  c.params = std::move(p);
+  return c;
+}
+
 void registerOpStackCommands(std::vector<CommandSpec>* out) {
   out->push_back(
       {"add_layer_op", "Add Layer Op", {"layer", "op"}, layerTargetUnavailable, doAddLayerOp});
@@ -1012,6 +1136,10 @@ void registerOpStackCommands(std::vector<CommandSpec>* out) {
                   saveSelectionUnavailable, doSaveSelectionAsChannel});
   out->push_back({"load_channel_as_selection", "Load Channel as Selection", {"channel"},
                   loadChannelUnavailable, doLoadChannelAsSelection});
+  out->push_back({"rename_channel", "Rename Channel", {"channel", "new_name"},
+                  renameChannelUnavailable, doRenameChannel});
+  out->push_back({"delete_channel", "Delete Channel", {"channel"}, deleteChannelUnavailable,
+                  doDeleteChannel});
 
   // PRD E4/E8/E9's five refines (§4). Menu order, which is the order the
   // ACTIONS panel lists them in.

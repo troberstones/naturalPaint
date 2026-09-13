@@ -53,6 +53,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/BucketRefusal.cpp
   app/selftest/CanvasDimensions.cpp
   app/selftest/Channels.cpp
+  app/selftest/ChannelsPanel.cpp
   app/selftest/CheckedAdd.cpp
   app/selftest/ChromeConsistency.cpp
   app/selftest/Clipboard.cpp
@@ -125,6 +126,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/BatchDialog.cpp
   app/selftest/ActionsPanel.cpp
   app/selftest/CommandsOpStack.cpp
+  app/selftest/QuickMaskPaint.cpp
   app/selftest/CommandsImage.cpp
   app/selftest/CommandCallsites.cpp
   app/selftest/Json.cpp
@@ -285,6 +287,7 @@ add_executable(naturalPaint
   app/CommandsOpStack.cpp
   app/CommandsPatterns.cpp
   app/CommandsRegions.cpp
+  app/ChannelsPanel.cpp
   app/CompPanel.cpp
   app/PanelLayout.cpp
   app/ControlsLayout.cpp
@@ -379,6 +382,7 @@ add_executable(naturalPaint
   brush/PencilDeposit.cpp
   brush/PigmentErase.cpp
   brush/PigmentSmudge.cpp
+  brush/QuickMaskPaint.cpp
   brush/RgbDeposit.cpp
   brush/RgbErase.cpp
   brush/Smudge.cpp

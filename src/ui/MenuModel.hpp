@@ -236,6 +236,23 @@ enum class MenuAction : uint16_t {
   // uses for Reselect.
   SelectUndoRefine,
 
+  // PRD E11: save the active selection into the document as a named channel,
+  // and load a named channel back as the active selection. Both are already
+  // `Registered` commands (`save_selection_as_channel`/
+  // `load_channel_as_selection`, app/CommandsOpStack.cpp) reachable only from
+  // the CHANNELS panel (app/ChannelsPanel.hpp) before this pair; these are the
+  // Select menu's own doors to the same two commands, each opening a small
+  // modal exactly like the five refines above.
+  SaveSelectionAsChannel,
+  LoadChannelAsSelection,
+
+  // PRD E12: enter/leave quick mask. A Check like `GrayscalePreview` (View
+  // menu) -- a display/editing MODE the user leaves on, not a one-shot
+  // command -- and unlike every other row in this section it is session
+  // state (`OpenDocument::quickMask`), not a document edit: see
+  // `coverageFor()`'s classification.
+  ToggleQuickMask,
+
   // --- Medium / Goodies ---------------------------------------------------
   PaintModeItem,        // family: param = the PaintMode's integer value
   ToolItem,             // family: param = the Tool's integer value
@@ -755,6 +772,14 @@ struct MenuContext {
   // `MenuAction::SelectUndoRefine` -- see that enumerator's own comment for
   // why this is a separate stack from core::History's Undo/Redo.
   bool hasRefineUndo = false;
+
+  // PRD E11/E13: whether `Document::channels` has at least one entry, for
+  // Load Channel as Selection's greying -- `hasEngagedSelection` answers Save
+  // Selection as Channel's.
+  bool hasChannels = false;
+
+  // PRD E12: `OpenDocument::quickMask.has_value()`, for the Check mark.
+  bool quickMaskActive = false;
 
   // --- Medium / Goodies ---------------------------------------------------
   std::vector<MenuFamilyEntry> paintModes;
