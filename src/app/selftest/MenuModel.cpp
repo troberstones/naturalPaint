@@ -218,13 +218,19 @@ bool runMenuModelTest() {
   // (View > Show Frames and Slices, `AppState::showRegions`) -- counted the
   // same way, off `MenuAction`'s enumerators in the merged header (101
   // including `Count`), never by adding 2 to 98.
-  check(kMenuActionCount == 100,
-        "ids: exactly 100 actions -- the original 41-item extraction plus D1/D2's "
+  //
+  // 100 -> 103 in the gap-closing wave's `fill` track: `Fill`, `Stroke` and
+  // `DefinePattern` (Edit > Fill.../Stroke.../Define Pattern..., PRD D26) --
+  // counted the same way, off this header's enumerators (104 including
+  // `Count`).
+  check(kMenuActionCount == 103,
+        "ids: exactly 103 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
         "dialog, Brush Settings, the crop pair, Pigment, Batch, Inpaint, D8's "
-        "make-tileable pair, the 3x3 repeat preview and the region export/show "
-        "pair, so an item lost in a later edit fails here");
+        "make-tileable pair, the 3x3 repeat preview, the region export/show pair, "
+        "and PRD D26's Fill/Stroke/Define Pattern, so an item lost in a later "
+        "edit fails here");
 
   {
     std::set<MenuAction> seen;

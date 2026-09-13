@@ -120,12 +120,20 @@ bool runCommandsFillTest() {
               readAt(store, 90, 60) == std::array<float, 4>{0, 0, 0, 0},
           "fill: outside the rectangle is untouched, exactly");
     // Texel 64 spans [64, 65); the rectangle's right edge at 64.5 covers
-    // exactly its left half, so `selectionCoverageAt()` reports 0.5 there and
-    // the composite is the half-way lerp between "untouched" (all zero) and
-    // "fully filled" -- i.e. half the fill colour's own premultiplied value.
+    // roughly its left half. The expected coverage is read from the
+    // selection itself, through `selectionCoverageAt()` -- the identical
+    // function `compositeFilterResult()` calls -- rather than assumed to be
+    // exactly 0.5: `core/SelectionMask`'s coverage is quantised to uint8, so
+    // the stored value is 127/255 or 128/255, not a bit-exact half, and a
+    // tolerance tuned for half-float rounding (`nearHalf`) is far tighter
+    // than that quantisation step.
+    const float coverage = selectionCoverageAt(&*od.selection, PixelCoord{64, 60});
+    check(coverage > 0.0f && coverage < 1.0f,
+          "fill: texel 64 is genuinely partially covered, not landed on a boundary");
     const std::array<float, 4> edge = readAt(store, 64, 60);
-    check(nearHalf(edge[0], 0.5f) && nearHalf(edge[1], 0.0f) && nearHalf(edge[2], 0.0f) &&
-              nearHalf(edge[3], 0.5f),
+    const std::array<float, 4> want{coverage, 0.0f, 0.0f, coverage};
+    check(nearHalf(edge[0], want[0]) && nearHalf(edge[1], want[1]) && nearHalf(edge[2], want[2]) &&
+              nearHalf(edge[3], want[3]),
           "fill: the fractional edge texel is the coverage-weighted lerp, not a hard cut");
   }
 
@@ -168,10 +176,14 @@ bool runCommandsFillTest() {
     FillParams p;
     p.source = FillSource::Gradient;
     p.gradientGeometry.kind = GradientKind::Linear;
-    p.gradientGeometry.x0 = 0.0f;
-    p.gradientGeometry.y0 = 64.0f;
-    p.gradientGeometry.x1 = 127.0f;
-    p.gradientGeometry.y1 = 64.0f;
+    // `ops/Gradient.cpp` samples at each texel's CENTRE (x + 0.5, y + 0.5),
+    // not its corner -- so the endpoints are placed at texel 0's and texel
+    // 126's own centres, which is what makes the two probes below exact
+    // rather than one texel's width of interpolation away from the stop.
+    p.gradientGeometry.x0 = 0.5f;
+    p.gradientGeometry.y0 = 64.5f;
+    p.gradientGeometry.x1 = 126.5f;
+    p.gradientGeometry.y1 = 64.5f;
     ColorStop a, b;
     a.position = 0.0f;
     a.color = kRed;
@@ -183,7 +195,7 @@ bool runCommandsFillTest() {
     const TileStore& store = *od.document.layers[0].rgbTiles;
     check(nearHalf(readAt(store, 0, 64)[0], 1.0f) && nearHalf(readAt(store, 0, 64)[2], 0.0f),
           "fill: the gradient's start endpoint is stop A's colour");
-    check(nearHalf(readAt(store, 127, 64)[2], 1.0f) && nearHalf(readAt(store, 127, 64)[0], 0.0f),
+    check(nearHalf(readAt(store, 126, 64)[2], 1.0f) && nearHalf(readAt(store, 126, 64)[0], 0.0f),
           "fill: the gradient's end endpoint is stop B's colour");
     // A vertical gradient (angle rotated 90 degrees from the horizontal one
     // above) is constant along x and varies along y -- the ramp actually
