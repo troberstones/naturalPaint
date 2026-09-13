@@ -31,6 +31,7 @@ RadialBlurParams g_radialParams;
 bool g_radialDialogOpen = false;
 bool g_radialHandleSettled = false;
 RadialBlurHandleDrag g_radialDrag;
+ImVec2 g_radialKeepClear{0.0f, 0.0f};  // the blur centre on screen, for where the dialog opens
 
 void filterExtraFooter(OpenDocument* od, std::string& status, const Command& command,
                        const char* nothingChangedText) {
@@ -98,7 +99,7 @@ void drawRadialBlurDialog(AppState& st) {
     params.amount = 0.0f;
     ImGui::OpenPopup("Radial Blur");
   }
-  if (!beginDialog("Radial Blur")) {
+  if (!beginDialogAwayFrom("Radial Blur", g_radialKeepClear)) {
     wasOpen = false;
     g_radialDialogOpen = false;
     clearExternalFilterPreview();
@@ -163,7 +164,15 @@ void drawRadialBlurDialog(AppState& st) {
 void drawRadialBlurCanvasHandles(AppState& st, const ViewTransform& view, Vec2 paneMin,
                                  Vec2 paneMax, ImDrawList* dl) {
   const OpenDocument* od = st.documents.active();
-  if (!g_radialDialogOpen || od == nullptr) {
+  if (od == nullptr) {
+    g_radialDrag = RadialBlurHandleDrag{};
+    return;
+  }
+  if (!g_radialDialogOpen) {
+    // The dialog re-centres the blur here when it opens, so it opens away from it.
+    const PixelCoord c = defaultBlurCenter(*od);
+    const Vec2 s = view.toScreen(Vec2{static_cast<float>(c.x), static_cast<float>(c.y)});
+    g_radialKeepClear = ImVec2(s.x, s.y);
     g_radialDrag = RadialBlurHandleDrag{};
     return;
   }
@@ -200,6 +209,7 @@ void drawRadialBlurCanvasHandles(AppState& st, const ViewTransform& view, Vec2 p
   const ImU32 casing = IM_COL32(0, 0, 0, 160);
   const ImU32 accent = atelierToken(kAccent);
   const ImVec2 c(shape.center.x, shape.center.y);
+  g_radialKeepClear = c;
 
   if (g_radialParams.method == RadialBlurMethod::Spin) {
     dl->AddCircle(c, kRadialBlurGuidePx, IM_COL32(0, 0, 0, 90), 96, 3.0f);

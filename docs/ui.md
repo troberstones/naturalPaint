@@ -1046,7 +1046,9 @@ Two constraints on any restyling this file's design language would drive:
   ±amount/2 sweep, 72 px out; Zoom: a segment showing 1 ∓ amount of that
   radius) while it is open. The dialog stays modal, so ImGui reports no hover
   for the canvas; the handles read the pointer themselves wherever no window is
-  under it, and the tools stay blocked. Geometry and drag maths are
+  under it, and the tools stay blocked. It opens in the work-area corner
+  farthest from the blur centre (`beginDialogAwayFrom()`) rather than centred,
+  so the sheet does not cover its own handles. Geometry and drag maths are
   `app/RadialBlurHandles`, tested apart from the drawing.
 
 ## 5b. Split View and Match Zoom

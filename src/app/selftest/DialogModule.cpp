@@ -31,6 +31,7 @@
 // violations -- the "test that tests a copy" shape, closed at the source.
 
 #include "app/SelfTest.hpp"
+#include "ui/Dialog.hpp"
 
 #include <cstdio>
 #include <filesystem>
@@ -172,6 +173,25 @@ bool runDialogModuleTest() {
   }
   check(clean, "dialog module: no bare BeginPopupModal() and no retired colour literal in src/ui");
   check(kAllowedBareModals.empty(), "dialog module: the bare-modal exception table is empty");
+
+  // beginDialogAwayFrom()'s corner: the one farthest from the point to keep clear.
+  {
+    const auto at = [](const DialogCorner& c, float x, float y, float px, float py) {
+      return c.pos.x == x && c.pos.y == y && c.pivot.x == px && c.pivot.y == py;
+    };
+    const ImVec2 lo(0.0f, 0.0f), hi(1280.0f, 790.0f);
+    check(at(dialogCornerAwayFrom(lo, hi, ImVec2(300, 200), 24.0f), 1256, 766, 1, 1),
+          "dialog corner: a point top-left opens the dialog bottom-right");
+    check(at(dialogCornerAwayFrom(lo, hi, ImVec2(1000, 600), 24.0f), 24, 24, 0, 0),
+          "dialog corner: a point bottom-right opens it top-left");
+    check(at(dialogCornerAwayFrom(lo, hi, ImVec2(1000, 150), 24.0f), 24, 766, 0, 1),
+          "dialog corner: a point top-right opens it bottom-left");
+    check(at(dialogCornerAwayFrom(lo, hi, ImVec2(200, 700), 24.0f), 1256, 24, 1, 0),
+          "dialog corner: a point bottom-left opens it top-right");
+    check(at(dialogCornerAwayFrom(ImVec2(0, 40), ImVec2(1280, 830), ImVec2(640, 100), 24.0f),
+             1256, 806, 1, 1),
+          "dialog corner: measured inside a work area that does not start at 0");
+  }
 
   return ok;
 }
