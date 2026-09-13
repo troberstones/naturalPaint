@@ -1035,6 +1035,58 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
   ImGui::SameLine(0.0f, 8.0f);
   ImGui::TextUnformatted(toolName(st.brush.tool));
 
+  // --- Warp's grid-size choice and the Free Transform <-> Warp toggle
+  //     (PRD D23) -------------------------------------------------------
+  //
+  // Placed first, ahead of every tool-specific block below: the palette is
+  // pinned to `Tool::Move` for a session's whole duration
+  // (`app/ToolSwitch.hpp` section 5), which has no options of its own, so
+  // warping is the one thing "the active tool" can mean here while a
+  // transform is live. Drawn for BOTH modes, not only while already
+  // warping, so the grid-size choice is visible and settable before the
+  // user ever switches into Warp -- `setWarpMode()` reads `st.warpGridN`
+  // the moment it does.
+  if (st.transform.active()) {
+    bandSeparator();
+    capsLabel("GRID");
+    ImGui::SameLine();
+    pushAtelierMono();
+    const bool warping = st.transform.mode() == TransformMode::Warp;
+    const int current = warping ? st.transform.warpMesh().n() : st.warpGridN;
+    for (int n = 3; n <= 5; ++n) {
+      if (n != 3) ImGui::SameLine(0.0f, 4.0f);
+      char label[8];
+      std::snprintf(label, sizeof(label), "%dx%d", n, n);
+      const bool selected = current == n;
+      if (selected)
+        ImGui::PushStyleColor(ImGuiCol_Button,
+                              ImGui::ColorConvertU32ToFloat4(atelierToken(kAccent)));
+      if (ImGui::SmallButton(label)) {
+        st.warpGridN = n;
+        // Re-fits a live warp net in place (exact for one nobody has bent
+        // yet, `app/WarpMesh::refit()`'s own header); a no-op while still
+        // in Affine mode -- the choice just takes effect the next time the
+        // user switches into Warp.
+        if (warping) st.transform.setWarpMode(true, n);
+      }
+      if (selected) ImGui::PopStyleColor();
+      ImGui::SetItemTooltip("%dx%d control cells for the next Warp -- PRD D23's own choice, "
+                            "3, 4 (the default) or 5.",
+                            n, n);
+    }
+    popAtelierMono();
+
+    bandSeparator();
+    // The identical request `Edit > Warp` raises -- one code path, not a
+    // second way to flip the same bit (`AppState::requestWarp`'s own
+    // comment for why this is a request rather than a direct call here).
+    if (ImGui::SmallButton(warping ? "Free Transform" : "Warp")) st.requestWarp = true;
+    ImGui::SetItemTooltip(warping
+                             ? "Back to the affine box (the bent net is discarded, not "
+                               "collapsed into an approximating matrix)."
+                             : "Bend this transform into a lattice instead of a box.");
+  }
+
   // --- the eyedropper's own two options (PRD Q10, P0) ---------------------
   //
   // **The first tool in this band to have options of its own.** Everything
