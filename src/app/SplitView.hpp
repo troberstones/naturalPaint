@@ -53,4 +53,12 @@ Vec2 splitPaneOrigin(Vec2 paneOrigin, Vec2 paneSize, float docW, float docH,
 CanvasView matchZoomView(const CanvasView& source, Vec2 srcPaneSize, float srcW, float srcH,
                          Vec2 dstPaneSize, float dstW, float dstH) noexcept;
 
+// The companion pane's view for this frame. Match Zoom follows the focused pane;
+// otherwise a view at the `zoom <= 0` "needs a fit" sentinel is fitted inside a
+// 24 px inset and centred, once; otherwise the companion keeps its own view.
+CanvasView companionViewForFrame(const CanvasView& current, bool matchZoom,
+                                 const CanvasView& focused, Vec2 focusedPaneSize, float focusedW,
+                                 float focusedH, Vec2 companionPaneSize, float companionW,
+                                 float companionH) noexcept;
+
 }  // namespace np

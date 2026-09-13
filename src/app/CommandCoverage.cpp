@@ -295,7 +295,7 @@ CommandCoverage coverageFor(MenuAction action) {
       // app/selftest/Command.cpp section H.
       return {CommandCoverageKind::Registered, "filter_inpaint", nullptr};
     case MenuAction::ContentAwareFill:
-      // PRD D7's second half, track `repair`. Same inverted-selection
+      // PRD D7's second half. Same inverted-selection
       // reasoning as `Inpaint` just above -- `content_aware_fill` is
       // `selectionBounded` for the identical reason: the recorder's channel-
       // match rule is the protection this op needs against a live, unsaved
@@ -305,7 +305,7 @@ CommandCoverage coverageFor(MenuAction action) {
     case MenuAction::RemoveLightingGradient:
       return {CommandCoverageKind::Registered, "filter_remove_lighting_gradient", nullptr};
     case MenuAction::SeamHeal:
-      // PRD D8, track `repair`. NOT `selectionBounded`, for `Offset`'s own
+      // PRD D8. NOT `selectionBounded`, for `Offset`'s own
       // reason just below: `seamHealRefusalFor()` refuses outright under ANY
       // live selection.
       return {CommandCoverageKind::Registered, "seam_heal", nullptr};

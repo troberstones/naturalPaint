@@ -1,5 +1,6 @@
 #include "app/selftest/Support.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -294,6 +295,44 @@ bool runSplitViewTest() {
           "the view that was focused becomes the new companion's");
     check(split.companion == b->id,
           "the document that lost focus is recorded as the companion");
+  }
+
+  std::printf("  -- 6. companionViewForFrame picks the companion pane's view each frame --\n");
+  {
+    const Vec2 focusedPane{400.0f, 300.0f};
+    const Vec2 companionPane{400.0f, 300.0f};
+    CanvasView focused;
+    focused.zoom = 2.0f;
+    focused.panX = -150.0f;
+    focused.panY = -40.0f;
+    CanvasView kept;
+    kept.zoom = 0.75f;
+    kept.panX = 12.0f;
+    kept.panY = -7.0f;
+    CanvasView sentinel;
+    sentinel.zoom = 0.0f;
+
+    const CanvasView matched =
+        matchZoomView(focused, focusedPane, 800.0f, 600.0f, companionPane, 500.0f, 900.0f);
+    check(matched.zoom != kept.zoom || matched.panX != kept.panX || matched.panY != kept.panY,
+          "fixture: the match-zoom result differs from the companion's kept view");
+    const CanvasView on = companionViewForFrame(kept, true, focused, focusedPane, 800.0f, 600.0f,
+                                                companionPane, 500.0f, 900.0f);
+    check(on.zoom == matched.zoom && on.panX == matched.panX && on.panY == matched.panY,
+          "Match Zoom on: the companion follows the focused pane over its own view");
+
+    const CanvasView off = companionViewForFrame(kept, false, focused, focusedPane, 800.0f,
+                                                 600.0f, companionPane, 500.0f, 900.0f);
+    check(off.zoom == kept.zoom && off.panX == kept.panX && off.panY == kept.panY,
+          "Match Zoom off: a companion view that is already set is kept");
+
+    const CanvasView fitted = companionViewForFrame(sentinel, false, focused, focusedPane, 800.0f,
+                                                    600.0f, companionPane, 500.0f, 900.0f);
+    const float expectFit = std::min((400.0f - 48.0f) / 500.0f, (300.0f - 48.0f) / 900.0f);
+    check(expectFit != (300.0f / 900.0f),
+          "fixture: the inset changes the fit, so a fit without it would be caught");
+    check(fitted.zoom == expectFit && fitted.panX == 0.0f && fitted.panY == 0.0f,
+          "Match Zoom off, needs a fit: fitted inside a 24 px inset and centred");
   }
 
   std::printf("[selftest] SplitView %s\n", ok ? "PASS" : "FAIL");

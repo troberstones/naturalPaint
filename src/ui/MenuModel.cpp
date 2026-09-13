@@ -142,7 +142,7 @@ const MenuItemSpec* specTable() {
     set(MenuAction::Fill, "Fill...", "");
     set(MenuAction::Stroke, "Stroke...", "");
     set(MenuAction::DefinePattern, "Define Pattern...", "");
-    // Track `repair`, PRD D7's second half. No key equivalent, the identical
+    // PRD D7's second half. No key equivalent, the identical
     // reason.
     set(MenuAction::ContentAwareFill, "Content-Aware Fill...", "");
 
@@ -282,7 +282,7 @@ const MenuItemSpec* specTable() {
     // before SDL sees it -- not a thing to claim speculatively.
     set(MenuAction::RemoveLightingGradient, "Remove Lighting Gradient...", "");
     set(MenuAction::Offset, "Offset...", "");
-    // Track `repair`, PRD D8's missing third piece. No key equivalent, the
+    // PRD D8's missing third piece. No key equivalent, the
     // identical reason.
     set(MenuAction::SeamHeal, "Seam Heal...", "");
     // No key equivalents, same reason as the two

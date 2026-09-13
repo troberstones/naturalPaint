@@ -78,6 +78,34 @@ double seamDiscontinuity(const TileStore& tiles, int32_t size) {
   return sum / size;
 }
 
+// Out-of-range bands on the left AND top edges over a field varying on both
+// axes, so each seam can be healed or missed independently of the other.
+void fillBothEdgeBands(TileStore& tiles, int32_t size, int32_t period, int32_t edgeWidth) {
+  constexpr double kTwoPi = 6.283185307179586;
+  for (int32_t y = 0; y < size; ++y) {
+    for (int32_t x = 0; x < size; ++x) {
+      const uint64_t i = static_cast<uint64_t>(y) * static_cast<uint64_t>(size) +
+                         static_cast<uint64_t>(x);
+      const double px = kTwoPi * static_cast<double>(x) / static_cast<double>(period);
+      const double py = kTwoPi * static_cast<double>(y) / static_cast<double>(period);
+      float v = (x < edgeWidth || y < edgeWidth)
+                    ? 0.95f
+                    : 0.5f + 0.15f * static_cast<float>(std::sin(px)) +
+                          0.15f * static_cast<float>(std::sin(py)) + 0.04f * shNoise(i);
+      v = std::min(1.0f, std::max(0.0f, v));
+      shWriteAt(tiles, x, y, {v, v, v, 1.0f});
+    }
+  }
+}
+
+// The top/bottom seam: how far rows y=0 and y=size-1 disagree, averaged over x.
+double rowSeamDiscontinuity(const TileStore& tiles, int32_t size) {
+  double sum = 0.0;
+  for (int32_t x = 0; x < size; ++x)
+    sum += std::fabs(shReadAt(tiles, x, 0)[0] - shReadAt(tiles, x, size - 1)[0]);
+  return sum / size;
+}
+
 const MenuNode* shFindMenuAction(const std::vector<MenuNode>& nodes, MenuAction action) {
   for (const MenuNode& n : nodes) {
     if (n.action == action) return &n;
@@ -190,6 +218,37 @@ bool runSeamHealTest() {
     TileStore dst;
     check(!seamHealTiles(field, params.wrapRect, wrongRect, &dst) && dst.occupiedTileCount() == 0,
           "engine: outRect must equal wrapRect -- this op is not tileable in pieces");
+  }
+
+  std::printf("  -- B2. both seams are healed, each on its own --\n");
+  {
+    constexpr int32_t kSize = 128;
+    TileStore field;
+    fillBothEdgeBands(field, kSize, 8, 6);
+    const double colBefore = seamDiscontinuity(field, kSize);
+    const double rowBefore = rowSeamDiscontinuity(field, kSize);
+    check(colBefore > 0.3 && rowBefore > 0.3,
+          "fixture: both the left/right and the top/bottom seams start discontinuous");
+
+    SeamHealParams params;
+    params.wrapRect = PixelRect{0, 0, kSize, kSize};
+    params.bandWidth = 16;
+    params.patchRadius = 3;
+    params.iterations = 5;
+    params.pyramidLevels = 3;
+    params.seed = 42;
+
+    TileStore healed;
+    check(seamHealTiles(field, params.wrapRect, params, &healed),
+          "engine: a field with both seams heals");
+    const double colAfter = seamDiscontinuity(healed, kSize);
+    const double rowAfter = rowSeamDiscontinuity(healed, kSize);
+    check(colAfter < 0.5 * colBefore,
+          "PRD D8: the left/right seam's discontinuity drops by at least half");
+    check(rowAfter < 0.5 * rowBefore,
+          "PRD D8: the top/bottom seam's discontinuity drops by at least half");
+    std::printf("  [measured] left/right %.3f -> %.3f, top/bottom %.3f -> %.3f\n", colBefore,
+                colAfter, rowBefore, rowAfter);
   }
 
   std::printf("  -- C. the command: refusal under a selection, and the seed ------\n");

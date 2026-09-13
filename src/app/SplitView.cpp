@@ -50,4 +50,24 @@ CanvasView matchZoomView(const CanvasView& source, Vec2 srcPaneSize, float srcW,
   return out;
 }
 
+CanvasView companionViewForFrame(const CanvasView& current, bool matchZoom,
+                                 const CanvasView& focused, Vec2 focusedPaneSize, float focusedW,
+                                 float focusedH, Vec2 companionPaneSize, float companionW,
+                                 float companionH) noexcept {
+  if (matchZoom)
+    return matchZoomView(focused, focusedPaneSize, focusedW, focusedH, companionPaneSize,
+                         companionW, companionH);
+  if (current.zoom > 0.0f) return current;
+  CanvasView out = current;
+  const float inset = 24.0f;
+  const float fit = (companionW > 0.0f && companionH > 0.0f)
+                        ? std::min((companionPaneSize.x - inset * 2.0f) / companionW,
+                                   (companionPaneSize.y - inset * 2.0f) / companionH)
+                        : 1.0f;
+  out.zoom = fit > 0.0f ? fit : 1.0f;
+  out.panX = 0.0f;
+  out.panY = 0.0f;
+  return out;
+}
+
 }  // namespace np

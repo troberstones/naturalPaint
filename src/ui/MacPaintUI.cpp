@@ -23489,18 +23489,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // arithmetic this pane always used, now stored rather than recomputed
       // every frame so it survives past this one fit.
       const Vec2 paneSize{r.w, r.h};
-      if (g_split.matchZoom) {
-        g_split.companionView =
-            matchZoomView(st.view, focusedAvail, focusedTexW, focusedTexH, paneSize, dw, dh);
-      } else if (g_split.companionView.zoom <= 0.0f) {
-        const float inset = 24.0f;
-        const float fit = (dw > 0.0f && dh > 0.0f)
-                              ? std::min((r.w - inset * 2.0f) / dw, (r.h - inset * 2.0f) / dh)
-                              : 1.0f;
-        g_split.companionView.zoom = fit > 0.0f ? fit : 1.0f;
-        g_split.companionView.panX = 0.0f;
-        g_split.companionView.panY = 0.0f;
-      }
+      g_split.companionView =
+          companionViewForFrame(g_split.companionView, g_split.matchZoom, st.view, focusedAvail,
+                                focusedTexW, focusedTexH, paneSize, dw, dh);
 
       // `splitPaneOrigin()` (app/SplitView.hpp) -- the SAME function the
       // focused pane's own canvas block now calls -- at identity

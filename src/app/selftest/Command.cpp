@@ -476,7 +476,7 @@ bool runCommandTest() {
     // `delete_selection` above: it is not merely unbounded by an absent
     // selection, it refuses outright under a PRESENT one
     // (`offsetRefusalFor()`'s `SelectionActive`), so "absent means whole
-    // canvas" was never a reading this op could have. Track `repair`'s
+    // canvas" was never a reading this op could have. The
     // `seam_heal` joins it for the identical reason --
     // `seamHealRefusalFor()` refuses the same way.
     check(!boundedById("flatten_image") && !boundedById("image_size") &&
