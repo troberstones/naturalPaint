@@ -168,8 +168,10 @@ float RgbStroke::strokeAlphaAt(PixelCoord doc) const noexcept {
 
 DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 centre,
                                    int32_t canvasW, int32_t canvasH, const Selection* selection,
-                                   std::vector<TileCoord>* touchedOut, Vec2 sweep) {
+                                   std::vector<TileCoord>* touchedOut, Vec2 sweep,
+                                   DualStroke* dual) {
   DepositCount count;
+  const bool dualStroke = dual != nullptr && tip.dualTip != nullptr;
   if (!(tip.flow > 0.0f)) return count;
   if (!(opacity_ > 0.0f)) return count;
 
@@ -247,6 +249,7 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
       const bool blending = blend_ != BlendMode::Normal;
       const Tile* dst0Read = blending ? dst0_.find(coord) : nullptr;
       Tile* dst0Write = nullptr;
+      DualStrokeTile dualTile;
 
       for (int32_t y = y0; y <= y1; ++y) {
         const float dy = (static_cast<float>(y) + 0.5f) - centre.y;
@@ -254,7 +257,9 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
           const float dx = (static_cast<float>(x) + 0.5f) - centre.x;
           const PixelCoord local = tileLocalOffset(PixelCoord{x, y});
 
-          const float rawCov = sweptDabCoverage(tip, dx, dy, sweep);
+          const float rawCov =
+              dualStroke ? dualStrokeCoverage(tip, *dual, dualTile, coord, local, dx, dy)
+                         : sweptDabCoverage(tip, dx, dy, sweep);
           if (!(rawCov > 0.0f)) continue;
 
           // Paper tooth, at this texel's ABSOLUTE canvas position -- `x`/`y`,
@@ -268,7 +273,8 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
           // control disabled and nothing said. `grainCoverageAt()` returns its
           // input bit-identical when grain is off, so adding it changes
           // nothing for a brush that has not turned it on.
-          const float cov = grainCoverageAt(tip.grain, rawCov, x, y);
+          // Flow included (brush/Grain.hpp's `grainWeightAt()`).
+          const float cov = grainWeightAt(tip.grain, rawCov, tip.flow, x, y);
           if (!(cov > 0.0f)) continue;  // a grain peak too tall for this pressure
           const float sel = selection != nullptr ? selectionTileCoverage(cover, local) : 1.0f;
           if (!(sel > 0.0f)) continue;
@@ -300,9 +306,9 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
                                                         : std::array<float, 4>{0.0f, 0.0f, 0.0f,
                                                                                0.0f});
             step = depositRgbTexelBlended(dst0Val, ink_, blend_, accumulated,
-                                          tip.flow * cov * sel, opacity_ * sel, alphaLocked_, wash_);
+                                          cov * sel, opacity_ * sel, alphaLocked_, wash_);
           } else {
-            step = depositRgbTexel(before, ink_, accumulated, tip.flow * cov * sel,
+            step = depositRgbTexel(before, ink_, accumulated, cov * sel,
                                    opacity_ * sel, alphaLocked_, wash_);
           }
           // The ceiling, the transparent tail of the falloff, and a texel the

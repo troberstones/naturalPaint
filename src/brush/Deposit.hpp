@@ -825,6 +825,18 @@ struct WashStroke {
   const PigmentTileStore* before = nullptr;
 };
 
+// A Dual Brush stroke (§2d): each tip's coverage accumulated over every dab so
+// far, owned by the caller for the whole stroke.
+struct DualStroke {
+  StrokeMassStore primary;
+  StrokeMassStore second;
+};
+// One tile of each, fetched lazily by `dualStrokeCoverage()`.
+struct DualStrokeTile {
+  StrokeMassTile* primary = nullptr;
+  StrokeMassTile* second = nullptr;
+};
+
 // The narrowest tip §2b will draw. `io/AbrBrushes.cpp`'s own clamp on an
 // imported `Rndn`, restated here so the deposit is defended at the point of
 // use and not only at the one importer that happens to share the number.
@@ -1196,6 +1208,21 @@ bool brushTipEqual(const BrushTip& a, const BrushTip& b) noexcept;
 // user who cannot trust it has to paint to find out anyway.
 float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept;
 
+// §2d, painted as a stroke: a dab's coverage when `tip.dualTip` is set and the
+// caller keeps a `DualStroke`. **Photoshop combines the two brushSTROKES, not
+// each pair of dabs.** Per dab, Hard Mix and Color Burn paint only where the
+// primary tip is fully opaque -- which a sampled tip scanned at 204-243 of 255
+// never is -- so against a 1-2 px second tip ("Rough Rowdy", "Bone Dry
+// Brush") every dab combined to nothing. The stroke's primary mask saturates
+// after a few overlapping dabs, and that is what Photoshop's threshold sees.
+//
+// Each tip's coverage is unioned into its mask (`m + c(1 - m)`); both masks are
+// read at 8 bits, as Photoshop's stroke masks are INFERRED to be (a union that
+// only approaches 1 would never cross those thresholds); the dab lays its own
+// share `c / primary` of the combined mask. Requires `tip.dualTip != nullptr`.
+float dualStrokeCoverage(const BrushTip& tip, DualStroke& dual, DualStrokeTile& at,
+                         TileCoord coord, PixelCoord local, float dx, float dy);
+
 // §1a: `dabCoverage()` for the tip swept from its centre to `centre + sweep`
 // -- at every texel, the coverage of the nearest position along that segment,
 // which for a round or elliptical tip is exact. `sweep == {0, 0}` is
@@ -1318,7 +1345,8 @@ PixelBounds sweptDabBounds(const BrushTip& tip, Vec2 centre, Vec2 sweep, int32_t
 DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centre,
                         int32_t canvasW, int32_t canvasH, const Selection* selection,
                         std::vector<TileCoord>* touchedOut, PigmentBuildup buildup = {},
-                        WashStroke* wash = nullptr, Vec2 sweep = {});
+                        WashStroke* wash = nullptr, Vec2 sweep = {},
+                        DualStroke* dual = nullptr);
 
 // Sorts ascending by (y, x) and removes duplicates, in place.
 //

@@ -320,7 +320,28 @@ float grainOverlayFraction(float P, float S, float O1, float G) noexcept;
 // (§ GrainParams::enabled's own comment).
 //
 // `O1` (§0) is fixed at 1.0 here; `params.strength` plays `S`.
+//
+// **Height reaches further into the paper than Subtract** for the same `depth`,
+// by `heightDepthGain()`: ten times as far for a shallow paper, easing to the
+// same at depth 1. Photoshop's Height formula is unpublished. The anchors:
+// Krita's manual gives its Photoshop-matching Height a tenfold strength range;
+// Adobe's says Depth 100% leaves only the LOWEST points unpainted, which a flat
+// x10 breaks (at Kyle's depths 0.2-0.36 it emptied most of the paper at full
+// flow, and five dry-media presets vanished). At Subtract's scale a Height
+// preset's Depth (mostly 0.05-0.2) never empties a hollow, so its texture
+// survived only at the stroke's soft edges.
+inline constexpr float kHeightDepthGain = 10.0f;
+// `kHeightDepthGain / (1 + (kHeightDepthGain - 1) * depth)`: 10 at depth 0, 1 at
+// depth 1, and `depth * gain` never above 1.
+float heightDepthGain(float depth) noexcept;
 float grainCoverageAt(const GrainParams& params, float coverage, int32_t x, int32_t y) noexcept;
+
+// `flow * grainCoverageAt()` -- except for Height, where flow joins the tip's
+// coverage BEFORE the paper is subtracted (`P` in the overlay fraction is how
+// hard the tip presses). So lowering flow opens more of the paper: a Height
+// brush turns from dense to grainy as flow comes down, not merely paler.
+float grainWeightAt(const GrainParams& params, float coverage, float flow, int32_t x,
+                    int32_t y) noexcept;
 
 // Whether two `GrainParams` describe the same paper. Bit equality throughout,
 // not a tolerance -- `brush/Library.hpp`'s `presetMatches()` convention

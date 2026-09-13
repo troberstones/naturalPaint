@@ -223,13 +223,10 @@ bool runPaperTextureTest() {
   std::printf("  -- C. Height and Subtract really are one formula --\n");
   // ======================================================================
   {
-    // brush/CoverageBlend.hpp claims the two ids "resolve to the same
-    // formula". They only do because `grainCoverageAt()` routes BOTH to
-    // `grainOverlayFraction()`; routed through `applyCoverageBlend()` instead,
-    // Height would clamp its base to [0,1] before subtracting and Subtract
-    // would not, so any `strength` above 1 -- which GrainParams::strength
-    // explicitly permits -- would make them diverge while the header said
-    // they could not. The grid below deliberately includes strength 1.75.
+    // Height is Subtract with the paper `heightDepthGain()` deeper, so Height at
+    // depth d paints what Subtract paints at depth d * gain. The grid includes
+    // strength 1.75: routed through `applyCoverageBlend()`, which clamps its
+    // base first, the two would diverge.
     GrainParams sub;
     sub.enabled = true;
     sub.depth = 1.0f;
@@ -241,21 +238,88 @@ bool runPaperTextureTest() {
     for (const float strength : {0.5f, 1.0f, 1.75f}) {
       GrainParams a = sub;
       a.strength = strength;
+      a.depth = 0.1f * heightDepthGain(0.1f);
       GrainParams b = a;
       b.blend = CoverageBlend::Height;
+      b.depth = 0.1f;
       for (int ci = 0; ci <= 8; ++ci) {
         const float cov = static_cast<float>(ci) / 8.0f;
         for (int32_t y = 0; y < 4; ++y)
           for (int32_t x = 0; x < 4; ++x) {
-            if (grainCoverageAt(a, cov, x, y) != grainCoverageAt(b, cov, x, y)) same = false;
+            if (std::fabs(grainCoverageAt(a, cov, x, y) - grainCoverageAt(b, cov, x, y)) > 1e-5f)
+              same = false;
             if (strength > 1.0f && cov > 0.75f && grainCoverageAt(a, cov, x, y) > 0.0f)
               strengthAbove1Reached = true;
           }
       }
     }
-    check(same, "paper/Height: identical to Subtract at every strength, including above 1");
+    check(same, "paper/Height: at depth d it paints what Subtract paints at depth d * "
+                "heightDepthGain(d), at every strength including above 1");
     check(strengthAbove1Reached,
           "paper/Height: and the strength>1 case is actually reached, not vacuously equal");
+
+    // The gain's anchors: tenfold for a shallow paper, none at depth 1 (Adobe:
+    // Depth 100% leaves only the lowest points unpainted), and never so deep
+    // that a full-coverage tip loses more than the deepest hollow.
+    bool reachCapped = true;
+    bool decreasing = true;
+    float previous = heightDepthGain(0.0f);
+    for (int di = 1; di <= 100; ++di) {
+      const float d = static_cast<float>(di) / 100.0f;
+      if (d * heightDepthGain(d) > 1.0f + 1e-6f) reachCapped = false;
+      if (!(heightDepthGain(d) < previous)) decreasing = false;
+      previous = heightDepthGain(d);
+    }
+    check(heightDepthGain(0.0f) == kHeightDepthGain && heightDepthGain(1.0f) == 1.0f && decreasing,
+          "paper/Height: the depth gain is ten for a shallow paper, falling to one at depth 1");
+    check(reachCapped, "paper/Height: depth times gain never exceeds 1, so a full-coverage dab at "
+                       "any depth still paints all but the deepest hollows");
+    std::printf("    [measured] Height depth gain: %.2f at 0.05, %.2f at 0.17, %.2f at 0.36\n",
+                heightDepthGain(0.05f), heightDepthGain(0.17f), heightDepthGain(0.36f));
+    GrainParams shallowHeight = sub;
+    shallowHeight.blend = CoverageBlend::Height;
+    shallowHeight.depth = 0.1f;
+    GrainParams shallowSub = shallowHeight;
+    shallowSub.blend = CoverageBlend::Subtract;
+    bool deeperThanSubtract = false;
+    bool neverShallower = true;
+    for (int32_t y = 0; y < 4; ++y)
+      for (int32_t x = 0; x < 4; ++x) {
+        const float hgt = grainCoverageAt(shallowHeight, 0.6f, x, y);
+        const float sbt = grainCoverageAt(shallowSub, 0.6f, x, y);
+        if (hgt < sbt) deeperThanSubtract = true;
+        if (hgt > sbt) neverShallower = false;
+      }
+    check(deeperThanSubtract && neverShallower,
+          "paper/Height: at a shallow depth it takes more paint out of the hollows than Subtract");
+
+    // Flow: for Height it presses the tip less hard, so more paper shows; for
+    // every other blend it only scales the result.
+    GrainParams h = sub;
+    h.blend = CoverageBlend::Height;
+    h.depth = 0.3f;
+    h.field = makeChecker(8, 8);
+    int emptyAtFull = 0;
+    int emptyAtLow = 0;
+    bool otherBlendsScale = true;
+    for (int32_t y = 0; y < 8; ++y)
+      for (int32_t x = 0; x < 8; ++x) {
+        emptyAtFull += grainWeightAt(h, 1.0f, 1.0f, x, y) == 0.0f;
+        emptyAtLow += grainWeightAt(h, 1.0f, 0.5f, x, y) == 0.0f;
+        for (const CoverageBlend other : {CoverageBlend::Subtract, CoverageBlend::Multiply,
+                                          CoverageBlend::ColorBurn}) {
+          GrainParams o = h;
+          o.blend = other;
+          if (grainWeightAt(o, 0.7f, 0.35f, x, y) != 0.35f * grainCoverageAt(o, 0.7f, x, y))
+            otherBlendsScale = false;
+        }
+      }
+    std::printf("    [measured] Height depth 0.3: %d/64 texels empty at flow 1, %d/64 at flow 0.5\n",
+                emptyAtFull, emptyAtLow);
+    check(emptyAtLow > emptyAtFull,
+          "paper/Height: lowering flow opens more of the paper, not merely a paler stroke");
+    check(otherBlendsScale,
+          "paper/weight: every other blend is exactly flow times its grain coverage");
   }
 
   // ======================================================================

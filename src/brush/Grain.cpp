@@ -95,6 +95,10 @@ float grainOverlayFraction(float P, float S, float O1, float G) noexcept {
   return raw < 1.0f ? raw : 1.0f;
 }
 
+float heightDepthGain(float depth) noexcept {
+  return kHeightDepthGain / (1.0f + (kHeightDepthGain - 1.0f) * std::max(depth, 0.0f));
+}
+
 float grainCoverageAt(const GrainParams& params, float coverage, int32_t x, int32_t y) noexcept {
   // Checked FIRST, before `grainHeightAt()` or `grainOverlayFraction()` runs
   // at all -- header §`GrainParams::enabled`'s own comment: this is what
@@ -109,20 +113,23 @@ float grainCoverageAt(const GrainParams& params, float coverage, int32_t x, int3
   // that turns a bit-exact golden reference red for no reason anyone can name
   // afterwards.
   //
-  // **`Height` joins it, and that is a correction rather than a convenience.**
-  // brush/CoverageBlend.hpp says the two ids "resolve to the same formula";
-  // routed through `applyCoverageBlend()` they would NOT, because that
-  // function clamps `a` to [0,1] before subtracting and `grainOverlayFraction`
-  // clamps only the result -- so any `strength` above 1 (which
-  // `GrainParams::strength` explicitly permits, "a paper that makes a fully
-  // loaded tip bite HARDER") would make Height and Subtract diverge while the
-  // header claimed they could not. One call site for both is what makes the
-  // claim checkable, and --selftest checks it over a grid that includes
-  // `strength > 1` rather than taking it on the comment.
-  if (params.blend == CoverageBlend::Subtract || params.blend == CoverageBlend::Height)
+  // **`Height` shares the overlay fraction, with the paper deeper**
+  // (`heightDepthGain()`, Grain.hpp). Not `applyCoverageBlend()`: that clamps
+  // `a` to [0,1] before subtracting, and `GrainParams::strength` may exceed 1.
+  if (params.blend == CoverageBlend::Height)
+    return grainOverlayFraction(coverage, params.strength, 1.0f, G * heightDepthGain(params.depth));
+  if (params.blend == CoverageBlend::Subtract)
     return grainOverlayFraction(coverage, params.strength, 1.0f, G);
   return applyCoverageBlend(params.blend,
                             std::clamp(coverage * params.strength, 0.0f, 1.0f), G);
+}
+
+float grainWeightAt(const GrainParams& params, float coverage, float flow, int32_t x,
+                    int32_t y) noexcept {
+  if (params.enabled && params.blend == CoverageBlend::Height)
+    return grainOverlayFraction(flow * coverage, params.strength, 1.0f,
+                                grainHeightAt(params, x, y) * heightDepthGain(params.depth));
+  return flow * grainCoverageAt(params, coverage, x, y);
 }
 
 bool grainParamsEqual(const GrainParams& a, const GrainParams& b) noexcept {

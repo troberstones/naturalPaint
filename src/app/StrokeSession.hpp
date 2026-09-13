@@ -2220,6 +2220,9 @@ class StrokeSession {
   // no pigment store at pen-down.
   PigmentBuildup pigmentBuildup_;
   WashStroke wash_;
+  // The Dual Brush's two stroke masks (brush/Deposit.hpp §2d), on both deposit
+  // routes; cleared with `wash_`.
+  DualStroke dual_;
   PigmentTileStore washNothingBefore_;
   Vec2 cloneOffset_{};
   // --- the exit taper's repaint ------------------------------------------

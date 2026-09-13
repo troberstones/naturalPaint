@@ -1488,6 +1488,7 @@ void StrokeSession::beginRoutes(Layer& layer) {
   // it holds no latched scalars to begin -- and because the exit taper's
   // repaint comes back through here and must not find its ceiling spent.
   wash_ = WashStroke{};
+  dual_ = DualStroke{};
 
   if (route_ == StrokeRoute::PigmentErase)
     pigErase_.begin(resolvedOpacity_);
@@ -2408,9 +2409,9 @@ void StrokeSession::depositPending(bool isEndFlush) {
                               &frameTiles_)
           : route_ == StrokeRoute::RgbDeposit
               ? rgb_.depositDab(*layer.rgbTiles, dabTip, centre, doc.width, doc.height, selection,
-                                &frameTiles_, sweep)
+                                &frameTiles_, sweep, &dual_)
               : depositDab(*layer.pigmentTiles, dabTip, centre, doc.width, doc.height, selection,
-                          &frameTiles_, pigmentBuildup_, washFor(), sweep);
+                          &frameTiles_, pigmentBuildup_, washFor(), sweep, &dual_);
       frameTexels += c.texels;
     }
     ++dabs_;

@@ -91,9 +91,8 @@ PigmentTexel dabPreviewTexel(const BrushTip& tip, float scale, int cell, int px,
   // `(x, y)` is the bit-identical integer pair as this function's `(px, py)`
   // for cell 0 -- so grain, keyed on that integer pair in both places, agrees
   // too. `--selftest`'s grain section builds exactly that pair and compares.
-  const float cov = grainCoverageAt(tip.grain, dabPreviewCoverageAt(tip, scale, cell, px, py),
-                                    px, py);
-  const float deltaMass = tip.flow * cov;
+  const float deltaMass =
+      grainWeightAt(tip.grain, dabPreviewCoverageAt(tip, scale, cell, px, py), tip.flow, px, py);
   if (!(deltaMass > 0.0f)) return PigmentTexel{};
   return depositTexel(PigmentTexel{}, tip.pigment, deltaMass);
 }

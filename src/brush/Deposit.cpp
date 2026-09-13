@@ -356,6 +356,30 @@ float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept {
   return std::clamp(combineDualCoverage(tip.dualBlend, base, second), 0.0f, 1.0f);
 }
 
+float dualStrokeCoverage(const BrushTip& tip, DualStroke& dual, DualStrokeTile& at,
+                         TileCoord coord, PixelCoord local, float dx, float dy) {
+  const float c = singleTipCoverage(tip, dx, dy);
+  if (!(c > 0.0f)) return 0.0f;
+  if (at.primary == nullptr) {
+    at.primary = &dual.primary.getOrCreate(coord);
+    at.second = &dual.second.getOrCreate(coord);
+  }
+  const float p = at.primary->at(local);
+  const float primary = p + c * (1.0f - p);
+  at.primary->set(local, primary);
+  const float d = singleTipCoverage(*tip.dualTip, dx, dy);
+  const float s = at.second->at(local);
+  const float second = s + d * (1.0f - s);
+  at.second->set(local, second);
+
+  const auto to8 = [](float v) { return std::round(std::clamp(v, 0.0f, 1.0f) * 255.0f) / 255.0f; };
+  // `combineDualCoverage()` keeps the cookie cutter: an empty 8-bit primary
+  // combines to 0 under every blend.
+  const float combined =
+      std::clamp(combineDualCoverage(tip.dualBlend, to8(primary), to8(second)), 0.0f, 1.0f);
+  return std::min(1.0f, c * combined / primary);
+}
+
 float sweptDabCoverage(const BrushTip& tip, float dx, float dy, Vec2 sweep) noexcept {
   if ((sweep.x == 0.0f && sweep.y == 0.0f) || tip.bitmap != nullptr || tip.dualTip != nullptr)
     return dabCoverage(tip, dx, dy);
@@ -499,11 +523,12 @@ PixelBounds sweptDabBounds(const BrushTip& tip, Vec2 centre, Vec2 sweep, int32_t
 DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centre,
                         int32_t canvasW, int32_t canvasH, const Selection* selection,
                         std::vector<TileCoord>* touchedOut, PigmentBuildup buildup,
-                        WashStroke* wash, Vec2 sweep) {
+                        WashStroke* wash, Vec2 sweep, DualStroke* dual) {
   DepositCount count;
   if (!(tip.flow > 0.0f)) return count;
 
   // §1a, hoisted: properties of the stroke, not of a texel.
+  const bool dualStroke = dual != nullptr && tip.dualTip != nullptr;
   const bool washing =
       buildup.mode == PigmentBuildupMode::Wash && wash != nullptr && wash->before != nullptr;
   const float washCeiling = std::clamp(buildup.opacity, 0.0f, 1.0f) * kMaxMass;
@@ -553,6 +578,7 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
       // so creating a tile of it costs a caller nothing.
       StrokeMassTile* laidTile = nullptr;
       const PigmentTile* beforeTile = nullptr;
+      DualStrokeTile dualTile;
 
       for (int32_t y = y0; y <= y1; ++y) {
         const float dy = (static_cast<float>(y) + 0.5f) - centre.y;
@@ -560,7 +586,9 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
           const float dx = (static_cast<float>(x) + 0.5f) - centre.x;
           const PixelCoord local = tileLocalOffset(PixelCoord{x, y});
 
-          const float rawCov = sweptDabCoverage(tip, dx, dy, sweep);
+          const float rawCov =
+              dualStroke ? dualStrokeCoverage(tip, *dual, dualTile, coord, local, dx, dy)
+                         : sweptDabCoverage(tip, dx, dy, sweep);
           if (!(rawCov > 0.0f)) continue;
 
           // §2e: grain modulates the tip's own coverage at this texel's
@@ -572,7 +600,9 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
           // it. `grainCoverageAt()` returns `rawCov` bit-identical when
           // `tip.grain` is off (its own default), which is what keeps this
           // line a no-op for every brush that has not turned grain on.
-          const float cov = grainCoverageAt(tip.grain, rawCov, x, y);
+          // Flow included: `grainWeightAt()` (Height subtracts the paper from
+          // flow times coverage, not from coverage alone).
+          const float cov = grainWeightAt(tip.grain, rawCov, tip.flow, x, y);
           if (!(cov > 0.0f)) continue;  // a grain peak too tall for this pressure
 
           const float sel = selection != nullptr ? selectionTileCoverage(cover, local) : 1.0f;
@@ -590,7 +620,7 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
           // and at the shipped defaults a half-selected texel walks straight
           // through it in six dabs -- one and a half radii of travel, which is
           // less than one ordinary brush-width of a stroke.
-          const float deltaMass = tip.flow * cov * sel;
+          const float deltaMass = cov * sel;
           if (!(deltaMass > 0.0f)) continue;
 
           if (tile == nullptr) {
