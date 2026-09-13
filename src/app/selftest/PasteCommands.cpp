@@ -9,10 +9,9 @@
 
 namespace np {
 
-// app/PasteCommands (PRD M9, track `paste`): Paste Into and Paste as New
-// Document. The third build in this track's brief, the Move tool's
-// Option-drag duplicate, is proven by `runMoveToolTest()` instead
-// (app/selftest/MoveTool.cpp), beside the rest of that tool's own decisions.
+// app/PasteCommands (PRD M9): Paste Into and Paste as New Document. (The
+// Move tool's Option-drag duplicate is proven by `runMoveToolTest()` instead,
+// app/selftest/MoveTool.cpp.)
 //
 // Pure and headless throughout, except the one OS-pasteboard smoke test
 // section 3 names -- io/ClipboardImage.hpp's own header explains why the

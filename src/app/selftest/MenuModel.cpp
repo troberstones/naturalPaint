@@ -218,9 +218,8 @@ bool runMenuModelTest() {
   // (View > Show Frames and Slices, `AppState::showRegions`) -- counted the
   // same way, off `MenuAction`'s enumerators in the merged header (101
   // including `Count`), never by adding 2 to 98.
-  // 100 -> 102: PRD M9 (track `paste`), `PasteInto` and `PasteAsNewDocument`,
-  // beside `Paste` in the Edit menu -- counted the same way, off `MenuAction`'s
-  // enumerators in this header (103 including `Count`).
+  // 100 -> 102: PRD M9's `PasteInto` and `PasteAsNewDocument`, beside `Paste`
+  // in the Edit menu.
   check(kMenuActionCount == 102,
         "ids: exactly 102 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "

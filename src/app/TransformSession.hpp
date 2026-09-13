@@ -551,6 +551,12 @@ class TransformSession {
 
   bool dragging() const noexcept { return drag_.active; }
 
+  // True when this session lifts a COPY of its target instead of moving the
+  // original -- PRD M9's Option-drag duplicate. Set only at `beginLayer()`/
+  // `beginSelectionPixels()` and read by `commit()` and by the UI's preview
+  // (it must not hide the source, since nothing is being removed from it).
+  bool duplicating() const noexcept { return duplicate_; }
+
   // Begins a transform of `doc.layers[layerIndex]`'s own pixels (and, at
   // commit, its mask). Refuses a locked layer or an out-of-range index by
   // name, and refuses a layer with no content to transform -- either no
@@ -587,8 +593,14 @@ class TransformSession {
   // closes and why a bare index could not close it. Nothing else about the
   // document is touched, no edit is recorded, and a layer that already carries
   // an id keeps it.
+  // `duplicate` is PRD M9's Option-drag: `commit()` then duplicates the layer
+  // (or, for `beginSelectionPixels()` below, copies rather than cuts the
+  // selected pixels) instead of moving the original in place, and the UI must
+  // not hide the source from the composite while dragging -- `duplicating()`
+  // above is what it checks.
   TransformBeginResult beginLayer(OpenDocument& od, size_t layerIndex,
-                                  const Mat3& initialPending = mat3Identity());
+                                  const Mat3& initialPending = mat3Identity(),
+                                  bool duplicate = false);
 
   // Begins a transform of the pixels `selection` covers on
   // `doc.layers[layerIndex]`. Refuses a locked layer, an out-of-range index,
@@ -597,10 +609,11 @@ class TransformSession {
   // `ops::selectionContentRegion(selection)`. A copy of `selection` is kept
   // for `commit()`, so a change to `doc`'s live selection after `begin`
   // (which nothing in a headless session should cause mid-drag) does not
-  // retarget an in-progress transform.
+  // retarget an in-progress transform. `duplicate` -- see `beginLayer()`'s own
+  // comment just above.
   // Takes the `OpenDocument` for the same reason `beginLayer()` above does.
   TransformBeginResult beginSelectionPixels(OpenDocument& od, const Selection& selection,
-                                            size_t layerIndex);
+                                            size_t layerIndex, bool duplicate = false);
 
   // Begins a transform of every member of `sel` together, as one set (PRD
   // C12; this header's section 8). Refuses, by name, before touching `od`:
@@ -713,6 +726,7 @@ class TransformSession {
   DocumentRegion sourceBounds_;
   Mat3 pending_ = mat3Identity();
   Selection selectionSnapshot_;  // only meaningful for SelectionPixels
+  bool duplicate_ = false;       // PRD M9's Option-drag; see `duplicating()` above
 
   struct DragState {
     bool active = false;

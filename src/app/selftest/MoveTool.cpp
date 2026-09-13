@@ -529,21 +529,15 @@ bool runMoveToolTest() {
           "through the same refused gate");
   }
 
-  // --- 9. PRD M9: the Option-drag duplicate (track `paste`) ----------------
+  // --- 9. PRD M9: the Option-drag duplicate ---------------------------------
   //
-  // The decision table first: (selection present/absent) x (Option held at
-  // drag start), with "Option pressed or released MID-drag" deliberately
-  // absent as an axis, because it cannot be expressed -- `moveDragDuplicates()`
-  // is the only function that ever reads Option, `commitDuplicateMove()`
-  // takes a final `(dx, dy)` and no modifier at all, and `moveTargetFor()`
-  // (the selection half) is section 2's own function, unchanged. There is no
-  // parameter downstream of drag-start for a later Option read to reach, so a
-  // table over the third axis would only be testing that a value nobody wired
-  // in does nothing -- true by construction, not by assertion.
+  // The decision table: (selection present/absent) x (Option held at drag
+  // start). "Option pressed or released MID-drag" is deliberately absent as
+  // an axis -- `moveDragDuplicates()` is the only function that ever reads
+  // Option, called once at `beginMove()`, and nothing downstream re-reads it.
   {
     check(moveDragDuplicates(true) && !moveDragDuplicates(false),
-          "duplicate: decision table -- Option held at drag start duplicates, unheld relocates, "
-          "and that is ALL moveDragDuplicates() looks at");
+          "duplicate: decision table -- Option held at drag start duplicates, unheld relocates");
   }
 
   // --- 9a. Whole layer: no selection ----------------------------------------
@@ -557,15 +551,22 @@ bool runMoveToolTest() {
 
     check(moveTargetFor(od) == MoveTarget::WholeLayer,
           "duplicate: (fixture) no selection -- the whole-layer target rule, unchanged");
-    const DuplicateMoveResult dup = commitDuplicateMove(od, 20.0f, 5.0f);
-    check(dup.ok, "duplicate: a whole-layer Option-drag duplicate commits");
+    TransformSession session;
+    const TransformBeginResult began = beginMove(session, od, /*duplicate=*/true);
+    check(began.ok && session.duplicating(),
+          "duplicate: beginMove(..., true) opens a session with duplicating() true");
+    setMoveTranslation(session, 20.0f, 5.0f);
+    check(samePixels(sourceBefore, snapshot(od, 64, 48)),
+          "duplicate: REQUIRED -- begin and update write nothing at all; the document is "
+          "untouched until commit, exactly like an ordinary Move session");
+    const TransformCommitResult done = session.commit(od);
+    check(done.ok, "duplicate: a whole-layer Option-drag duplicate commits");
     check(od.document.layers.size() == layersBefore + 1,
           "duplicate: exactly ONE new layer appears -- not zero, not two");
     check(samePixels(sourceBefore, snapshot(od, 64, 48)),
           "duplicate: REQUIRED -- the SOURCE layer (still index 0) is bit-identical afterwards; "
           "the original must stay exactly where it was");
-    check(od.activeLayer == 1,
-          "duplicate: the new layer becomes active, ready for the rest of the drag");
+    check(od.activeLayer == 1, "duplicate: the new layer becomes active");
     const DocumentRegion movedBounds = rgbContentRegion(*od.document.layers[1].rgbTiles);
     check(movedBounds.x == 8 + 20 && movedBounds.y == 8 + 5,
           "duplicate: the COPY's content sits displaced by exactly the drag's own offset");
@@ -575,11 +576,10 @@ bool runMoveToolTest() {
 
   // --- 9b. A selection: the copy lands on the SAME layer, source untouched -
   //
-  // Same red/blue/gap fixture section 4 uses, so "the blue block is
-  // untouched" is again a bit comparison rather than a coordinate check.
-  // The drag distance (40) clears the 20-px-wide source block entirely, so
-  // "the original is bit-identical" and "the copy arrived" cannot be the same
-  // pixels answering both questions by accident.
+  // Same red/blue/gap fixture section 4 uses. The drag distance (40) clears
+  // the 20-px-wide source block entirely, so "the original is bit-identical"
+  // and "the copy arrived" cannot be the same pixels answering both by
+  // accident.
   {
     OpenDocument od = makeBlankOpenDocument(80, 32, WorkingSpace{});
     TileStore& tiles = *od.document.layers[0].rgbTiles;
@@ -595,11 +595,20 @@ bool runMoveToolTest() {
     od.selection = selectRectangle(0.0f, 0.0f, 20.0f, 32.0f);
     check(moveTargetFor(od) == MoveTarget::SelectionPixels,
           "duplicate: (fixture) a live selection -- the selection-pixels target rule, unchanged");
-    const DuplicateMoveResult dup = commitDuplicateMove(od, 40.0f, 0.0f);
-    check(dup.ok, "duplicate: a selection Option-drag duplicate commits");
+    TransformSession session;
+    const TransformBeginResult began = beginMove(session, od, /*duplicate=*/true);
+    check(began.ok && session.duplicating(),
+          "duplicate: beginMove(..., true) opens a duplicating selection-pixels session");
+    setMoveTranslation(session, 40.0f, 0.0f);
+    check(samePixels(sourceBefore,
+                     imageFromTileStore(*od.document.layers[0].rgbTiles, 0, 0, 20u, 32u)),
+          "duplicate: REQUIRED -- mid-drag the selected pixels are still there, untouched; a "
+          "duplicate session must not cut the source the way a plain Move's commit does");
+    const TransformCommitResult done = session.commit(od);
+    check(done.ok, "duplicate: a selection Option-drag duplicate commits");
     check(od.document.layers.size() == layersBefore,
           "duplicate: REQUIRED -- a selection duplicate stays on the SAME layer; no new layer "
-          "appears at all, unlike the whole-layer case above");
+          "appears, unlike the whole-layer case above");
 
     const TransformImage sourceAfter =
         imageFromTileStore(*od.document.layers[0].rgbTiles, 0, 0, 20u, 32u);
@@ -632,17 +641,18 @@ bool runMoveToolTest() {
     fillRgb(*locked.document.layers[0].rgbTiles, 4, 4, 20, 20);
     locked.recordEdit("fill fixture", EditKind::Content);
     locked.document.layers[0].locked = true;
-    const size_t cursorBefore = locked.history.cursor();
-    const DuplicateMoveResult lockedResult = commitDuplicateMove(locked, 5.0f, 5.0f);
+    TransformSession lockedSession;
+    const TransformBeginResult lockedResult = beginMove(lockedSession, locked, /*duplicate=*/true);
     check(!lockedResult.ok && lockedResult.error.find("locked") != std::string::npos &&
-              locked.history.cursor() == cursorBefore,
-          "duplicate: a locked active layer refuses BY NAME and writes nothing");
+              !lockedSession.active(),
+          "duplicate: a locked active layer refuses BY NAME, same as an ordinary move");
 
     OpenDocument emptySel = makeBlankOpenDocument(32, 32, WorkingSpace{});
     fillRgb(*emptySel.document.layers[0].rgbTiles, 4, 4, 20, 20);
     emptySel.recordEdit("fill fixture", EditKind::Content);
     emptySel.selection = selectRectangle(10.0f, 10.0f, 10.0f, 10.0f);  // zero area: no coverage
-    const DuplicateMoveResult emptyResult = commitDuplicateMove(emptySel, 5.0f, 5.0f);
+    TransformSession emptySession;
+    const TransformBeginResult emptyResult = beginMove(emptySession, emptySel, /*duplicate=*/true);
     check(!emptyResult.ok && emptyResult.error.find("no pixels") != std::string::npos,
           "duplicate: a selection engaged but covering no pixels refuses by name");
 
@@ -659,13 +669,17 @@ bool runMoveToolTest() {
     pig.recordEdit("pigment fixture", EditKind::Content);
 
     const size_t pigLayersBefore = pig.document.layers.size();
-    const DuplicateMoveResult pigWhole = commitDuplicateMove(pig, 5.0f, 5.0f);
+    TransformSession pigWholeSession;
+    check(beginMove(pigWholeSession, pig, /*duplicate=*/true).ok,
+          "duplicate: a Pigment layer with NO selection begins a duplicating whole-layer "
+          "session, unrefused -- matching an ordinary Move's own asymmetry");
+    const TransformCommitResult pigWhole = pigWholeSession.commit(pig);
     check(pigWhole.ok && pig.document.layers.size() == pigLayersBefore + 1,
-          "duplicate: a Pigment layer with NO selection duplicates as a whole layer, unrefused "
-          "-- matching an ordinary Move's own asymmetry (app/MoveTool.hpp section 6)");
+          "duplicate: ...and commits, producing exactly one new layer");
 
     pig.selection = selectRectangle(4.0f, 4.0f, 16.0f, 16.0f);
-    const DuplicateMoveResult pigSel = commitDuplicateMove(pig, 5.0f, 5.0f);
+    TransformSession pigSelSession;
+    const TransformBeginResult pigSel = beginMove(pigSelSession, pig, /*duplicate=*/true);
     check(!pigSel.ok && pigSel.error.find("Pigment") != std::string::npos,
           "duplicate: but a Pigment layer WITH a selection refuses by name -- splicing the "
           "moved paint back needs Kubelka-Munk mixing, not a straight alpha over");

@@ -190,7 +190,13 @@ MoveTarget moveTargetFor(const OpenDocument& od) noexcept;
 // Takes the `OpenDocument` rather than its `Document` for
 // `TransformSession::beginLayer()`'s own stated reason: the session records
 // which document it belongs to, so a commit cannot land in another one.
-TransformBeginResult beginMove(TransformSession& session, OpenDocument& od);
+//
+// `duplicate` (Option held at drag start) is forwarded to `beginLayer()`/
+// `beginSelectionPixels()` unchanged -- the session itself lifts a copy
+// instead of the original from here on, so the rest of a Move drag (preview,
+// per-frame translate, commit) needs no special case at all.
+TransformBeginResult beginMove(TransformSession& session, OpenDocument& od,
+                               bool duplicate = false);
 
 // One frame of a Move drag: `session`'s pending matrix becomes the PURE
 // translation `(dx, dy)`, in document pixels.
@@ -217,64 +223,12 @@ void setMoveTranslation(TransformSession& session, float dx, float dy) noexcept;
 // `error` exactly as `beginMove()`'s do, and leave `od` untouched.
 TransformCommitResult nudgeMove(OpenDocument& od, float dx, float dy);
 
-// ==========================================================================
-// 6. PRD M9 (track `paste`): THE OPTION-DRAG DUPLICATE
-// ==========================================================================
-//
-// Photoshop's Option-drag: dragging the Move tool with Option held duplicates
-// the target instead of relocating it, and the original is left exactly
-// where it was. Section 2's `moveTargetFor()` rule is unchanged -- a
-// selection still scopes the gesture to its own pixels, no selection still
-// takes the whole layer -- Option only changes what happens to the SOURCE.
-//
-// **Read once, at drag start, never again.** `moveDragDuplicates()` is a pure
-// function of "was Option down at mouse-down", and nothing downstream of it
-// (`commitDuplicateMove()` takes a final `(dx, dy)`, not a live modifier) ever
-// samples Option a second time -- which is what makes a mid-drag press or
-// release of Option a no-op: there is no code path left that could read it.
-//
-// **Deliberately NOT built on `TransformSession`.** That session's own
-// `SelectionPixels` commit CUTS the source before moving it
-// (app/TransformSession.hpp section 7's "cut, transform, splice back onto the
-// hole") -- exactly backwards for a duplicate, where the source must survive
-// untouched, and this track was told not to change that file. So this is new,
-// narrow, ONE-SHOT orchestration: called exactly once, at pen-up, with the
-// drag's total offset -- never per-frame, which would duplicate again on
-// every mouse-move.
-//
-// **Whole layer**: `core::duplicateLayer()` (already tested, already COW on
-// the tile stores) makes the copy, then the ordinary `ops::transformLayer()`
-// translate this file already uses for `nudgeMove()` moves ONLY the copy.
-// The source layer is never opened by either call.
-//
-// **Selection**: `core::copyThroughSelection()` (this track's own
-// core/Clipboard, a COPY, not `cutThroughSelection()`'s cut) lifts the
-// selected pixels; `ops::transformRgbTiles()` translates them; a straight
-// premultiplied `over` (this file's own copy of the same twelve-line splice
-// `app/TransformSession.cpp` already uses privately -- there is still no
-// shared "splice a TileStore over another" entry point in core/ or ops/,
-// that file's own comment says so) stamps the result back onto the SAME
-// layer's UNTOUCHED tiles. Refused for a Pigment layer, for the identical
-// reason `app/TransformSession.hpp` section 4 refuses a Pigment
-// `SelectionPixels` transform: splicing pigment back is Kubelka-Munk mixing,
-// not a straight blend, and this file does not reimplement that. The
-// selection itself moves with the pixels (`ops::transformSelectionCoverage()`),
-// matching `TransformSession.hpp` section 3's rule for an ordinary move.
+// Option-drag duplicate: read ONCE, at drag start, and never again -- a
+// mid-drag press or release of Option must not change a gesture already
+// under way, and nothing downstream of `beginMove()` re-reads the key.
+// `TransformSession::duplicating()` is what carries the answer from here on.
 inline bool moveDragDuplicates(bool optionHeldAtDragStart) noexcept {
   return optionHeldAtDragStart;
 }
-
-struct DuplicateMoveResult {
-  bool ok = false;
-  std::string error;
-  std::string editLabel;
-};
-
-// The whole gesture, as one call. Refuses (touching nothing) a document with
-// no active layer, a locked active layer, a Pigment layer with a live
-// selection, or a selection engaged but covering no pixels -- each named,
-// never a silent no-op. On success, records exactly ONE undo entry for
-// "duplicate + move" together.
-DuplicateMoveResult commitDuplicateMove(OpenDocument& od, float dx, float dy);
 
 }  // namespace np

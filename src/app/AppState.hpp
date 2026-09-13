@@ -1350,10 +1350,8 @@ struct AppState {
   bool requestCopyMerged = false;
   bool requestCut = false;
   bool requestPaste = false;
-  // PRD M9 (track `paste`): Paste Into and Paste as New Document. Session
-  // state for the identical reason `requestPaste` is -- the clipboard is
-  // process state, and Paste as New Document also touches `st.documents`,
-  // which a native menu callback has no safe way to reach either.
+  // PRD M9: session state for the same reason `requestPaste` is -- a native
+  // menu callback has no safe way to reach `st.documents` either.
   bool requestPasteInto = false;
   bool requestPasteAsNewDocument = false;
   bool requestDeleteSelection = false;

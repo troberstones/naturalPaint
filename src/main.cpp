@@ -4269,10 +4269,7 @@ int main(int argc, char** argv) {
     const bool strokeInputOk = np::runStrokeInputTest();
     const bool pointerQueueOk = np::runPointerQueueTest();
     const bool appIconOk = np::runAppIconTest();
-    // track `paste` (PRD M9): Paste Into's centred-on-selection insert and its
-    // mask equal to the selection's own coverage, and Paste as New Document's
-    // internal-clipboard-first / OS-pasteboard-fallback source. Headless and
-    // GPU-free.
+    // PRD M9: Paste Into and Paste as New Document. Headless and GPU-free.
     const bool pasteCommandsOk = np::runPasteCommandsTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
@@ -5597,9 +5594,8 @@ int main(int argc, char** argv) {
         else if (action == "copy_merged") st.requestCopyMerged = true;
         else if (action == "cut") st.requestCut = true;
         else if (action == "paste") st.requestPaste = true;
-        // PRD M9 (track `paste`): Paste Into and Paste as New Document are
-        // session state exactly as Paste above is -- same request-flag route,
-        // consumed alongside it in ui/MacPaintUI.cpp.
+        // PRD M9: same request-flag route as Paste above, consumed alongside
+        // it in ui/MacPaintUI.cpp.
         else if (action == "paste_into") st.requestPasteInto = true;
         else if (action == "paste_as_new_document") st.requestPasteAsNewDocument = true;
         else if (action == "delete_selection") st.requestDeleteSelection = true;

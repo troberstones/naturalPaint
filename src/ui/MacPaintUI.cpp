@@ -219,14 +219,6 @@ TransformPreviewTexture g_transformPreview;
 // same frame that stops hiding the layer.
 bool g_moveDragging = false;
 bool g_moveCommitPending = false;
-// PRD M9 (track `paste`): Option held at THIS drag's own mouse-down, and
-// nothing later -- app/MoveTool.hpp section 6's whole argument for why a
-// mid-drag Option press or release cannot change what the gesture already
-// under way does. A duplicate drag uses none of `st.transform` or
-// `g_transformPreview`: `commitDuplicateMove()` is one-shot, called once at
-// pen-up with the drag's own total offset (see the pen-up block below), so
-// there is nothing here to feed a live preview even if one were built.
-bool g_moveDuplicating = false;
 float g_moveStartX = 0.0f;
 float g_moveStartY = 0.0f;
 float g_moveDx = 0.0f;
@@ -17123,36 +17115,28 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       g_moveCommitPending = false;
       g_moveDragging = false;
       OpenDocument* od = st.documents.active();
-      if (g_moveDuplicating) {
-        // PRD M9's Option-drag duplicate: no `st.transform` session and no
-        // preview were ever opened for this branch (app/MoveTool.hpp section
-        // 6), so there is nothing to cancel or reset here -- only the
-        // one-shot commit itself. Photoshop still stamps a duplicate for a
-        // zero-distance Option-drag (a real edit, unlike an ordinary Move's
-        // own zero-distance click), so `(0, 0)` is not special-cased away.
-        g_moveDuplicating = false;
-        if (od != nullptr) {
-          const DuplicateMoveResult done = commitDuplicateMove(*od, g_moveDx, g_moveDy);
-          g_docStatus = done.ok ? "Duplicated." : done.error;
-        }
-      } else if (od == nullptr || !st.transform.active() || st.transform.documentId() != od->id) {
+      const bool duplicating = st.transform.duplicating();
+      if (od == nullptr || !st.transform.active() || st.transform.documentId() != od->id) {
         // The document went away, or the user switched tabs between pen-up
         // and here. Dropped rather than committed: `commit()` would refuse a
         // foreign document anyway (app/TransformSession.hpp), and a session
         // left live with no gizmo and no drag behind it is worse than none.
         st.transform.cancel();
         g_transformPreview.reset();
-      } else if (g_moveDx == 0.0f && g_moveDy == 0.0f) {
+      } else if (!duplicating && g_moveDx == 0.0f && g_moveDy == 0.0f) {
         // A click with no drag is not an edit. `commit()` would treat the
         // identity as a no-op and record nothing, so this is only saving the
-        // status line from announcing a move that did not happen.
+        // status line from announcing a move that did not happen. Photoshop
+        // still stamps a duplicate for a zero-distance Option-drag, so this
+        // guard does not apply when `duplicating` is set.
         st.transform.cancel();
         g_transformPreview.reset();
       } else {
         const TransformCommitResult done = st.transform.commit(*od);
-        g_docStatus = done.ok ? (done.exact != ExactRemap::None
-                                     ? "Moved -- lossless, no resampling."
-                                     : "Moved.")
+        g_docStatus = done.ok ? (duplicating ? "Duplicated."
+                                             : done.exact != ExactRemap::None
+                                                   ? "Moved -- lossless, no resampling."
+                                                   : "Moved.")
                               : done.error;
         // Only on success, matching the Free Transform block above: a refusal
         // leaves `active()` true, and the session then simply becomes an
@@ -17240,8 +17224,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const bool transformOnThisDoc = st.transform.active() && activeDocument != nullptr &&
                                     st.transform.documentId() == activeDocument->id &&
                                     transformHiIndex < activeDocument->document.layers.size();
+    // PRD M9's Option-drag duplicate: the source is never hidden, because it
+    // is never cut -- nothing here to split around, so the preview quad draws
+    // straight over the untouched composite.
+    const bool transformDuplicating = transformOnThisDoc && st.transform.duplicating();
     const bool transformSplitDraws =
-        !transformIsSet && transformOnThisDoc &&
+        !transformDuplicating && !transformIsSet && transformOnThisDoc &&
         anyVisibleLayerAbove(activeDocument->document, transformLayer) &&
         transformSplitIsExact(activeDocument->document, transformLayer);
 
@@ -17258,6 +17246,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       size_t layerIndex = static_cast<size_t>(-1);
       size_t hiIndex = static_cast<size_t>(-1);  // == layerIndex except for a LayerSet range
       bool split = false;
+      bool duplicating = false;
       bool valid = false;
       OpenDocument below;  // layers strictly below (split), all but one (hide), or all but a range
       OpenDocument above;  // layers strictly above; unused when `split` is false
@@ -17271,17 +17260,20 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     } else if (!views.valid || views.id != activeDocument->id ||
                views.revision != activeDocument->revision ||
                views.layerIndex != transformLayer || views.hiIndex != transformHiIndex ||
-               views.split != transformSplitDraws) {
+               views.split != transformSplitDraws || views.duplicating != transformDuplicating) {
       views = TransformSplitViews{};
       views.id = activeDocument->id;
       views.revision = activeDocument->revision;
       views.layerIndex = transformLayer;
       views.hiIndex = transformHiIndex;
       views.split = transformSplitDraws;
+      views.duplicating = transformDuplicating;
       views.below.id = activeDocument->id;
       views.below.revision = activeDocument->revision;
       views.below.document =
-          transformIsSet
+          transformDuplicating
+              ? activeDocument->document
+          : transformIsSet
               ? documentWithLayerRangeHidden(activeDocument->document, transformLoIndex,
                                              transformHiIndex)
           : transformSplitDraws
@@ -18146,10 +18138,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           od->recordEdit("paste", EditKind::Structural);
         }
       }
-      // PRD M9 (track `paste`): app/PasteCommands owns both engines; this is
-      // the same request-flag hook every clipboard command in this block
-      // already uses, for the identical reason (a native menu callback has
-      // no `OpenDocument&` to act through).
+      // PRD M9: app/PasteCommands owns both engines; same request-flag hook
+      // every clipboard command in this block already uses.
       if (st.requestPasteInto && od != nullptr) {
         const PasteIntoResult r = pasteInto(*od, st.clipboard);
         g_docStatus = r.ok ? "Pasted into selection." : r.error;
@@ -18708,41 +18698,27 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (!g_moveDragging && !g_moveCommitPending && !st.transform.active() && hovered &&
           ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         if (OpenDocument* od = st.documents.active()) {
-          // PRD M9: Option's state at THIS click, read once and never again
-          // (app/MoveTool.hpp section 6) -- `moveDragDuplicates()` is the one
-          // place that reads it.
-          if (moveDragDuplicates(ImGui::GetIO().KeyAlt)) {
-            // No `TransformSession` and no preview upload for this branch:
-            // `commitDuplicateMove()` is one-shot, called once at pen-up
-            // (below) with the drag's total offset. A live ghost of the
-            // moving duplicate is therefore not drawn mid-drag -- a named,
-            // scoped-down gap (this track's report says so), not an
-            // oversight; the original stays visible throughout, exactly
-            // where it was, which is at least half of "the originals stay".
+          // Option's state at THIS click, read once and never again
+          // (`moveDragDuplicates()`) -- the session carries the answer as
+          // `duplicating()` from here on, so the rest of the drag (preview,
+          // per-frame translate, commit) needs no branch of its own.
+          const bool duplicating = moveDragDuplicates(ImGui::GetIO().KeyAlt);
+          const TransformBeginResult began = beginMove(st.transform, *od, duplicating);
+          if (!began.ok) {
+            // app/MoveTool.hpp section 3: shown, never a dead drag. The drag
+            // is deliberately NOT started -- a gesture that moved a preview
+            // around for a second and then committed nothing is a worse lie
+            // than a pointer that does not pick the picture up at all.
+            g_docStatus = began.error;
+          } else {
             g_moveDragging = true;
-            g_moveDuplicating = true;
             g_moveStartX = tx;
             g_moveStartY = ty;
             g_moveDx = 0.0f;
             g_moveDy = 0.0f;
-          } else {
-            const TransformBeginResult began = beginMove(st.transform, *od);
-            if (!began.ok) {
-              // app/MoveTool.hpp section 3: shown, never a dead drag. The drag
-              // is deliberately NOT started -- a gesture that moved a preview
-              // around for a second and then committed nothing is a worse lie
-              // than a pointer that does not pick the picture up at all.
-              g_docStatus = began.error;
-            } else {
-              g_moveDragging = true;
-              g_moveDuplicating = false;
-              g_moveStartX = tx;
-              g_moveStartY = ty;
-              g_moveDx = 0.0f;
-              g_moveDy = 0.0f;
-              // The session's ONE upload, exactly as Cmd+T's begin does it.
-              beginTransformPreview(st, gpu);
-            }
+            // The session's ONE upload, exactly as Cmd+T's begin does it --
+            // the untouched source crop, whether or not it duplicates.
+            beginTransformPreview(st, gpu);
           }
         }
       } else if (g_moveDragging && !g_moveCommitPending) {
@@ -18752,9 +18728,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           // `setMoveTranslation()` carries the argument.
           g_moveDx = tx - g_moveStartX;
           g_moveDy = ty - g_moveStartY;
-          // A duplicate drag has no session to feed -- `commitDuplicateMove()`
-          // reads `g_moveDx`/`g_moveDy` directly at pen-up instead.
-          if (!g_moveDuplicating) setMoveTranslation(st.transform, g_moveDx, g_moveDy);
+          setMoveTranslation(st.transform, g_moveDx, g_moveDy);
         } else {
           // Committed at the TOP of the NEXT frame, not here. This frame's
           // composite was already built with this layer hidden, so writing

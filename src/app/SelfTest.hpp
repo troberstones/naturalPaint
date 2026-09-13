@@ -1421,13 +1421,11 @@ bool runTransformSessionTest();
 // and a Pigment-plus-selection target each refuse by name while a Pigment
 // layer with no selection does not. Headless and GPU-free.
 //
-// Also PRD M9's Option-drag duplicate (track `paste`): the decision table
-// (selection present/absent x Option held at drag-start) is read ONCE, at
-// drag start, and this file's own `moveDragDuplicates()`/`commitDuplicateMove()`
-// never sample it again -- so a mid-drag Option press or release cannot
-// change what a gesture already in progress does. Proves a duplicate leaves
-// the SOURCE bit-identical, the copy lands displaced by exactly the drag's
-// offset, and the whole gesture (duplicate + move) is ONE history entry.
+// Also PRD M9's Option-drag duplicate: `beginMove(..., true)` opens the same
+// `TransformSession` with `duplicating()` set, read once at drag start and
+// never again. Proves the source stays bit-identical through begin, update
+// and commit, the copy lands displaced by exactly the drag's offset, and
+// duplicate + move is ONE history entry.
 bool runMoveToolTest();
 
 // app/CropTool: `Tool::Crop` in both modes, and the two Image-menu items that
@@ -6716,10 +6714,9 @@ bool runPointerQueueTest();
 // byte for byte, reaches SDL unchanged, and the window accepted it.
 bool runAppIconTest();
 
-// app/PasteCommands (PRD M9, track `paste`): Paste Into and Paste as New
-// Document, the other two of `docs/reach-paste.md`'s three builds (the third,
-// the Move tool's Option-drag duplicate, is proven by `runMoveToolTest()`
-// instead, beside the rest of that tool's decisions).
+// app/PasteCommands (PRD M9): Paste Into and Paste as New Document. (The
+// third build, the Move tool's Option-drag duplicate, is proven by
+// `runMoveToolTest()` instead, beside the rest of that tool's decisions.)
 //
 // Paste Into: the new layer's mask equals the selection's own coverage
 // wherever either the selection or the pasted content touches a tile, the
