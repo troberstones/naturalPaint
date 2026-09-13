@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 
+#include "core/Channels.hpp"
 #include "core/Document.hpp"
 #include "core/History.hpp"
 #include "core/LayerOps.hpp"
@@ -296,6 +297,14 @@ struct OpenDocument {
   // empty-but-engaged selection, which core/SelectionMask.hpp is explicit is
   // a different state.
   std::vector<std::optional<Selection>> refineUndoStack;
+
+  // PRD E12. `std::nullopt` outside quick mask; engaged while the mode is
+  // live. Session state for `selection`'s own reason -- a paintable overlay
+  // with no `core::History` entry and no file representation -- and per
+  // `OpenDocument` rather than a single global by construction, which is
+  // what keeps switching or closing documents from leaking one document's
+  // live mask into another's.
+  std::optional<QuickMask> quickMask;
 
   // Bumped whenever `selection` changes. ui/MacPaintUI caches the selection's
   // drawn bounds against this, and PaintSim's GPU coverage upload is keyed on

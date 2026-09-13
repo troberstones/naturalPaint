@@ -173,6 +173,15 @@ CommandCoverage coverageFor(MenuAction action) {
       // the refine it wants, rather than un-stating one it never made.
       return {CommandCoverageKind::NotRecordable, nullptr,
               "pops OpenDocument::refineUndoStack, which is per-session state that is deliberately outside core::History and outside the document file -- so a recorded undo would undo whatever the replaying session happened to do last. An action states the refine it wants instead"};
+    case MenuAction::SaveSelectionAsChannel:
+      return {CommandCoverageKind::Registered, "save_selection_as_channel", nullptr};
+    case MenuAction::LoadChannelAsSelection:
+      return {CommandCoverageKind::Registered, "load_channel_as_selection", nullptr};
+    case MenuAction::ToggleQuickMask:
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "enters/leaves OpenDocument::quickMask, a live paintable overlay held on the "
+              "session, never in core::History or the document file (core/Channels.hpp's "
+              "QuickMask section)"};
     case MenuAction::PaintModeItem:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "AppState -- the paint mode is a tool setting"};

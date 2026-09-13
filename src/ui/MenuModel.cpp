@@ -136,6 +136,13 @@ const MenuItemSpec* specTable() {
     // No "...": it needs nothing from the user and acts immediately, the
     // same reason Deselect and Invert (Edit menu) carry none either.
     set(MenuAction::SelectUndoRefine, "Undo Refine", "");
+    set(MenuAction::SaveSelectionAsChannel, "Save Selection as Channel...", "");
+    set(MenuAction::LoadChannelAsSelection, "Load Channel as Selection...", "");
+    // Bare "Q", like `MirrorX`'s bare "F" above: a hint string only, no
+    // `MenuKeyEquivalent` -- claiming a bare letter as a native key
+    // equivalent would consume it before SDL's keymap dispatch (main.cpp)
+    // ever saw it, and Q is `keymaps/default.json`'s `quick_mask` action.
+    set(MenuAction::ToggleQuickMask, "Edit in Quick Mask Mode", "Q");
 
     family(MenuAction::PaintModeItem);
     family(MenuAction::ToolItem);
@@ -458,6 +465,9 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::SelectColourRange: return "SelectColourRange";
     case MenuAction::SelectLuminanceRange: return "SelectLuminanceRange";
     case MenuAction::SelectUndoRefine: return "SelectUndoRefine";
+    case MenuAction::SaveSelectionAsChannel: return "SaveSelectionAsChannel";
+    case MenuAction::LoadChannelAsSelection: return "LoadChannelAsSelection";
+    case MenuAction::ToggleQuickMask: return "ToggleQuickMask";
     case MenuAction::PaintModeItem: return "PaintModeItem";
     case MenuAction::ToolItem: return "ToolItem";
     case MenuAction::PauseSolver: return "PauseSolver";
@@ -646,6 +656,9 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::SelectColourRange:
     case MenuAction::SelectLuminanceRange:
     case MenuAction::SelectUndoRefine:
+    case MenuAction::SaveSelectionAsChannel:
+    case MenuAction::LoadChannelAsSelection:
+    case MenuAction::ToggleQuickMask:
     case MenuAction::PaintModeItem:
     case MenuAction::GaussianBlur:
     case MenuAction::Sharpen:
@@ -1095,6 +1108,19 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
         "Nothing to undo. Grow, Shrink, Feather, Colour Range and Luminance Range each "
         "push one step here; the ordinary Undo does not reach a selection change (see "
         "OpenDocument::selection in app/DocumentLifecycle.hpp)."));
+    s.push_back(separator());
+    // PRD E11. Same `unavailableReason` the command itself already refuses
+    // on (app/CommandsOpStack.cpp's `saveSelectionUnavailable()`) -- an
+    // engaged selection to save.
+    s.push_back(refusable(item(MenuAction::SaveSelectionAsChannel), ctx.hasEngagedSelection,
+                          "Nothing is selected, so there is no coverage to save."));
+    s.push_back(refusable(item(MenuAction::LoadChannelAsSelection), ctx.hasChannels,
+                          "This document has no saved channels yet -- Save Selection as "
+                          "Channel first."));
+    s.push_back(separator());
+    // PRD E12. A Check, not a one-shot item -- see the enumerator's own
+    // comment on why quick mask is a mode rather than a command.
+    s.push_back(check(MenuAction::ToggleQuickMask, ctx.quickMaskActive));
 
     bar.push_back(std::move(select));
   }

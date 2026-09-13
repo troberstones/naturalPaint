@@ -40,6 +40,7 @@
 #include "app/Command.hpp"
 #include "app/CommandsImage.hpp"
 #include "app/CommandsLayers.hpp"
+#include "app/CommandsOpStack.hpp"
 #include "app/CompPanel.hpp"
 #include "app/CropTool.hpp"  // Tool::Crop, both modes
 #include "app/RegionTool.hpp"  // Tool::Frame, Tool::Slice
@@ -6453,6 +6454,23 @@ void installSelection(OpenDocument& od, std::optional<Selection> selection) {
 
 }  // namespace
 
+// PRD E12: enter/leave quick mask. External linkage and declared in
+// ui/MacPaintUI.hpp for `installSelection()`'s own reason -- `app/selftest`
+// calls this directly, since it cannot open a window to press Q in.
+//
+// Session-only both ways: entering and leaving call `installSelection()`
+// itself or write `OpenDocument::quickMask` alone, neither of which is
+// `recordEdit()`, so this never appends a history entry -- PRD E12's own
+// requirement that leaving must not look like a layer edit.
+void toggleQuickMask(OpenDocument& od) {
+  if (od.quickMask.has_value()) {
+    installSelection(od, selectionFromQuickMask(*od.quickMask));
+    od.quickMask.reset();
+  } else {
+    od.quickMask = quickMaskFromSelection(od.selection.has_value() ? &*od.selection : nullptr);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The Select menu's dialog -> engine boundary (docs/reachability-audit.md C5;
 // PRD E4/E8/E9). Declared in ui/MacPaintUI.hpp and defined here, external
@@ -12195,6 +12213,9 @@ bool g_selectShrinkRequested = false;
 bool g_selectFeatherRequested = false;
 bool g_selectColourRangeRequested = false;
 bool g_selectLuminanceRangeRequested = false;
+// PRD E11, same route.
+bool g_saveSelectionAsChannelRequested = false;
+bool g_loadChannelAsSelectionRequested = false;
 
 // The shape Grow, Shrink and Feather share: a title, a one-line explanation
 // of what THIS op's radius means (grow/shrink move an edge; feather softens
@@ -12373,6 +12394,116 @@ void drawSelectLuminanceRangeDialog(AppState& st) {
   endDialog();
 }
 
+// Save Selection as Channel (PRD E11). Through `applyCommand()` directly --
+// docs/automation.md §2.3's boundary is `applyCommand()` itself, and this
+// dialog's outcome (a channel may come back uniquified, §5's own warning) is
+// not the pixel-op three-way `runPixelCommand()` translates, so a bespoke
+// footer reads the `CommandResult` rather than routing through it.
+void drawSaveSelectionAsChannelDialog(AppState& st) {
+  static char nameBuf[128] = "Alpha";
+  static std::string error;
+
+  if (g_saveSelectionAsChannelRequested) {
+    g_saveSelectionAsChannelRequested = false;
+    error.clear();
+    ImGui::OpenPopup("Save Selection as Channel");
+  }
+  if (!beginDialog("Save Selection as Channel")) return;
+
+  dialogText("Saves the active selection into this document as a named alpha channel -- "
+             "document data, unlike the marquee itself, so it survives a save and reload "
+             "(core/Channels.hpp).");
+  ImGui::Spacing();
+  dialogInputText("Name", nameBuf, sizeof(nameBuf), ImGuiInputTextFlags_EnterReturnsTrue);
+
+  OpenDocument* od = st.documents.active();
+  const bool usable = od != nullptr && od->selection.has_value();
+  if (od == nullptr) dialogHint("No document is open.");
+  else if (!usable) dialogHint("Nothing is selected, so there is no coverage to save.");
+  if (!error.empty()) dialogStatusLine(DialogStatus::Error, error);
+
+  DialogFooter footer;
+  footer.commit = "Save";
+  footer.commitEnabled = usable && nameBuf[0] != '\0';
+  switch (dialogFooter(footer)) {
+    case DialogAction::Commit: {
+      const CommandResult r = applyCommand(*od, saveSelectionAsChannelCommand(nameBuf));
+      if (!r.ok) {
+        error = r.status;
+      } else {
+        // May differ from what was typed (§5's uniquify-on-collision warning)
+        // -- said here, on `g_docStatus`'s own "OK: ... / ! warning"
+        // convention, since this dialog is closing and a warning line drawn
+        // inside it will not still be on screen for the user to read.
+        g_docStatus = r.status;
+        for (const std::string& w : r.warnings) g_docStatus += "\n! " + w;
+        ImGui::CloseCurrentPopup();
+      }
+      break;
+    }
+    case DialogAction::Cancel:
+      ImGui::CloseCurrentPopup();
+      break;
+    default:
+      break;
+  }
+  endDialog();
+}
+
+// Load Channel as Selection (PRD E11): a plain list, since a document's
+// channels are usually few and a name is what identifies one to a user (never
+// an index, docs/automation.md §3.2).
+void drawLoadChannelAsSelectionDialog(AppState& st) {
+  static int selected = 0;
+  static std::string error;
+
+  if (g_loadChannelAsSelectionRequested) {
+    g_loadChannelAsSelectionRequested = false;
+    error.clear();
+    selected = 0;
+    ImGui::OpenPopup("Load Channel as Selection");
+  }
+  if (!beginDialog("Load Channel as Selection")) return;
+
+  OpenDocument* od = st.documents.active();
+  const std::vector<AlphaChannel>* channels = od != nullptr ? &od->document.channels : nullptr;
+  const bool usable = channels != nullptr && !channels->empty();
+
+  dialogText("Replaces the active selection with a channel saved earlier by Save Selection as "
+             "Channel.");
+  ImGui::Spacing();
+  if (!usable) {
+    dialogHint(od == nullptr ? "No document is open."
+                             : "This document has no saved channels yet.");
+  } else {
+    if (selected >= static_cast<int>(channels->size())) selected = 0;
+    std::vector<const char*> names;
+    names.reserve(channels->size());
+    for (const AlphaChannel& c : *channels) names.push_back(c.name.c_str());
+    dialogCombo("Channel", &selected, names.data(), static_cast<int>(names.size()));
+  }
+  if (!error.empty()) dialogStatusLine(DialogStatus::Error, error);
+
+  DialogFooter footer;
+  footer.commit = "Load";
+  footer.commitEnabled = usable;
+  switch (dialogFooter(footer)) {
+    case DialogAction::Commit: {
+      const CommandResult r =
+          applyCommand(*od, loadChannelAsSelectionCommand((*channels)[static_cast<size_t>(selected)].name));
+      if (!r.ok) error = r.status;
+      else ImGui::CloseCurrentPopup();
+      break;
+    }
+    case DialogAction::Cancel:
+      ImGui::CloseCurrentPopup();
+      break;
+    default:
+      break;
+  }
+  endDialog();
+}
+
 // The five dialogs together, called once a frame from the same place
 // drawExportAsDialog() &c. are: outside BeginMainMenuBar()/EndMainMenuBar(),
 // because a popup opened from a menu item has to begin outside the menu
@@ -12398,6 +12529,8 @@ void drawSelectMenuDialogs(AppState& st) {
   drawRefineRadiusDialog(st, featherDlg, &g_selectFeatherRequested);
   drawSelectColourRangeDialog(st);
   drawSelectLuminanceRangeDialog(st);
+  drawSaveSelectionAsChannelDialog(st);
+  drawLoadChannelAsSelectionDialog(st);
 }
 
 MenuFamilyEntry familyEntry(std::string label, bool enabled, bool checked,
@@ -12615,6 +12748,8 @@ MenuContext menuContextFromState(AppState& st) {
     ctx.hasEngagedSelection = selectRefineEnabled(*doc);
     ctx.hasRgbSource = selectRangeEnabled(*doc);
     ctx.hasRefineUndo = selectUndoRefineEnabled(*doc);
+    ctx.hasChannels = !doc->document.channels.empty();
+    ctx.quickMaskActive = doc->quickMask.has_value();
   }
 
   // --- Medium / Goodies ---------------------------------------------------
@@ -13151,6 +13286,22 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     // queued native-menu action (see undoLastRefine()'s own comment).
     case MenuAction::SelectUndoRefine:
       if (doc != nullptr) undoLastRefine(*doc);
+      break;
+
+    // PRD E11. Deferred for the identical reason the five refines above are:
+    // each opens a small modal, and `ImGui::OpenPopup()` cannot be called
+    // from a native menu's AppKit callback.
+    case MenuAction::SaveSelectionAsChannel:
+      g_saveSelectionAsChannelRequested = true;
+      break;
+    case MenuAction::LoadChannelAsSelection:
+      g_loadChannelAsSelectionRequested = true;
+      break;
+
+    // PRD E12. Acts immediately -- there is nothing to ask the user, unlike
+    // the two above.
+    case MenuAction::ToggleQuickMask:
+      if (doc != nullptr) toggleQuickMask(*doc);
       break;
 
     // --- Medium / Goodies -------------------------------------------------

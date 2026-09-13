@@ -663,4 +663,11 @@ void installRefinedSelection(OpenDocument& od, std::optional<Selection> result);
 // quietly rather than pop a stack that emptied out from under it.
 bool undoLastRefine(OpenDocument& od);
 
+// PRD E12's `MenuAction::ToggleQuickMask` body, and the `Q` keymap action's:
+// enters quick mask from the active selection (absent means an empty mask,
+// core::quickMaskFromSelection()'s own rule), or leaves it, converting the
+// painted overlay back into the active selection. Never touches
+// `core::History` in either direction.
+void toggleQuickMask(OpenDocument& od);
+
 }  // namespace np
