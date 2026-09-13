@@ -274,6 +274,8 @@ set(NP_SELFTEST_SOURCES
   app/selftest/SplitView.cpp
   app/selftest/DustScratches.cpp
   app/selftest/ShadowsHighlights.cpp
+  app/selftest/Version.cpp
+  app/selftest/FlatsKeys.cpp
 )
 
 add_executable(naturalPaint
@@ -538,6 +540,7 @@ add_executable(naturalPaint
   ui/DustScratchesDialog.cpp
   ui/ShadowsHighlightsDialog.cpp
   ui/RepairDialogs.cpp
+  app/Version.cpp
 )
 
 # NP_SELFTEST's two halves: the 236 section TUs, and the guard main.cpp's
@@ -673,6 +676,26 @@ target_include_directories(naturalPaint PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/gen
 # For app/selftest/AppIcon.cpp's embedded-vs-committed comparison.
 target_compile_definitions(naturalPaint PRIVATE NP_APP_ICON_PNG="${NP_APP_ICON_PNG}")
 
+# ---- the version header (app/Version.cpp reads it) -------------------------
+# `naturalPaint --version`'s git hash has to come from the last BUILD, not the
+# last `cmake` configure -- see cmake/GenerateVersionHeader.cmake's own header
+# for why configure time is the wrong answer. `np_version_header` is a phony
+# ALL target with no OUTPUT, so Ninja reruns the (cheap, one or two `git`
+# calls) script every build; the script itself rewrites the header only when
+# its bytes change, so a build that does not move the hash never touches the
+# file's mtime and never forces a relink of anything that includes it.
+set(NP_VERSION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/app/VersionInfo.hpp")
+add_custom_target(np_version_header ALL
+  COMMAND ${CMAKE_COMMAND}
+    -DNP_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+    -DNP_VERSION=${PROJECT_VERSION}
+    -DNP_OUT_FILE=${NP_VERSION_HEADER}
+    -P ${CMAKE_SOURCE_DIR}/cmake/GenerateVersionHeader.cmake
+  BYPRODUCTS "${NP_VERSION_HEADER}"
+  COMMENT "naturalPaint: refreshing version header"
+  VERBATIM)
+add_dependencies(naturalPaint np_version_header)
+
 if(WIN32)
   set(NP_APP_ICON_ICO "${CMAKE_SOURCE_DIR}/icons/windows/naturalPaint.ico")
   configure_file("${CMAKE_SOURCE_DIR}/icons/windows/naturalPaint.rc.in"
@@ -690,9 +713,8 @@ if(APPLE AND NP_MACOS_APP_BUNDLE)
     MACOSX_BUNDLE_BUNDLE_NAME "naturalPaint"
     MACOSX_BUNDLE_ICON_FILE "naturalPaint.icns"
     MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.troberstones.naturalPaint"
-    # No project() VERSION yet; Launch Services treats an empty one as malformed.
-    MACOSX_BUNDLE_SHORT_VERSION_STRING "0.0"
-    MACOSX_BUNDLE_BUNDLE_VERSION "0")
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}")
   message(STATUS "naturalPaint: building naturalPaint.app (NP_MACOS_APP_BUNDLE=ON)")
 endif()
 

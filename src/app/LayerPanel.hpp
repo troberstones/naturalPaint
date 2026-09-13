@@ -260,6 +260,21 @@ std::string layerRowTitle(const Layer& layer, size_t layerIndex);
 // not be "labelled as such" in any useful sense.
 std::string layerRowSubLine(const Layer& layer);
 
+// The document-aware overload: identical to the one above, except that on a
+// Flats layer it also appends the fill count docs/ui.md §3.2 puts right
+// after the kind (`FLATS · 153 FILLS · NORMAL · 100%`) -- the count `Layer`
+// alone cannot see, since it lives in a cached `flats::FlatEvaluation`
+// (flats/FlatsLayer.hpp) keyed on the layer's content hash.
+//
+// **Peek only.** This reads `flatsPeekEvaluation()`, never
+// `flatsEvaluateLayer()`: a row draw runs every frame the panel is open, and
+// this function must not be what turns that into a segmentation. With no
+// cached evaluation the row shows no count -- it does not show `0 FILLS`,
+// which would claim a fact ("this Flats layer currently has no fills") that
+// an uncomputed evaluation cannot support. `layerIndex` out of range for
+// `doc` returns an empty string.
+std::string layerRowSubLine(const Document& doc, size_t layerIndex);
+
 // --- The blend dropdown (PLAN.md Phase 5 step 2; PRD B7, C3, L5) ----------
 
 // The modes the dropdown offers for `doc.layers[layerIndex]`, in

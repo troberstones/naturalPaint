@@ -6805,4 +6805,11 @@ bool runDustScratchesTest();
 // blurred luminance guide, so it is spatial rather than a point curve. Headless.
 bool runShadowsHighlightsTest();
 
+// `naturalPaint --version`: versionString()'s shape. Headless.
+bool runVersionTest();
+
+// docs/shortcuts.md §1.1's six Flats keys: Flats-scoped resolution, the same
+// toggle as the palette cells, and accept-all through the per-gap path. Headless.
+bool runFlatsKeysTest();
+
 }  // namespace np
