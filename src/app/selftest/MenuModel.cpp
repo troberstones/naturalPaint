@@ -221,15 +221,16 @@ bool runMenuModelTest() {
   // 100 -> 108: PRD M9's `PasteInto` and `PasteAsNewDocument`, PRD D26's
   // `Fill`, `Stroke` and `DefinePattern`, and PRD E11/E12's
   // `SaveSelectionAsChannel`, `LoadChannelAsSelection` and `ToggleQuickMask`.
-  check(kMenuActionCount == 108,
-        "ids: exactly 108 actions -- the original 41-item extraction plus D1/D2's "
+  // 108 -> 109: PRD D23's `Warp`.
+  check(kMenuActionCount == 109,
+        "ids: exactly 109 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
         "dialog, Brush Settings, the crop pair, Pigment, Batch, Inpaint, D8's "
         "make-tileable pair, the 3x3 repeat preview, the region export/show pair, "
-        "Paste Into / Paste as New Document, Fill/Stroke/Define Pattern and the "
-        "save/load channel and quick-mask trio, so an item lost in a later edit "
-        "fails here");
+        "Paste Into / Paste as New Document, Fill/Stroke/Define Pattern, the "
+        "save/load channel and quick-mask trio, and PRD D23's Warp toggle, so an "
+        "item lost in a later edit fails here");
 
   {
     std::set<MenuAction> seen;

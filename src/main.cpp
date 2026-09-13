@@ -1730,6 +1730,11 @@ int main(int argc, char** argv) {
   // `--transform-demo 1` alone (no pen demo) is the `transform_stack`
   // golden case.
   int transformDemoLayer = -1;
+  // PRD D23: `--transform-demo warp` -- the literal token "warp" in the same
+  // argument slot a layer index would otherwise occupy, so it toggles the
+  // freshly-begun session into Warp mode and bends one control point,
+  // rather than reading `std::atoi("warp")`'s silent 0 as layer index 0.
+  bool transformDemoWarp = false;
   bool demoDocument = false;
   bool pigmentStrokeDemo = false;
   bool pigmentStrokeDemoMix = true;
@@ -2465,8 +2470,12 @@ int main(int argc, char** argv) {
       journalEnabled = false;
     } else if (a == "--transform-demo") {
       transformDemo = true;
-      if (i + 1 < argc && argv[i + 1][0] != '-')
+      if (i + 1 < argc && std::string(argv[i + 1]) == "warp") {
+        transformDemoWarp = true;
+        ++i;
+      } else if (i + 1 < argc && argv[i + 1][0] != '-') {
         transformDemoLayer = std::atoi(argv[++i]);
+      }
     } else if (a == "--ui-multiselect-demo") {
       // PLAN.md Phase 5 step 11 / PRD C12, C13, C15: press the multi-selection's
       // own set commands. See runUiMultiSelectDemo().
@@ -5000,6 +5009,10 @@ int main(int argc, char** argv) {
         np::setActiveLayer(*od, static_cast<size_t>(transformDemoLayer));
     }
     st.requestFreeTransform = true;
+    if (transformDemoWarp) {
+      st.requestWarp = true;
+      st.requestWarpDemoBend = true;
+    }
   }
 
   // After all of them, and the only fixture that is not meant to be combined

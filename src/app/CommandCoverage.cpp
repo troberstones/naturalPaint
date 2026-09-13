@@ -361,6 +361,17 @@ CommandCoverage coverageFor(MenuAction action) {
       return {CommandCoverageKind::Registered, "stroke", nullptr};
     case MenuAction::DefinePattern:
       return {CommandCoverageKind::Registered, "define_pattern", nullptr};
+    case MenuAction::Warp:
+      // Classified exactly as `FreeTransform` above, for the identical
+      // reason (PRD D23's brief: "classify exactly as Free Transform's
+      // commit is today"). `FreeTransform` itself is NotRecordable -- it
+      // begins an interactive gesture with on-canvas handles that the
+      // session owns live -- so there is no "if Free Transform records a
+      // command" branch to take here either.
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "toggles the live transform session's shape between an affine box and a warp net; "
+              "begins/continues an interactive gesture with on-canvas handles, exactly as "
+              "FreeTransform above -- the session owns the live transform"};
     case MenuAction::Count:
       // Not an action: the enum's own size marker.
       return {CommandCoverageKind::NotRecordable, nullptr, "the enum's count marker, not an action"};

@@ -13558,6 +13558,11 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     case MenuAction::NumericTransform:
       g_numericTransformRequested = true;
       break;
+    // PRD D23: same "needs the live document" reason as FreeTransform just
+    // above -- see AppState::requestWarp's own comment.
+    case MenuAction::Warp:
+      st.requestWarp = true;
+      break;
     case MenuAction::Cut:
       st.requestCut = true;
       break;
@@ -17620,6 +17625,64 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
 
+    // --- Warp (Edit > Warp, PRD D23) -----------------------------------------
+    //
+    // A Free Transform <-> Warp TOGGLE of the SAME live session
+    // (`app/TransformSession.hpp` section 9) -- see `AppState::requestWarp`'s
+    // own comment for why this is a request rather than a direct call.
+    // Beginning a FRESH session when none is live mirrors the single-layer
+    // path of the `requestFreeTransform` block just above exactly; the
+    // LayerSet path is deliberately not reproduced here, because
+    // `TransformSession::commit()` refuses a `TransformTarget::LayerSet`
+    // warp by name (section 9) -- starting one under a multi-layer selection
+    // would only walk straight into that refusal.
+    if (st.requestWarp) {
+      st.requestWarp = false;
+      OpenDocument* od = st.documents.active();
+      const bool liveHere =
+          st.transform.active() && od != nullptr && st.transform.documentId() == od->id;
+      if (!liveHere) {
+        const std::optional<size_t> li = od != nullptr ? activeLayerIndex(*od) : std::nullopt;
+        if (od == nullptr || !li) {
+          g_docStatus = "Warp needs an open document with a layer.";
+        } else {
+          const TransformBeginResult began =
+              od->selection ? st.transform.beginSelectionPixels(*od, *od->selection, *li)
+                            : st.transform.beginLayer(*od, *li);
+          if (!began.ok) g_docStatus = began.error;
+          if (began.ok) {
+            enterTransformTool(st);
+            beginTransformPreview(st, gpu);
+            st.transform.setWarpMode(true, st.warpGridN);
+          }
+        }
+      } else if (st.transform.mode() == TransformMode::Affine) {
+        st.transform.setWarpMode(true, st.warpGridN);
+      } else {
+        // Toggling back: section 9's own decision -- the net is discarded,
+        // not collapsed into an approximating matrix.
+        st.transform.setWarpMode(false);
+      }
+    }
+
+    // `--transform-demo warp` only -- see `AppState::requestWarpDemoBend`'s
+    // own comment. Runs in the same frame as the `requestWarp` block just
+    // above, which is what just built `warpMesh()` for this to bend.
+    if (st.requestWarpDemoBend) {
+      st.requestWarpDemoBend = false;
+      if (st.transform.mode() == TransformMode::Warp) {
+        const WarpMesh& mesh = st.transform.warpMesh();
+        const int n = mesh.n();
+        const WarpControlRef center{true, 3 * (n / 2), 3 * (n / 2)};
+        const float bend =
+            std::min(static_cast<float>(mesh.bounds().width), static_cast<float>(mesh.bounds().height)) *
+            0.15f;
+        st.transform.warpBeginDrag(center, Point2{0.0f, 0.0f});
+        st.transform.warpUpdateDrag(Point2{bend, -bend});
+        st.transform.warpEndDrag();
+      }
+    }
+
     // ===== Tool::Move -- BEGIN: last frame's pen-up, and the nudge =========
     //
     // Serviced HERE, above the composite decision, for the reason
@@ -17999,7 +18062,29 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       const float rotateReachDoc = kTransformRotateReachPx / zoom;
 
       // ---- input, claimed before any tool sees it -------------------------
-      if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+      //
+      // PRD D23: Warp mode claims the SAME mouse/keyboard the affine gizmo
+      // does, through its own parallel set of session methods
+      // (`warpHitTest()`/`warpBeginDrag()`/`warpUpdateDrag()`/
+      // `warpDragging()`/`warpEndDrag()`, `app/TransformSession.hpp` section
+      // 9) rather than by teaching `TransformHandle` a control-net index --
+      // that enum names the eight box handles plus rotate, not one of
+      // potentially 13x13 lattice points. Commit and cancel below need no
+      // branch at all: `TransformSession::commit()`/`cancel()` already
+      // dispatch on `mode()` internally.
+      if (st.transform.mode() == TransformMode::Warp) {
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+          const WarpControlRef grabbed = st.transform.warpHitTest(Point2{tx, ty}, handleRadiusDoc);
+          if (grabbed.valid) st.transform.warpBeginDrag(grabbed, Point2{tx, ty});
+        }
+        if (st.transform.warpDragging()) {
+          if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            st.transform.warpUpdateDrag(Point2{tx, ty});
+          } else {
+            st.transform.warpEndDrag();
+          }
+        }
+      } else if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         const TransformHandle grabbed = st.transform.hitTest(
             Point2{tx, ty}, handleRadiusDoc, rotateReachDoc);
         // A click on nothing is NOT a commit and NOT a cancel -- it is
@@ -18012,7 +18097,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // arm, which is what finally made that sentence true.
         if (grabbed != TransformHandle::None) st.transform.beginDrag(grabbed, Point2{tx, ty});
       }
-      if (st.transform.dragging()) {
+      if (st.transform.mode() == TransformMode::Affine && st.transform.dragging()) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
           // Modifiers read live, per frame, not latched at grab time -- so
           // Shift pressed half way through a corner drag starts constraining
@@ -21595,7 +21680,13 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // live preview at its new position -- strictly more information than
       // the wireframe box alone gave, which is the bar this step sets, not a
       // claim that the drag view is pixel-identical to Photoshop's.
-      if (g_transformPreview.view() != nullptr)
+      // PRD D23: no moving-pixels preview for Warp -- `g_transformPreview`'s
+      // quad has exactly four corners and a non-affine net has no four
+      // corners that represent it. Named the same way a Pigment layer's or a
+      // LayerSet's own missing preview already is in this codebase: the
+      // original stays visible in place (nothing was written yet) and the
+      // grid overlay below shows the shape that will land at commit.
+      if (st.transform.mode() == TransformMode::Affine && g_transformPreview.view() != nullptr)
         addCanvasQuad(dl, g_transformPreview.view(), tl, tr, br, bl);
 
       // --- the layers ABOVE the transformed one, back in front -------------
@@ -21647,7 +21738,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // there. The box goes with them: without handles it is a marquee-
       // coloured rectangle around the picture with no meaning of its own, and
       // the moving pixels themselves are already the feedback.
-      if (!g_moveDragging) {
+      if (!g_moveDragging && st.transform.mode() == TransformMode::Affine) {
         // ===== Tool::Move -- END ==========================================
         dl->AddLine(tl, tr, line, kRuleThickness);
         dl->AddLine(tr, br, line, kRuleThickness);
@@ -21672,6 +21763,48 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         const ImVec2 rot = toScr(h.rotate);
         dl->AddCircleFilled(rot, r, atelierToken(kCanvasPaper));
         dl->AddCircle(rot, r, line, 0, 1.0f);
+      } else if (!g_moveDragging && st.transform.mode() == TransformMode::Warp) {
+        // PRD D23: the lattice grid, in place of the affine box -- (n+1)
+        // curved iso-lines each direction, tessellated cosmetically (this is
+        // chrome, not the commit-quality rasteriser, so a fixed subdivision
+        // is plenty rather than `warpChordSubdivisions()`'s own bound),
+        // anchors drawn as the identical square glyph the affine handles use
+        // and tangent handles as small discs -- the same "square means
+        // draggable box handle, disc means something else" vocabulary the
+        // rotate handle above already established.
+        const WarpMesh& mesh = st.transform.warpMesh();
+        const int n = mesh.n();
+        constexpr int kGizmoSubdivisions = 10;
+        auto drawIsoline = [&](bool alongU, int fixedIndex) {
+          Point2 prev = alongU ? mesh.evaluate(0.0f, static_cast<float>(fixedIndex))
+                               : mesh.evaluate(static_cast<float>(fixedIndex), 0.0f);
+          const int steps = n * kGizmoSubdivisions;
+          for (int k = 1; k <= steps; ++k) {
+            const float t = static_cast<float>(n) * static_cast<float>(k) / steps;
+            const Point2 cur = alongU ? mesh.evaluate(t, static_cast<float>(fixedIndex))
+                                      : mesh.evaluate(static_cast<float>(fixedIndex), t);
+            dl->AddLine(toScr(prev), toScr(cur), line, kRuleThickness);
+            prev = cur;
+          }
+        };
+        for (int j = 0; j <= n; ++j) drawIsoline(true, j);
+        for (int i = 0; i <= n; ++i) drawIsoline(false, i);
+
+        const float r = kTransformHandleDrawPx * 0.5f;
+        const int side = mesh.pointsPerSide();
+        for (int row = 0; row < side; ++row) {
+          for (int col = 0; col < side; ++col) {
+            const ImVec2 c = toScr(mesh.at(row, col));
+            if (WarpControlRef{true, row, col}.isAnchor()) {
+              dl->AddRectFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r),
+                                atelierToken(kCanvasPaper));
+              dl->AddRect(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), line, 0.0f, 0, 1.0f);
+            } else {
+              dl->AddCircleFilled(c, r * 0.6f, atelierToken(kCanvasPaper));
+              dl->AddCircle(c, r * 0.6f, line, 0, 1.0f);
+            }
+          }
+        }
       }
     }
 
