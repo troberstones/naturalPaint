@@ -188,7 +188,7 @@ exists, 100.7 MB of it the ink-only lattice, dead in watercolour mode.
 | D10 | Colour set beyond D1: gain/offset/gamma, white balance, colour balance, hue/saturation by range, black & white, gradient map, invert, clamp | **P1** |
 | D11 | Filter set beyond D4: sharpen, motion blur, add noise, median, dust & scratches | **P1** |
 | D12 | Shadows/highlights and local contrast — spatial, not point ops | **P1** |
-| D13 | Dodge and burn as a brush painting into an adjustment layer's mask, never as a destructive pixel op | **P1** |
+| D13 | Dodge and burn as a brush that lightens / darkens the layer's own pixels (owner decision 2026-09-12: destructive is accepted; the adjustment-mask form is not required) | **P1** |
 | D14 | Free transform: translate, scale, rotate, skew, 4-corner perspective, with handles | **P1** |
 | D15 | Flips and 90° rotations are **exact** — no resample | **P1** |
 | D16 | Stacked transforms compose their matrices and resample **once**, from the original pixels | **P1** |

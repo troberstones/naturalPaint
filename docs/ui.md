@@ -666,7 +666,7 @@ scope**, which changes the PRD's non-goals.
 | added | disposition |
 |---|---|
 | CROP | PRD **D17**, phase 6. |
-| DODGE, BURN | PRD **D13**, phase 10 — as a brush painting an adjustment mask, not a pixel op. |
+| DODGE, BURN | PRD **D13**, phase 10 — a brush on the layer's own pixels (destructive by owner decision, 2026-09-12). |
 | GRAD | PRD **D24**, phase 6 — linear/radial/angular with an editor and presets. |
 | FILL | PRD **D25, D26**, phase 6 — the paint bucket with tolerance is distinct from Fill-with-colour. |
 | **PEN, CURVE, + PATHS tab** | New subsystem. Phase 13. Pen and Curve shipped 2026-09-03 (§4a); **the PATHS tab has not** — §5 still reserves it. |
