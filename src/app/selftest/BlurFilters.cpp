@@ -733,6 +733,141 @@ bool runBlurFiltersTest() {
     }
   }
 
+  std::printf("  -- N. Radial encoder round-trip, one per method --\n");
+  {
+    // The dialog records through radialBlurCommand(); the callsite table's
+    // fixture is Spin only, so an encoder that dropped the method passed.
+    auto noiseDoc = [] {
+      OpenDocument doc = makeBlankOpenDocument(64, 64, WorkingSpace{}, "radial round-trip fixture");
+      Tile& t = doc.document.layers[0].rgbTiles->getOrCreate(TileCoord{0, 0});
+      for (int32_t y = 0; y < 64; ++y)
+        for (int32_t x = 0; x < 64; ++x) {
+          const float v = blurNoise(static_cast<uint64_t>(x) * 131u + static_cast<uint64_t>(y));
+          t.writePixel(PixelCoord{x, y}, {v, 1.0f - v, 0.4f, 1.0f});
+        }
+      doc.recordEdit("radial round-trip fixture", EditKind::Content);
+      return doc;
+    };
+    const PixelRect whole{0, 0, 64, 64};
+    const RadialBlurParams spin{RadialBlurMethod::Spin, 21.0f, 37.0f, 12.0f, 5};
+    const RadialBlurParams zoom{RadialBlurMethod::Zoom, 21.0f, 37.0f, 0.35f, 5};
+
+    std::vector<TileStore> viaCommand;
+    for (const RadialBlurParams& params : {spin, zoom}) {
+      OpenDocument viaEncoder = noiseDoc();
+      OpenDocument direct = noiseDoc();
+      const CommandResult r = applyCommand(viaEncoder, radialBlurCommand(params));
+      applyRadialBlur(direct, params);
+      const std::string name = radialBlurMethodName(params.method);
+      const std::string applies = "radial round-trip: the encoded " + name + " command applies";
+      const std::string identical = "radial round-trip: applyCommand(radialBlurCommand(" + name +
+                                    ")) is bit-identical to applyRadialBlur";
+      check(r.ok, applies.c_str());
+      check(blurTilesBitExact(*viaEncoder.document.layers[0].rgbTiles,
+                              *direct.document.layers[0].rgbTiles, whole),
+            identical.c_str());
+      viaCommand.push_back(*viaEncoder.document.layers[0].rgbTiles);
+    }
+    check(!blurTilesBitExact(viaCommand[0], viaCommand[1], whole),
+          "radial round-trip fixture: Spin and Zoom give different results, so a lost method shows");
+
+    // A hand-written action may omit the centre; it means the canvas centre,
+    // (32, 32) on this 64 x 64 document -- not (0, 0).
+    OpenDocument noCentre = noiseDoc();
+    OpenDocument explicitCentre = noiseDoc();
+    JsonValue params = JsonValue::object();
+    params.set("method", JsonValue::string("spin"));
+    params.set("amount", JsonValue::number(12.0));
+    params.set("samples", JsonValue::number(5));
+    const CommandResult r = applyCommand(noCentre, Command{"filter_radial_blur", params});
+    applyRadialBlur(explicitCentre, RadialBlurParams{RadialBlurMethod::Spin, 32.0f, 32.0f, 12.0f, 5});
+    check(r.ok && blurTilesBitExact(*noCentre.document.layers[0].rgbTiles,
+                                    *explicitCentre.document.layers[0].rgbTiles, whole),
+          "radial: a command without center_x/center_y blurs about the canvas centre");
+  }
+
+  std::printf("  -- O. RadialBlur: how far one lit texel is swept --\n");
+  {
+    // Section D proves which axis moves, not how far. One opaque texel at
+    // (68, 48), 20 texels right of the centre, on a transparent field.
+    const int32_t size = 96;
+    const float cx = 48.0f, cy = 48.0f;
+    TileStore impulse = blurFlatField(size, {0.0f, 0.0f, 0.0f, 0.0f});
+    impulse.getOrCreate(tileCoordAt(PixelCoord{68, 48}))
+        .writePixel(tileLocalOffset(PixelCoord{68, 48}), {1.0f, 1.0f, 1.0f, 1.0f});
+    const PixelRect whole{0, 0, size, size};
+    const float alphaLit = 0.005f;
+
+    // Spin 60 degrees reaches +/-30 degrees along the r=20 circle: lit at
+    // 0.75-0.85 of the half-angle, and more than 3 texels of arc past its end
+    // nothing can reach.
+    {
+      TileStore out;
+      const RadialBlurParams p{RadialBlurMethod::Spin, cx, cy, 60.0f, 16};
+      radialBlurTiles(impulse, whole, p, &out);
+      const float half = 30.0f * (3.14159265f / 180.0f);
+      float litBand = 0.0f, pastEnd = 0.0f;
+      int32_t litTexels = 0, pastTexels = 0;
+      for (int32_t y = 0; y < size; ++y)
+        for (int32_t x = 0; x < size; ++x) {
+          const float dx = static_cast<float>(x) - cx, dy = static_cast<float>(y) - cy;
+          if (std::fabs(std::sqrt(dx * dx + dy * dy) - 20.0f) >= 0.5f) continue;
+          const float angle = std::atan2(dy, dx);
+          const float a = blurReadAt(out, x, y)[3];
+          if (angle >= 0.75f * half && angle <= 0.85f * half) {
+            litBand = std::max(litBand, a);
+            ++litTexels;
+          } else if (angle >= 1.3f * half && angle <= 1.6f * half) {
+            pastEnd = std::max(pastEnd, a);
+            ++pastTexels;
+          }
+        }
+      check(litTexels > 0 && pastTexels > 0, "radial sweep fixture: both Spin probe bands hold texels");
+      check(litBand > alphaLit, "radial: Spin 60 reaches 0.8 of its 30-degree half-angle");
+      check(pastEnd < 1e-6f, "radial: Spin 60 leaves the arc past 30 degrees untouched");
+    }
+
+    // Zoom 0.4 samples 0.6-1.4 times each radius, so the r=20 texel lights
+    // radii 20/1.4 = 14.3 through 20/0.6 = 33.3 along the ray.
+    {
+      TileStore out;
+      const RadialBlurParams p{RadialBlurMethod::Zoom, cx, cy, 0.4f, 16};
+      radialBlurTiles(impulse, whole, p, &out);
+      const auto alphaAt = [&](int32_t d) { return blurReadAt(out, 48 + d, 48)[3]; };
+      check(alphaAt(15) > alphaLit, "radial: Zoom 0.4 reaches radius 15 (source read at x1.4)");
+      check(alphaAt(32) > alphaLit, "radial: Zoom 0.4 reaches radius 32 (source read at x0.625)");
+      check(alphaAt(11) < 1e-6f, "radial: Zoom 0.4 leaves radius 11 untouched");
+      check(alphaAt(37) < 1e-6f, "radial: Zoom 0.4 leaves radius 37 untouched");
+    }
+  }
+
+  std::printf("  -- P. LensBlur: the highlight boost brightens colour, never coverage --\n");
+  {
+    const int32_t size = 32;
+    TileStore field;
+    Tile& t = field.getOrCreate(TileCoord{0, 0});
+    for (int32_t y = 0; y < size; ++y)
+      for (int32_t x = 0; x < size; ++x) {
+        const bool bright = blurNoise(static_cast<uint64_t>(y) * 977u + static_cast<uint64_t>(x)) > 0.5f;
+        const float a = 0.6f;
+        const float c = a * (bright ? 0.9f : 0.1f);
+        t.writePixel(PixelCoord{x, y}, {c, c, c, a});
+      }
+    const PixelRect probe{4, 4, size - 4, size - 4};
+    TileStore boosted, plain;
+    lensBlurTiles(field, probe, LensBlurParams{6, 0.2f, 3, 0.3f, 1.5f}, &boosted);
+    lensBlurTiles(field, probe, LensBlurParams{6, 0.2f, 3, 0.3f, 0.0f}, &plain);
+    bool alphaSame = true, colourChanged = false;
+    for (int32_t y = probe.y0; y < probe.y1; ++y)
+      for (int32_t x = probe.x0; x < probe.x1; ++x) {
+        const std::array<float, 4> b = blurReadAt(boosted, x, y), q = blurReadAt(plain, x, y);
+        if (b[3] != q[3]) alphaSame = false;
+        if (b[0] != q[0]) colourChanged = true;
+      }
+    check(colourChanged, "lens boost fixture: the boost brightens some texel's colour");
+    check(alphaSame, "lens: the highlight boost leaves alpha exactly as boost 0 does");
+  }
+
   std::printf("[selftest] blurFilters %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

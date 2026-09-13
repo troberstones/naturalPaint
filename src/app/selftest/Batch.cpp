@@ -617,6 +617,14 @@ bool runBatchTest() {
                   firstMissing.c_str());
     check(everyUserListed,
           "table: every command advertising one of those names is listed");
+
+    // Direction 2 only sees a name some listed command already uses; the
+    // radial centre's names are its own, so dropping them needs this pin.
+    for (const char* param : {"center_x", "center_y"}) {
+      const std::vector<std::string> ids = commandsWithPixelUnitParameter(param);
+      check(std::find(ids.begin(), ids.end(), "filter_radial_blur") != ids.end(),
+            "table: filter_radial_blur's centre is pixel-unit (a position scales with the document)");
+    }
   }
 
   // ======================================================================
