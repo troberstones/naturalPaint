@@ -199,6 +199,7 @@ bool runQuickMaskPaintTest() {
           "quick mask overlay: a texel outside the dab is untouched by painting one spot");
   }
 
+  std::printf("[selftest] quick mask paint %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }
 

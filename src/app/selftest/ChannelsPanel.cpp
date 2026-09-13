@@ -74,6 +74,7 @@ bool runChannelsPanelTest() {
           "since this replaces the canvas rather than tinting it");
   }
 
+  std::printf("[selftest] channels panel %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }
 
