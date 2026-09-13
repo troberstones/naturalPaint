@@ -168,7 +168,7 @@ float RgbStroke::strokeAlphaAt(PixelCoord doc) const noexcept {
 
 DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 centre,
                                    int32_t canvasW, int32_t canvasH, const Selection* selection,
-                                   std::vector<TileCoord>* touchedOut) {
+                                   std::vector<TileCoord>* touchedOut, Vec2 sweep) {
   DepositCount count;
   if (!(tip.flow > 0.0f)) return count;
   if (!(opacity_ > 0.0f)) return count;
@@ -177,7 +177,7 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
   // the shape of a dab is not a property of what it is made of, and a second
   // falloff here would be a second place for the two routes to disagree about
   // where a brush ends.
-  const PixelBounds b = dabPixelBounds(tip, centre, canvasW, canvasH);
+  const PixelBounds b = sweptDabBounds(tip, centre, sweep, canvasW, canvasH);
   if (b.empty()) return count;
 
   const TileCoord first = tileCoordAt(PixelCoord{b.x0, b.y0});
@@ -254,7 +254,7 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
           const float dx = (static_cast<float>(x) + 0.5f) - centre.x;
           const PixelCoord local = tileLocalOffset(PixelCoord{x, y});
 
-          const float rawCov = dabCoverage(tip, dx, dy);
+          const float rawCov = sweptDabCoverage(tip, dx, dy, sweep);
           if (!(rawCov > 0.0f)) continue;
 
           // Paper tooth, at this texel's ABSOLUTE canvas position -- `x`/`y`,

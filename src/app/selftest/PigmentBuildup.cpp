@@ -251,6 +251,37 @@ bool runPigmentBuildupTest() {
     check(halfCross <= 0.5f * 0.18f + kF16Slack,
           "wash: a stroke is never darker than its load times its opacity");
 
+    // The edge of a straight Wash stroke at the default spacing. A row of
+    // discs kept by `max` scallops once per spacing; swept, the edge is flat.
+    for (bool rgb : {false, true}) {
+      OpenDocument od = rgb ? makeRgbDoc(256, 128) : makePigmentDoc(256, 128);
+      BrushState brush = brushFor(1.0f, 0.3f, 40.0f);
+      brush.native.load = 0.5f;
+      MixboxLut noLut;
+      std::string error;
+      StrokeSession session;
+      session.begin(od, 1, brushTipFor(brush, noLut, 1.0f), Tool::Brush, &error, nullptr,
+                    DynamicInputs{}, nullptr, StabiliserParams{}, 1.0f, &brush.native, wash);
+      for (int i = 0; i <= 40; ++i) session.addPoint(30.0f + 5.0f * static_cast<float>(i), 64.3f);
+      session.end();
+      float worst = 0.0f;
+      for (int dy : {10, 14, 17}) {
+        float lo = 1.0f;
+        float hi = 0.0f;
+        for (int32_t x = 80; x < 180; ++x) {
+          const float v = coverAt(od.document.layers[1], x, 64 + dy);
+          lo = std::min(lo, v);
+          hi = std::max(hi, v);
+        }
+        if (hi > 0.0f) worst = std::max(worst, (hi - lo) / hi);
+      }
+      std::printf("  [measured] %s wash, straight stroke at 25%% spacing: worst edge ripple "
+                  "%.2f%%\n",
+                  rgb ? "RGB" : "Pigment", 100.0f * worst);
+      check(worst < 0.01f, rgb ? "RGB wash: the stroke's edge is smooth, not scalloped per dab"
+                               : "Pigment wash: the stroke's edge is smooth, not scalloped per dab");
+    }
+
     // Separate strokes still layer, each by its OWN strength: the second pass
     // is lighter than the first, so a buffer carried over from the first
     // would lay the first stroke's amount again rather than its own.
@@ -339,6 +370,40 @@ bool runPigmentBuildupTest() {
     check(stronger.strokeAlpha == 0.6f && std::fabs(stronger.premultiplied[3] - 0.6f) < 1.0e-5f,
           "RGB wash: a stronger dab lands the texel exactly at its own strength over what was "
           "there at pen-down");
+  }
+
+  // ======================================================================
+  // 6. A Wash dab is the tip swept back to the previous dab
+  // ======================================================================
+  {
+    BrushTip round = tip(20.0f, 0.3f, 1.0f, kBlue);
+    BrushTip ellipse = round;
+    ellipse.roundness = 0.4f;
+    ellipse.angle = 30.0f;
+    bool identical = true;
+    float below = 0.0f;
+    float above = 0.0f;
+    const Vec2 sweep{-10.0f, 3.0f};
+    for (const BrushTip* t : {&round, &ellipse})
+      for (float dy = -26.0f; dy <= 26.0f; dy += 1.3f)
+        for (float dx = -30.0f; dx <= 22.0f; dx += 1.3f) {
+          if (sweptDabCoverage(*t, dx, dy, Vec2{}) != dabCoverage(*t, dx, dy)) identical = false;
+          float sampled = 0.0f;
+          for (int k = 0; k <= 400; ++k) {
+            const float f = static_cast<float>(k) / 400.0f;
+            sampled = std::max(sampled, dabCoverage(*t, dx - f * sweep.x, dy - f * sweep.y));
+          }
+          const float swept = sweptDabCoverage(*t, dx, dy, sweep);
+          below = std::max(below, sampled - swept);
+          above = std::max(above, swept - sampled);
+        }
+    std::printf("  [measured] swept vs densely sampled tip (round and a 30-degree ellipse): "
+                "%.6f below, %.6f above\n",
+                below, above);
+    check(identical, "sweep: no sweep is the plain dab bit for bit, round and elliptical");
+    check(below < 1.0e-5f && above < 2.0e-3f,
+          "sweep: a swept tip covers each texel as its nearest position along the path does, "
+          "for a round tip and a rotated ellipse");
   }
 
   std::printf("[selftest] pigment buildup %s\n", ok ? "PASS" : "FAIL");

@@ -598,9 +598,11 @@ class RgbStroke {
   // instead of through `depositRgbTexel()` against the live tile -- the only
   // difference the blend mode makes to this loop. `blend_ == Normal` takes
   // the exact branch and exact code this function always ran.
+  // `sweep`: brush/Deposit.hpp's `sweptDabCoverage()`, which a Wash stroke
+  // passes; `{0, 0}` is a plain dab bit for bit.
   DepositCount depositDab(TileStore& store, const BrushTip& tip, Vec2 centre, int32_t canvasW,
                           int32_t canvasH, const Selection* selection,
-                          std::vector<TileCoord>* touchedOut);
+                          std::vector<TileCoord>* touchedOut, Vec2 sweep = {});
 
   // Deposits every dab in `dabs`, in order. Order matters here for the same
   // reason it does for pigment, though for a different mechanism: `A` is a

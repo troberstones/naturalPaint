@@ -2327,6 +2327,14 @@ void StrokeSession::depositPending(bool isEndFlush) {
     // (`dynamicRandomDraw(seed_, dabIndex)`, which nothing downstream reads
     // per sub-dab today) and SCATTER's own draw read a per-dab index, and
     // only the second actually varies within this loop, via `subIndex` alone.
+    // brush/Deposit.hpp §1a: a Wash dab covers the path back to the previous
+    // one, so the stroke's edge is the tip swept rather than a row of
+    // scallops. Only an unscattered single dab: swept between scattered
+    // positions it would draw a streak the brush never asked for.
+    const bool sweepDab = havePrevDab_ && pigmentBuildup_.mode == PigmentBuildupMode::Wash &&
+                          (route_ == StrokeRoute::CpuDeposit || route_ == StrokeRoute::RgbDeposit) &&
+                          dabTip.scatter == 0.0f && resolvedCount == 1;
+    const Vec2 sweep = sweepDab ? Vec2{-dx, -dy} : Vec2{};
     for (int32_t subIndex = 0; subIndex < resolvedCount; ++subIndex) {
       const Vec2 centre = applyPerDabScatter(p.pos, dabTip, seed_, static_cast<uint32_t>(dabs_), dx,
                                              dy, static_cast<uint32_t>(subIndex));
@@ -2400,9 +2408,9 @@ void StrokeSession::depositPending(bool isEndFlush) {
                               &frameTiles_)
           : route_ == StrokeRoute::RgbDeposit
               ? rgb_.depositDab(*layer.rgbTiles, dabTip, centre, doc.width, doc.height, selection,
-                                &frameTiles_)
+                                &frameTiles_, sweep)
               : depositDab(*layer.pigmentTiles, dabTip, centre, doc.width, doc.height, selection,
-                          &frameTiles_, pigmentBuildup_, washFor());
+                          &frameTiles_, pigmentBuildup_, washFor(), sweep);
       frameTexels += c.texels;
     }
     ++dabs_;

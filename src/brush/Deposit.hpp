@@ -754,6 +754,11 @@ inline constexpr float kMaxMass = 1.0f;
 //     which simply receives more dabs. `max` is order-independent and
 //     idempotent. Load and opacity together set how dark one stroke is.
 //
+//     A Wash dab covers the path back to the previous dab, not only its own
+//     disc (`sweptDabCoverage()`): the strongest of a row of discs has a
+//     scalloped edge, one scallop per spacing, that a sum fills in and `max`
+//     does not.
+//
 //     The layer texel is then recomputed from the texel as it was at PEN-DOWN,
 //     as one deposit of `s`: `depositTexel(before, pigment, s, sel)`. The
 //     stroke meets existing paint once -- one hue mix, one paper cap, one
@@ -1191,6 +1196,13 @@ bool brushTipEqual(const BrushTip& a, const BrushTip& b) noexcept;
 // user who cannot trust it has to paint to find out anyway.
 float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept;
 
+// §1a: `dabCoverage()` for the tip swept from its centre to `centre + sweep`
+// -- at every texel, the coverage of the nearest position along that segment,
+// which for a round or elliptical tip is exact. `sweep == {0, 0}` is
+// `dabCoverage()` bit for bit, and so is a bitmap or dual tip, whose coverage
+// has no nearest position to find.
+float sweptDabCoverage(const BrushTip& tip, float dx, float dy, Vec2 sweep) noexcept;
+
 // The rule of §1, as a pure function of one texel, for the one reason a pure
 // function earns its keep here: the invariants are about *this arithmetic*,
 // so `--selftest` asserts them on this and not on a tile of it.
@@ -1294,13 +1306,19 @@ struct DepositCount {
 // even evaluated, so grain can thin or empty a texel already inside the
 // footprint, and never add one outside it -- §3's containment fact is
 // unaffected by whether a brush has grain on.
-// `buildup`/`wash` are §1a's mode and a Wash stroke's state. Defaulted to
-// Build-up and null, bit for bit the rule this function had before §1a --
-// `app/DabPreview`, `depositDabs()` below and every texel selftest take that.
+// `buildup`/`wash`/`sweep` are §1a's mode, a Wash stroke's state and the
+// swept dab (`sweptDabCoverage()`). Defaulted to Build-up, null and no sweep,
+// bit for bit the rule this function had before §1a -- `app/DabPreview`,
+// `depositDabs()` below and every texel selftest take that.
+// `dabPixelBounds()` of both ends of a sweep, joined -- which contains the
+// whole swept tip, each end's box containing its disc.
+PixelBounds sweptDabBounds(const BrushTip& tip, Vec2 centre, Vec2 sweep, int32_t canvasW,
+                           int32_t canvasH) noexcept;
+
 DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centre,
                         int32_t canvasW, int32_t canvasH, const Selection* selection,
                         std::vector<TileCoord>* touchedOut, PigmentBuildup buildup = {},
-                        WashStroke* wash = nullptr);
+                        WashStroke* wash = nullptr, Vec2 sweep = {});
 
 // Sorts ascending by (y, x) and removes duplicates, in place.
 //
