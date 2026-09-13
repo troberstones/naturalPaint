@@ -6753,4 +6753,15 @@ bool runPasteCommandsTest();
 // app/selftest/CommandsFill.cpp.
 bool runCommandsFillTest();
 
+// PRD Q1 (P0), reach wave track `zoom`: View > Zoom to Selection.
+// `fitZoomToSelection()` (app/ZoomToSelection.hpp) -- the largest zoom that
+// fits the selection's bounds with the tighter axis deciding, the selection's
+// own centre landing exactly on the viewport's centre (round-tripped through
+// the real `ViewTransform`, not this function's own arithmetic), a rotated
+// view still honoured rather than assumed away, and the existing zoom limits
+// clamping both ends on selections chosen to force each (a 1-texel selection
+// past `kViewZoomMax`, the whole canvas into a much smaller viewport past
+// `kViewZoomMin`). Headless and GPU-free. See app/selftest/ZoomToSelection.cpp.
+bool runZoomToSelectionTest();
+
 }  // namespace np

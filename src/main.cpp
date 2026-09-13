@@ -4279,6 +4279,8 @@ int main(int argc, char** argv) {
     const bool pasteCommandsOk = np::runPasteCommandsTest();
     // PRD D26: `fill` and `stroke`.
     const bool commandsFillOk = np::runCommandsFillTest();
+    // PRD Q1 (P0), reach wave track `zoom`: View > Zoom to Selection.
+    const bool zoomToSelectionOk = np::runZoomToSelectionTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4352,7 +4354,7 @@ int main(int argc, char** argv) {
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
                     nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
-                    pasteCommandsOk && commandsFillOk;
+                    pasteCommandsOk && commandsFillOk && zoomToSelectionOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -5518,11 +5520,9 @@ int main(int argc, char** argv) {
         // discrete key-down); MacPaintUI.cpp's canvas block reads that key's
         // live held-state directly instead. See that file's comment at its
         // `rotateHeld` local for the full reasoning. `⌘⌥0` "zoom to
-        // selection" (PRD Q1) is still absent, but the reason has changed
-        // and is restated rather than left standing untrue: selection state
-        // now EXISTS (core/SelectionMask; ⌘A/⌘D/⌘C/⌘X/⌘V are bound just
-        // below). What is missing is the view maths to frame an arbitrary
-        // rectangle, which belongs with the other view commands.
+        // selection" (PRD Q1) is now bound too, alongside fit_window/zoom_100
+        // a few lines below -- app/ZoomToSelection.hpp is the view maths this
+        // comment used to say was missing.
         // Cmd+T. Sets the same flag `MenuAction::FreeTransform` does, so the
         // chord and Edit > Free Transform are one path from here on --
         // ui/MacPaintUI.cpp's canvas block services it, because choosing
@@ -5557,6 +5557,7 @@ int main(int argc, char** argv) {
         else if (action == "adjust_auto_color")
           st.requestAdjustment = np::AdjustmentRequest::AutoColor;
         else if (action == "fit_window") st.requestFitWindow = true;
+        else if (action == "zoom_to_selection") st.requestZoomToSelection = true;
         else if (action == "zoom_100") st.requestZoom100 = true;
         else if (action == "zoom_in") st.requestZoomIn = true;
         else if (action == "zoom_out") st.requestZoomOut = true;

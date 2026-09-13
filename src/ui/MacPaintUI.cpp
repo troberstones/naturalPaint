@@ -10,6 +10,7 @@
 #include "ui/DynamicsMatrixPanel.hpp"
 #include "ui/FileDialog.hpp"
 #include "ui/FillDialog.hpp"
+#include "ui/FilterDialogsExtra.hpp"
 #include "ui/Dialog.hpp"
 #include "ui/LabelledControl.hpp"
 #include "ui/AtelierLayout.hpp"
@@ -84,6 +85,7 @@
 #include "app/ViewTransform.hpp"
 #include "app/WheelInput.hpp"
 #include "app/ZoomAndSize.hpp"
+#include "app/ZoomToSelection.hpp"
 #include "color/LutBake.hpp"  // kMaxCurvePointsPerChannel
 #include "core/Half.hpp"
 #include "core/Histogram.hpp"
@@ -9842,7 +9844,14 @@ enum class FilterPreviewOwner {
   // frame its popup stops being open, and this clears on the frame the tool
   // is not the gradient or the pointer is not down (see the owner-guarded
   // call beside the canvas input block).
-  GradientTool
+  GradientTool,
+  // Reach wave, track `zoom`: Highpass/Local Contrast/Lens Correction, drawn
+  // from ui/FilterDialogsExtra.cpp -- a dialog outside this file, so it
+  // cannot name one of the enumerators above. `setExternalFilterPreview()`/
+  // `clearExternalFilterPreview()` (ui/MacPaintUI.hpp) are the only door onto
+  // this one; safe to share among several such dialogs because only one
+  // modal is ever open at a time.
+  External
 };
 
 struct FilterPreviewState {
@@ -12972,6 +12981,17 @@ bool keyboardBelongsToTyping(const AppState& st) {
 
 }  // namespace
 
+// Declared in ui/MacPaintUI.hpp, for the identical reason `toolMenuFamily()`
+// below it is: `FilterPreviewOwner`/`setFilterPreview()`/`clearFilterPreview()`
+// are internally linked (the anonymous namespace just closed), so a dialog
+// living in its own translation unit (ui/FilterDialogsExtra.cpp, reach wave
+// track `zoom`) needs a pair of externally-linked functions to reach them
+// through -- see ui/MacPaintUI.hpp's own comment on why `External` exists.
+void setExternalFilterPreview(DocumentId id, size_t layerIndex, TileStore tiles) {
+  setFilterPreview(FilterPreviewOwner::External, id, layerIndex, std::move(tiles));
+}
+void clearExternalFilterPreview() { clearFilterPreview(FilterPreviewOwner::External); }
+
 // Declared in ui/MacPaintUI.hpp. **Moved out of the anonymous namespace**
 // 2026-09-10 for the reason `toolMenuFamily()` just below was put here:
 // `--selftest` has to be able to call it. It builds the tool and layer
@@ -13698,6 +13718,10 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
 
     // --- View -------------------------------------------------------------
     case MenuAction::FitToWindow: st.requestFitWindow = true; break;
+    // PRD Q1 (P0), reach wave track `zoom`: same request-then-consume shape
+    // as FitToWindow, and consumed at the same point (the canvas window's
+    // on-screen size only exists inside MacPaintUI's Begin()/End() block).
+    case MenuAction::ZoomToSelection: st.requestZoomToSelection = true; break;
     case MenuAction::Zoom100:     st.requestZoom100 = true;   break;
     case MenuAction::ZoomIn:      st.requestZoomIn = true;    break;
     case MenuAction::ZoomOut:     st.requestZoomOut = true;   break;
@@ -13773,6 +13797,12 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     // PRD D8's two.
     case MenuAction::RemoveLightingGradient: g_removeLightingGradientRequested = true; break;
     case MenuAction::Offset:                 g_offsetRequested = true;                 break;
+    // Reach wave, track `zoom`: ui/FilterDialogsExtra.hpp's three dialogs --
+    // the small hooks reach-common.md asks for; the dialogs themselves live
+    // in that file, not here.
+    case MenuAction::Highpass:      requestHighpassDialog();      break;
+    case MenuAction::LocalContrast: requestLocalContrastDialog(); break;
+    case MenuAction::LensCorrect:   requestLensCorrectDialog();   break;
 
     // --- Image ----------------------------------------------------------
     case MenuAction::ImageSize:  g_imageSizeRequested = true;  break;
@@ -16902,6 +16932,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // make-tileable pixel ops, same placement rule again.
   drawRemoveLightingGradientDialog(st);
   drawOffsetDialog(st);
+  // Reach wave, track `zoom`: Highpass, Local Contrast and Lens Correction --
+  // living in their own translation unit (ui/FilterDialogsExtra.hpp), same
+  // placement rule again.
+  drawHighpassDialog(st);
+  drawLocalContrastDialog(st);
+  drawLensCorrectDialog(st);
   drawAdjustmentDialogs(st);
   // PRD D24: the gradient tool's own stop editor, opened from the options
   // bar's swatch rather than a menu -- same placement rule again, so it
@@ -18419,6 +18455,31 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     if (st.requestZoomOut) {
       applyZoomFactor(1.0f / kZoomStepFactor, viewportCenter);
       st.requestZoomOut = false;
+    }
+    // PRD Q1 (P0), reach wave track `zoom`: View > Zoom to Selection, the
+    // menu's own `hasEngagedSelection` predicate already keeps the item
+    // (and the keymap chord reaching here at all in practice) gated on a
+    // real selection -- this re-checks rather than trusts that, the same
+    // defensive posture every request-flag consumer in this block already
+    // takes. `app/ZoomToSelection.hpp` does the actual fit arithmetic; this
+    // is only where its inputs (the live selection's bounds, the document's
+    // on-screen size, this window's own geometry) are gathered.
+    if (st.requestZoomToSelection) {
+      st.requestZoomToSelection = false;
+      OpenDocument* zoomDoc = st.documents.active();
+      const std::optional<SelectionBounds> sb =
+          zoomDoc != nullptr && zoomDoc->selection.has_value()
+              ? selectionBounds(*zoomDoc->selection)
+              : std::nullopt;
+      if (sb.has_value()) {
+        const ZoomToSelectionFit fit = fitZoomToSelection(
+            static_cast<float>(sb->x0), static_cast<float>(sb->y0), static_cast<float>(sb->x1),
+            static_cast<float>(sb->y1), texW, texH, st.view, Vec2{paintOrigin.x, paintOrigin.y},
+            Vec2{avail.x, avail.y}, kZoomToSelectionMarginPx);
+        st.view.zoom = fit.zoom;
+        st.view.panX = fit.panX;
+        st.view.panY = fit.panY;
+      }
     }
 
     // --- the Zoom tool itself (PRD Q1, A3): click zooms in at the clicked

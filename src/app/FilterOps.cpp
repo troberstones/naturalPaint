@@ -135,6 +135,17 @@ FilterOpResult applyMotionBlur(OpenDocument& doc, const MotionBlurParams& params
   return applyPixelFilter(doc, motionBlurTiles, params, "motion blur");
 }
 
+FilterOpResult applyHighpass(OpenDocument& doc, float sigma) {
+  BlurParams params;
+  params.kind = BlurKind::Gaussian;
+  params.sigma = sigma;
+  return applyPixelFilter(doc, highpassTiles, params, "highpass");
+}
+
+FilterOpResult applyLocalContrast(OpenDocument& doc, const LocalContrastParams& params) {
+  return applyPixelFilter(doc, localContrastTiles, params, "local contrast");
+}
+
 namespace {
 
 // **The one expression in this build that fills in `InpaintParams::hole`.**
@@ -219,6 +230,18 @@ FilterOpResult previewMedian(const OpenDocument& doc, const MedianParams& params
 FilterOpResult previewMotionBlur(const OpenDocument& doc, const MotionBlurParams& params,
                                  TileStore* previewOut) {
   return computePixelFilter(doc, motionBlurTiles, params, previewOut);
+}
+
+FilterOpResult previewHighpass(const OpenDocument& doc, float sigma, TileStore* previewOut) {
+  BlurParams params;
+  params.kind = BlurKind::Gaussian;
+  params.sigma = sigma;
+  return computePixelFilter(doc, highpassTiles, params, previewOut);
+}
+
+FilterOpResult previewLocalContrast(const OpenDocument& doc, const LocalContrastParams& params,
+                                    TileStore* previewOut) {
+  return computePixelFilter(doc, localContrastTiles, params, previewOut);
 }
 
 FilterOpResult previewInpaint(const OpenDocument& doc, int32_t radius, TileStore* previewOut) {
@@ -314,6 +337,17 @@ FilterOpResult previewOffset(const OpenDocument& doc, const OffsetRequest& reque
   result.refusal = offsetRefusalFor(doc);
   if (result.refusal != PixelOpRefusal::None) return result;
   return computePixelFilter(doc, offsetTiles, offsetParamsFor(doc, request), previewOut);
+}
+
+FilterOpResult applyLensCorrect(OpenDocument& doc, LensParams params) {
+  params.frame = canvasRectOf(doc);
+  return applyPixelFilter(doc, lensCorrectTiles, params, "lens correction");
+}
+
+FilterOpResult previewLensCorrect(const OpenDocument& doc, LensParams params,
+                                  TileStore* previewOut) {
+  params.frame = canvasRectOf(doc);
+  return computePixelFilter(doc, lensCorrectTiles, params, previewOut);
 }
 
 DocumentOpOutcome applyImageSize(OpenDocument& doc, uint32_t width, uint32_t height,

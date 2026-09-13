@@ -9,6 +9,7 @@
 #include "ops/DocumentTransform.hpp"
 #include "ops/Filters.hpp"
 #include "ops/Inpaint.hpp"
+#include "ops/Lens.hpp"
 
 // app/FilterOps -- the wiring bridge for the Filter and Image menus
 // (docs/reachability-audit.md C1: "~93 entry points... no UI path to any of
@@ -204,6 +205,23 @@ FilterOpResult applyAddNoise(OpenDocument& doc, const NoiseParams& params);
 FilterOpResult applyEmboss(OpenDocument& doc, const EmbossParams& params);
 FilterOpResult applyMedian(OpenDocument& doc, const MedianParams& params);
 FilterOpResult applyMotionBlur(OpenDocument& doc, const MotionBlurParams& params);
+
+// Reach wave, track `zoom`: three more engines with no menu path
+// (docs/reachability-audit.md C1), wired the identical way.
+//
+// Highpass is PLAN.md's own `src - blur(src)` formulation and reuses
+// `BlurParams` -- no second params struct, no second validity check:
+// `blurParamsValid()` already governs it, the same struct `applyGaussianBlur()`
+// above takes.
+FilterOpResult applyHighpass(OpenDocument& doc, float sigma);
+FilterOpResult previewHighpass(const OpenDocument& doc, float sigma, TileStore* previewOut);
+
+// Local contrast (ops/Filters.hpp section 6): blur in linear light, add the
+// difference back in the shaper domain. Takes the whole `LocalContrastParams`
+// for the same "one struct, no drift" reason `applyUnsharpMask()` does.
+FilterOpResult applyLocalContrast(OpenDocument& doc, const LocalContrastParams& params);
+FilterOpResult previewLocalContrast(const OpenDocument& doc, const LocalContrastParams& params,
+                                    TileStore* previewOut);
 
 // ==========================================================================
 // Inpaint, and the one place this header's own selection rule is inverted
@@ -419,6 +437,27 @@ PixelOpRefusal offsetRefusalFor(const OpenDocument& doc) noexcept;
 FilterOpResult applyOffset(OpenDocument& doc, const OffsetRequest& request);
 FilterOpResult previewOffset(const OpenDocument& doc, const OffsetRequest& request,
                              TileStore* previewOut);
+
+// ==========================================================================
+// PRD D22 -- lens correction (ops/Lens.hpp)
+// ==========================================================================
+//
+// `app/CommandsPatterns.cpp` registered `lens_correct` before this track with
+// no applier of its own -- the command called `applyPixelFilter()` directly.
+// This gives it one, so its dialog (ui/FilterDialogsExtra.cpp) can preview the
+// identical way every other Filter dialog does, and moves "the frame is
+// always the canvas" out of the command adapter and in here, beside
+// `lightingGradientParamsFor()`/`offsetParamsFor()` above, which make the
+// identical decision for their own document-shaped field.
+//
+// `params` is taken **by value**, not `const&`, because both functions
+// overwrite `.frame` themselves -- a caller-supplied frame would be a second
+// place this build lets a lens be centred somewhere the photograph's own
+// centre is not, which `app/CommandsPatterns.cpp`'s own comment already
+// argues against.
+FilterOpResult applyLensCorrect(OpenDocument& doc, LensParams params);
+FilterOpResult previewLensCorrect(const OpenDocument& doc, LensParams params,
+                                  TileStore* previewOut);
 
 // What one Image-menu document op did. `error` is `ops/DocumentTransform`'s
 // own message (naming the extent or the layer count that refused it) and is

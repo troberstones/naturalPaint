@@ -203,6 +203,13 @@ CommandCoverage coverageFor(MenuAction action) {
     case MenuAction::FitToWindow:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "needs the canvas window size, which only exists inside a frame"};
+    case MenuAction::ZoomToSelection:
+      // Reach wave, track `zoom`, PRD Q1. The same reason as FitToWindow above
+      // (needs the live canvas window size), plus zoom/pan are session view
+      // state, never document state -- see ResetView's own reason below.
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "needs the canvas window size, which only exists inside a frame; zoom/pan are "
+              "session view state, not document state"};
     case MenuAction::Zoom100:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "the view"};
@@ -309,6 +316,14 @@ CommandCoverage coverageFor(MenuAction action) {
       return {CommandCoverageKind::Registered, "filter_median", nullptr};
     case MenuAction::MotionBlur:
       return {CommandCoverageKind::Registered, "filter_motion_blur", nullptr};
+    // Reach wave, track `zoom`: three engines with no menu path before this
+    // (docs/reachability-audit.md C1).
+    case MenuAction::Highpass:
+      return {CommandCoverageKind::Registered, "filter_highpass", nullptr};
+    case MenuAction::LocalContrast:
+      return {CommandCoverageKind::Registered, "filter_local_contrast", nullptr};
+    case MenuAction::LensCorrect:
+      return {CommandCoverageKind::Registered, "lens_correct", nullptr};
     case MenuAction::ImageSize:
       return {CommandCoverageKind::Registered, "image_size", nullptr};
     case MenuAction::CanvasSize:

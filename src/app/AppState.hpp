@@ -1672,6 +1672,11 @@ struct AppState {
   bool requestZoom100 = false;
   bool requestZoomIn = false;
   bool requestZoomOut = false;
+  // PRD Q1 (P0), reach wave track `zoom`: View > Zoom to Selection. Same
+  // request-then-consume shape as the four above, and consumed at the exact
+  // same point in ui/MacPaintUI.cpp's canvas block -- app/ZoomToSelection.hpp
+  // does the actual fit arithmetic.
+  bool requestZoomToSelection = false;
 
   // **Free Transform** (Cmd+T / Edit > Free Transform), and the session it
   // starts. A request rather than a direct call for the same reason the view

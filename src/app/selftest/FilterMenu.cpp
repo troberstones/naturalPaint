@@ -769,6 +769,91 @@ bool runFilterMenuTest() {
           "what the preview held");
   }
 
+  std::printf("  -- J. reach wave, track `zoom`: Highpass and Local Contrast --\n");
+  {
+    // Section A's own standard: the layer's result after `applyHighpass()`
+    // must be bit-identical to calling `highpassTiles()` directly with the
+    // SAME sigma on a copy of the pre-filter field.
+    OpenDocument odHighpass = makeFilterMenuDocument("highpass");
+    const TileStore highpassOriginal = *odHighpass.document.layers[0].rgbTiles;
+    const FilterOpResult highpassR = applyHighpass(odHighpass, 6.0f);
+    check(highpassR.refusal == PixelOpRefusal::None && highpassR.texelsChanged > 0,
+          "highpass: a non-zero sigma on a filled RGB layer changes texels and is not refused");
+    TileStore highpassReference;
+    BlurParams hbp;
+    hbp.kind = BlurKind::Gaussian;
+    hbp.sigma = 6.0f;
+    check(highpassTiles(highpassOriginal, kCanvasRect, hbp, &highpassReference),
+          "highpass: the reference engine call (sigma 6.0, same as the dialog) succeeds");
+    check(tilesExactlyEqual(*odHighpass.document.layers[0].rgbTiles, highpassReference),
+          "highpass: the layer's result is bit-identical to highpassTiles() called directly "
+          "with the SAME sigma");
+
+    OpenDocument odLocal = makeFilterMenuDocument("local contrast");
+    const TileStore localOriginal = *odLocal.document.layers[0].rgbTiles;
+    LocalContrastParams lcp;
+    lcp.blur.kind = BlurKind::Gaussian;
+    lcp.blur.sigma = 20.0f;
+    lcp.amount = 0.5f;
+    const FilterOpResult localR = applyLocalContrast(odLocal, lcp);
+    check(localR.refusal == PixelOpRefusal::None && localR.texelsChanged > 0,
+          "local contrast: a non-zero amount on a filled RGB layer changes texels and is not "
+          "refused");
+    TileStore localReference;
+    check(localContrastTiles(localOriginal, kCanvasRect, lcp, &localReference),
+          "local contrast: the reference engine call (SAME radius/amount) succeeds");
+    check(tilesExactlyEqual(*odLocal.document.layers[0].rgbTiles, localReference),
+          "local contrast: the layer's result is bit-identical to localContrastTiles() called "
+          "directly with the SAME params");
+
+    // Section B's own standard, compact: a selection bounds both new filters
+    // exactly as it bounds the original ones -- outside a hard-edged,
+    // deliberately non-tile-aligned marquee is untouched, and the interior
+    // does change.
+    OpenDocument odBounded = makeFilterMenuDocument("highpass bounded");
+    const TileStore boundedOriginal = *odBounded.document.layers[0].rgbTiles;
+    odBounded.selection = selectRectangle(0.0f, 0.0f, 64.0f, 64.0f);  // one quarter of tile (0,0)
+    const FilterOpResult boundedR = applyHighpass(odBounded, 6.0f);
+    check(boundedR.refusal == PixelOpRefusal::None && boundedR.texelsChanged > 0,
+          "highpass: bounded by a selection, still changes the covered texels");
+    const TileStore& boundedAfter = *odBounded.document.layers[0].rgbTiles;
+    bool outsideUntouched = true;
+    for (int32_t y = 0; y < 256 && outsideUntouched; ++y)
+      for (int32_t x = 0; x < 256; ++x) {
+        if (x < 64 && y < 64) continue;  // inside the selection
+        if (readAt(boundedAfter, x, y) != readAt(boundedOriginal, x, y)) {
+          outsideUntouched = false;
+          break;
+        }
+      }
+    check(outsideUntouched,
+          "highpass: every texel outside the rectangle is bit-identical to before -- the "
+          "selection bound highpass exactly as it bounds every other Filter-menu op");
+    bool insideChanged = false;
+    for (int32_t y = 0; y < 64 && !insideChanged; ++y)
+      for (int32_t x = 0; x < 64; ++x)
+        if (readAt(boundedAfter, x, y) != readAt(boundedOriginal, x, y)) {
+          insideChanged = true;
+          break;
+        }
+    check(insideChanged, "highpass: at least the interior of the rectangle did change");
+
+    // Refusal wiring, reused: a Pigment-only ("Backdrop") layer refuses both,
+    // exactly as it refuses the original ten (app/FilterOps.hpp's own
+    // argument: a filter is a fill in every texel it touches).
+    OpenDocument odRefuse = makeBlankOpenDocument(64, 64, WorkingSpace{}, "highpass refusal");
+    const size_t pigmentAt = odRefuse.document.layers.size();
+    recordLayerEdit(odRefuse,
+                    addLayer(odRefuse.document, pigmentAt, makePigmentLayer("Backdrop pigment")));
+    odRefuse.activeLayer = pigmentAt;
+    const FilterOpResult highpassRefused = applyHighpass(odRefuse, 6.0f);
+    const FilterOpResult localRefused = applyLocalContrast(odRefuse, lcp);
+    check(highpassRefused.refusal == PixelOpRefusal::NoRgbStore &&
+              localRefused.refusal == PixelOpRefusal::NoRgbStore,
+          "refuse: both new filters refuse a Pigment layer with the SAME "
+          "PixelOpRefusal::NoRgbStore the rest of this menu uses");
+  }
+
   std::printf("[selftest] filter menu %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

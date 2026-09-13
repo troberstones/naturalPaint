@@ -3,6 +3,8 @@
 #include <string>
 
 #include "app/CommandSupport.hpp"
+#include "app/FilterCommandsExtra.hpp"
+#include "app/FilterOps.hpp"
 #include "app/PixelOpBridge.hpp"
 #include "core/SelectionMask.hpp"
 #include "ops/Lens.hpp"
@@ -53,11 +55,12 @@ CommandResult doLensCorrect(OpenDocument& doc, const JsonValue& params) {
     p.kernel = *k;
   }
 
-  // The frame is the document canvas, always, and is not a parameter.
-  // ops/Lens.hpp section 3: the optical centre and the normalising radius are
-  // properties of the picture, and letting a caller pass a different rectangle
-  // would let an action recorded on a crop centre the lens somewhere the
-  // photograph's own centre is not.
+  // The frame is the document canvas, always, and is not a parameter --
+  // ops/Lens.hpp section 3's argument, unchanged. Set here too (not only
+  // inside `applyLensCorrect()`, which sets it again from the same `doc`) so
+  // `lensParamsValid()` below -- which refuses an empty frame -- reads the
+  // real one; `applyLensCorrect()` re-deriving it from the identical document
+  // is what keeps this from becoming a second, independently-settable frame.
   p.frame = PixelRect{0, 0, doc.document.width, doc.document.height};
 
   // Refuse by name rather than letting `lensCorrectTiles()` return false,
@@ -73,8 +76,7 @@ CommandResult doLensCorrect(OpenDocument& doc, const JsonValue& params) {
         "not increasing out to the corner, so two rings of the result would read the same ring of "
         "the source. Reduce k1/k2, or check their sign: positive corrects barrel.");
 
-  return fromFilterResult(applyPixelFilter(doc, lensCorrectTiles, p, "Lens Correction"), doc,
-                          "lens correction");
+  return fromFilterResult(applyLensCorrect(doc, p), doc, "lens correction");
 }
 
 // --------------------------------------------------------------------------
@@ -192,6 +194,24 @@ void registerPatternCommands(std::vector<CommandSpec>* out) {
                   {"pattern", "origin_x", "origin_y"},
                   pixelOpUnavailable,
                   doFillWithPattern, /*selectionBounded=*/true});
+}
+
+// app/FilterCommandsExtra.hpp's encoder for `lens_correct` -- see that
+// header for why it lives there rather than in a Patterns header of its own.
+// `frame` is never written: `doLensCorrect()` above overwrites it from the
+// document regardless of what a caller sets, so encoding it would be writing
+// a key the reader ignores.
+Command lensCorrectCommand(const LensParams& p) {
+  JsonValue params = JsonValue::object();
+  params.set("k1", JsonValue::number(p.k1));
+  params.set("k2", JsonValue::number(p.k2));
+  params.set("ca_red", JsonValue::number(p.caRed));
+  params.set("ca_blue", JsonValue::number(p.caBlue));
+  params.set("kernel", JsonValue::string(resampleKernelName(p.kernel)));
+  Command c;
+  c.id = "lens_correct";
+  c.params = std::move(params);
+  return c;
 }
 
 }  // namespace np
