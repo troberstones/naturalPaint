@@ -88,34 +88,37 @@ bool runWarpMeshTest() {
     const int sub = warpChordSubdivisions(m, 0.5f);
     check(sub >= 1 && sub <= kMaxSubdivisionsPerCell, "subdivision count stays in its bounded range");
 
-    // Directly test the bound the derivation claims: sample the TRUE surface
-    // far more finely than the chosen subdivision and check no sample point
-    // strays more than the tolerance from the nearest tessellated segment of
-    // its own cell edge (the V=3 row, which the bent anchor sits on, is the
-    // most strongly curved iso-line in this net).
+    // Sample the true surface between tessellation nodes and measure how far
+    // it strays from each chord. Parameters run 0..n, so control (3, 3) is the
+    // anchor at (u, v) = (1, 1) and v = 1 is the iso-line it bends.
     const float tol = 0.5f;
-    const int probesPerSeg = 9;  // finer than `sub`, to actually probe BETWEEN nodes
-    float worst = 0.0f;
-    for (int a = 0; a < sub; ++a) {
-      const float u0 = 3.0f + static_cast<float>(a) / sub;
-      const float u1 = 3.0f + static_cast<float>(a + 1) / sub;
-      const Point2 segA = m.evaluate(u0, 3.0f);
-      const Point2 segB = m.evaluate(u1, 3.0f);
-      for (int p = 1; p < probesPerSeg; ++p) {
-        const float t = static_cast<float>(p) / probesPerSeg;
-        const float u = u0 + (u1 - u0) * t;
-        const Point2 truePoint = m.evaluate(u, 3.0f);
-        // Distance from truePoint to the chord segA-segB.
-        const float ex = segB.x - segA.x, ey = segB.y - segA.y;
-        const float len2 = ex * ex + ey * ey;
-        float proj = len2 > 1e-9f ? ((truePoint.x - segA.x) * ex + (truePoint.y - segA.y) * ey) / len2
-                                  : 0.0f;
-        proj = std::clamp(proj, 0.0f, 1.0f);
-        const float cx = segA.x + proj * ex, cy = segA.y + proj * ey;
-        const float d = std::hypot(truePoint.x - cx, truePoint.y - cy);
-        worst = std::max(worst, d);
+    auto worstChordDeviation = [&](int segmentsPerCell) {
+      const int probesPerSeg = 9;
+      float worst = 0.0f;
+      for (int cell = 0; cell < 2; ++cell) {
+        for (int a = 0; a < segmentsPerCell; ++a) {
+          const float u0 = cell + static_cast<float>(a) / segmentsPerCell;
+          const float u1 = cell + static_cast<float>(a + 1) / segmentsPerCell;
+          const Point2 segA = m.evaluate(u0, 1.0f);
+          const Point2 segB = m.evaluate(u1, 1.0f);
+          const float ex = segB.x - segA.x, ey = segB.y - segA.y;
+          const float len2 = ex * ex + ey * ey;
+          for (int p = 1; p < probesPerSeg; ++p) {
+            const Point2 truePoint = m.evaluate(u0 + (u1 - u0) * p / probesPerSeg, 1.0f);
+            float proj = len2 > 1e-9f
+                             ? ((truePoint.x - segA.x) * ex + (truePoint.y - segA.y) * ey) / len2
+                             : 0.0f;
+            proj = std::clamp(proj, 0.0f, 1.0f);
+            worst = std::max(worst, std::hypot(truePoint.x - (segA.x + proj * ex),
+                                               truePoint.y - (segA.y + proj * ey)));
+          }
+        }
       }
-    }
+      return worst;
+    };
+    check(worstChordDeviation(1) > tol,
+          "the probed iso-line really bends: one chord per cell misses it by more than the bound");
+    const float worst = worstChordDeviation(sub);
     char buf[128];
     std::snprintf(buf, sizeof(buf), "chord deviation %.4f px stays under the %.2f px bound", worst,
                  tol);
@@ -452,6 +455,63 @@ bool runWarpMeshTest() {
     }
   }
 
+  // --- 13. The same, for a SelectionPixels warp -----------------------------
+  {
+    OpenDocument od = makeBlankOpenDocument(48, 48, WorkingSpace{});
+    TileStore& rgb = *od.document.layers[0].rgbTiles;
+    for (int32_t y = 0; y < 48; ++y) {
+      for (int32_t x = 0; x < 48; ++x) {
+        rgb.getOrCreate(tileCoordAt(PixelCoord{x, y}))
+            .writePixel(tileLocalOffset(PixelCoord{x, y}),
+                       {static_cast<float>(x) / 48.0f, static_cast<float>(y) / 48.0f, 0.5f, 1.0f});
+      }
+    }
+    od.recordEdit("fixture", EditKind::Content);
+    od.selection = selectRectangle(8.0f, 8.0f, 40.0f, 40.0f);
+
+    TransformSession session;
+    const TransformBeginResult began = session.beginSelectionPixels(od, *od.selection, 0);
+    check(began.ok, "selection preview-vs-commit fixture: beginSelectionPixels() succeeds");
+    session.setWarpMode(true, 3);
+    session.warpBeginDrag(WarpControlRef{true, 3, 3}, Point2{0.0f, 0.0f});
+    session.warpUpdateDrag(Point2{6.0f, -4.0f});
+    session.warpEndDrag();
+
+    Document preview;
+    const bool previewOk = session.previewWarpDocument(od, ResampleKernel::CatmullRom, &preview);
+    check(previewOk, "previewWarpDocument() succeeds mid-drag for a SelectionPixels target");
+    const TransformCommitResult done = session.commit(od);
+    check(done.ok, "selection preview-vs-commit fixture: the same warp commits");
+    if (previewOk && done.ok) {
+      const TransformImage previewImg = imageFromTileStore(*preview.layers[0].rgbTiles, 0, 0, 48, 48);
+      const TransformImage committedImg =
+          imageFromTileStore(*od.document.layers[0].rgbTiles, 0, 0, 48, 48);
+      check(previewImg.px.size() == committedImg.px.size() &&
+                std::memcmp(previewImg.px.data(), committedImg.px.data(),
+                           previewImg.px.size() * sizeof(float)) == 0,
+            "a SelectionPixels warp's preview is bit-identical to what commit() wrote");
+    }
+  }
+
+  // --- 14. An untouched net returns its source bit-for-bit ------------------
+  {
+    const DocumentRegion bounds{0, 0, 16u, 16u};
+    const WarpMesh identity = WarpMesh::flat(bounds, 3);
+    TransformImage src;
+    src.width = 16;
+    src.height = 16;
+    src.px.resize(src.sampleCount());
+    for (size_t i = 0; i < src.px.size(); ++i)
+      src.px[i] = static_cast<float>((i * 37) % 101) / 101.0f;  // noise, so any resample shows
+    TransformImage out;
+    std::string err;
+    const bool warped = warpImage(src, identity, bounds, ResampleKernel::CatmullRom, &out, &err);
+    check(warped && out.px.size() == src.px.size() &&
+              std::memcmp(out.px.data(), src.px.data(), src.px.size() * sizeof(float)) == 0,
+          "an identity net returns its source bit-identical");
+  }
+
+  std::printf("[selftest] warp mesh %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }
 
