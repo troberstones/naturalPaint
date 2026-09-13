@@ -567,8 +567,12 @@ bool runMoveToolTest() {
           "duplicate: REQUIRED -- the SOURCE layer (still index 0) is bit-identical afterwards; "
           "the original must stay exactly where it was");
     check(od.activeLayer == 1, "duplicate: the new layer becomes active");
-    const DocumentRegion movedBounds = rgbContentRegion(*od.document.layers[1].rgbTiles);
-    check(movedBounds.x == 8 + 20 && movedBounds.y == 8 + 5,
+    // Guarded: an unguarded layers[1] on a failed duplicate crashes the suite and
+    // loses the buffered FAIL lines above it.
+    const bool haveCopy = od.document.layers.size() > 1 && od.document.layers[1].rgbTiles;
+    const DocumentRegion movedBounds =
+        haveCopy ? rgbContentRegion(*od.document.layers[1].rgbTiles) : DocumentRegion{};
+    check(haveCopy && movedBounds.x == 8 + 20 && movedBounds.y == 8 + 5,
           "duplicate: the COPY's content sits displaced by exactly the drag's own offset");
     check(od.history.cursor() == cursorBefore + 1,
           "duplicate: REQUIRED -- 'duplicate + move' is ONE undo step, never two");
