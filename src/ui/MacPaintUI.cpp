@@ -41,6 +41,7 @@
 #include "app/CommandsImage.hpp"
 #include "app/CommandsLayers.hpp"
 #include "app/CommandsOpStack.hpp"
+#include "app/ChannelsPanel.hpp"
 #include "app/CompPanel.hpp"
 #include "app/CropTool.hpp"  // Tool::Crop, both modes
 #include "app/RegionTool.hpp"  // Tool::Frame, Tool::Slice
@@ -7213,6 +7214,104 @@ void drawCompsSection(AppState& st) {
   }
 }
 
+// ------------------------------------------------------ The CHANNELS panel
+//
+// PRD E11, E13. The chrome only -- row order and row text are
+// app/ChannelsPanel's, for app/CompPanel.hpp's own reason. Every verb goes
+// through `applyCommand()` directly (the four commands in
+// app/CommandsOpStack.cpp), matching this file's other document-editing
+// panels rather than `runLayerGesture()`/`runActiveLayerSetter()`: none of
+// the four is a `LayerCommand` or an active-layer setter.
+std::string g_channelsError;
+
+// Set below, at the Select menu's own dialogs (docs/reachability-audit.md
+// C5's route) -- forward-declared so the panel's "+ Save Selection" button
+// can open the identical popup rather than growing a second name-entry UI.
+extern bool g_saveSelectionAsChannelRequested;
+
+void drawChannelsSection(AppState& st) {
+  OpenDocument* od = st.documents.active();
+  if (od == nullptr) {
+    ImGui::TextDisabled("No document open.");
+    return;
+  }
+
+  std::string& lastError = g_channelsError;
+  static size_t selected = 0;
+  static char renameBuf[128] = "";
+
+  auto run = [&](const Command& cmd) {
+    const CommandResult r = applyCommand(*od, cmd);
+    lastError = r.ok ? std::string() : r.status;
+    return r.ok;
+  };
+
+  const std::vector<ChannelsPanelRow> rows = channelsPanelRows(od->document);
+  if (selected >= rows.size()) selected = rows.empty() ? 0 : rows.size() - 1;
+
+  textDisabledWrapped("%zu channel(s) -- named alpha coverage saved in this document", rows.size());
+
+  {
+    const bool usable = od->selection.has_value();
+    ImGui::BeginDisabled(!usable);
+    if (ImGui::SmallButton("+ Save Selection")) g_saveSelectionAsChannelRequested = true;
+    ImGui::EndDisabled();
+    if (!usable)
+      ImGui::SetItemTooltip("Nothing is selected, so there is no coverage to save.");
+  }
+
+  // Deferred, like drawCompsSection()'s own restore/remove/moveUp/moveDown:
+  // an action taken from inside the row loop is applied after it, never
+  // during, so a delete cannot invalidate the row the loop is still on.
+  size_t loadIdx = rows.size(), deleteIdx = rows.size();
+
+  constexpr int kChannelsVisibleRows = 4;
+  const float rowH = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetFrameHeightWithSpacing();
+  const float childH =
+      std::max(rowH, static_cast<float>(std::min(rows.size(),
+                                                 static_cast<size_t>(kChannelsVisibleRows))) *
+                         rowH) +
+      2.0f * ImGui::GetStyle().WindowPadding.y;
+
+  if (ImGui::BeginChild("##channelsrows", ImVec2(0.0f, childH), true)) {
+    for (const ChannelsPanelRow& row : rows) {
+      ImGui::PushID(static_cast<int>(row.index));
+      if (ImGui::Selectable(channelRowText(row).c_str(), selected == row.index))
+        selected = row.index;
+      if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+        loadIdx = row.index;
+      ImGui::Indent();
+      if (ImGui::SmallButton("Load")) loadIdx = row.index;
+      ImGui::SetItemTooltip("Load Channel as Selection: replaces the active selection with "
+                          "this channel's coverage. Same as double-clicking the row.");
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Delete")) deleteIdx = row.index;
+
+      if (selected == row.index) {
+        std::snprintf(renameBuf, sizeof(renameBuf), "%s", row.name.c_str());
+        if (ctlInputText("Channel name", renameBuf, sizeof(renameBuf),
+                         ImGuiInputTextFlags_EnterReturnsTrue))
+          run(renameChannelCommand(row.name, renameBuf));
+      }
+      ImGui::Unindent();
+      ImGui::PopID();
+    }
+  }
+  ImGui::EndChild();
+
+  if (loadIdx < rows.size()) {
+    run(loadChannelAsSelectionCommand(rows[loadIdx].name));
+  } else if (deleteIdx < rows.size()) {
+    run(deleteChannelCommand(rows[deleteIdx].name));
+  }
+
+  if (!lastError.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 120, 110, 255));
+    ImGui::TextWrapped("%s", lastError.c_str());
+    ImGui::PopStyleColor();
+    if (ImGui::SmallButton("Dismiss##channelserror")) lastError.clear();
+  }
+}
 
 // ------------------------------------------------------- The ACTIONS panel
 //
@@ -14939,6 +15038,7 @@ void drawPanelBody(AppState& st, ControlsSection section, std::unique_ptr<PaintS
     case ControlsSection::History:      drawHistorySection(st, sim, gpu); break;
     // PLAN.md Phase 5 step 12 ("Layer comps ...", PRD C14).
     case ControlsSection::Comps:        drawCompsSection(st); break;
+    case ControlsSection::Channels:     drawChannelsSection(st); break;
     // docs/automation-plan.md step 7 / PRD P1, P5.
     case ControlsSection::Actions:      drawActionsSection(st); break;
     case ControlsSection::FlatsSegmentation: drawFlatsSegmentationSection(st); break;
