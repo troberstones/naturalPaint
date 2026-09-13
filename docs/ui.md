@@ -1042,6 +1042,55 @@ Two constraints on any restyling this file's design language would drive:
   dialog may use** -- `dialogStatusLine()` / `dialogStatusColor()` are how a
   call site reaches them, and there are no literals left to copy from.
 
+## 5b. Split View and Match Zoom
+
+PRD A5's tabs-with-a-split shipped its layout and pane/companion state
+earlier (`ui/AtelierLayout.hpp`'s `atelierSplitPanes()`, `ui/AtelierChrome.hpp`'s
+`AtelierSplitState`/`atelierPaneDocuments()`, wired to the tab strip's two
+`columns-2`/`layout-grid` icons) with the companion pane deliberately a
+static, fitted-and-centred preview: `CanvasView` lived once on `AppState`,
+not per document, so the second pane had no zoom or pan of its own to show.
+No design document specified the rest, so the owner decided it here.
+
+**Two panes, each a different open document, each with its own zoom and
+pan.** Only the focused pane is an editor -- rulers, guides, the navigator,
+rotate and painting all stay exclusive to it, unchanged from the PRD A5
+chrome -- but the companion pane is no longer locked to "whole document,
+fitted". It carries its own `CanvasView` (`AtelierSplitState::companionView`),
+fit-and-centred the first time a document lands in the slot and preserved
+after that. Clicking the companion pane makes its document the session's
+active one (unchanged: "the focused pane always shows the active document")
+and **exchanges** the two `CanvasView`s, so a document keeps the zoom/pan it
+had as it moves between panes rather than the two panes trading views along
+with their documents. A first click on the companion pane only focuses it —
+there is no code path from that click to a painted pixel, because the
+companion window never installs a brush or tool handler at all.
+
+**View > Split View** (menu-only for now — no default chord; the tab strip's
+own two icons remain the pixel-precise route) toggles between `Single` and
+`Columns` (side by side), refusing with a status line under two open
+documents, the same "the way out is the way in" rule the tab strip's icons
+already use.
+
+**View > Match Zoom**, enabled only while a split is active, keeps the
+companion at the focused pane's zoom and at the same *normalised position*
+of its own document — the document-space point at the pane's centre,
+expressed as a fraction of that document's own width/height, matched on
+both sides regardless of how large either document is. Rotation and the two
+mirrors are **not** mirrored to the companion: its quad is always
+axis-aligned, so there is no second `ViewTransform` for a rotated point to
+travel through. `app/SplitView.hpp`'s `matchZoomView()` is the whole
+mapping, and it collapses to one line per axis: the destination pan is the
+source pan scaled by the destination/source document size ratio, at the
+identical zoom.
+
+The divider is fixed at 50%; a draggable one is a follow-up. See
+`app/selftest/SplitView.cpp` for the pure hit-test/mapping proofs and the
+state rules (refusal under two documents, the companion's view resetting
+when a different document takes the slot, focus swapping both the active
+document and the two views), and `--split-demo [rows] [match-zoom]` /
+`verifySplitDemoScreenshot()` in `src/main.cpp` for the photographable case.
+
 ## 6. Naming
 
 **Decided: the project keeps the name naturalPaint.** The wireframe's "ATELIER 2D"

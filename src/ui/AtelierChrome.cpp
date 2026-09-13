@@ -559,9 +559,24 @@ AtelierPaneDocuments atelierPaneDocuments(DocumentSession& session,
   AtelierPaneDocuments out;
   if (state.focusedPane != 0 && state.focusedPane != 1) state.focusedPane = 0;
 
+  // Track `split`: whenever this function hands `state.companion` a document
+  // it was not already showing, the companion's OWN zoom/pan is stale -- it
+  // belonged to whatever used to be there, or to nothing. `companionView`'s
+  // own comment names the sentinel this resets it to; a focus swap
+  // (`focusSplitPane()` below) never calls this lambda, which is what keeps
+  // that path's view *exchange* instead of a reset.
+  const DocumentId previousCompanion = state.companion;
+  const auto setCompanion = [&](DocumentId id) {
+    if (id != previousCompanion) {
+      state.companionView = CanvasView{};
+      state.companionView.zoom = 0.0f;
+    }
+    state.companion = id;
+  };
+
   OpenDocument* active = session.active();
   if (active == nullptr) {
-    state.companion = 0;
+    setCompanion(0);
     state.focusedPane = 0;
     return out;  // one empty pane: the canvas still draws paper with no document
   }
@@ -571,7 +586,7 @@ AtelierPaneDocuments atelierPaneDocuments(DocumentSession& session,
     // Nothing to put in a second pane. The companion is dropped rather than
     // remembered: re-opening the split re-derives it from the tab order, which
     // is one rule instead of a remembered one that can go stale.
-    state.companion = 0;
+    setCompanion(0);
     state.focusedPane = 0;
     return out;
   }
@@ -582,17 +597,43 @@ AtelierPaneDocuments atelierPaneDocuments(DocumentSession& session,
     companion = session.at(activeIndex > 0 ? activeIndex - 1 : activeIndex + 1);
   }
   if (companion == nullptr || companion->id == active->id) {
-    state.companion = 0;
+    setCompanion(0);
     state.focusedPane = 0;
     return out;
   }
 
-  state.companion = companion->id;
+  setCompanion(companion->id);
   out.count = 2;
   out.focusedPane = state.focusedPane;
   out.pane[state.focusedPane] = active;
   out.pane[1 - state.focusedPane] = companion;
   return out;
+}
+
+std::string toggleSplitView(DocumentSession& session, AtelierSplitState& state) {
+  if (state.mode != AtelierSplit::Single) {
+    state.mode = AtelierSplit::Single;
+    return {};
+  }
+  if (session.count() < 2) return "Split View needs a second open document.";
+  state.mode = AtelierSplit::Columns;
+  return {};
+}
+
+void focusSplitPane(DocumentSession& session, AtelierSplitState& state, CanvasView& focusedView,
+                    int paneIndex, DocumentId incoming) {
+  const OpenDocument* wasActive = session.active();
+  if (wasActive != nullptr && wasActive->id == incoming) return;  // already focused
+  state.companion = wasActive != nullptr ? wasActive->id : 0;
+  state.focusedPane = paneIndex;
+  for (size_t i = 0; i < session.count(); ++i) {
+    const OpenDocument* d = session.at(i);
+    if (d != nullptr && d->id == incoming) {
+      session.setActive(i);
+      break;
+    }
+  }
+  std::swap(focusedView, state.companionView);
 }
 
 bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands,

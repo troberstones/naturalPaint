@@ -241,6 +241,14 @@ const MenuItemSpec* specTable() {
     set(MenuAction::Snap, "Snap", "Cmd+Shift+;",
         MenuKeyEquivalent{';', kMenuModCmd | kMenuModShift, "toggle_snapping"});
 
+    // Track `split`. No key equivalent: `keymaps/default.json` binds no
+    // chord to either `split_view` action string, on the same "not
+    // speculatively" reasoning `BrushSettings` below already states, so
+    // claiming one from a native menu here would consume a chord nothing
+    // else in the shortcut table asks for.
+    set(MenuAction::SplitView, "Split View", "");
+    set(MenuAction::MatchZoom, "Match Zoom", "");
+
     // No key equivalent. `docs/shortcuts.md` assigns nothing here, and
     // claiming a chord from a native menu **consumes** it before SDL sees it
     // (MenuKeyEquivalent's own header) -- not a thing to do speculatively for
@@ -532,6 +540,8 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::Grid: return "Grid";
     case MenuAction::ShowRegions: return "ShowRegions";
     case MenuAction::Snap: return "Snap";
+    case MenuAction::SplitView: return "SplitView";
+    case MenuAction::MatchZoom: return "MatchZoom";
     case MenuAction::ImGuiDemo: return "ImGuiDemo";
     case MenuAction::ActivateDocument: return "ActivateDocument";
     case MenuAction::GaussianBlur: return "GaussianBlur";
@@ -611,6 +621,9 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::Grid:
     case MenuAction::ShowRegions:
     case MenuAction::Snap:
+    // Track `split`: `g_split` and its `CanvasView`s, not `OpenDocument`.
+    case MenuAction::SplitView:
+    case MenuAction::MatchZoom:
     // Merged in from main 2026-09-10 and classified here because `-Wswitch`
     // would not let it be inherited: `setTilePreview()` writes
     // `st.tilePreview` and `st.view`, so a tiled preview is a way of LOOKING
@@ -1381,6 +1394,19 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     v.push_back(check(MenuAction::Grid, ctx.showGrid));
     v.push_back(check(MenuAction::ShowRegions, ctx.showRegions));
     v.push_back(check(MenuAction::Snap, ctx.snappingEnabled));
+    v.push_back(separator());
+    {
+      // Enabled even at one document, like the tab strip's own two split
+      // icons -- toggling off is always legal, so the item disables only
+      // for "there is nothing a second pane could show", the same
+      // `canSplitView` the refusal status line explains in words.
+      MenuNode n = check(MenuAction::SplitView, ctx.splitViewActive,
+                         ctx.canSplitView || ctx.splitViewActive);
+      if (!ctx.canSplitView && !ctx.splitViewActive)
+        n.tooltip = "Needs a second open document.";
+      v.push_back(std::move(n));
+    }
+    v.push_back(check(MenuAction::MatchZoom, ctx.matchZoomActive, ctx.splitViewActive));
     bar.push_back(std::move(view));
   }
 

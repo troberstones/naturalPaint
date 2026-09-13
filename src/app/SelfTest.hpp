@@ -6776,4 +6776,16 @@ bool runZoomToSelectionTest();
 // touches ui/. See app/selftest/WarpMesh.cpp.
 bool runWarpMeshTest();
 
+// Track `split`: View > Split View and Match Zoom. `matchZoomView()`'s
+// pan-scales-by-size-ratio derivation checked independently by recomputing
+// the normalised centre from both sides; `atelierPaneAt()`'s hit-test on
+// either side of and on the divider; `toggleSplitView()` refusing under two
+// open documents and toggling for real above that; `AtelierSplitState::
+// companionView` resetting to its "needs a fit" sentinel exactly when
+// `atelierPaneDocuments()` hands the slot a different document; and
+// `focusSplitPane()` swapping the active document and the two views, a
+// no-op on the pane that is already focused. Headless and GPU-free. See
+// app/selftest/SplitView.cpp.
+bool runSplitViewTest();
+
 }  // namespace np

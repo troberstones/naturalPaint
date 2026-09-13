@@ -1789,6 +1789,8 @@ int main(int argc, char** argv) {
   bool uiLayerDemoClip = true;
   bool splitDemo = false;
   np::AtelierSplit splitDemoMode = np::AtelierSplit::Columns;
+  // Track `split`: also exercise View > Match Zoom in the same screenshot.
+  bool splitDemoMatchZoom = false;
   const char* uiMergeDemo = nullptr;
   const char* uiMultiSelectDemo = nullptr;
   bool controlsAllOpen = false;
@@ -2455,9 +2457,22 @@ int main(int argc, char** argv) {
       // ui/AtelierLayout's enumerator is called and the design's own two icon
       // names are, by that header's admission, an interpretation.
       splitDemo = true;
-      if (i + 1 < argc && std::string_view(argv[i + 1]) == "rows") {
-        splitDemoMode = np::AtelierSplit::Rows;
-        ++i;
+      // Two independent optional tokens, either order: `rows` picks the
+      // arrangement (see above), `match-zoom` also turns on View > Match
+      // Zoom (track `split`) before the first frame -- `setSplitMatchZoom()`
+      // is `setSplitArrangement()`'s own reason, restated: no click exists
+      // yet for `--screenshot` to have replayed.
+      for (int taken = 0; taken < 2 && i + 1 < argc; ++taken) {
+        const std::string_view next(argv[i + 1]);
+        if (next == "rows") {
+          splitDemoMode = np::AtelierSplit::Rows;
+          ++i;
+        } else if (next == "match-zoom") {
+          splitDemoMatchZoom = true;
+          ++i;
+        } else {
+          break;
+        }
       }
     } else if (a == "--ui-merge-demo") {
       // Phase 5 step 10 / PRD C10: press one merge button. See runUiMergeDemo().
@@ -4291,6 +4306,8 @@ int main(int argc, char** argv) {
     // PRD D23: app/WarpMesh's bicubic lattice and app/TransformSession's Warp
     // mode built on it. Headless and GPU-free.
     const bool warpMeshOk = np::runWarpMeshTest();
+    // Track `split`: View > Split View / Match Zoom. Headless and GPU-free.
+    const bool splitViewOk = np::runSplitViewTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4364,7 +4381,8 @@ int main(int argc, char** argv) {
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
                     nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
-                    pasteCommandsOk && commandsFillOk && zoomToSelectionOk && warpMeshOk;
+                    pasteCommandsOk && commandsFillOk && zoomToSelectionOk && warpMeshOk &&
+                    splitViewOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -5021,7 +5039,10 @@ int main(int argc, char** argv) {
   // under that fixture's upper two layers. Said here rather than enforced --
   // the flags are a developer's tool and a refusal would be a rule to
   // remember where a sentence is enough.
-  if (splitDemo) buildSplitDemo(st, splitDemoMode);
+  if (splitDemo) {
+    buildSplitDemo(st, splitDemoMode);
+    if (splitDemoMatchZoom) np::setSplitMatchZoom(true);
+  }
 
   // D4 (docs/reachability-audit.md): `naturalPaint foo.npaint` on the command
   // line. After every `--*-demo` fixture rather than interleaved with them,
@@ -5654,6 +5675,12 @@ int main(int argc, char** argv) {
         else if (action == "toggle_guides") st.showGuides = !st.showGuides;
         else if (action == "toggle_snapping") st.snappingEnabled = !st.snappingEnabled;
         else if (action == "toggle_grid") st.showGrid = !st.showGrid;
+        // Track `split`: View > Split View / Match Zoom's action strings, for
+        // a keymap that binds them -- `keymaps/default.json` ships neither
+        // bound (ui/MenuModel.cpp's own note on why), so this is reachable
+        // only from the View menu today.
+        else if (action == "split_view") np::toggleSplitViewKey(st);
+        else if (action == "match_zoom") np::toggleMatchZoomKey(st);
         // docs/shortcuts.md §1, "unmodified letters are tools" -- **one arm,
         // not twenty-one.**
         //
