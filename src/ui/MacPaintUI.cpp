@@ -13298,10 +13298,12 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
       g_loadChannelAsSelectionRequested = true;
       break;
 
-    // PRD E12. Acts immediately -- there is nothing to ask the user, unlike
-    // the two above.
+    // PRD E12. The same request flag the `Q` keymap action sets
+    // (AppState::requestToggleQuickMask) -- one place applies it, drawUI()'s
+    // per-frame block below, so a menu click and a keypress cannot disagree
+    // about what toggling means.
     case MenuAction::ToggleQuickMask:
-      if (doc != nullptr) toggleQuickMask(*doc);
+      st.requestToggleQuickMask = true;
       break;
 
     // --- Medium / Goodies -------------------------------------------------
@@ -18153,6 +18155,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (st.requestInvertSelection && od != nullptr && od->selection.has_value())
         installSelection(*od, invertSelection(*od->selection, od->document.width,
                                               od->document.height));
+      // PRD E12: `Q` and the Select menu's check item both land here.
+      if (st.requestToggleQuickMask && od != nullptr) toggleQuickMask(*od);
 
       const Selection* sel =
           (od != nullptr && od->selection.has_value()) ? &*od->selection : nullptr;
@@ -18286,6 +18290,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       st.requestDeselect = false;
       st.requestReselect = false;
       st.requestInvertSelection = false;
+      st.requestToggleQuickMask = false;
       st.requestCopy = false;
       st.requestCopyMerged = false;
       st.requestCut = false;

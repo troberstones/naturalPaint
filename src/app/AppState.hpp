@@ -1346,6 +1346,10 @@ struct AppState {
   bool requestDeselect = false;
   bool requestReselect = false;
   bool requestInvertSelection = false;
+  // PRD E12: the `Q` keymap action and `MenuAction::ToggleQuickMask` share
+  // this one flag, exactly as the rows above already share theirs between a
+  // key and a menu item.
+  bool requestToggleQuickMask = false;
   bool requestCopy = false;
   bool requestCopyMerged = false;
   bool requestCut = false;

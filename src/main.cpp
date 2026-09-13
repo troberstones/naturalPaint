@@ -5587,6 +5587,7 @@ int main(int argc, char** argv) {
         else if (action == "deselect") st.requestDeselect = true;
         else if (action == "reselect") st.requestReselect = true;
         else if (action == "invert_selection") st.requestInvertSelection = true;
+        else if (action == "quick_mask") st.requestToggleQuickMask = true;
         else if (action == "copy") st.requestCopy = true;
         else if (action == "copy_merged") st.requestCopyMerged = true;
         else if (action == "cut") st.requestCut = true;
