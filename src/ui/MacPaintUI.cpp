@@ -78,6 +78,7 @@
 #include "app/QuitSequence.hpp"
 #include "app/SelectionDrag.hpp"
 #include "app/Snapping.hpp"
+#include "app/SplitView.hpp"    // matchZoomView()
 #include "app/TilePreview.hpp"  // PRD D8: the 3x3 repeat preview's offsets and its enter/leave
 #include "app/ToolSurface.hpp"  // T5's second axis: can this tool act on THIS surface
 #include "app/ToolSwitch.hpp"
@@ -13195,6 +13196,9 @@ MenuContext menuContextFromState(AppState& st) {
   ctx.showRegions = st.showRegions;
   ctx.snappingEnabled = st.snappingEnabled;
   ctx.hasGuides = !st.guides.empty();
+  ctx.canSplitView = st.documents.count() >= 2;
+  ctx.splitViewActive = g_split.mode != AtelierSplit::Single;
+  ctx.matchZoomActive = g_split.matchZoom;
 
   // --- Window -------------------------------------------------------------
   ctx.showDemo = st.showDemo;
@@ -13785,6 +13789,8 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
       setTilePreview(st.tilePreview, st.view, st.requestFitWindow, !st.tilePreview.active);
       break;
     case MenuAction::Rulers:           st.showRulers = !st.showRulers;           break;
+    case MenuAction::SplitView:        toggleSplitViewKey(st);                   break;
+    case MenuAction::MatchZoom:        toggleMatchZoomKey(st);                   break;
     case MenuAction::Navigator:        st.showNavigator = !st.showNavigator;     break;
     // Inline, not Deferred: this flips a bool that next frame's
     // `drawBrushSettingsWindow()` reads. It opens no ImGui popup, so it is
@@ -17334,6 +17340,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // own comment warns about).
   if (st.documents.empty()) g_documentTextures.release();
 
+  // Track `split`: the focused document's own pixel size, captured here
+  // because `texW`/`texH` below are scoped to this window's Begin()/End()
+  // block and View > Match Zoom's mapping (app/SplitView.hpp) needs them
+  // again after that block closes, in the companion pane's own block.
+  float focusedTexW = 0.0f, focusedTexH = 0.0f;
+
   ImGui::SetNextWindowSize(canvasSize);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
   // The canvas surround (PRD **L6**), and the one place this chrome
@@ -17370,6 +17382,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const CanvasDimensions canvasDims = canvasDimensionsFor(st.documents.active(), canvasW, canvasH);
     const float texW = canvasDims.w;
     const float texH = canvasDims.h;
+    focusedTexW = texW;
+    focusedTexH = texH;
 
     // PLAN.md Phase 2 step 12: rulers reserve a thin strip along the top and
     // left of this window when shown, so the paintable area shrinks by
@@ -23401,27 +23415,24 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 
   // ------------------------------------------------- the unfocused pane
   //
-  // PRD **A5**'s second document, and it is deliberately **a view, not a
-  // second editor**. No rulers, no guides, no navigator, no pan/zoom/rotate
-  // and no painting: the whole document, fitted and centred, and a click that
-  // focuses it.
+  // PRD **A5**'s second document, track `split`'s own view. No rulers, no
+  // guides, no navigator, no rotate and no painting -- only the focused pane
+  // is an editor -- but it DOES carry its own zoom and pan now
+  // (`g_split.companionView`), independent of the focused pane's `st.view`.
   //
-  // That is a scope decision rather than an omission, and the reason is
-  // ownership. `CanvasView` -- zoom, pan, rotation, the two mirrors -- lives
-  // once on `AppState`, not per document, and `sim::PaintSim` is one shared
-  // canvas with no document binding at all. A second pane with its own
-  // transform would need the first of those moved onto `OpenDocument`, which
-  // is a change to a shared header this step does not own, and a second
-  // *paintable* pane would need the second, which is the stroke bridge and is
-  // not built. Fitting the whole document is the one honest thing a pane with
-  // no view state of its own can show.
+  // Still not a second editor, and the reason is unchanged: `sim::PaintSim`
+  // is one shared canvas with no document binding, so a second *paintable*
+  // pane needs the stroke bridge, which is not built. What changed is scope
+  // this track does own -- `AtelierSplitState::companionView` (declared
+  // beside `companion` itself, ui/AtelierChrome.hpp) -- not the one the old
+  // comment here deferred, which stays deferred: `AppState::view` is still
+  // the FOCUSED pane's only, never one of two `CanvasView`s per document.
   //
-  // **Focus is a swap, not a pointer.** Clicking here makes this document the
-  // session's active one and hands the old active document to this pane, so
-  // the panes stay where they are and the documents move between them. See
-  // ui/AtelierChrome.hpp: every other surface in the application acts on
-  // `DocumentSession::active()`, and a focus that did not move it would leave
-  // the LAYERS panel describing a document the user was not looking at.
+  // **Focus is a swap, not a pointer**, and now a swap of two things: which
+  // document is active, and which `CanvasView` follows the focused pane.
+  // `focusSplitPane()` (ui/AtelierChrome.cpp) does both, so a document keeps
+  // the zoom/pan it had when it moves between panes instead of the two panes
+  // trading views along with their documents.
   if (splitActive) {
     const int otherPane = 1 - paneDocs.focusedPane;
     const AtelierRect r = panes.pane[otherPane];
@@ -23435,16 +23446,38 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       ImDrawList* pdl = ImGui::GetWindowDrawList();
       const float dw = static_cast<float>(other->document.width);
       const float dh = static_cast<float>(other->document.height);
-      // 24 px of surround on every side, so the sheet reads as lying on the
-      // desk rather than as a panel background that happens to be the paper.
-      const float inset = 24.0f;
-      const float fit = (dw > 0.0f && dh > 0.0f)
-                            ? std::min((r.w - inset * 2.0f) / dw, (r.h - inset * 2.0f) / dh)
-                            : 0.0f;
-      if (fit > 0.0f) {
-        const float sw = dw * fit, sh = dh * fit;
-        const ImVec2 p0(r.x + (r.w - sw) * 0.5f, r.y + (r.h - sh) * 0.5f);
-        const ImVec2 p1(p0.x + sw, p0.y + sh);
+
+      // View > Match Zoom overrides whatever this pane's own view was, every
+      // frame -- self-correcting, and simpler than hooking every place
+      // `st.view` can change (wheel, drag, the seven View-menu view commands,
+      // Reset View). Otherwise, a `zoom <= 0` sentinel (set by
+      // `atelierPaneDocuments()` whenever this document is new to the
+      // companion slot) means "fit and centre it once", the same 24 px-inset
+      // arithmetic this pane always used, now stored rather than recomputed
+      // every frame so it survives past this one fit.
+      if (g_split.matchZoom) {
+        g_split.companionView = matchZoomView(st.view, focusedTexW, focusedTexH, dw, dh);
+      } else if (g_split.companionView.zoom <= 0.0f) {
+        const float inset = 24.0f;
+        const float fit = (dw > 0.0f && dh > 0.0f)
+                              ? std::min((r.w - inset * 2.0f) / dw, (r.h - inset * 2.0f) / dh)
+                              : 1.0f;
+        g_split.companionView.zoom = fit > 0.0f ? fit : 1.0f;
+        g_split.companionView.panX = 0.0f;
+        g_split.companionView.panY = 0.0f;
+      }
+
+      // The same drawSize/origin arithmetic the focused pane's own canvas
+      // block uses at identity rotation/mirror (this pane never rotates or
+      // mirrors its quad -- `matchZoomView()`'s own header says why) --
+      // centred when the document is smaller than the pane, offset by
+      // `panX`/`panY` from that centre otherwise, exactly like `st.view`'s.
+      const float zoom = g_split.companionView.zoom;
+      const ImVec2 drawSize(dw * zoom, dh * zoom);
+      const ImVec2 p0(r.x + std::max(0.0f, (r.w - drawSize.x) * 0.5f) + g_split.companionView.panX,
+                      r.y + std::max(0.0f, (r.h - drawSize.y) * 0.5f) + g_split.companionView.panY);
+      const ImVec2 p1(p0.x + drawSize.x, p0.y + drawSize.y);
+      if (drawSize.x > 0.0f && drawSize.y > 0.0f) {
         pdl->AddRectFilled(ImVec2(p0.x + 6, p0.y + 6), ImVec2(p1.x + 6, p1.y + 6),
                            IM_COL32(0, 0, 0, 110));
         // Blank paper, not PaintSim's canvas: that texture is the *focused*
@@ -23456,16 +23489,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // sense, and it is the second and last slot the pool will ever give
         // out.
         //
-        // The viewport passed is the WHOLE document -- this pane's own
-        // design is "the whole document, fitted and centred" (see the
-        // comment above this block), so nothing is ever off screen here and
-        // decision 6 never defers anything for it. Passed anyway, rather
-        // than nullptr, so a slot the OTHER call site left mid-backlog
-        // (a document that was focused, is now in this pane) still catches
-        // up through the same code path instead of silently falling back to
-        // paying for its entire backlog in one call -- either is correct,
-        // this is simply the one that keeps every production call site
-        // making the same kind of request.
+        // The viewport passed is still the WHOLE document, unchanged by this
+        // pane now having its own zoom: `addCanvasImage()` always samples the
+        // full composite and it is `p0`/`p1` above, not this request, that
+        // places only the visible part of it on screen (ImGui's own window
+        // clip rect crops the rest, the identical mechanism the focused
+        // pane's zoomed-in quad already relies on). Keeping the request whole
+        // avoids touching ui/DocumentTexture's residency budget, which is a
+        // shared header this track does not own.
         const DocumentTextureViewport wholeDoc{0, 0, other->document.width,
                                                other->document.height};
         const WGPUTextureView v = g_documentTextures.viewFor(gpu, *other, nullptr, &wholeDoc);
@@ -23477,17 +23508,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 
       ImGui::SetCursorScreenPos(ImVec2(r.x, r.y));
       if (ImGui::InvisibleButton("##focusPane2", ImVec2(r.w, r.h))) {
-        const OpenDocument* wasActive = st.documents.active();
-        const DocumentId incoming = other->id;
-        g_split.companion = wasActive != nullptr ? wasActive->id : 0;
-        g_split.focusedPane = otherPane;
-        for (size_t i = 0; i < st.documents.count(); ++i) {
-          const OpenDocument* d = st.documents.at(i);
-          if (d != nullptr && d->id == incoming) {
-            st.documents.setActive(i);
-            break;
-          }
-        }
+        focusSplitPane(st.documents, g_split, st.view, otherPane, other->id);
       }
     }
     ImGui::End();
@@ -23920,5 +23941,16 @@ void setDocumentStatusLine(std::string status) { g_docStatus = std::move(status)
 // more -- the declaration says why the companion and the focused pane are not
 // written here.
 void setSplitArrangement(AtelierSplit mode) { g_split.mode = mode; }
+
+// Track `split`. `toggleSplitView()` (ui/AtelierChrome.cpp) is the same
+// refuse-or-flip function `--selftest` drives directly against a bare
+// `AtelierSplitState`; the status line is the empty string on success, so
+// this only ever writes something worth reading.
+void toggleSplitViewKey(AppState& st) {
+  const std::string refusal = toggleSplitView(st.documents, g_split);
+  if (!refusal.empty()) g_docStatus = refusal;
+}
+void toggleMatchZoomKey(AppState&) { g_split.matchZoom = !g_split.matchZoom; }
+void setSplitMatchZoom(bool on) { g_split.matchZoom = on; }
 
 }  // namespace np

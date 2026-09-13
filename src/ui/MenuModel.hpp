@@ -294,6 +294,11 @@ enum class MenuAction : uint16_t {
   // after switching away", not the only way to see them.
   ShowRegions,
   Snap,
+  // Track `split`. `SplitView` refuses (a status line, no state change) with
+  // fewer than two open documents; `MatchZoom` is enabled only while a split
+  // is active. app/CommandCoverage.cpp: both NotRecordable, session state.
+  SplitView,
+  MatchZoom,
 
   // --- Window -------------------------------------------------------------
   //
@@ -823,6 +828,9 @@ struct MenuContext {
   bool showRegions = false;
   bool snappingEnabled = false;
   bool hasGuides = false;           // Clear Guides is dead with none placed
+  bool canSplitView = false;        // Split View needs a second open document
+  bool splitViewActive = false;     // g_split.mode != Single (ui/MacPaintUI.cpp)
+  bool matchZoomActive = false;     // g_split.matchZoom
 
   // --- Window -------------------------------------------------------------
   bool showBrushSettings = false;

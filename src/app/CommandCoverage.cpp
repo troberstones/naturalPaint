@@ -258,6 +258,12 @@ CommandCoverage coverageFor(MenuAction action) {
     case MenuAction::Snap:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "a tool behaviour"};
+    case MenuAction::SplitView:
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "the session's pane arrangement, not the document"};
+    case MenuAction::MatchZoom:
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "a view toggle; the document is unchanged"};
     case MenuAction::BrushSettings:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "a panel"};

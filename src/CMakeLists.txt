@@ -269,6 +269,8 @@ set(NP_SELFTEST_SOURCES
   app/selftest/AppIcon.cpp
   # PRD Q1 zoom to selection.
   app/selftest/ZoomToSelection.cpp
+  # Track `split`: View > Split View / Match Zoom.
+  app/selftest/SplitView.cpp
 )
 
 add_executable(naturalPaint
@@ -527,6 +529,8 @@ add_executable(naturalPaint
   # Highpass/Local Contrast/Lens Correction.
   app/ZoomToSelection.cpp
   ui/FilterDialogsExtra.cpp
+  # Track `split`: View > Split View's match-zoom mapping.
+  app/SplitView.cpp
 )
 
 # NP_SELFTEST's two halves: the 236 section TUs, and the guard main.cpp's
