@@ -243,6 +243,42 @@ bool runSeamHealTest() {
           "menu: SeamHeal is Deferred -- it opens a modal");
   }
 
+  std::printf("  -- E. Recompute's reseed still round-trips through the encoder --\n");
+  {
+    // The full property-based coverage (in range, moving, provably not
+    // vacuous) lives in app/selftest/PatchMatch.cpp's own reseed section --
+    // `nextRepairSeed()` is one shared function, not two. This section
+    // covers only what is specific to Seam Heal: a value THAT function
+    // actually produces still gets through `seamHealCommand()` and
+    // `applyCommand()` bit-identically to the direct applier.
+    const uint64_t reseeded =
+        nextRepairSeed(nextRepairSeed(9007199254740992ULL));  // two steps from 2^53
+    check(reseeded <= 9007199254740992ULL, "reseed: still in range after two steps from 2^53");
+
+    OpenDocument doc = makeBlankOpenDocument(64, 64, WorkingSpace{}, "seam heal reseed fixture");
+    fillEdgeOffsetStripes(*doc.document.layers[0].rgbTiles, 64, 8, 4);
+    doc.recordEdit("seam heal reseed fixture", EditKind::Content);
+
+    SeamHealRequest req;
+    req.bandWidth = 10;
+    req.patchRadius = 2;
+    req.iterations = 3;
+    req.pyramidLevels = 2;
+    req.seed = reseeded;
+
+    OpenDocument reference =
+        makeBlankOpenDocument(64, 64, WorkingSpace{}, "seam heal reseed reference");
+    reference.document.layers[0].rgbTiles = doc.document.layers[0].rgbTiles;
+    const FilterOpResult refResult = applySeamHeal(reference, req);
+
+    const CommandResult cmdResult = applyCommand(doc, seamHealCommand(req));
+    check(cmdResult.ok && refResult.refusal == PixelOpRefusal::None,
+          "reseed: a Recompute-sized seed is ACCEPTED by the real encoder and applyCommand()");
+    check(shTilesExactlyEqual(*doc.document.layers[0].rgbTiles,
+                              *reference.document.layers[0].rgbTiles),
+          "reseed: and bit-identical to the direct applier called with the same reseeded value");
+  }
+
   std::printf("[selftest] seamheal %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

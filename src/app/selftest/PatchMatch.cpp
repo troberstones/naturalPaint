@@ -366,6 +366,84 @@ bool runPatchMatchTest() {
                ms);
   }
 
+  std::printf("  -- F. Recompute's reseed: in range, moving, and still accepted -----\n");
+  {
+    // splitmix64's finalizer, this suite's own copy -- used ONLY to compute
+    // the RAW (unbounded) step independently of `nextRepairSeed()`, so
+    // property (c) below is checked against a second implementation of the
+    // math rather than against `nextRepairSeed()`'s own bookkeeping.
+    auto rawSplitMix64 = [](uint64_t z) noexcept -> uint64_t {
+      z += 0x9e3779b97f4a7c15ULL;
+      z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+      return (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    };
+    constexpr uint64_t kMaxSeed = 9007199254740992ULL;  // 2^53
+
+    // (c) first: an UNBOUNDED step from each starting point this section
+    // walks forward from really would have exceeded 2^53 -- so the modulo
+    // `nextRepairSeed()` applies is doing real work on these inputs, not
+    // passing by coincidence because the raw hash already happened to land
+    // in range.
+    check(rawSplitMix64(0) > kMaxSeed && rawSplitMix64(kMaxSeed) > kMaxSeed,
+          "reseed: an unbounded splitmix64 step from 0 or from 2^53 exceeds 2^53 -- the bound "
+          "this function applies is not a no-op on these inputs");
+
+    // (a) many consecutive reseeds from each starting point stay in range and
+    // are not all equal -- i.e. the sequence does not get stuck.
+    for (const uint64_t start : {uint64_t{0}, kMaxSeed}) {
+      uint64_t seed = start;
+      bool allInRange = true;
+      bool anyDifferent = false;
+      bool anyConsecutiveCollision = false;
+      for (int i = 0; i < 2000; ++i) {
+        const uint64_t next = nextRepairSeed(seed);
+        if (next > kMaxSeed) allInRange = false;
+        if (next != seed) anyDifferent = true;
+        if (next == seed) anyConsecutiveCollision = true;
+        seed = next;
+      }
+      check(allInRange, "reseed: two thousand consecutive reseeds all stay within [0, 2^53]");
+      check(anyDifferent,
+            "reseed: the sequence actually moves -- not every value is the same one");
+      check(!anyConsecutiveCollision,
+            "reseed: no step ever returns the seed it was given -- never stuck at a fixed "
+            "point on the very next press");
+    }
+
+    // (b) a seed this function actually produces still round-trips through
+    // the REAL encoders and applyCommand(), for both commands -- the whole
+    // point of the fix: a seed in range must be a seed the reader accepts.
+    const uint64_t reseeded = nextRepairSeed(nextRepairSeed(kMaxSeed));
+    check(reseeded <= kMaxSeed, "reseed: two steps from 2^53 is still in range");
+
+    OpenDocument doc = makeBlankOpenDocument(48, 48, WorkingSpace{}, "reseed round trip");
+    fillStripeField(*doc.document.layers[0].rgbTiles, 48, 6);
+    Selection sel;
+    pmSelectRect(sel, 10, 10, 20, 20);
+    doc.recordEdit("reseed fixture", EditKind::Content);
+    doc.selection = sel;
+
+    ContentAwareFillRequest req;
+    req.patchRadius = 2;
+    req.iterations = 2;
+    req.pyramidLevels = 2;
+    req.seed = reseeded;
+
+    OpenDocument reference = makeBlankOpenDocument(48, 48, WorkingSpace{}, "reseed reference");
+    reference.document.layers[0].rgbTiles = doc.document.layers[0].rgbTiles;
+    reference.selection = sel;
+    const FilterOpResult refResult = applyContentAwareFill(reference, req);
+
+    const CommandResult cmdResult = applyCommand(doc, contentAwareFillCommand(req));
+    check(cmdResult.ok && refResult.refusal == PixelOpRefusal::None,
+          "reseed: a Recompute-sized seed is ACCEPTED by the real encoder and applyCommand() -- "
+          "the bug this section was added for is a seed the reader refuses");
+    check(pmTilesExactlyEqual(*doc.document.layers[0].rgbTiles,
+                              *reference.document.layers[0].rgbTiles),
+          "reseed: and the command's result is bit-identical to the direct applier called with "
+          "the same reseeded value");
+  }
+
   std::printf("[selftest] patchmatch %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

@@ -1741,6 +1741,27 @@ Command seamHealCommand(const SeamHealRequest& r) {
   return command("seam_heal", std::move(p));
 }
 
+namespace {
+// splitmix64's finalizer, this file's own copy -- ops/Filters.cpp's and
+// ops/PatchMatch.cpp's own precedent for keeping one rather than exporting a
+// shared header for four lines.
+uint64_t repairReseedSplitMix64(uint64_t z) noexcept {
+  z += 0x9e3779b97f4a7c15ULL;
+  z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+  return z ^ (z >> 31);
+}
+}  // namespace
+
+uint64_t nextRepairSeed(uint64_t seed) noexcept {
+  // 2^53 -- `readSeed()`'s own ceiling, restated here rather than shared,
+  // because the two live in different files for different reasons (one
+  // reads JSON, this one walks a dialog's own field) and a shared constant
+  // would be a coupling neither side asked for.
+  constexpr uint64_t kMaxRepairSeed = 9007199254740992ULL;
+  return repairReseedSplitMix64(seed) % (kMaxRepairSeed + 1);
+}
+
 Command removeLightingGradientCommand(float sigma) {
   JsonValue p = JsonValue::object();
   p.set("sigma", JsonValue::number(sigma));

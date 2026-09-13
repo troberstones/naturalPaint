@@ -18,15 +18,6 @@ namespace {
 bool g_contentAwareFillRequested = false;
 bool g_seamHealRequested = false;
 
-// A cheap reseed for the "Recompute" button -- splitmix64's own constants,
-// one step, so pressing it repeatedly walks a long, non-repeating sequence
-// without needing a system RNG a dialog would then have to seed itself.
-uint64_t nextRepairSeed(uint64_t s) noexcept {
-  s += 0x9e3779b97f4a7c15ULL;
-  s = (s ^ (s >> 30)) * 0xbf58476d1ce4e5b9ULL;
-  return (s ^ (s >> 27)) * 0x94d049bb133111ebULL;
-}
-
 template <typename PreviewFn, typename Params>
 void updateRepairPreview(OpenDocument* od, PreviewFn previewFn, const Params& params) {
   if (od != nullptr) {
