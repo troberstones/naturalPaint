@@ -10,6 +10,7 @@
 #include "app/CommandsImage.hpp"
 #include "app/CommandSupport.hpp"
 #include "app/FilterCommandsExtra.hpp"
+#include "app/RepairCommandsExtra.hpp"
 #include "app/CropTool.hpp"
 #include "app/FilterOps.hpp"
 #include "app/TransformSession.hpp"
@@ -157,6 +158,21 @@ std::string readBool(const JsonValue& params, const char* id, const char* key, b
   if (v == nullptr || v->isNull()) return {};
   if (!v->isBool()) return refuseValue(id, key, "true or false");
   *io = v->asBool();
+  return {};
+}
+
+// `filter_add_noise`'s own seed reasoning, shared: a JSON number is a double,
+// exact only to 2^53, so a uint64 seed above that would round on the way in
+// and silently stop being the seed the file names.
+std::string readSeed(const JsonValue& params, const char* id, uint64_t* io) {
+  const JsonValue* v = params.find("seed");
+  if (v == nullptr || v->isNull()) return {};
+  if (!v->isNumber()) return refuseValue(id, "seed", "a number");
+  const double d = v->asNumber();
+  if (!std::isfinite(d) || d != std::floor(d) || d < 0.0 || d > 9007199254740992.0)
+    return refuseValue(id, "seed",
+                       "a whole number from 0 to 2^53; a larger seed would round on the way in");
+  *io = static_cast<uint64_t>(d);
   return {};
 }
 
@@ -481,6 +497,47 @@ std::string inpaintUnavailable(const OpenDocument& doc, const JsonValue&) {
   return pixelOpRefusalMessage(why, activeLayerOf(doc), "inpaint");
 }
 
+// ==========================================================================
+// Content-Aware Fill -- ops/PatchMatch, PRD D7's second half
+// ==========================================================================
+//
+// Same hole-not-bound shape as Inpaint just above: `contentAwareFillRefusal()`
+// is the precondition (an absent selection is a hard `NoSelection`, not "the
+// whole canvas"), and this adapter validates every OTHER field before handing
+// them to the engine, which gets the last word on a combination none of them
+// individually catches.
+CommandResult doContentAwareFill(OpenDocument& doc, const JsonValue& params) {
+  const char* kId = "content_aware_fill";
+  ContentAwareFillRequest r;
+  int32_t patchRadius = r.patchRadius;
+  int32_t iterations = r.iterations;
+  int32_t pyramidLevels = r.pyramidLevels;
+  std::string why = readWhole(params, kId, "patch_radius", kOptional, &patchRadius);
+  if (why.empty()) why = readWhole(params, kId, "iterations", kOptional, &iterations);
+  if (why.empty()) why = readWhole(params, kId, "pyramid_levels", kOptional, &pyramidLevels);
+  if (why.empty()) why = readSeed(params, kId, &r.seed);
+  if (!why.empty()) return commandRefused(why);
+  if (patchRadius < 1 || patchRadius > kPatchMatchMaxPatchRadius)
+    return commandRefused(refuseValue(
+        kId, "patch_radius", "from 1 to " + std::to_string(kPatchMatchMaxPatchRadius) + " texels"));
+  if (iterations < 1 || iterations > kPatchMatchMaxIterations)
+    return commandRefused(refuseValue(
+        kId, "iterations", "from 1 to " + std::to_string(kPatchMatchMaxIterations)));
+  if (pyramidLevels < 1 || pyramidLevels > kPatchMatchMaxPyramidLevels)
+    return commandRefused(refuseValue(
+        kId, "pyramid_levels", "from 1 to " + std::to_string(kPatchMatchMaxPyramidLevels)));
+  r.patchRadius = patchRadius;
+  r.iterations = iterations;
+  r.pyramidLevels = pyramidLevels;
+  return fromFilterResult(applyContentAwareFill(doc, r), doc, "content-aware fill");
+}
+
+std::string contentAwareFillUnavailable(const OpenDocument& doc, const JsonValue&) {
+  const PixelOpRefusal why = contentAwareFillRefusal(doc);
+  if (why == PixelOpRefusal::None) return {};
+  return pixelOpRefusalMessage(why, activeLayerOf(doc), "content-aware fill");
+}
+
 CommandResult doRemoveLightingGradient(OpenDocument& doc, const JsonValue& params) {
   const char* kId = "filter_remove_lighting_gradient";
   float sigma = 0.0f;
@@ -539,6 +596,52 @@ std::string offsetUnavailable(const OpenDocument& doc, const JsonValue&) {
   const PixelOpRefusal why = offsetRefusalFor(doc);
   if (why == PixelOpRefusal::None) return {};
   return pixelOpRefusalMessage(why, activeLayerOf(doc), "offset");
+}
+
+// ==========================================================================
+// Seam Heal -- ops/SeamHeal, make-tileable's missing third piece (PRD D8)
+// ==========================================================================
+//
+// Refuses under any live selection for `offsetUnavailable()`'s own reason --
+// this op is defined over the whole canvas as a torus, and a selection has
+// no single meaning against that. NOT `selectionBounded`, for the identical
+// reason `filter_offset` is not (app/CommandCoverage.cpp names it).
+CommandResult doSeamHeal(OpenDocument& doc, const JsonValue& params) {
+  const char* kId = "seam_heal";
+  SeamHealRequest r;
+  int32_t bandWidth = r.bandWidth;
+  int32_t patchRadius = r.patchRadius;
+  int32_t iterations = r.iterations;
+  int32_t pyramidLevels = r.pyramidLevels;
+  std::string why = readWhole(params, kId, "band_width", kOptional, &bandWidth);
+  if (why.empty()) why = readWhole(params, kId, "patch_radius", kOptional, &patchRadius);
+  if (why.empty()) why = readWhole(params, kId, "iterations", kOptional, &iterations);
+  if (why.empty()) why = readWhole(params, kId, "pyramid_levels", kOptional, &pyramidLevels);
+  if (why.empty()) why = readSeed(params, kId, &r.seed);
+  if (!why.empty()) return commandRefused(why);
+
+  if (bandWidth < 1)
+    return commandRefused(refuseValue(kId, "band_width", "at least 1 texel"));
+  if (patchRadius < 1 || patchRadius > kPatchMatchMaxPatchRadius)
+    return commandRefused(refuseValue(
+        kId, "patch_radius", "from 1 to " + std::to_string(kPatchMatchMaxPatchRadius) + " texels"));
+  if (iterations < 1 || iterations > kPatchMatchMaxIterations)
+    return commandRefused(refuseValue(
+        kId, "iterations", "from 1 to " + std::to_string(kPatchMatchMaxIterations)));
+  if (pyramidLevels < 1 || pyramidLevels > kPatchMatchMaxPyramidLevels)
+    return commandRefused(refuseValue(
+        kId, "pyramid_levels", "from 1 to " + std::to_string(kPatchMatchMaxPyramidLevels)));
+  r.bandWidth = bandWidth;
+  r.patchRadius = patchRadius;
+  r.iterations = iterations;
+  r.pyramidLevels = pyramidLevels;
+  return fromFilterResult(applySeamHeal(doc, r), doc, "seam heal");
+}
+
+std::string seamHealUnavailable(const OpenDocument& doc, const JsonValue&) {
+  const PixelOpRefusal why = seamHealRefusalFor(doc);
+  if (why == PixelOpRefusal::None) return {};
+  return pixelOpRefusalMessage(why, activeLayerOf(doc), "seam heal");
 }
 
 // ==========================================================================
@@ -1236,6 +1339,16 @@ void registerImageCommands(std::vector<CommandSpec>* out) {
   // bounded exception beside `crop_to_selection`.
   out->push_back({"filter_inpaint", "Inpaint", {"radius"}, inpaintUnavailable, doInpaint,
                   /*selectionBounded=*/true});
+  // Same shape and the same `selectionBounded`-without-the-bridge exception
+  // as `filter_inpaint` just above -- the hole is the selection, so
+  // `contentAwareFillUnavailable()` refuses `NoSelection` directly rather
+  // than through `pixelOpUnavailable()`. app/selftest/Command.cpp section H
+  // names this as the fourth such row.
+  out->push_back({"content_aware_fill",
+                  "Content-Aware Fill",
+                  {"patch_radius", "iterations", "pyramid_levels", "seed"},
+                  contentAwareFillUnavailable,
+                  doContentAwareFill, /*selectionBounded=*/true});
   out->push_back({"filter_remove_lighting_gradient",
                   "Remove Lighting Gradient",
                   {"sigma"},
@@ -1250,6 +1363,14 @@ void registerImageCommands(std::vector<CommandSpec>* out) {
                   {"dx_fraction", "dy_fraction", "edge"},
                   offsetUnavailable,
                   doOffset});
+  // NOT selectionBounded, for `filter_offset`'s own reason just above:
+  // `seamHealUnavailable()` refuses outright under any live selection, so an
+  // absent one is never the "whole canvas" reading that needed protecting.
+  out->push_back({"seam_heal",
+                  "Seam Heal",
+                  {"band_width", "patch_radius", "iterations", "pyramid_levels", "seed"},
+                  seamHealUnavailable,
+                  doSeamHeal});
 
   // ---- Image > Adjustments -----------------------------------------------
   out->push_back({"adjust_levels", "Levels", {"channels"}, pixelOpUnavailable, doLevels,
@@ -1599,6 +1720,25 @@ Command inpaintCommand(int32_t radius) {
   JsonValue p = JsonValue::object();
   p.set("radius", JsonValue::number(radius));
   return command("filter_inpaint", std::move(p));
+}
+
+Command contentAwareFillCommand(const ContentAwareFillRequest& r) {
+  JsonValue p = JsonValue::object();
+  p.set("patch_radius", JsonValue::number(r.patchRadius));
+  p.set("iterations", JsonValue::number(r.iterations));
+  p.set("pyramid_levels", JsonValue::number(r.pyramidLevels));
+  p.set("seed", JsonValue::number(static_cast<double>(r.seed)));
+  return command("content_aware_fill", std::move(p));
+}
+
+Command seamHealCommand(const SeamHealRequest& r) {
+  JsonValue p = JsonValue::object();
+  p.set("band_width", JsonValue::number(r.bandWidth));
+  p.set("patch_radius", JsonValue::number(r.patchRadius));
+  p.set("iterations", JsonValue::number(r.iterations));
+  p.set("pyramid_levels", JsonValue::number(r.pyramidLevels));
+  p.set("seed", JsonValue::number(static_cast<double>(r.seed)));
+  return command("seam_heal", std::move(p));
 }
 
 Command removeLightingGradientCommand(float sigma) {

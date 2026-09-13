@@ -131,6 +131,8 @@ set(NP_SELFTEST_SOURCES
   app/selftest/CommandCallsites.cpp
   app/selftest/Json.cpp
   app/selftest/Inpaint.cpp
+  app/selftest/PatchMatch.cpp
+  app/selftest/SeamHeal.cpp
   app/selftest/Keymap.cpp
   app/selftest/LayerComp.cpp
   app/selftest/LayerEditor.cpp
@@ -488,6 +490,8 @@ add_executable(naturalPaint
   ops/Fill.cpp
   ops/Gradient.cpp
   ops/Inpaint.cpp
+  ops/PatchMatch.cpp
+  ops/SeamHeal.cpp
   ops/Lens.cpp
   ops/MonoOps.cpp
   ops/Pattern.cpp
@@ -527,6 +531,8 @@ add_executable(naturalPaint
   # Highpass/Local Contrast/Lens Correction.
   app/ZoomToSelection.cpp
   ui/FilterDialogsExtra.cpp
+  # PatchMatch content-aware fill and seam heal (PRD D7 second half, D8).
+  ui/RepairDialogs.cpp
 )
 
 # NP_SELFTEST's two halves: the 236 section TUs, and the guard main.cpp's

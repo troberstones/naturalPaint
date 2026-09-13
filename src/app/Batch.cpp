@@ -145,6 +145,15 @@ constexpr PixelUnitParam kPixelUnitParams[] = {
     // texels.
     {"filter_highpass", "sigma"},
     {"filter_local_contrast", "radius"},
+    // Track `repair`: `patch_radius`/`band_width` are ops/PatchMatch and
+    // ops/SeamHeal window sizes in document texels, the identical unit
+    // `filter_median`'s own `radius` is already in this table for.
+    // `iterations`, `pyramid_levels` and `seed` are counts, not lengths, and
+    // stay out for `numeric_transform`'s own reason: a count means the same
+    // thing at any resolution.
+    {"content_aware_fill", "patch_radius"},
+    {"seam_heal", "band_width"},
+    {"seam_heal", "patch_radius"},
 };
 
 // "filter_gaussian_blur's sigma" for every pixel-unit parameter `action`

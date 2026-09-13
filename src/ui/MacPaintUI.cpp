@@ -11,6 +11,7 @@
 #include "ui/FileDialog.hpp"
 #include "ui/FillDialog.hpp"
 #include "ui/FilterDialogsExtra.hpp"
+#include "ui/RepairDialogs.hpp"
 #include "ui/Dialog.hpp"
 #include "ui/LabelledControl.hpp"
 #include "ui/AtelierLayout.hpp"
@@ -13848,6 +13849,10 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     case MenuAction::Highpass:      requestHighpassDialog();      break;
     case MenuAction::LocalContrast: requestLocalContrastDialog(); break;
     case MenuAction::LensCorrect:   requestLensCorrectDialog();   break;
+    // Track `repair`'s two (PRD D7 second half, D8) -- ui/RepairDialogs.hpp,
+    // the identical small-hook shape as the three just above.
+    case MenuAction::ContentAwareFill: requestContentAwareFillDialog(); break;
+    case MenuAction::SeamHeal:         requestSeamHealDialog();         break;
 
     // --- Image ----------------------------------------------------------
     case MenuAction::ImageSize:  g_imageSizeRequested = true;  break;
@@ -16983,6 +16988,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   drawHighpassDialog(st);
   drawLocalContrastDialog(st);
   drawLensCorrectDialog(st);
+  // Track `repair`'s two (PRD D7 second half, D8) -- ui/RepairDialogs.hpp,
+  // same placement rule again.
+  drawContentAwareFillDialog(st);
+  drawSeamHealDialog(st);
   drawAdjustmentDialogs(st);
   // PRD D24: the gradient tool's own stop editor, opened from the options
   // bar's swatch rather than a menu -- same placement rule again, so it
