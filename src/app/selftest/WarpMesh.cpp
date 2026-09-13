@@ -8,7 +8,7 @@
 
 namespace np {
 
-// app/WarpMesh + app/TransformSession's Warp mode (PRD D23, track `warp`).
+// app/WarpMesh + app/TransformSession's Warp mode (PRD D23).
 // Headless and GPU-free. See app/WarpMesh.hpp for the model this proves and
 // app/TransformSession.hpp section 9 for how a session's Warp mode uses it.
 bool runWarpMeshTest() {
@@ -398,29 +398,19 @@ bool runWarpMeshTest() {
       const float outsideCoverage = selectionCoverageAt(&*od.selection, PixelCoord{2, 2});
       check(outsideCoverage < 0.05f, "warped coverage well outside the box is unselected");
 
-      // `OpenDocument::warpSelectionUndo` is what lets ordinary Undo restore
-      // the selection too (ui/MacPaintUI.cpp's moveHistoryCursor()) -- keyed
-      // by the serial of the entry `commit()` just pushed.
-      const uint64_t committedSerial = od.history.entries()[od.history.cursor()].serial;
-      const OpenDocument::WarpSelectionUndo* rec = nullptr;
-      for (const auto& u : od.warpSelectionUndo)
-        if (u.serial == committedSerial) rec = &u;
-      check(rec != nullptr, "commit() recorded a warpSelectionUndo entry for its own history entry");
-      if (rec != nullptr) {
-        check(rec->before.has_value() && selectionCoverageAt(&*rec->before, PixelCoord{2, 2}) < 0.05f &&
-                  selectionCoverageAt(&*rec->before, PixelCoord{16, 16}) > 0.9f,
-              "the recorded 'before' selection is the pre-warp rectangle");
-        // The exact restore `moveHistoryCursor()` performs on Undo.
-        od.selection = rec->before;
-      }
     }
+    // A pixel Undo must not revert a selection (app/DocumentLifecycle.hpp on
+    // `selection`), so the warped coverage survives it, exactly as a Move's does.
+    const std::optional<Selection> warpedSelection = od.selection;
     const Document* prior = od.history.undo();
     check(prior != nullptr, "selection-follows-warp: one undo() call succeeds");
     if (prior != nullptr) od.document = *prior;
-    check(od.selection.has_value() &&
-              selectionCoverageAt(&*od.selection, PixelCoord{16, 16}) > 0.9f &&
-              selectionCoverageAt(&*od.selection, PixelCoord{2, 2}) < 0.05f,
-          "after undo (pixels via History, selection via warpSelectionUndo) the original box reads back");
+    bool selectionUntouched = od.selection.has_value() == warpedSelection.has_value();
+    for (int32_t y = 0; selectionUntouched && warpedSelection && y < 32; ++y)
+      for (int32_t x = 0; selectionUntouched && x < 32; ++x)
+        selectionUntouched = selectionCoverageAt(&*od.selection, PixelCoord{x, y}) ==
+                             selectionCoverageAt(&*warpedSelection, PixelCoord{x, y});
+    check(selectionUntouched, "undo restores the pixels and leaves the warped selection alone");
   }
 
   // --- 12. previewWarpDocument() matches what commit() actually writes ------

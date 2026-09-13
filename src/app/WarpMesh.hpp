@@ -9,7 +9,7 @@
 #include "ops/DocumentTransform.hpp"
 #include "ops/Transform.hpp"
 
-// app/WarpMesh (PRD D23; track `warp` of the `reach` wave).
+// app/WarpMesh (PRD D23).
 //
 // A Photoshop-style lattice Warp of a Free Transform target: an N x N grid of
 // bicubic Bezier patches over a rectangle, dragged by anchors and tangent

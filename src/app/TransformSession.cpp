@@ -816,7 +816,6 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
 
     // The selection moves with the pixels, same net and regions -- the warp
     // sibling of the affine path's `transformSelectionCoverage()` call above.
-    const std::optional<Selection> beforeSelection = od.selection;
     Selection movedSelection;
     std::string selErr;
     const bool selectionMoved = warpSelectionCoverage(
@@ -826,13 +825,6 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
 
     const std::string label = "warp selection";
     od.recordEdit(label, EditKind::Structural);
-    // `od.selection` is outside `core::History` (app/DocumentLifecycle.hpp);
-    // this is what lets ordinary Undo/Redo put it back too, keyed by the
-    // entry this recordEdit() just pushed.
-    if (selectionMoved) {
-      od.warpSelectionUndo.push_back({od.history.entries()[od.history.cursor()].serial,
-                                      beforeSelection, od.selection});
-    }
     active_ = false;
     out.ok = true;
     out.editLabel = label;

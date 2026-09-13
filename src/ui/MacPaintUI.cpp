@@ -10001,7 +10001,7 @@ class FilterPreviewTexture {
   std::vector<Retired> retired_;
 };
 FilterPreviewTexture g_filterPreviewTexture;
-FilterPreviewTexture g_warpPreviewTexture;  // track `warp`'s own instance; see warpPreviewViewFor()
+FilterPreviewTexture g_warpPreviewTexture;  // the Warp preview's own instance; see warpPreviewViewFor()
 
 // Same shape as `FilterPreviewTexture` above -- fresh-on-resize, retire not
 // release, re-upload keyed on a caller generation rather than a revision this
@@ -13235,22 +13235,7 @@ void moveHistoryCursor(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext&
                        OpenDocument& od, int direction) {
   settleWetPaintBeforeHistoryMove(st, sim, gpu, od);
   History& h = od.history;
-  // `OpenDocument::warpSelectionUndo` rides along with the entry it moved
-  // in, by serial. `direction` is always +/-1 here (a History-panel jump
-  // goes through `install()` instead), so at most one boundary is crossed.
-  const uint64_t fromSerial = h.entries()[h.cursor()].serial;
   installHistoryCursor(od, historyPanelClick(h, historySerialForRow(h, h.cursor() + direction)));
-  const uint64_t toSerial = h.entries()[h.cursor()].serial;
-  for (const OpenDocument::WarpSelectionUndo& u : od.warpSelectionUndo) {
-    if (direction < 0 && u.serial == fromSerial) {
-      od.selection = u.before;
-      break;
-    }
-    if (direction > 0 && u.serial == toSerial) {
-      od.selection = u.after;
-      break;
-    }
-  }
 
   // A live Text session survives undo/redo on purpose -- a typing burst IS a
   // history entry, so Cmd+Z during a session is the user undoing their own

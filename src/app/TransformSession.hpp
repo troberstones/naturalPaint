@@ -383,7 +383,7 @@ namespace np {
 //     geometry (a pure function of `sourceBounds()`/`pending()`) is exact
 //     either way -- what is missing is only the live paint inside it.
 // ==========================================================================
-// (9) WARP: A SECOND SHAPE FOR THE SAME SESSION (PRD D23, track `warp`)
+// (9) WARP: A SECOND SHAPE FOR THE SAME SESSION (PRD D23)
 // ==========================================================================
 //
 // A Free Transform <-> Warp TOGGLE on the same live session, not a second
@@ -400,9 +400,8 @@ namespace np {
 // path's dual-image/hide-space bridge re-run through a non-linear map,
 // unbuilt). `SelectionPixels` warps the covered pixels the same way the
 // affine path does, and moves `od.selection` too via `warpSelectionCoverage()`
-// -- keyed for Undo/Redo through `OpenDocument::warpSelectionUndo`
-// (app/DocumentLifecycle.hpp), since `core::History` itself excludes
-// `selection`.
+// -- and, like every other transform, leaves the selection out of Undo
+// (app/DocumentLifecycle.hpp on `selection`).
 enum class TransformMode { Affine, Warp };
 
 enum class TransformTarget { Layer, SelectionPixels, LayerSet };
