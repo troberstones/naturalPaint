@@ -261,6 +261,13 @@ enum class MenuAction : uint16_t {
 
   // --- View ---------------------------------------------------------------
   FitToWindow,
+  // PRD Q1 (P0), reach wave track `zoom`. Fits the active selection's bounds
+  // into the canvas viewport, honouring the current rotation and the existing
+  // zoom limits -- app/ZoomToSelection.hpp's own header has the arithmetic.
+  // Disabled without an engaged selection, `hasEngagedSelection`'s own
+  // reading (`Inpaint`'s neighbouring comment already argues for this exact
+  // field rather than a new one).
+  ZoomToSelection,
   Zoom100,
   ZoomIn,
   ZoomOut,
@@ -348,6 +355,15 @@ enum class MenuAction : uint16_t {
   // appearing and doing nothing.
   RemoveLightingGradient,
   Offset,
+
+  // Reach wave, track `zoom`: three more engines with no menu path before
+  // this (docs/reachability-audit.md C1) -- `ops/Filters.hpp`'s
+  // `highpassTiles()`/`localContrastTiles()` and `ops/Lens.hpp`'s
+  // `lensCorrectTiles()`. `lens_correct` (PRD D22) already existed as a
+  // command with no menu item; this is that door.
+  Highpass,
+  LocalContrast,
+  LensCorrect,
 
   // --- Image ------------------------------------------------------------
   //

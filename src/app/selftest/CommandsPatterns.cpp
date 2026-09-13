@@ -627,6 +627,42 @@ bool runCommandsPatternsTest() {
     r = applyCommand(od, lens);
     check(r.ok && r.texelsChanged > 0, "command: a real lens_correct runs and changes texels");
 
+    // Reach wave, track `zoom`: `applyLensCorrect()`/`previewLensCorrect()`
+    // (app/FilterOps.hpp) are new -- `doLensCorrect()` above now calls the
+    // first of them instead of `applyPixelFilter()` directly, but neither
+    // function had a test of its own yet. Section A's own standard, on a
+    // clean (no selection) document: the applier's result must be
+    // bit-identical to calling `lensCorrectTiles()` directly with the SAME
+    // params, and the preview must match what committing then writes --
+    // section H's T15 property, restated for this op.
+    od.selection.reset();
+    const PixelRect fullCanvas{0, 0, kW, kH};
+    LensParams lp;
+    lp.k1 = 0.08f;
+    lp.kernel = ResampleKernel::CatmullRom;
+    const TileStore beforeLens = *od.document.layers[0].rgbTiles;
+    TileStore lensPreview;
+    const FilterOpResult previewed = previewLensCorrect(od, lp, &lensPreview);
+    check(previewed.refusal == PixelOpRefusal::None && previewed.texelsChanged > 0,
+          "applier: previewLensCorrect() computes something and does not refuse");
+    check(rawBits(*od.document.layers[0].rgbTiles, fullCanvas) == rawBits(beforeLens, fullCanvas),
+          "applier: previewLensCorrect() leaves the document's own tiles untouched");
+    const FilterOpResult applied = applyLensCorrect(od, lp);
+    check(applied.refusal == PixelOpRefusal::None &&
+              rawBits(*od.document.layers[0].rgbTiles, fullCanvas) ==
+                  rawBits(lensPreview, fullCanvas),
+          "applier: applyLensCorrect() at the SAME params writes tiles BIT-IDENTICAL to what "
+          "the preview held");
+    LensParams lpWithFrame = lp;
+    lpWithFrame.frame = fullCanvas;
+    TileStore reference;
+    check(lensCorrectTiles(beforeLens, fullCanvas, lpWithFrame, &reference),
+          "applier: the reference engine call (SAME k1, frame set to the canvas) succeeds");
+    check(rawBits(*od.document.layers[0].rgbTiles, fullCanvas) == rawBits(reference, fullCanvas),
+          "applier: applyLensCorrect()'s result is bit-identical to lensCorrectTiles() called "
+          "directly with the SAME params -- the applier's own frame-from-canvas is not a "
+          "second, silently-different rectangle");
+
     sessionPatterns().clear();
   }
 

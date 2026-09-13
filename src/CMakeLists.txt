@@ -266,6 +266,8 @@ set(NP_SELFTEST_SOURCES
   app/selftest/StrokeInput.cpp
   app/selftest/PointerQueue.cpp
   app/selftest/AppIcon.cpp
+  # Reach wave, track `zoom`: PRD Q1 zoom to selection.
+  app/selftest/ZoomToSelection.cpp
 )
 
 add_executable(naturalPaint
@@ -519,6 +521,10 @@ add_executable(naturalPaint
   ui/ToolCursor.cpp
   ui/TransformCompositeSplit.cpp
   ui/TransformPreviewTexture.cpp
+  # Reach wave, track `zoom`: PRD Q1 zoom to selection, Filter menu's
+  # Highpass/Local Contrast/Lens Correction.
+  app/ZoomToSelection.cpp
+  ui/FilterDialogsExtra.cpp
 )
 
 # NP_SELFTEST's two halves: the 236 section TUs, and the guard main.cpp's

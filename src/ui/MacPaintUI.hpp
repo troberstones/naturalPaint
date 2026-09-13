@@ -550,6 +550,16 @@ struct PixelCommandOutcome {
 PixelCommandOutcome runPixelCommand(OpenDocument& od, const Command& command,
                                     const char* nothingChangedText);
 
+// The live canvas GPU preview every Filter/Adjustments dialog above shows,
+// exposed for one living in its own translation unit (ui/FilterDialogsExtra
+// .cpp, PRD Q1/D22): `FilterPreviewOwner`/`setFilterPreview()` are file-scope
+// in ui/MacPaintUI.cpp and not in any header (ui/FillDialog.cpp's own comment
+// on `pixelOpFooter()` says why -- the same "small hooks only" boundary), so
+// these two are the whole of what crosses it. Both dialogs sharing one
+// `External` owner is safe: only one modal is ever open at a time.
+void setExternalFilterPreview(DocumentId id, size_t layerIndex, TileStore tiles);
+void clearExternalFilterPreview();
+
 // A layer gesture or a layer value setter, through the same door. Both report
 // the same three things, because `g_layers`' message band shows the same three
 // things for both.

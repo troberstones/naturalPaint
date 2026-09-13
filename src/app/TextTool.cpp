@@ -448,7 +448,8 @@ bool keymapActionEndsTextSession(std::string_view action) noexcept {
   return !(
       // the view -- none of these can move a byte of the document
       action == "zoom_in" || action == "zoom_out" || action == "zoom_100" ||
-      action == "fit_window" || action == "reset_view" || action == "mirror_x" ||
+      action == "fit_window" || action == "zoom_to_selection" || action == "reset_view" ||
+      action == "mirror_x" ||
       action == "mirror_y" || action == "reset_rotation" || action == "toggle_grayscale" ||
       action == "toggle_guides" || action == "toggle_snapping" || action == "toggle_grid" ||
       // history -- a typing burst IS an entry, so Cmd+Z is the user undoing
