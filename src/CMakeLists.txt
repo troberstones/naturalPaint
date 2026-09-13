@@ -32,6 +32,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/GimpBrush.cpp
   app/selftest/Variance.cpp
   app/selftest/CommandsPatterns.cpp
+  app/selftest/CommandsFill.cpp
   app/selftest/CoverageBlend.cpp
   app/selftest/PaperTexture.cpp
   app/selftest/DabLibrary.cpp
@@ -52,6 +53,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/BucketRefusal.cpp
   app/selftest/CanvasDimensions.cpp
   app/selftest/Channels.cpp
+  app/selftest/ChannelsPanel.cpp
   app/selftest/CheckedAdd.cpp
   app/selftest/ChromeConsistency.cpp
   app/selftest/Clipboard.cpp
@@ -124,6 +126,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/BatchDialog.cpp
   app/selftest/ActionsPanel.cpp
   app/selftest/CommandsOpStack.cpp
+  app/selftest/QuickMaskPaint.cpp
   app/selftest/CommandsImage.cpp
   app/selftest/CommandCallsites.cpp
   app/selftest/Json.cpp
@@ -226,10 +229,12 @@ set(NP_SELFTEST_SOURCES
   app/selftest/TransformPreviewTexture.cpp
   app/selftest/TransformSession.cpp
   app/selftest/TransformLayerSet.cpp
+  app/selftest/WarpMesh.cpp
   app/selftest/FramePacing.cpp
   app/selftest/GradientTool.cpp
   app/selftest/MaskTarget.cpp
   app/selftest/MoveTool.cpp
+  app/selftest/PasteCommands.cpp
   app/selftest/CropTool.cpp
   app/selftest/PathRaster.cpp
   app/selftest/SvgImport.cpp
@@ -262,6 +267,8 @@ set(NP_SELFTEST_SOURCES
   app/selftest/StrokeInput.cpp
   app/selftest/PointerQueue.cpp
   app/selftest/AppIcon.cpp
+  # PRD Q1 zoom to selection.
+  app/selftest/ZoomToSelection.cpp
 )
 
 add_executable(naturalPaint
@@ -277,11 +284,13 @@ add_executable(naturalPaint
   app/BatchDialog.cpp
   app/Command.cpp
   app/CommandCoverage.cpp
+  app/CommandsFill.cpp
   app/CommandsImage.cpp
   app/CommandsLayers.cpp
   app/CommandsOpStack.cpp
   app/CommandsPatterns.cpp
   app/CommandsRegions.cpp
+  app/ChannelsPanel.cpp
   app/CompPanel.cpp
   app/PanelLayout.cpp
   app/ControlsLayout.cpp
@@ -308,7 +317,9 @@ add_executable(naturalPaint
   app/SelectionDrag.cpp
   app/LayerEditor.cpp
   app/TransformSession.cpp
+  app/WarpMesh.cpp
   app/MoveTool.cpp
+  app/PasteCommands.cpp
   app/ToolSwitch.cpp
   app/FramePacing.cpp
   app/ToolSurface.cpp
@@ -375,6 +386,7 @@ add_executable(naturalPaint
   brush/PencilDeposit.cpp
   brush/PigmentErase.cpp
   brush/PigmentSmudge.cpp
+  brush/QuickMaskPaint.cpp
   brush/RgbDeposit.cpp
   brush/RgbErase.cpp
   brush/Smudge.cpp
@@ -473,6 +485,7 @@ add_executable(naturalPaint
   ops/Feather.cpp
   ops/Filters.cpp
   ops/FloodFill.cpp
+  ops/Fill.cpp
   ops/Gradient.cpp
   ops/Inpaint.cpp
   ops/Lens.cpp
@@ -504,11 +517,16 @@ add_executable(naturalPaint
   ui/AtelierLayout.cpp
   ui/DockLayout.cpp
   ui/AtelierChrome.cpp
+  ui/FillDialog.cpp
   ui/MenuModel.cpp
   ui/NewDocumentDialog.cpp
   ui/ToolCursor.cpp
   ui/TransformCompositeSplit.cpp
   ui/TransformPreviewTexture.cpp
+  # PRD Q1 zoom to selection, Filter menu's
+  # Highpass/Local Contrast/Lens Correction.
+  app/ZoomToSelection.cpp
+  ui/FilterDialogsExtra.cpp
 )
 
 # NP_SELFTEST's two halves: the 236 section TUs, and the guard main.cpp's

@@ -1420,6 +1420,12 @@ bool runTransformSessionTest();
 // revision bump, no history entry), and that a locked layer, an empty layer
 // and a Pigment-plus-selection target each refuse by name while a Pigment
 // layer with no selection does not. Headless and GPU-free.
+//
+// Also PRD M9's Option-drag duplicate: `beginMove(..., true)` opens the same
+// `TransformSession` with `duplicating()` set, read once at drag start and
+// never again. Proves the source stays bit-identical through begin, update
+// and commit, the copy lands displaced by exactly the drag's offset, and
+// duplicate + move is ONE history entry.
 bool runMoveToolTest();
 
 // app/CropTool: `Tool::Crop` in both modes, and the two Image-menu items that
@@ -3955,6 +3961,17 @@ bool runActionsPanelTest();
 //
 // Headless, GPU-free, filesystem-free.
 bool runCommandsOpStackTest();
+// app/ChannelsPanel (PRD E13): the CHANNELS dock tab's row mapping --
+// model-order rows keyed by `Document::channels`' own index, and the
+// name-or-placeholder text a row reads. Headless, GPU-free.
+bool runChannelsPanelTest();
+// PRD E12, the app-level half of quick mask: `toggleQuickMask()`
+// (ui/MacPaintUI.hpp) and brush/QuickMaskPaint's dab arithmetic. The engine
+// underneath (core::QuickMask, quickMaskFromSelection/selectionFromQuickMask/
+// paintQuickMask) is already proven by runChannelsTest(); this is the wiring
+// on top of it and the brush/eraser arithmetic a real stroke feeds it.
+// Headless, GPU-free.
+bool runQuickMaskPaintTest();
 // app/CommandsImage -- the command rows for everything that changes pixels or
 // the document's own geometry (docs/automation-plan.md step 1): the Filter
 // menu's seven, Image > Adjustments' nineteen including its four auto solvers,
@@ -6707,5 +6724,56 @@ bool runPointerQueueTest();
 // ui/AppIcon: the embedded PNG decodes at 512 px, matches the committed file
 // byte for byte, reaches SDL unchanged, and the window accepted it.
 bool runAppIconTest();
+
+// app/PasteCommands (PRD M9): Paste Into and Paste as New Document. (The
+// third build, the Move tool's Option-drag duplicate, is proven by
+// `runMoveToolTest()` instead, beside the rest of that tool's decisions.)
+//
+// Paste Into: the new layer's mask equals the selection's own coverage
+// wherever either the selection or the pasted content touches a tile, the
+// pasted pixels land centred on the selection's bounds (whole pixels, PRD
+// D15's exact path), and it refuses by name without an engaged, non-empty
+// selection or with an empty clipboard.
+//
+// Paste as New Document: `buildDocumentFromClipboard()` (the pure half) gives
+// a document sized exactly to the clipboard's own content bounds holding
+// that content as its one layer, content shifted to the origin; the whole
+// command prefers the internal clipboard and falls back to the OS pasteboard
+// image only when it is empty (PRD M8's "internal never round-trips the
+// pasteboard" applied to the one case ordinary Paste never had to answer).
+// Headless and GPU-free.
+bool runPasteCommandsTest();
+
+// PRD D26: `fill` and `stroke`, through `ops/Fill`'s one
+// engine -- inside/outside a selection and its antialiased edge, no-selection
+// whole-layer fill, blend and opacity arithmetic, a gradient's endpoint
+// colours and angle, a pattern's tiling origin, stroke width and
+// Inside/Center/Outside on a known rectangle, the refusals, and a recorded
+// `fill` replaying to the same texels as the direct call. See
+// app/selftest/CommandsFill.cpp.
+bool runCommandsFillTest();
+
+// PRD Q1 (P0): View > Zoom to Selection.
+// `fitZoomToSelection()` (app/ZoomToSelection.hpp) -- the largest zoom that
+// fits the selection's bounds with the tighter axis deciding, the selection's
+// own centre landing exactly on the viewport's centre (round-tripped through
+// the real `ViewTransform`, not this function's own arithmetic), a rotated
+// view still honoured rather than assumed away, and the existing zoom limits
+// clamping both ends on selections chosen to force each (a 1-texel selection
+// past `kViewZoomMax`, the whole canvas into a much smaller viewport past
+// `kViewZoomMin`). Headless and GPU-free. See app/selftest/ZoomToSelection.cpp.
+bool runZoomToSelectionTest();
+
+// PRD D23: `app/WarpMesh` (the N x N bicubic Bezier lattice) and
+// `app/TransformSession`'s Warp mode built on it -- flat() reproducing a
+// rectangle exactly, anchor-drags carrying their tangent handles, the
+// chord-error tessellation bound on a strongly bent net, a corner drag
+// landing its texel where evaluate() predicts, an interior texel matching
+// evaluate() within the resample kernel's own tolerance, a SelectionPixels
+// warp leaving every texel outside the moved box bit-identical, cancel
+// leaving the document untouched, one undo restoring it, and an affine
+// net's grid-size re-fit being exact. Headless and GPU-free -- nothing here
+// touches ui/. See app/selftest/WarpMesh.cpp.
+bool runWarpMeshTest();
 
 }  // namespace np

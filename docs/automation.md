@@ -100,7 +100,7 @@ All four call `applyCommand()`, which is where the recorder's single tap sits
 that tap, which is what makes "a refused command is not a step" a property of
 where the tap sits rather than of a flag someone remembers to check.
 
-If your feature fits none of the three, add a fourth boundary next to them —
+If your feature fits none of the four, add another boundary next to them —
 at file scope, with its own `--selftest` case in
 `app/selftest/CommandCallsites.cpp` §A. Do not call `applyCommand()` from
 inside a widget: an anonymous-namespace call site is one `--selftest` cannot

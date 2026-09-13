@@ -11,7 +11,7 @@ MoveTarget moveTargetFor(const OpenDocument& od) noexcept {
   return od.selection.has_value() ? MoveTarget::SelectionPixels : MoveTarget::WholeLayer;
 }
 
-TransformBeginResult beginMove(TransformSession& session, OpenDocument& od) {
+TransformBeginResult beginMove(TransformSession& session, OpenDocument& od, bool duplicate) {
   TransformBeginResult r;
   const std::optional<size_t> li = activeLayerIndex(od);
   if (!li) {
@@ -19,8 +19,8 @@ TransformBeginResult beginMove(TransformSession& session, OpenDocument& od) {
     return r;
   }
   return moveTargetFor(od) == MoveTarget::SelectionPixels
-             ? session.beginSelectionPixels(od, *od.selection, *li)
-             : session.beginLayer(od, *li);
+             ? session.beginSelectionPixels(od, *od.selection, *li, duplicate)
+             : session.beginLayer(od, *li, mat3Identity(), duplicate);
 }
 
 void setMoveTranslation(TransformSession& session, float dx, float dy) noexcept {

@@ -1730,6 +1730,9 @@ int main(int argc, char** argv) {
   // `--transform-demo 1` alone (no pen demo) is the `transform_stack`
   // golden case.
   int transformDemoLayer = -1;
+  // `--transform-demo warp`: the literal token in the layer-index slot,
+  // checked before `std::atoi` so "warp" cannot silently parse as index 0.
+  bool transformDemoWarp = false;
   bool demoDocument = false;
   bool pigmentStrokeDemo = false;
   bool pigmentStrokeDemoMix = true;
@@ -2465,8 +2468,12 @@ int main(int argc, char** argv) {
       journalEnabled = false;
     } else if (a == "--transform-demo") {
       transformDemo = true;
-      if (i + 1 < argc && argv[i + 1][0] != '-')
+      if (i + 1 < argc && std::string(argv[i + 1]) == "warp") {
+        transformDemoWarp = true;
+        ++i;
+      } else if (i + 1 < argc && argv[i + 1][0] != '-') {
         transformDemoLayer = std::atoi(argv[++i]);
+      }
     } else if (a == "--ui-multiselect-demo") {
       // PLAN.md Phase 5 step 11 / PRD C12, C13, C15: press the multi-selection's
       // own set commands. See runUiMultiSelectDemo().
@@ -3840,6 +3847,12 @@ int main(int argc, char** argv) {
     // kind NAME, and the selection rows that cross the session/document line.
     // See app/SelfTest.hpp.
     const bool commandsOpStackOk = np::runCommandsOpStackTest();
+    // app/ChannelsPanel: the CHANNELS dock tab's pure row mapping. See
+    // app/SelfTest.hpp.
+    const bool channelsPanelOk = np::runChannelsPanelTest();
+    // PRD E12's app-level half: toggleQuickMask() and brush/QuickMaskPaint's
+    // dab arithmetic. See app/SelfTest.hpp.
+    const bool quickMaskPaintOk = np::runQuickMaskPaintTest();
     // app/CommandsImage: the thirty rows that change pixels or the document's
     // geometry, and the adapter layer between a JSON object and the appliers
     // they drive. See app/SelfTest.hpp for the four ways an adapter can be
@@ -4269,6 +4282,15 @@ int main(int argc, char** argv) {
     const bool strokeInputOk = np::runStrokeInputTest();
     const bool pointerQueueOk = np::runPointerQueueTest();
     const bool appIconOk = np::runAppIconTest();
+    // PRD M9: Paste Into and Paste as New Document. Headless and GPU-free.
+    const bool pasteCommandsOk = np::runPasteCommandsTest();
+    // PRD D26: `fill` and `stroke`.
+    const bool commandsFillOk = np::runCommandsFillTest();
+    // PRD Q1 (P0): View > Zoom to Selection.
+    const bool zoomToSelectionOk = np::runZoomToSelectionTest();
+    // PRD D23: app/WarpMesh's bicubic lattice and app/TransformSession's Warp
+    // mode built on it. Headless and GPU-free.
+    const bool warpMeshOk = np::runWarpMeshTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4303,6 +4325,7 @@ int main(int argc, char** argv) {
                     batchOk && batchDialogOk &&
                     actionsPanelOk &&
                     commandsOpStackOk &&
+                    channelsPanelOk && quickMaskPaintOk &&
                     commandOk && jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     commandsImageOk &&
                     commandsPatternsOk &&
@@ -4340,7 +4363,8 @@ int main(int argc, char** argv) {
                     penToolOk && pathOpsOk && pathBooleanOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
-                    nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk;
+                    nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
+                    pasteCommandsOk && commandsFillOk && zoomToSelectionOk && warpMeshOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -4985,6 +5009,10 @@ int main(int argc, char** argv) {
         np::setActiveLayer(*od, static_cast<size_t>(transformDemoLayer));
     }
     st.requestFreeTransform = true;
+    if (transformDemoWarp) {
+      st.requestWarp = true;
+      st.requestWarpDemoBend = true;
+    }
   }
 
   // After all of them, and the only fixture that is not meant to be combined
@@ -5506,11 +5534,9 @@ int main(int argc, char** argv) {
         // discrete key-down); MacPaintUI.cpp's canvas block reads that key's
         // live held-state directly instead. See that file's comment at its
         // `rotateHeld` local for the full reasoning. `⌘⌥0` "zoom to
-        // selection" (PRD Q1) is still absent, but the reason has changed
-        // and is restated rather than left standing untrue: selection state
-        // now EXISTS (core/SelectionMask; ⌘A/⌘D/⌘C/⌘X/⌘V are bound just
-        // below). What is missing is the view maths to frame an arbitrary
-        // rectangle, which belongs with the other view commands.
+        // selection" (PRD Q1) is now bound too, alongside fit_window/zoom_100
+        // a few lines below -- app/ZoomToSelection.hpp is the view maths this
+        // comment used to say was missing.
         // Cmd+T. Sets the same flag `MenuAction::FreeTransform` does, so the
         // chord and Edit > Free Transform are one path from here on --
         // ui/MacPaintUI.cpp's canvas block services it, because choosing
@@ -5545,6 +5571,7 @@ int main(int argc, char** argv) {
         else if (action == "adjust_auto_color")
           st.requestAdjustment = np::AdjustmentRequest::AutoColor;
         else if (action == "fit_window") st.requestFitWindow = true;
+        else if (action == "zoom_to_selection") st.requestZoomToSelection = true;
         else if (action == "zoom_100") st.requestZoom100 = true;
         else if (action == "zoom_in") st.requestZoomIn = true;
         else if (action == "zoom_out") st.requestZoomOut = true;
@@ -5587,10 +5614,15 @@ int main(int argc, char** argv) {
         else if (action == "deselect") st.requestDeselect = true;
         else if (action == "reselect") st.requestReselect = true;
         else if (action == "invert_selection") st.requestInvertSelection = true;
+        else if (action == "quick_mask") st.requestToggleQuickMask = true;
         else if (action == "copy") st.requestCopy = true;
         else if (action == "copy_merged") st.requestCopyMerged = true;
         else if (action == "cut") st.requestCut = true;
         else if (action == "paste") st.requestPaste = true;
+        // PRD M9: same request-flag route as Paste above, consumed alongside
+        // it in ui/MacPaintUI.cpp.
+        else if (action == "paste_into") st.requestPasteInto = true;
+        else if (action == "paste_as_new_document") st.requestPasteAsNewDocument = true;
         else if (action == "delete_selection") st.requestDeleteSelection = true;
         // D1 (reachability audit): ⌘Z/⇧⌘Z did not exist as keymap actions at
         // all -- there was no "undo"/"redo" name for `resolve()` to return,

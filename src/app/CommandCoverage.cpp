@@ -104,6 +104,12 @@ CommandCoverage coverageFor(MenuAction action) {
     case MenuAction::Paste:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "as Cut -- and what it pastes is whatever the clipboard holds at replay time, which is the definition of a step that is not reproducible"};
+    case MenuAction::PasteInto:
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "as Paste -- the pasted content is still whatever the clipboard holds at replay time"};
+    case MenuAction::PasteAsNewDocument:
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "as Paste, and it creates a document besides -- the session owns which documents exist (see NewDocument above)"};
     case MenuAction::DeleteSelection:
       // Registered as `delete_selection`. The blocker this row states was
       // "how a step names the selection it acted through", and the answer is
@@ -173,6 +179,15 @@ CommandCoverage coverageFor(MenuAction action) {
       // the refine it wants, rather than un-stating one it never made.
       return {CommandCoverageKind::NotRecordable, nullptr,
               "pops OpenDocument::refineUndoStack, which is per-session state that is deliberately outside core::History and outside the document file -- so a recorded undo would undo whatever the replaying session happened to do last. An action states the refine it wants instead"};
+    case MenuAction::SaveSelectionAsChannel:
+      return {CommandCoverageKind::Registered, "save_selection_as_channel", nullptr};
+    case MenuAction::LoadChannelAsSelection:
+      return {CommandCoverageKind::Registered, "load_channel_as_selection", nullptr};
+    case MenuAction::ToggleQuickMask:
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "enters/leaves OpenDocument::quickMask, a live paintable overlay held on the "
+              "session, never in core::History or the document file (core/Channels.hpp's "
+              "QuickMask section)"};
     case MenuAction::PaintModeItem:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "AppState -- the paint mode is a tool setting"};
@@ -188,6 +203,13 @@ CommandCoverage coverageFor(MenuAction action) {
     case MenuAction::FitToWindow:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "needs the canvas window size, which only exists inside a frame"};
+    case MenuAction::ZoomToSelection:
+      // PRD Q1. The same reason as FitToWindow above
+      // (needs the live canvas window size), plus zoom/pan are session view
+      // state, never document state -- see ResetView's own reason below.
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "needs the canvas window size, which only exists inside a frame; zoom/pan are "
+              "session view state, not document state"};
     case MenuAction::Zoom100:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "the view"};
@@ -294,6 +316,14 @@ CommandCoverage coverageFor(MenuAction action) {
       return {CommandCoverageKind::Registered, "filter_median", nullptr};
     case MenuAction::MotionBlur:
       return {CommandCoverageKind::Registered, "filter_motion_blur", nullptr};
+    // Three engines with no menu path before this
+    // (docs/reachability-audit.md C1).
+    case MenuAction::Highpass:
+      return {CommandCoverageKind::Registered, "filter_highpass", nullptr};
+    case MenuAction::LocalContrast:
+      return {CommandCoverageKind::Registered, "filter_local_contrast", nullptr};
+    case MenuAction::LensCorrect:
+      return {CommandCoverageKind::Registered, "lens_correct", nullptr};
     case MenuAction::ImageSize:
       return {CommandCoverageKind::Registered, "image_size", nullptr};
     case MenuAction::CanvasSize:
@@ -340,6 +370,23 @@ CommandCoverage coverageFor(MenuAction action) {
       return {CommandCoverageKind::Registered, "adjust_auto_color", nullptr};
     case MenuAction::AdjustEqualize:
       return {CommandCoverageKind::Registered, "adjust_equalize", nullptr};
+    case MenuAction::Fill:
+      return {CommandCoverageKind::Registered, "fill", nullptr};
+    case MenuAction::Stroke:
+      return {CommandCoverageKind::Registered, "stroke", nullptr};
+    case MenuAction::DefinePattern:
+      return {CommandCoverageKind::Registered, "define_pattern", nullptr};
+    case MenuAction::Warp:
+      // Classified exactly as `FreeTransform` above, for the identical
+      // reason (PRD D23's brief: "classify exactly as Free Transform's
+      // commit is today"). `FreeTransform` itself is NotRecordable -- it
+      // begins an interactive gesture with on-canvas handles that the
+      // session owns live -- so there is no "if Free Transform records a
+      // command" branch to take here either.
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "toggles the live transform session's shape between an affine box and a warp net; "
+              "begins/continues an interactive gesture with on-canvas handles, exactly as "
+              "FreeTransform above -- the session owns the live transform"};
     case MenuAction::Count:
       // Not an action: the enum's own size marker.
       return {CommandCoverageKind::NotRecordable, nullptr, "the enum's count marker, not an action"};

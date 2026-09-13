@@ -219,6 +219,18 @@ std::vector<ImageCommandFixture> imageCommandFixtures() {
     p.set("sigma", num(2.0));
     add("filter_gaussian_blur", p);
   }
+  // Two more engines with no menu path before this.
+  {
+    JsonValue p = JsonValue::object();
+    p.set("sigma", num(6.0));
+    add("filter_highpass", p);
+  }
+  {
+    JsonValue p = JsonValue::object();
+    p.set("radius", num(20.0));
+    p.set("amount", num(0.5));
+    add("filter_local_contrast", p);
+  }
   {
     JsonValue p = JsonValue::object();
     p.set("strength", num(1.5));
@@ -715,6 +727,37 @@ bool runCommandsImageTest() {
     const CommandResult r7 = applyCommand(od, Command{"filter_sharpen", zeroStrength});
     check(!r7.ok && contains(r7.status, "strength"),
           "range: a strength of zero refuses rather than running the identity");
+
+    // `filter_highpass` shares `requireAbove()` with
+    // `filter_gaussian_blur`/`filter_sharpen` above, so a sigma of zero
+    // refuses the same way.
+    JsonValue zeroSigma = JsonValue::object();
+    zeroSigma.set("sigma", num(0.0));
+    const CommandResult rHighpassZero = applyCommand(od, Command{"filter_highpass", zeroSigma});
+    check(!rHighpassZero.ok && contains(rHighpassZero.status, "sigma"),
+          "range: filter_highpass's sigma of zero refuses rather than running the identity");
+
+    // `filter_local_contrast`'s `amount` is the one magnitude gate in this
+    // table that is legally NEGATIVE (ops/Filters.hpp §6), so it is refused by
+    // `requireNonZero()` -- a NEW helper this track added -- rather than
+    // `requireAbove()`. Asserted at zero AND that a legitimately negative
+    // amount is NOT refused, which is the one property `requireAbove()` could
+    // not have given it.
+    JsonValue zeroAmount = JsonValue::object();
+    zeroAmount.set("radius", num(20.0));
+    zeroAmount.set("amount", num(0.0));
+    const CommandResult rLocalContrastZero =
+        applyCommand(od, Command{"filter_local_contrast", zeroAmount});
+    check(!rLocalContrastZero.ok && contains(rLocalContrastZero.status, "amount"),
+          "range: filter_local_contrast's amount of zero refuses rather than running the identity");
+    JsonValue negativeAmount = JsonValue::object();
+    negativeAmount.set("radius", num(20.0));
+    negativeAmount.set("amount", num(-0.5));
+    const CommandResult rLocalContrastNegative =
+        applyCommand(od, Command{"filter_local_contrast", negativeAmount});
+    check(rLocalContrastNegative.ok && rLocalContrastNegative.texelsChanged > 0,
+          "range: filter_local_contrast accepts a negative amount -- it flattens, it is not "
+          "refused the way a negative sharpen amount would be");
 
     // Out of order, and NOT silently sorted: ops/Gradient makes ascending
     // order the caller's contract.

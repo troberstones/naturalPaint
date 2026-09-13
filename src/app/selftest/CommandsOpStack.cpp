@@ -1,6 +1,7 @@
 #include "app/selftest/Support.hpp"
 
 #include "app/Command.hpp"
+#include "app/CommandsOpStack.hpp"
 #include "color/Space.hpp"
 #include "core/Channels.hpp"
 #include "core/LayerOps.hpp"
@@ -702,6 +703,70 @@ bool runCommandsOpStackTest() {
           "channels: the engine still appends under a uniquified name rather than replacing");
   }
 
+  std::printf("  -- G2. rename/delete a channel, by name (PRD E13) --\n");
+  {
+    OpenDocument od = makeOpStackDocument();
+    od.selection = selectRectangle(8.0f, 8.0f, 24.0f, 24.0f);
+    JsonValue save = JsonValue::object();
+    save.set("channel", JsonValue::string("Mask"));
+    applyCommand(od, Command{"save_selection_as_channel", save});
+    save.set("channel", JsonValue::string("Other"));
+    od.selection = selectRectangle(0.0f, 0.0f, 8.0f, 8.0f);
+    applyCommand(od, Command{"save_selection_as_channel", save});
+    check(od.document.channels.size() == 2, "channels: fixture has two channels, Mask and Other");
+
+    JsonValue missing = JsonValue::object();
+    missing.set("channel", JsonValue::string("Nope"));
+    check(!applyCommand(od, Command{"rename_channel", missing}).ok,
+          "rename_channel: refuses a channel this document lacks");
+    check(!applyCommand(od, Command{"delete_channel", missing}).ok,
+          "delete_channel: refuses a channel this document lacks");
+
+    JsonValue toMask = JsonValue::object();
+    toMask.set("channel", JsonValue::string("Other"));
+    toMask.set("new_name", JsonValue::string("Mask"));
+    const CommandResult collide = applyCommand(od, Command{"rename_channel", toMask});
+    check(!collide.ok && contains(collide.status, "Mask"),
+          "rename_channel: refuses a collision with an existing channel, naming it");
+
+    JsonValue toSelf = JsonValue::object();
+    toSelf.set("channel", JsonValue::string("Mask"));
+    toSelf.set("new_name", JsonValue::string("Mask"));
+    check(!applyCommand(od, Command{"rename_channel", toSelf}).ok,
+          "rename_channel: refuses an identity rename rather than reporting a silent success");
+
+    JsonValue toKeep = JsonValue::object();
+    toKeep.set("channel", JsonValue::string("Mask"));
+    toKeep.set("new_name", JsonValue::string("Keep"));
+    const CommandResult renamed = applyCommand(od, Command{"rename_channel", toKeep});
+    check(renamed.ok && od.document.channels[0].name == "Keep" &&
+              od.document.channels[1].name == "Other",
+          "rename_channel: renames the named channel and leaves the other alone");
+
+    JsonValue dropOther = JsonValue::object();
+    dropOther.set("channel", JsonValue::string("Other"));
+    const CommandResult deleted = applyCommand(od, Command{"delete_channel", dropOther});
+    check(deleted.ok && od.document.channels.size() == 1 &&
+              od.document.channels[0].name == "Keep",
+          "delete_channel: removes the named channel and leaves the other in place");
+
+    // The CHANNELS panel sends these encoders, not hand-built JSON, so each has to
+    // reach its reader intact.
+    check(applyCommand(od, renameChannelCommand("Keep", "Kept")).ok &&
+              od.document.channels[0].name == "Kept",
+          "rename_channel: renameChannelCommand() carries both names to the reader");
+    od.selection = selectRectangle(0.0f, 0.0f, 4.0f, 4.0f);
+    check(applyCommand(od, saveSelectionAsChannelCommand("Saved")).ok &&
+              findChannel(od.document, "Saved") != nullptr,
+          "save_selection_as_channel: saveSelectionAsChannelCommand() carries the name");
+    od.selection.reset();
+    check(applyCommand(od, loadChannelAsSelectionCommand("Kept")).ok && od.selection.has_value(),
+          "load_channel_as_selection: loadChannelAsSelectionCommand() carries the name");
+    check(applyCommand(od, deleteChannelCommand("Saved")).ok &&
+              findChannel(od.document, "Saved") == nullptr,
+          "delete_channel: deleteChannelCommand() carries the name");
+  }
+
   std::printf("  -- H. PRD E4/E8/E9's five refines, as command rows --\n");
   {
     // These were five of app/CommandCoverage's eight "not yet registered"
@@ -917,6 +982,7 @@ bool runCommandsOpStackTest() {
     }
   }
 
+  std::printf("[selftest] commands op stack %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }
 

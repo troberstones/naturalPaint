@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <string>
 
 #include "app/AppState.hpp"          // Tool
 #include "app/DocumentLifecycle.hpp"  // OpenDocument, activeLayerIndex()
@@ -189,7 +190,13 @@ MoveTarget moveTargetFor(const OpenDocument& od) noexcept;
 // Takes the `OpenDocument` rather than its `Document` for
 // `TransformSession::beginLayer()`'s own stated reason: the session records
 // which document it belongs to, so a commit cannot land in another one.
-TransformBeginResult beginMove(TransformSession& session, OpenDocument& od);
+//
+// `duplicate` (Option held at drag start) is forwarded to `beginLayer()`/
+// `beginSelectionPixels()` unchanged -- the session itself lifts a copy
+// instead of the original from here on, so the rest of a Move drag (preview,
+// per-frame translate, commit) needs no special case at all.
+TransformBeginResult beginMove(TransformSession& session, OpenDocument& od,
+                               bool duplicate = false);
 
 // One frame of a Move drag: `session`'s pending matrix becomes the PURE
 // translation `(dx, dy)`, in document pixels.
@@ -215,5 +222,13 @@ void setMoveTranslation(TransformSession& session, float dx, float dy) noexcept;
 // half-live gizmo behind if the commit refused. Refusals come back in
 // `error` exactly as `beginMove()`'s do, and leave `od` untouched.
 TransformCommitResult nudgeMove(OpenDocument& od, float dx, float dy);
+
+// Option-drag duplicate: read ONCE, at drag start, and never again -- a
+// mid-drag press or release of Option must not change a gesture already
+// under way, and nothing downstream of `beginMove()` re-reads the key.
+// `TransformSession::duplicating()` is what carries the answer from here on.
+inline bool moveDragDuplicates(bool optionHeldAtDragStart) noexcept {
+  return optionHeldAtDragStart;
+}
 
 }  // namespace np

@@ -120,6 +120,14 @@ enum class ControlsSection {
   // rather than second because a comp is a saved state *of* the layer stack and
   // a history row is an edit *to* it, so LAYERS reads before either.
   Comps,
+  // PRD E11/E13, docs/ui.md section 2's own diagram (COLOR / BRUSH SET. /
+  // LAYERS / CHANNELS). A `Document` role beside LAYERS/HISTORY/COMPS for
+  // their reason: a channel is document data (core/Channels.hpp), persisted
+  // in the file and in history. Fourth rather than adjacent to LAYERS in the
+  // enum -- app/selftest/ControlsLayout.cpp pins LAYERS immediately before
+  // HISTORY, and this sits after COMPS instead so that assertion needs no
+  // second edit.
+  Channels,
   // docs/automation-plan.md step 7 / PRD P1, P5: record a sequence of
   // commands, edit it as a list, replay it, and keep it in the `.npaction`
   // library. A `Document` role, and the role is the argument for the

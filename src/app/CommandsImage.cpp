@@ -9,6 +9,7 @@
 #include "app/AdjustmentOps.hpp"
 #include "app/CommandsImage.hpp"
 #include "app/CommandSupport.hpp"
+#include "app/FilterCommandsExtra.hpp"
 #include "app/CropTool.hpp"
 #include "app/FilterOps.hpp"
 #include "app/TransformSession.hpp"
@@ -235,6 +236,17 @@ std::string requireAbove(const char* id, const char* key, float value, float flo
          "unmodified and reported as a success.";
 }
 
+// The same gate, for a magnitude that is legally negative -- `local_contrast`'s
+// `amount` (ops/Filters.hpp §6: negative *reduces* contrast) is the one filter
+// parameter here `requireAbove()` cannot police, because zero and not "at or
+// below zero" is its identity.
+std::string requireNonZero(const char* id, const char* key, float value) {
+  if (value != 0.0f) return {};
+  return std::string("refused: ") + id + "'s \"" + key +
+         "\" must not be zero; at zero the filter is the identity, which in a batch is a file "
+         "written unmodified and reported as a success.";
+}
+
 // ==========================================================================
 // Filters -- app/FilterOps.hpp's seven
 // ==========================================================================
@@ -245,6 +257,38 @@ CommandResult doGaussianBlur(OpenDocument& doc, const JsonValue& params) {
   if (why.empty()) why = requireAbove("filter_gaussian_blur", "sigma", sigma, 0.0f);
   if (!why.empty()) return commandRefused(why);
   return fromFilterResult(applyGaussianBlur(doc, sigma), doc, "gaussian blur");
+}
+
+// PLAN.md's highpass, `src - blur(src)`
+// (ops/Filters.hpp §1). Gaussian only -- the dialog exposes one "Radius"
+// slider, the identical shape `doGaussianBlur()` above takes, rather than
+// unsharp mask's Gaussian/box choice; nothing in PLAN.md's own formulation of
+// highpass asks for a box kernel.
+CommandResult doHighpass(OpenDocument& doc, const JsonValue& params) {
+  float sigma = 0.0f;
+  std::string why = readNumber(params, "filter_highpass", "sigma", kRequired, &sigma);
+  if (why.empty()) why = requireAbove("filter_highpass", "sigma", sigma, 0.0f);
+  if (!why.empty()) return commandRefused(why);
+  return fromFilterResult(applyHighpass(doc, sigma), doc, "highpass");
+}
+
+// Local contrast (ops/Filters.hpp §6). `radius` is
+// `LocalContrastParams::blur.sigma` -- Gaussian only, the same simplification
+// `doHighpass()` above makes -- and `amount` may be negative (it flattens
+// rather than sharpens), so it is gated by `requireNonZero()`, not
+// `requireAbove()`.
+CommandResult doLocalContrast(OpenDocument& doc, const JsonValue& params) {
+  LocalContrastParams p;
+  const char* kId = "filter_local_contrast";
+  std::string why = readNumber(params, kId, "radius", kRequired, &p.blur.sigma);
+  if (why.empty()) why = requireAbove(kId, "radius", p.blur.sigma, 0.0f);
+  if (why.empty()) why = readNumber(params, kId, "amount", kRequired, &p.amount);
+  if (why.empty()) why = requireNonZero(kId, "amount", p.amount);
+  if (!why.empty()) return commandRefused(why);
+  if (!localContrastParamsValid(p))
+    return commandRefused(std::string("refused: ") + kId +
+                          " was given a request ops/Filters cannot build a kernel from.");
+  return fromFilterResult(applyLocalContrast(doc, p), doc, "local contrast");
 }
 
 CommandResult doSharpen(OpenDocument& doc, const JsonValue& params) {
@@ -1145,6 +1189,17 @@ void registerImageCommands(std::vector<CommandSpec>* out) {
   // ---- the Filter menu's seven, plus three more ---------------------------
   out->push_back({"filter_gaussian_blur", "Gaussian Blur", {"sigma"}, pixelOpUnavailable,
                   doGaussianBlur, /*selectionBounded=*/true});
+  // Two more engines with no menu path before this
+  // (docs/reachability-audit.md C1), registered beside their nearest sibling
+  // rather than at the end of this table -- `filter_gaussian_blur` reuses the
+  // identical `BlurParams`/Gaussian-only shape `filter_highpass` does.
+  out->push_back({"filter_highpass", "Highpass", {"sigma"}, pixelOpUnavailable, doHighpass,
+                  /*selectionBounded=*/true});
+  out->push_back({"filter_local_contrast",
+                  "Local Contrast",
+                  {"radius", "amount"},
+                  pixelOpUnavailable,
+                  doLocalContrast, /*selectionBounded=*/true});
   out->push_back({"filter_sharpen", "Sharpen", {"strength"}, pixelOpUnavailable, doSharpen,
                   /*selectionBounded=*/true});
   out->push_back({"filter_unsharp_mask",
@@ -1299,6 +1354,21 @@ Command gaussianBlurCommand(float sigma) {
   JsonValue p = JsonValue::object();
   p.set("sigma", JsonValue::number(sigma));
   return command("filter_gaussian_blur", std::move(p));
+}
+
+// app/FilterCommandsExtra.hpp's other two -- see that header for why they and
+// `lensCorrectCommand()` share one declaration site.
+Command highpassCommand(float sigma) {
+  JsonValue p = JsonValue::object();
+  p.set("sigma", JsonValue::number(sigma));
+  return command("filter_highpass", std::move(p));
+}
+
+Command localContrastCommand(const LocalContrastParams& lc) {
+  JsonValue p = JsonValue::object();
+  p.set("radius", JsonValue::number(lc.blur.sigma));
+  p.set("amount", JsonValue::number(lc.amount));
+  return command("filter_local_contrast", std::move(p));
 }
 
 Command sharpenCommand(float strength) {

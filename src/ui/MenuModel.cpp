@@ -95,6 +95,10 @@ const MenuItemSpec* specTable() {
     // keymaps/default.json, which this item does not have).
     set(MenuAction::NumericTransform, "Transform...", "");
 
+    // PRD D23: no chord of its own, matching `NumericTransform`'s own
+    // two-argument `set()` just above.
+    set(MenuAction::Warp, "Warp", "");
+
     // D2: the other nine. Chords are `keymaps/default.json`'s own, already
     // shipped and already resolving through main.cpp's dispatch -- this is
     // the menu catching up to keys that worked all along, not a new binding.
@@ -103,6 +107,17 @@ const MenuItemSpec* specTable() {
     set(MenuAction::CopyMerged, "Copy Merged", "Cmd+Shift+C",
         MenuKeyEquivalent{'c', kMenuModCmd | kMenuModShift, "copy_merged"});
     set(MenuAction::Paste, "Paste", "Cmd+V", MenuKeyEquivalent{'v', kMenuModCmd, "paste"});
+    // PRD M9. "Paste Into...", not "Paste Into" -- it needs a selection AND
+    // clipboard content, and Photoshop's own convention marks it with "..."
+    // whenever an item can refuse for a reason worth a tooltip
+    // (buildMenuModel()'s Edit section below supplies it). Chord checked free
+    // in keymaps/default.json before being claimed, same discipline as every
+    // other chord in this file.
+    set(MenuAction::PasteInto, "Paste Into", "Shift+Opt+Cmd+V",
+        MenuKeyEquivalent{'v', kMenuModCmd | kMenuModShift | kMenuModOption, "paste_into"});
+    // No chord: Photoshop ships none for this one either, and this build's
+    // Cmd+V/Shift+Opt+Cmd+V pair already claims every plausible variant of V.
+    set(MenuAction::PasteAsNewDocument, "Paste as New Document", "");
     // No key equivalent: `keymaps/default.json` binds Delete Selection to bare
     // Backspace/Delete, and MenuKeyEquivalent's own rule (this header, above)
     // is that a chord with no Command modifier must not be claimed here --
@@ -121,6 +136,13 @@ const MenuItemSpec* specTable() {
     set(MenuAction::ClearCanvas, "Clear Canvas", "Cmd+K",
         MenuKeyEquivalent{'k', kMenuModCmd, "clear_canvas"});
 
+    // PRD D26: no key equivalent for any of the three --
+    // `docs/shortcuts.md` assigns none, and claiming a chord from a native
+    // menu consumes it before SDL sees it, not a thing to do speculatively.
+    set(MenuAction::Fill, "Fill...", "");
+    set(MenuAction::Stroke, "Stroke...", "");
+    set(MenuAction::DefinePattern, "Define Pattern...", "");
+
     family(MenuAction::LayerCommandItem);
     family(MenuAction::LayerSetCommandItem);
 
@@ -136,6 +158,13 @@ const MenuItemSpec* specTable() {
     // No "...": it needs nothing from the user and acts immediately, the
     // same reason Deselect and Invert (Edit menu) carry none either.
     set(MenuAction::SelectUndoRefine, "Undo Refine", "");
+    set(MenuAction::SaveSelectionAsChannel, "Save Selection as Channel...", "");
+    set(MenuAction::LoadChannelAsSelection, "Load Channel as Selection...", "");
+    // Bare "Q", like `MirrorX`'s bare "F" above: a hint string only, no
+    // `MenuKeyEquivalent` -- claiming a bare letter as a native key
+    // equivalent would consume it before SDL's keymap dispatch (main.cpp)
+    // ever saw it, and Q is `keymaps/default.json`'s `quick_mask` action.
+    set(MenuAction::ToggleQuickMask, "Edit in Quick Mask Mode", "Q");
 
     family(MenuAction::PaintModeItem);
     family(MenuAction::ToolItem);
@@ -149,6 +178,13 @@ const MenuItemSpec* specTable() {
 
     set(MenuAction::FitToWindow, "Fit to Window", "Cmd+0",
         MenuKeyEquivalent{'0', kMenuModCmd, "fit_window"});
+    // PRD Q1 (P0). `Cmd+Opt+0` sits next to
+    // `Cmd+0`/`Cmd+1` for the identical reason `ResetView` claimed
+    // `Shift+Cmd+0` -- checked free of both a `keymaps/default.json` binding
+    // and any other `MenuKeyEquivalent` chord before being claimed (neither
+    // has ever bound `Cmd+Alt+0`).
+    set(MenuAction::ZoomToSelection, "Zoom to Selection", "Cmd+Opt+0",
+        MenuKeyEquivalent{'0', kMenuModCmd | kMenuModOption, "zoom_to_selection"});
     set(MenuAction::Zoom100, "100%", "Cmd+1",
         MenuKeyEquivalent{'1', kMenuModCmd, "zoom_100"});
     set(MenuAction::ZoomIn, "Zoom In", "Cmd+=",
@@ -235,6 +271,11 @@ const MenuItemSpec* specTable() {
     // before SDL sees it -- not a thing to claim speculatively.
     set(MenuAction::RemoveLightingGradient, "Remove Lighting Gradient...", "");
     set(MenuAction::Offset, "Offset...", "");
+    // No key equivalents, same reason as the two
+    // above: `docs/shortcuts.md` assigns none of these three.
+    set(MenuAction::Highpass, "Highpass...", "");
+    set(MenuAction::LocalContrast, "Local Contrast...", "");
+    set(MenuAction::LensCorrect, "Lens Correction...", "");
 
     // --- Image ----------------------------------------------------------
     set(MenuAction::ImageSize, "Image Size...", "");
@@ -444,12 +485,17 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::Copy: return "Copy";
     case MenuAction::CopyMerged: return "CopyMerged";
     case MenuAction::Paste: return "Paste";
+    case MenuAction::PasteInto: return "PasteInto";
+    case MenuAction::PasteAsNewDocument: return "PasteAsNewDocument";
     case MenuAction::DeleteSelection: return "DeleteSelection";
     case MenuAction::SelectAll: return "SelectAll";
     case MenuAction::Deselect: return "Deselect";
     case MenuAction::Reselect: return "Reselect";
     case MenuAction::InvertSelection: return "InvertSelection";
     case MenuAction::ClearCanvas: return "ClearCanvas";
+    case MenuAction::Fill: return "Fill";
+    case MenuAction::Stroke: return "Stroke";
+    case MenuAction::DefinePattern: return "DefinePattern";
     case MenuAction::LayerCommandItem: return "LayerCommandItem";
     case MenuAction::LayerSetCommandItem: return "LayerSetCommandItem";
     case MenuAction::SelectGrow: return "SelectGrow";
@@ -458,11 +504,15 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::SelectColourRange: return "SelectColourRange";
     case MenuAction::SelectLuminanceRange: return "SelectLuminanceRange";
     case MenuAction::SelectUndoRefine: return "SelectUndoRefine";
+    case MenuAction::SaveSelectionAsChannel: return "SaveSelectionAsChannel";
+    case MenuAction::LoadChannelAsSelection: return "LoadChannelAsSelection";
+    case MenuAction::ToggleQuickMask: return "ToggleQuickMask";
     case MenuAction::PaintModeItem: return "PaintModeItem";
     case MenuAction::ToolItem: return "ToolItem";
     case MenuAction::PauseSolver: return "PauseSolver";
     case MenuAction::ReloadShaders: return "ReloadShaders";
     case MenuAction::FitToWindow: return "FitToWindow";
+    case MenuAction::ZoomToSelection: return "ZoomToSelection";
     case MenuAction::Zoom100: return "Zoom100";
     case MenuAction::ZoomIn: return "ZoomIn";
     case MenuAction::ZoomOut: return "ZoomOut";
@@ -494,6 +544,9 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::Inpaint: return "Inpaint";
     case MenuAction::RemoveLightingGradient: return "RemoveLightingGradient";
     case MenuAction::Offset: return "Offset";
+    case MenuAction::Highpass: return "Highpass";
+    case MenuAction::LocalContrast: return "LocalContrast";
+    case MenuAction::LensCorrect: return "LensCorrect";
     case MenuAction::ImageSize: return "ImageSize";
     case MenuAction::CanvasSize: return "CanvasSize";
     case MenuAction::CropToSelection: return "CropToSelection";
@@ -517,6 +570,7 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::AdjustAutoContrast: return "AdjustAutoContrast";
     case MenuAction::AdjustAutoColor: return "AdjustAutoColor";
     case MenuAction::AdjustEqualize: return "AdjustEqualize";
+    case MenuAction::Warp: return "Warp";
     case MenuAction::Count: break;
   }
   // Not a fallback string: reaching this means an enumerator was added without
@@ -538,6 +592,9 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     // them is inside `OpenDocument::document`. Zooming to place something
     // precisely is a mid-transform gesture, not an interruption of one.
     case MenuAction::FitToWindow:
+    // PRD Q1: the same seat as FitToWindow -- it
+    // rewrites `AppState::view` alone, nothing inside `OpenDocument::document`.
+    case MenuAction::ZoomToSelection:
     case MenuAction::Zoom100:
     case MenuAction::ZoomIn:
     case MenuAction::ZoomOut:
@@ -592,6 +649,14 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::ClearRecentMenu:
       return false;
 
+    // PRD D23: a Free Transform <-> Warp TOGGLE of the SAME live session
+    // (app/TransformSession.hpp section 9) -- the opposite of `FreeTransform`
+    // just above, which starts a fresh one. Ending the transform to service
+    // this action would cancel the very session it is meant to switch the
+    // shape of.
+    case MenuAction::Warp:
+      return false;
+
     // --- Everything else ends it ------------------------------------------
     //
     // Listed rather than caught by a `default:`, so that adding a
@@ -632,12 +697,20 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::Copy:
     case MenuAction::CopyMerged:
     case MenuAction::Paste:
+    // Both insert a layer or open a whole new document -- at least as
+    // disruptive to a live gizmo as `Paste` above, whose own row this
+    // comment already covers ("Paste inserts a layer").
+    case MenuAction::PasteInto:
+    case MenuAction::PasteAsNewDocument:
     case MenuAction::DeleteSelection:
     case MenuAction::SelectAll:
     case MenuAction::Deselect:
     case MenuAction::Reselect:
     case MenuAction::InvertSelection:
     case MenuAction::ClearCanvas:
+    case MenuAction::Fill:
+    case MenuAction::Stroke:
+    case MenuAction::DefinePattern:
     case MenuAction::LayerCommandItem:
     case MenuAction::LayerSetCommandItem:
     case MenuAction::SelectGrow:
@@ -646,6 +719,9 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::SelectColourRange:
     case MenuAction::SelectLuminanceRange:
     case MenuAction::SelectUndoRefine:
+    case MenuAction::SaveSelectionAsChannel:
+    case MenuAction::LoadChannelAsSelection:
+    case MenuAction::ToggleQuickMask:
     case MenuAction::PaintModeItem:
     case MenuAction::GaussianBlur:
     case MenuAction::Sharpen:
@@ -686,6 +762,11 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::Inpaint:
     case MenuAction::RemoveLightingGradient:
     case MenuAction::Offset:
+    // The same seat as GaussianBlur above -- each
+    // rewrites the active layer's own texels.
+    case MenuAction::Highpass:
+    case MenuAction::LocalContrast:
+    case MenuAction::LensCorrect:
     case MenuAction::Batch:
     case MenuAction::Count:
       return true;
@@ -746,6 +827,11 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     // PRD D8's two, for the identical reason -- each opens a modal.
     case MenuAction::RemoveLightingGradient:
     case MenuAction::Offset:
+    // The identical reason -- each opens a modal
+    // (ui/FilterDialogsExtra.hpp).
+    case MenuAction::Highpass:
+    case MenuAction::LocalContrast:
+    case MenuAction::LensCorrect:
     case MenuAction::ImageSize:
     case MenuAction::CanvasSize:
     // Image > Adjustments' four dialogs, for the identical reason: opening one
@@ -786,6 +872,14 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     case MenuAction::SelectFeather:
     case MenuAction::SelectColourRange:
     case MenuAction::SelectLuminanceRange:
+      return MenuEffect::Deferred;
+
+    // PRD D26: Fill, Stroke and Define Pattern each open a
+    // modal (`ui/FillDialog.hpp`), for the identical ID-stack reason as every
+    // dialog above.
+    case MenuAction::Fill:
+    case MenuAction::Stroke:
+    case MenuAction::DefinePattern:
       return MenuEffect::Deferred;
 
     default:
@@ -904,17 +998,58 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     // Same predicate, same reasoning as FreeTransform just above -- the
     // numeric dialog begins the identical session, just from typed fields.
     e.push_back(item(MenuAction::NumericTransform, ctx.hasEditableLayer));
+    // Same predicate again (PRD D23): a toggle of the SAME session
+    // FreeTransform starts, so it needs exactly what starting one needs.
+    e.push_back(item(MenuAction::Warp, ctx.hasEditableLayer));
     e.push_back(separator());
     e.push_back(item(MenuAction::Cut, ctx.hasEditableLayer));
     e.push_back(item(MenuAction::Copy, ctx.hasActiveLayer));
     e.push_back(item(MenuAction::CopyMerged, ctx.hasDocument));
     e.push_back(item(MenuAction::Paste, ctx.hasDocument && ctx.clipboardHasContent));
+    // Needs BOTH an engaged selection and clipboard content -- `ctx.
+    // hasEngagedSelection` rather than `ctx.hasSelection`, matching the Select
+    // menu's own refine items just below: a selection that is engaged but
+    // happens to cover nothing is refused by name at the point of the paste
+    // (app/PasteCommands.cpp), the same "clickable in that rare state" shape
+    // this codebase already uses for Grow/Shrink/Feather.
+    {
+      MenuNode n = item(MenuAction::PasteInto, ctx.hasEngagedSelection && ctx.clipboardHasContent);
+      if (!ctx.hasEngagedSelection)
+        n.tooltip = "Paste Into needs an active selection to paste inside of.";
+      else if (!ctx.clipboardHasContent)
+        n.tooltip = "The clipboard is empty.";
+      e.push_back(std::move(n));
+    }
+    // Always enabled, even with nothing to offer -- `RecoverDocuments`'s own
+    // reasoning just above in the File menu applies unchanged: the command
+    // checks the internal clipboard AND, failing that, the OS pasteboard
+    // (app/PasteCommands.cpp), and greying this on `ctx.clipboardHasContent`
+    // (the internal-only signal `Paste`/`PasteInto` use) would hide it in
+    // exactly the one case an OS-copied image is what the user reached for
+    // it to use.
+    e.push_back(item(MenuAction::PasteAsNewDocument));
     e.push_back(item(MenuAction::DeleteSelection, ctx.hasEditableLayer));
     e.push_back(separator());
     e.push_back(item(MenuAction::SelectAll, ctx.hasDocument));
     e.push_back(item(MenuAction::Deselect, ctx.hasSelection));
     e.push_back(item(MenuAction::Reselect, ctx.hasLastDeselected));
     e.push_back(item(MenuAction::InvertSelection, ctx.hasSelection));
+    e.push_back(separator());
+    // PRD D26: Fill, Stroke and Define Pattern all read the
+    // active layer's RGB tiles, so they share the Filter menu's own predicate
+    // and refusal sentence -- `ctx.filterLayerUsable`/`ctx.filterRefusalNote`,
+    // that menu's own comment argues why one gate serves every pixel op that
+    // asks the identical question.
+    {
+      auto fillMenuItem = [&](MenuAction action) {
+        MenuNode n = item(action, ctx.filterLayerUsable);
+        if (!ctx.filterLayerUsable) n.tooltip = ctx.filterRefusalNote;
+        return n;
+      };
+      e.push_back(fillMenuItem(MenuAction::Fill));
+      e.push_back(fillMenuItem(MenuAction::Stroke));
+      e.push_back(fillMenuItem(MenuAction::DefinePattern));
+    }
     e.push_back(separator());
     e.push_back(item(MenuAction::ClearCanvas));
     bar.push_back(std::move(edit));
@@ -1095,6 +1230,19 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
         "Nothing to undo. Grow, Shrink, Feather, Colour Range and Luminance Range each "
         "push one step here; the ordinary Undo does not reach a selection change (see "
         "OpenDocument::selection in app/DocumentLifecycle.hpp)."));
+    s.push_back(separator());
+    // PRD E11. Same `unavailableReason` the command itself already refuses
+    // on (app/CommandsOpStack.cpp's `saveSelectionUnavailable()`) -- an
+    // engaged selection to save.
+    s.push_back(refusable(item(MenuAction::SaveSelectionAsChannel), ctx.hasEngagedSelection,
+                          "Nothing is selected, so there is no coverage to save."));
+    s.push_back(refusable(item(MenuAction::LoadChannelAsSelection), ctx.hasChannels,
+                          "This document has no saved channels yet -- Save Selection as "
+                          "Channel first."));
+    s.push_back(separator());
+    // PRD E12. A Check, not a one-shot item -- see the enumerator's own
+    // comment on why quick mask is a mode rather than a command.
+    s.push_back(check(MenuAction::ToggleQuickMask, ctx.quickMaskActive));
 
     bar.push_back(std::move(select));
   }
@@ -1155,6 +1303,12 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     flt.push_back(separator());
     flt.push_back(filterItem(MenuAction::Emboss));
     flt.push_back(filterItem(MenuAction::MotionBlur));
+    flt.push_back(separator());
+    // Two more engines with no menu path before
+    // this. Highpass beside the blur-family it reuses `BlurParams` with;
+    // Local Contrast set apart, a tonal op rather than a blur-based one.
+    flt.push_back(filterItem(MenuAction::Highpass));
+    flt.push_back(filterItem(MenuAction::LocalContrast));
     // Set apart, and the separator is the point: the eight above are filters
     // BOUNDED by the selection, and this one FILLS it (ops/Inpaint.hpp
     // section 1). It is also the only one whose enable predicate asks a
@@ -1181,6 +1335,12 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     flt.push_back(separator());
     flt.push_back(filterItem(MenuAction::RemoveLightingGradient));
     flt.push_back(filterItem(MenuAction::Offset));
+    // PRD D22. Set apart from D8's make-tileable pair
+    // above it -- a geometric correction, not a tiling workflow step -- but
+    // sharing their enable predicate: `lensCorrectTiles()` is bounded by the
+    // selection exactly as every filter in this menu is.
+    flt.push_back(separator());
+    flt.push_back(filterItem(MenuAction::LensCorrect));
     bar.push_back(std::move(filter));
   }
 
@@ -1189,6 +1349,15 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     MenuNode view = submenu("View");
     std::vector<MenuNode>& v = view.children;
     v.push_back(item(MenuAction::FitToWindow));
+    // PRD Q1 (P0). Disabled without an engaged
+    // selection -- `Inpaint`'s own tooltip above makes the identical case for
+    // reusing `hasEngagedSelection` rather than a new context field.
+    {
+      MenuNode n = item(MenuAction::ZoomToSelection, ctx.hasEngagedSelection);
+      if (!ctx.hasEngagedSelection)
+        n.tooltip = "Frames the current selection. Select something first.";
+      v.push_back(std::move(n));
+    }
     v.push_back(item(MenuAction::Zoom100));
     v.push_back(item(MenuAction::ZoomIn));
     v.push_back(item(MenuAction::ZoomOut));

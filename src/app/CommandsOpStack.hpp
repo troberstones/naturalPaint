@@ -48,4 +48,16 @@ Command selectColourRangeCommand(const std::array<float, 3>& swatchSrgb, float t
                                  float edgeBand);
 Command selectLuminanceRangeCommand(float low, float high, float edgeBand);
 
+// --- the channel commands' encoders (PRD E11, E13; docs/automation.md §2.2)
+// ---------------------------------------------------------------------------
+//
+// Beside the readers in app/CommandsOpStack.cpp. `ui/MacPaintUI.cpp`'s two
+// Select menu dialogs and its CHANNELS panel build a `Command` through these
+// rather than a `JsonValue{}` literal, so a key renamed on one side is a key
+// visibly not renamed on the other.
+Command saveSelectionAsChannelCommand(std::string name);
+Command loadChannelAsSelectionCommand(std::string name);
+Command renameChannelCommand(std::string name, std::string newName);
+Command deleteChannelCommand(std::string name);
+
 }  // namespace np

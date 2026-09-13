@@ -550,6 +550,16 @@ struct PixelCommandOutcome {
 PixelCommandOutcome runPixelCommand(OpenDocument& od, const Command& command,
                                     const char* nothingChangedText);
 
+// The live canvas GPU preview every Filter/Adjustments dialog above shows,
+// exposed for one living in its own translation unit (ui/FilterDialogsExtra
+// .cpp, PRD Q1/D22): `FilterPreviewOwner`/`setFilterPreview()` are file-scope
+// in ui/MacPaintUI.cpp and not in any header (ui/FillDialog.cpp's own comment
+// on `pixelOpFooter()` says why -- the same "small hooks only" boundary), so
+// these two are the whole of what crosses it. Both dialogs sharing one
+// `External` owner is safe: only one modal is ever open at a time.
+void setExternalFilterPreview(DocumentId id, size_t layerIndex, TileStore tiles);
+void clearExternalFilterPreview();
+
 // A layer gesture or a layer value setter, through the same door. Both report
 // the same three things, because `g_layers`' message band shows the same three
 // things for both.
@@ -625,5 +635,31 @@ Command selectRefineCommand(MenuAction action, float radius);
 // but a queued action from before the last validation should still refuse
 // quietly rather than pop a stack that emptied out from under it.
 bool undoLastRefine(OpenDocument& od);
+
+// PRD E12's `MenuAction::ToggleQuickMask` body, and the `Q` keymap action's:
+// enters quick mask from the active selection (absent means an empty mask,
+// core::quickMaskFromSelection()'s own rule), or leaves it, converting the
+// painted overlay back into the active selection. Never touches
+// `core::History` in either direction.
+void toggleQuickMask(OpenDocument& od);
+
+// PRD E12's overlay tint, packed as straight-alpha RGBA16Float half floats --
+// red where the mask has no coverage, fading to transparent where it does.
+// Pure CPU, no GPU/ImGui type in its signature, so `app/selftest` can prove
+// the packing directly rather than only through a texture nobody but a real
+// GPU frame ever reads back. External linkage for that reason alone; the
+// GPU-side texture upload built on top of it (ui/MacPaintUI.cpp's
+// `QuickMaskOverlayTexture`) stays file-local like `FilterPreviewTexture`
+// beside it, since `--selftest` never opens a window to exercise either.
+std::vector<uint16_t> packQuickMaskOverlayHalf(const QuickMask& mask, int32_t width,
+                                               int32_t height);
+
+// PRD E13's single-channel view: one `AlphaChannel`'s coverage as a grayscale
+// image the size of the document -- R=G=B=coverage, alpha opaque, so it
+// REPLACES the canvas rather than tinting it the way the quick-mask overlay
+// above does. Pure CPU for the same reason as `packQuickMaskOverlayHalf()`:
+// `app/selftest` can prove the texel math without a window.
+std::vector<uint16_t> packChannelViewHalf(const AlphaChannel& channel, int32_t width,
+                                          int32_t height);
 
 }  // namespace np
