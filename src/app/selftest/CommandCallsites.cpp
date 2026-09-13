@@ -3,6 +3,7 @@
 #include <functional>
 
 #include "app/AdjustmentOps.hpp"
+#include "app/BlurCommandsExtra.hpp"
 #include "app/Command.hpp"
 #include "app/CommandsImage.hpp"
 #include "app/CommandsLayers.hpp"
@@ -100,6 +101,26 @@ MotionBlurParams motionFixture() {
   MotionBlurParams p;
   p.radius = 5;
   p.angleRadians = 0.7f;
+  return p;
+}
+
+RadialBlurParams radialBlurFixture() {
+  RadialBlurParams p;
+  p.method = RadialBlurMethod::Spin;
+  p.centerX = 20.0f;
+  p.centerY = 40.0f;
+  p.amount = 15.0f;
+  p.samples = 4;
+  return p;
+}
+
+LensBlurParams lensBlurFixture() {
+  LensBlurParams p;
+  p.bladeCount = 6;
+  p.bladeRotationRadians = 0.3f;
+  p.radius = 5;
+  p.highlightThreshold = 0.5f;
+  p.highlightBoost = 1.2f;
   return p;
 }
 
@@ -211,6 +232,10 @@ std::vector<RerouteCase> rerouteCases() {
       [](OpenDocument& d) { applyMedian(d, MedianParams{2}); });
   add("filter_motion_blur", motionBlurCommand(motionFixture()),
       [](OpenDocument& d) { applyMotionBlur(d, motionFixture()); });
+  add("filter_radial_blur", radialBlurCommand(radialBlurFixture()),
+      [](OpenDocument& d) { applyRadialBlur(d, radialBlurFixture()); });
+  add("filter_lens_blur", lensBlurCommand(lensBlurFixture()),
+      [](OpenDocument& d) { applyLensBlur(d, lensBlurFixture()); });
 
   add("adjust_levels", levelsCommand(levelsFixture()),
       [](OpenDocument& d) { applyLevelsAdjustment(d, levelsFixture()); });

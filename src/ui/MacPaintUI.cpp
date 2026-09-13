@@ -9,6 +9,7 @@
 #include "ui/DabPicker.hpp"
 #include "ui/DynamicsMatrixPanel.hpp"
 #include "ui/FileDialog.hpp"
+#include "ui/BlurDialogsExtra.hpp"
 #include "ui/FillDialog.hpp"
 #include "ui/FilterDialogsExtra.hpp"
 #include "ui/Dialog.hpp"
@@ -13848,6 +13849,9 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     case MenuAction::Highpass:      requestHighpassDialog();      break;
     case MenuAction::LocalContrast: requestLocalContrastDialog(); break;
     case MenuAction::LensCorrect:   requestLensCorrectDialog();   break;
+    // ui/BlurDialogsExtra.hpp's two, the identical shape.
+    case MenuAction::RadialBlur:    requestRadialBlurDialog();    break;
+    case MenuAction::LensBlur:      requestLensBlurDialog();      break;
 
     // --- Image ----------------------------------------------------------
     case MenuAction::ImageSize:  g_imageSizeRequested = true;  break;
@@ -16983,6 +16987,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   drawHighpassDialog(st);
   drawLocalContrastDialog(st);
   drawLensCorrectDialog(st);
+  // PRD P2: Radial/Spin+Zoom and Lens blur -- living in their own
+  // translation unit (ui/BlurDialogsExtra.hpp), same placement rule again.
+  drawRadialBlurDialog(st);
+  drawLensBlurDialog(st);
   drawAdjustmentDialogs(st);
   // PRD D24: the gradient tool's own stop editor, opened from the options
   // bar's swatch rather than a menu -- same placement rule again, so it

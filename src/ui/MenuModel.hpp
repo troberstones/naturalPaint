@@ -365,6 +365,13 @@ enum class MenuAction : uint16_t {
   LocalContrast,
   LensCorrect,
 
+  // PRD P2 (docs/operations.md §2.2): Radial/Spin+Zoom blur
+  // (ops/RadialBlur.hpp) and Lens blur (ops/LensBlur.hpp), the same wiring
+  // shape as the three above -- app/FilterOps.hpp's `applyRadialBlur`/
+  // `applyLensBlur` and their `preview*` twins.
+  RadialBlur,
+  LensBlur,
+
   // --- Image ------------------------------------------------------------
   //
   // ops/DocumentTransform, Photoshop-style: geometry that changes the

@@ -145,6 +145,21 @@ constexpr PixelUnitParam kPixelUnitParams[] = {
     // texels.
     {"filter_highpass", "sigma"},
     {"filter_local_contrast", "radius"},
+    // PRD P2 (docs/operations.md §2.2). `filter_radial_blur`'s `center_x`/
+    // `center_y` are an absolute document position, the same classification
+    // `fill_with_pattern`'s `origin_x`/`origin_y` already have above --
+    // "centre the sweep at (400, 300)" means a different point on a 2k plate
+    // than on an 8k one. `filter_lens_blur`'s `radius` reuses the name
+    // already in this table for the identical reason `filter_highpass`'s
+    // `sigma` does. Its `blade_rotation_radians`, `highlight_threshold` and
+    // `highlight_boost` are not here for `filter_motion_blur`'s own
+    // `angle_radians` reason: an angle, and a value-space threshold/gain, mean
+    // the same thing at every resolution. `filter_radial_blur`'s `amount` and
+    // `samples` are the identical case one level over -- a degree sweep, a
+    // scale fraction, and a tap count are not lengths.
+    {"filter_radial_blur", "center_x"},
+    {"filter_radial_blur", "center_y"},
+    {"filter_lens_blur", "radius"},
 };
 
 // "filter_gaussian_blur's sigma" for every pixel-unit parameter `action`

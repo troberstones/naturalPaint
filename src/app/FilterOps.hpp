@@ -10,6 +10,8 @@
 #include "ops/Filters.hpp"
 #include "ops/Inpaint.hpp"
 #include "ops/Lens.hpp"
+#include "ops/LensBlur.hpp"
+#include "ops/RadialBlur.hpp"
 
 // app/FilterOps -- the wiring bridge for the Filter and Image menus
 // (docs/reachability-audit.md C1: "~93 entry points... no UI path to any of
@@ -222,6 +224,31 @@ FilterOpResult previewHighpass(const OpenDocument& doc, float sigma, TileStore* 
 FilterOpResult applyLocalContrast(OpenDocument& doc, const LocalContrastParams& params);
 FilterOpResult previewLocalContrast(const OpenDocument& doc, const LocalContrastParams& params,
                                     TileStore* previewOut);
+
+// PRD P2 (docs/operations.md §2.2): Radial/Spin and Zoom blur
+// (ops/RadialBlur.hpp) and Lens blur (ops/LensBlur.hpp). Same
+// applyPixelFilter()/computePixelFilter() shape as every filter above.
+//
+// **Both take a centre/aperture the dialog does not compute itself.** Radial
+// blur's centre defaults to the canvas centre -- `defaultBlurCenter()` below,
+// this file's own `canvasRectOf()`-style answer to "what does the canvas
+// look like", which the engine is deliberately kept free of (ops/RadialBlur's
+// own header says so). The dialog calls it once to seed its initial state;
+// `doRadialBlur()` (app/CommandsImage.cpp) calls the SAME function to fill an
+// absent `center_x`/`center_y` in a hand-written action, so the two cannot
+// come to mean different things by "the centre".
+FilterOpResult applyRadialBlur(OpenDocument& doc, const RadialBlurParams& params);
+FilterOpResult previewRadialBlur(const OpenDocument& doc, const RadialBlurParams& params,
+                                 TileStore* previewOut);
+FilterOpResult applyLensBlur(OpenDocument& doc, const LensBlurParams& params);
+FilterOpResult previewLensBlur(const OpenDocument& doc, const LensBlurParams& params,
+                               TileStore* previewOut);
+
+// The canvas centre, in document texels -- `offsetByHalf()`'s own reasoning
+// one level over: a dialog opening on a document it has not seen yet needs
+// somewhere to start, and "the middle of the canvas" is the one answer that
+// does not depend on the engine knowing what a canvas is.
+PixelCoord defaultBlurCenter(const OpenDocument& doc) noexcept;
 
 // ==========================================================================
 // Inpaint, and the one place this header's own selection rule is inverted

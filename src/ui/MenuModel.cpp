@@ -276,6 +276,9 @@ const MenuItemSpec* specTable() {
     set(MenuAction::Highpass, "Highpass...", "");
     set(MenuAction::LocalContrast, "Local Contrast...", "");
     set(MenuAction::LensCorrect, "Lens Correction...", "");
+    // No key equivalents, same reason as the three above.
+    set(MenuAction::RadialBlur, "Radial Blur...", "");
+    set(MenuAction::LensBlur, "Lens Blur...", "");
 
     // --- Image ----------------------------------------------------------
     set(MenuAction::ImageSize, "Image Size...", "");
@@ -547,6 +550,8 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::Highpass: return "Highpass";
     case MenuAction::LocalContrast: return "LocalContrast";
     case MenuAction::LensCorrect: return "LensCorrect";
+    case MenuAction::RadialBlur: return "RadialBlur";
+    case MenuAction::LensBlur: return "LensBlur";
     case MenuAction::ImageSize: return "ImageSize";
     case MenuAction::CanvasSize: return "CanvasSize";
     case MenuAction::CropToSelection: return "CropToSelection";
@@ -767,6 +772,10 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::Highpass:
     case MenuAction::LocalContrast:
     case MenuAction::LensCorrect:
+    // PRD P2's two additions, the same seat as GaussianBlur above -- each
+    // rewrites the active layer's own texels.
+    case MenuAction::RadialBlur:
+    case MenuAction::LensBlur:
     case MenuAction::Batch:
     case MenuAction::Count:
       return true;
@@ -832,6 +841,9 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     case MenuAction::Highpass:
     case MenuAction::LocalContrast:
     case MenuAction::LensCorrect:
+    // The identical reason -- each opens a modal (ui/BlurDialogsExtra.hpp).
+    case MenuAction::RadialBlur:
+    case MenuAction::LensBlur:
     case MenuAction::ImageSize:
     case MenuAction::CanvasSize:
     // Image > Adjustments' four dialogs, for the identical reason: opening one
@@ -1309,6 +1321,13 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     // Local Contrast set apart, a tonal op rather than a blur-based one.
     flt.push_back(filterItem(MenuAction::Highpass));
     flt.push_back(filterItem(MenuAction::LocalContrast));
+    // PRD P2: Radial/Spin+Zoom and Lens blur, docs/operations.md §2.2's
+    // "polar-space line integral" pair and its "most expensive filter here"
+    // neighbour -- set beside the blur family above rather than beside Motion
+    // Blur specifically, since Lens Blur is not directional the way that one
+    // is.
+    flt.push_back(filterItem(MenuAction::RadialBlur));
+    flt.push_back(filterItem(MenuAction::LensBlur));
     // Set apart, and the separator is the point: the eight above are filters
     // BOUNDED by the selection, and this one FILLS it (ops/Inpaint.hpp
     // section 1). It is also the only one whose enable predicate asks a

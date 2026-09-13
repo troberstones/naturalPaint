@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "app/AdjustmentOps.hpp"
+#include "app/BlurCommandsExtra.hpp"
 #include "app/CommandsImage.hpp"
 #include "app/CommandSupport.hpp"
 #include "app/FilterCommandsExtra.hpp"
@@ -437,6 +438,56 @@ CommandResult doMotionBlur(OpenDocument& doc, const JsonValue& params) {
     return commandRefused(std::string("refused: ") + kId +
                           " was given a smear ops/Filters cannot build.");
   return fromFilterResult(applyMotionBlur(doc, p), doc, "motion blur");
+}
+
+// ==========================================================================
+// PRD P2 (docs/operations.md §2.2): Radial/Spin+Zoom blur and Lens blur
+// ==========================================================================
+
+CommandResult doRadialBlur(OpenDocument& doc, const JsonValue& params) {
+  RadialBlurParams p;
+  const char* kId = "filter_radial_blur";
+  // Absent center_x/center_y default to the canvas centre -- the same
+  // function the dialog seeds its own initial state from
+  // (`defaultBlurCenter()`, app/FilterOps.hpp), pre-set here so `readNumber`'s
+  // kOptional leaves it untouched rather than falling back to (0, 0).
+  const PixelCoord center = defaultBlurCenter(doc);
+  p.centerX = static_cast<float>(center.x);
+  p.centerY = static_cast<float>(center.y);
+  std::string why = readEnumByName(params, kId, "method", radialBlurMethodFromName, &p.method);
+  if (why.empty()) why = readNumber(params, kId, "center_x", kOptional, &p.centerX);
+  if (why.empty()) why = readNumber(params, kId, "center_y", kOptional, &p.centerY);
+  if (why.empty()) why = readNumber(params, kId, "amount", kRequired, &p.amount);
+  if (why.empty()) why = requireNonZero(kId, "amount", p.amount);
+  if (why.empty()) why = readWhole(params, kId, "samples", kOptional, &p.samples);
+  if (!why.empty()) return commandRefused(why);
+  if (p.samples < 1)
+    return commandRefused(refuseValue(kId, "samples", "at least 1"));
+  if (!radialBlurParamsValid(p))
+    return commandRefused(std::string("refused: ") + kId +
+                          " was given a sweep ops/RadialBlur cannot build.");
+  return fromFilterResult(applyRadialBlur(doc, p), doc, "radial blur");
+}
+
+CommandResult doLensBlur(OpenDocument& doc, const JsonValue& params) {
+  LensBlurParams p;
+  const char* kId = "filter_lens_blur";
+  std::string why = readWhole(params, kId, "radius", kRequired, &p.radius);
+  if (why.empty()) why = readWhole(params, kId, "blade_count", kOptional, &p.bladeCount);
+  if (why.empty())
+    why = readNumber(params, kId, "blade_rotation_radians", kOptional, &p.bladeRotationRadians);
+  if (why.empty())
+    why = readNumber(params, kId, "highlight_threshold", kOptional, &p.highlightThreshold);
+  if (why.empty()) why = readNumber(params, kId, "highlight_boost", kOptional, &p.highlightBoost);
+  if (!why.empty()) return commandRefused(why);
+  // radius 0 is documented as the exact identity, refused for §2's reason.
+  if (p.radius < 1)
+    return commandRefused(
+        refuseValue(kId, "radius", "at least 1 texel; radius 0 is the documented identity"));
+  if (!lensBlurParamsValid(p))
+    return commandRefused(std::string("refused: ") + kId +
+                          " was given an aperture ops/LensBlur cannot build.");
+  return fromFilterResult(applyLensBlur(doc, p), doc, "lens blur");
 }
 
 // ==========================================================================
@@ -1224,6 +1275,17 @@ void registerImageCommands(std::vector<CommandSpec>* out) {
                   {"radius", "angle_radians"},
                   pixelOpUnavailable,
                   doMotionBlur, /*selectionBounded=*/true});
+  out->push_back({"filter_radial_blur",
+                  "Radial Blur",
+                  {"method", "center_x", "center_y", "amount", "samples"},
+                  pixelOpUnavailable,
+                  doRadialBlur, /*selectionBounded=*/true});
+  out->push_back({"filter_lens_blur",
+                  "Lens Blur",
+                  {"radius", "blade_count", "blade_rotation_radians", "highlight_threshold",
+                   "highlight_boost"},
+                  pixelOpUnavailable,
+                  doLensBlur, /*selectionBounded=*/true});
   // `filter_inpaint` is the one row here NOT bounded through the shared
   // `pixelOpUnavailable()` bridge -- `inpaintUnavailable()` calls
   // `inpaintRefusal()` instead, because an absent selection is a hard refusal
@@ -1426,6 +1488,28 @@ Command motionBlurCommand(const MotionBlurParams& m) {
   p.set("radius", JsonValue::number(m.radius));
   p.set("angle_radians", JsonValue::number(m.angleRadians));
   return command("filter_motion_blur", std::move(p));
+}
+
+// app/BlurCommandsExtra.hpp's two -- see that header for why they are
+// declared apart from the family above.
+Command radialBlurCommand(const RadialBlurParams& p) {
+  JsonValue j = JsonValue::object();
+  j.set("method", JsonValue::string(radialBlurMethodName(p.method)));
+  j.set("center_x", JsonValue::number(p.centerX));
+  j.set("center_y", JsonValue::number(p.centerY));
+  j.set("amount", JsonValue::number(p.amount));
+  j.set("samples", JsonValue::number(p.samples));
+  return command("filter_radial_blur", std::move(j));
+}
+
+Command lensBlurCommand(const LensBlurParams& p) {
+  JsonValue j = JsonValue::object();
+  j.set("radius", JsonValue::number(p.radius));
+  j.set("blade_count", JsonValue::number(p.bladeCount));
+  j.set("blade_rotation_radians", JsonValue::number(p.bladeRotationRadians));
+  j.set("highlight_threshold", JsonValue::number(p.highlightThreshold));
+  j.set("highlight_boost", JsonValue::number(p.highlightBoost));
+  return command("filter_lens_blur", std::move(j));
 }
 
 Command levelsCommand(const std::array<LevelsParams, 3>& channels) {

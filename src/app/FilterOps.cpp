@@ -350,6 +350,32 @@ FilterOpResult previewLensCorrect(const OpenDocument& doc, LensParams params,
   return computePixelFilter(doc, lensCorrectTiles, params, previewOut);
 }
 
+PixelCoord defaultBlurCenter(const OpenDocument& doc) noexcept {
+  // Same floor-division argument `offsetByHalf()` makes just below: a
+  // non-negative unsigned extent divided by two has no round-toward-zero
+  // case to get wrong.
+  return PixelCoord{static_cast<int32_t>(doc.document.width / 2),
+                    static_cast<int32_t>(doc.document.height / 2)};
+}
+
+FilterOpResult applyRadialBlur(OpenDocument& doc, const RadialBlurParams& params) {
+  return applyPixelFilter(doc, radialBlurTiles, params, "radial blur");
+}
+
+FilterOpResult previewRadialBlur(const OpenDocument& doc, const RadialBlurParams& params,
+                                 TileStore* previewOut) {
+  return computePixelFilter(doc, radialBlurTiles, params, previewOut);
+}
+
+FilterOpResult applyLensBlur(OpenDocument& doc, const LensBlurParams& params) {
+  return applyPixelFilter(doc, lensBlurTiles, params, "lens blur");
+}
+
+FilterOpResult previewLensBlur(const OpenDocument& doc, const LensBlurParams& params,
+                               TileStore* previewOut) {
+  return computePixelFilter(doc, lensBlurTiles, params, previewOut);
+}
+
 DocumentOpOutcome applyImageSize(OpenDocument& doc, uint32_t width, uint32_t height,
                                  ResampleKernel kernel) {
   DocumentTransformParams params;

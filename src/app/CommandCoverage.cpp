@@ -324,6 +324,11 @@ CommandCoverage coverageFor(MenuAction action) {
       return {CommandCoverageKind::Registered, "filter_local_contrast", nullptr};
     case MenuAction::LensCorrect:
       return {CommandCoverageKind::Registered, "lens_correct", nullptr};
+    // PRD P2 (docs/operations.md §2.2).
+    case MenuAction::RadialBlur:
+      return {CommandCoverageKind::Registered, "filter_radial_blur", nullptr};
+    case MenuAction::LensBlur:
+      return {CommandCoverageKind::Registered, "filter_lens_blur", nullptr};
     case MenuAction::ImageSize:
       return {CommandCoverageKind::Registered, "image_size", nullptr};
     case MenuAction::CanvasSize:
