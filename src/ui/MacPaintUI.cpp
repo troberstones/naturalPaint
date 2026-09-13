@@ -12985,7 +12985,7 @@ bool keyboardBelongsToTyping(const AppState& st) {
 // below it is: `FilterPreviewOwner`/`setFilterPreview()`/`clearFilterPreview()`
 // are internally linked (the anonymous namespace just closed), so a dialog
 // living in its own translation unit (ui/FilterDialogsExtra.cpp)
-//  needs a pair of externally-linked functions to reach them
+// needs a pair of externally-linked functions to reach them
 // through -- see ui/MacPaintUI.hpp's own comment on why `External` exists.
 void setExternalFilterPreview(DocumentId id, size_t layerIndex, TileStore tiles) {
   setFilterPreview(FilterPreviewOwner::External, id, layerIndex, std::move(tiles));
