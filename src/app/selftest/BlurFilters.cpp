@@ -331,7 +331,13 @@ bool runBlurFiltersTest() {
     const PixelRect whole{0, 0, 96, 96};
     for (const RadialBlurMethod method : {RadialBlurMethod::Spin, RadialBlurMethod::Zoom}) {
       TileStore out;
-      const RadialBlurParams p{method, 48.0f, 48.0f, 40.0f, 8};
+      // Spin's amount is degrees, Zoom's is a scale fraction -- the same two
+      // units section D's "which axis" tests use, not one magnitude reused
+      // for both (a fraction of 40 would zoom every tap into the padding
+      // beyond the flat field's own tile, reading it back as zero and
+      // measuring the apron's fallback rather than normalisation).
+      const RadialBlurParams p{method, 48.0f, 48.0f, method == RadialBlurMethod::Spin ? 40.0f : 0.4f,
+                               8};
       radialBlurTiles(flat, whole, p, &out);
       check(blurApproxEqual(blurReadAt(flat, 60, 55), blurReadAt(out, 60, 55), p.samples),
             method == RadialBlurMethod::Spin

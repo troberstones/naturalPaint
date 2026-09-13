@@ -407,7 +407,9 @@ bool runCommandCallsitesTest() {
   std::printf("  -- B. the reroute changed no pixels --\n");
   {
     const std::vector<RerouteCase> cases = rerouteCases();
-    check(cases.size() == 26, "cases: all twenty-six pixel commands the UI issues are covered");
+    // PRD P2's two (filter_radial_blur, filter_lens_blur) joined the
+    // twenty-six that were here before.
+    check(cases.size() == 28, "cases: all twenty-eight pixel commands the UI issues are covered");
     size_t matched = 0;
     size_t moved = 0;
     std::string firstBad;
