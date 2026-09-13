@@ -3,7 +3,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <vector>
 
@@ -732,83 +731,54 @@ inline constexpr float kMaxMass = 1.0f;
 // 1a. How a deposit builds up where a stroke overlaps ITSELF
 // ==========================================================================
 //
-// §1's rule adds mass **linearly**: `m' = min(m + dm, cap)`, so the second
-// time a stroke crosses a texel it adds exactly as much as the first, and the
-// tenth adds as much again until the paper is full. That is the honest reading
-// of "mass of paint", and next to Photoshop -- or next to this build's own RGB
-// route, whose §2 accumulates `A + w*(1-A)` and caps at the stroke's opacity
-// -- it reads wrong in two ways at once. A single pass comes out with a dark
-// core and light rims (a texel under the middle of the stroke is covered by
-// more dabs than one under its edge), and a self-crossing comes out
-// disproportionately darker than either pass.
+// §1's rule adds mass **linearly** and every dab mixes into what the last one
+// left. Next to Photoshop or Krita that reads wrong: a single pass has a dark
+// core and light rims (a texel under the middle is covered by more dabs than
+// one under its edge), a self-crossing is disproportionately darker, and a
+// stroke over existing paint re-mixes its colour once per dab. A hard
+// per-stroke clamp was tried and felt unnatural -- it flattens a soft tip into
+// a plateau with a cliff at its edge. So there are two modes:
 //
-// Both are the same missing idea -- diminishing returns -- and there are two
-// separable ways to supply it. **Both default OFF, and with both off every
-// line below is bit-for-bit §1's rule**, which is what lets them be toggled
-// at runtime rather than chosen once.
+//   * **`BuildUp`** -- §1's rule, every dab straight into the layer. The
+//     default, and bit for bit the arithmetic this route had before §1a.
 //
-//   * **`saturating`** replaces the rate: `m' = m + dm * (1 - m/cap)`. On
-//     empty paper this is `dm` exactly, so the first touch of a stroke is
-//     unchanged and only the overlaps differ -- each one adding a share of
-//     what is still *empty* rather than a fixed amount. The paper fills
-//     asymptotically instead of in a fixed number of passes.
+//   * **`Wash`** -- Krita's indirect "Wash" mode on this route's quantities.
+//     The stroke keeps its own buffer, `s` per texel, and each dab eases it
+//     toward the stroke's opacity:
 //
-//   * **`strokeCeiling`** makes `BrushTip::opacity` mean on this route what it
-//     already means on the RGB one: the most mass ONE stroke may lay at one
-//     texel, however many dabs it spends and however often it crosses itself.
-//     Today `opacity` is read by nothing here -- it appears in `Deposit.cpp`
-//     only inside `brushTipEqual()` -- so a Pigment layer's Opacity slider
-//     moves and changes nothing, which is the defect this closes as much as
-//     it is a feature.
+//         s' = s + min(dm, 1) * (opacity - s)      (only while s < opacity)
 //
-// The two compose: `saturating` shapes the approach, `strokeCeiling` says
-// where it stops. Note what `strokeCeiling` does NOT do: at `opacity == 1`
-// the ceiling is `kMaxMass`, which the paper cap already enforces, so it is a
-// no-op at the default and is only visible once the slider comes down. That
-// is the same shape as Photoshop, where a 100% stroke also builds to full.
+//     -- Krita's Alpha Darken, "creamy" variant. It approaches the ceiling
+//     rather than hitting it, so a soft tip keeps its profile; and what is
+//     left below the ceiling is a product of `(1 - rate)` terms, so dabs
+//     arriving in any order reach the same amount.
 //
-// **A ceiling needs a memory, and that is what `StrokeMassStore` is for.** A
-// ceiling applied without one would clamp each DAB rather than the stroke, and
-// `brush/RgbDeposit` §2 spells out why that is not a weaker version of the
-// same thing but a different and wrong model ("no setting ever produces a flat
-// 50% pass"). So the ceiling is honoured only when a store is supplied, and
-// the two arguments travel together.
+//     The layer texel is then recomputed from the texel as it was at PEN-DOWN,
+//     as one deposit of `s`: `depositTexel(before, pigment, s, sel)`. The
+//     stroke meets existing paint once -- one hue mix, one paper cap, one
+//     selection cap -- and glazes on top of it up to the paper's limit. The
+//     layer holds the result throughout, so nothing is merged at pen-up and a
+//     tool that reads the layer mid-stroke reads what is shown.
 //
-// **Hue keeps moving after the ceiling, exactly as it does at the paper cap.**
-// §1(iii) and §4 already settle this for the two caps that existed: the
-// mixing weight uses the UNCAPPED `dm`, so a texel that can hold no more paint
-// still takes on the colour of what is laid on it. A third cap does not get a
-// different answer. This is a deliberate divergence from the RGB route, which
-// skips a dab outright once its ceiling is reached -- there, alpha *is* the
-// whole texel; here, mass and hue are separate quantities and only one of them
-// is full.
+// Wash needs two things only the caller has, carried together in `WashStroke`:
+// the buffer, and the layer's store as it was at pen-down. Without the second,
+// `depositDab()` falls back to `BuildUp`: washing against the LIVE layer would
+// mix every dab in again, which is the defect Wash exists to remove.
+enum class PigmentBuildupMode : uint8_t { BuildUp, Wash };
+
 struct PigmentBuildup {
-  bool saturating = false;
-  bool strokeCeiling = false;
-  // The ceiling itself, a fraction of `kMaxMass`, latched by the caller at
-  // pen-down for the reason every other route latches its own
-  // (`brush/RgbDeposit.hpp` §2: a stroke whose ceiling moved half way through
-  // has no well-defined ceiling). `app/StrokeSession` passes its
-  // `resolvedOpacity_` -- `tip.opacity` scaled by the model's Transfer Opacity
-  // Variance -- rather than letting this read `tip.opacity` per dab, which is
-  // the same number today only because nothing varies it per dab yet.
+  PigmentBuildupMode mode = PigmentBuildupMode::BuildUp;
+  // Wash's ceiling, a fraction of `kMaxMass`, latched by the caller at pen-down
+  // for the reason every route latches its own (`brush/RgbDeposit.hpp` §2: a
+  // ceiling that moves half way through a stroke has no defined meaning).
+  // `app/StrokeSession` passes its `resolvedOpacity_`. Unread by `BuildUp`.
   float opacity = 1.0f;
 };
 
-bool pigmentBuildupEqual(const PigmentBuildup& a, const PigmentBuildup& b) noexcept;
+// §1a's per-texel rule, on its own so it can be tested on its own.
+float washAmount(float laid, float rate, float ceiling) noexcept;
 
-// §1a, as one argument, so `depositTexel()` keeps one meaning per parameter
-// and the two rules cannot be passed in the wrong order.
-struct MassRule {
-  bool saturating = false;
-  // How much more mass THIS stroke may lay at this texel. Infinite is "no
-  // stroke ceiling", which is §1's historical rule and this struct's default;
-  // a finite value is `opacity * kMaxMass` minus what the stroke has already
-  // laid here.
-  float strokeRoom = std::numeric_limits<float>::infinity();
-};
-
-// One tile's worth of the mass a single stroke has laid -- §1a's memory.
+// One tile of a Wash stroke's buffer (§1a): how much that stroke has laid.
 //
 // Nothing but its buffer, the discipline `core::PigmentTile` and
 // `brush/RgbDeposit`'s `StrokeAlphaTile` each keep. It is deliberately NOT
@@ -841,6 +811,13 @@ static_assert(sizeof(StrokeMassTile) == 64 * 1024,
               "accumulated into hundreds of times, so its rounding error compounds)");
 
 using StrokeMassStore = TileStoreOf<StrokeMassTile>;
+
+// A Wash stroke's state (§1a), owned by the caller for the whole stroke.
+struct WashStroke {
+  StrokeMassStore laid;
+  // The layer's pigment store as it was at pen-down. Borrowed.
+  const PigmentTileStore* before = nullptr;
+};
 
 // The narrowest tip §2b will draw. `io/AbrBrushes.cpp`'s own clamp on an
 // imported `Rndn`, restated here so the deposit is defended at the point of
@@ -1237,7 +1214,7 @@ float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept;
 // the texel invariants in `--selftest` are claims about the mixing arithmetic
 // and not about the gate. The *loop* below deliberately does not default it.
 PigmentTexel depositTexel(const PigmentTexel& dst, const Latent& pigment, float deltaMass,
-                          float selection = 1.0f, const MassRule& rule = {}) noexcept;
+                          float selection = 1.0f) noexcept;
 
 // The inclusive texel rectangle a dab centred at `centre` can change, clipped
 // to `[0,canvasW) x [0,canvasH)`. Empty (`x1 < x0` or `y1 < y0`) when the dab
@@ -1316,14 +1293,13 @@ struct DepositCount {
 // even evaluated, so grain can thin or empty a texel already inside the
 // footprint, and never add one outside it -- §3's containment fact is
 // unaffected by whether a brush has grain on.
-// `buildup`/`laid` are §1a's two rules and the memory the second of them
-// needs. Defaulted to off and null, which is bit-for-bit the rule this
-// function had before they existed -- `app/DabPreview`, `depositDabs()` below
-// and every texel selftest take that default and are unaffected.
+// `buildup`/`wash` are §1a's mode and a Wash stroke's state. Defaulted to
+// Build-up and null, bit for bit the rule this function had before §1a --
+// `app/DabPreview`, `depositDabs()` below and every texel selftest take that.
 DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centre,
                         int32_t canvasW, int32_t canvasH, const Selection* selection,
                         std::vector<TileCoord>* touchedOut, PigmentBuildup buildup = {},
-                        StrokeMassStore* laid = nullptr);
+                        WashStroke* wash = nullptr);
 
 // Sorts ascending by (y, x) and removes duplicates, in place.
 //

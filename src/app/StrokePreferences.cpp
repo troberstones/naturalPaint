@@ -180,14 +180,14 @@ void StrokePreferencesStore::parse(const std::string& text, StabiliserParams& gl
     } else if (key == "showString" && takeFloat(rest, f)) {
       global.showString = f != 0.0f;
       continue;
-      // brush/Deposit.hpp §1a. Named for the rule rather than for "mode 1"
-      // and "mode 2": these are two independent switches and a file that
-      // numbered them would stop making sense the moment there is a third.
-    } else if (key == "buildupSaturating" && takeFloat(rest, f)) {
-      buildup.saturating = f != 0.0f;
+      // brush/Deposit.hpp §1a. A key per mode rather than an ordinal, so a
+      // third mode is a new key and not a renumbering of this one.
+    } else if (key == "buildupWash" && takeFloat(rest, f)) {
+      buildup.mode = f != 0.0f ? PigmentBuildupMode::Wash : PigmentBuildupMode::BuildUp;
       continue;
-    } else if (key == "buildupStrokeCeiling" && takeFloat(rest, f)) {
-      buildup.strokeCeiling = f != 0.0f;
+    } else if (key == "buildupSaturating" || key == "buildupStrokeCeiling") {
+      // The two switches Wash replaced. Recognised so they are dropped: as
+      // unknown lines they would be re-emitted into every later save.
       continue;
     }
     // A key this build does not know, or a value that did not parse:
@@ -229,8 +229,8 @@ std::string StrokePreferencesStore::serialize(const StabiliserParams& global,
   out += std::string("stabilisePressure ") + (global.stabilisePressure ? "1" : "0") + "\n";
   out += std::string("scaleWithZoom ") + (global.scaleWithZoom ? "1" : "0") + "\n";
   out += std::string("showString ") + (global.showString ? "1" : "0") + "\n";
-  out += std::string("buildupSaturating ") + (buildup.saturating ? "1" : "0") + "\n";
-  out += std::string("buildupStrokeCeiling ") + (buildup.strokeCeiling ? "1" : "0") + "\n";
+  out += std::string("buildupWash ") + (buildup.mode == PigmentBuildupMode::Wash ? "1" : "0") +
+         "\n";
   for (const std::string& line : unknownLines_) out += sanitizeOneLine(line) + "\n";
   return out;
 }

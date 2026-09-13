@@ -1481,14 +1481,12 @@ void StrokeSession::beginRoutes(Layer& layer) {
   // whichever route this stroke took, the other three must be left holding no
   // tiles, and an interrupted drag is exactly the case that reaches here with
   // one of them still live.
-  // The Pigment DEPOSIT route's per-stroke mass memory (brush/Deposit.hpp
-  // §1a), dropped here for the reason every accumulator in this function is
-  // reset: mass carried across strokes would let the last stroke's ceiling cap
-  // the first dab of the next. Unconditional, because unlike the four pairs
-  // around it this store holds no latched scalars to begin -- and because the
-  // exit taper's repaint comes back through here, which is what stops a
-  // replayed stroke finding its own ceiling already spent.
-  pigmentLaid_ = StrokeMassStore{};
+  // A Wash stroke's buffer (brush/Deposit.hpp §1a), dropped for the reason
+  // every accumulator here is reset: carried over, the last stroke's amount
+  // would start the next one part way to its ceiling. Unconditional, because
+  // it holds no latched scalars to begin -- and because the exit taper's
+  // repaint comes back through here and must not find its ceiling spent.
+  wash_ = WashStroke{};
 
   if (route_ == StrokeRoute::PigmentErase)
     pigErase_.begin(resolvedOpacity_);
@@ -1825,8 +1823,14 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // record rather than writing any of the three tile stores `restore()`
   // knows how to put back, so a repaint there would replay the stroke on top
   // of itself. Its exit taper is unimplemented, not silently wrong.
-  if (taperOut_.on && taperOut_.lengthPx > 0.0f && route_ != StrokeRoute::None &&
-      route_ != StrokeRoute::StrokesRecord)
+  //
+  // A Wash stroke needs the same picture for a different reason: each of its
+  // dabs recomputes a texel from what was there at pen-down (brush/Deposit.hpp
+  // §1a).
+  const bool washing =
+      route_ == StrokeRoute::CpuDeposit && pigmentBuildup_.mode == PigmentBuildupMode::Wash;
+  if (washing || (taperOut_.on && taperOut_.lengthPx > 0.0f && route_ != StrokeRoute::None &&
+                  route_ != StrokeRoute::StrokesRecord))
     preStroke_ = doc.document;
   else
     preStroke_.reset();
@@ -1915,6 +1919,15 @@ float StrokeSession::taperedSpacingPx() const noexcept {
 
 bool StrokeSession::exitTaperRepaintPending() const noexcept {
   return taperOut_.on && taperOut_.lengthPx > 0.0f && preStroke_.has_value();
+}
+
+WashStroke* StrokeSession::washFor() noexcept {
+  if (pigmentBuildup_.mode != PigmentBuildupMode::Wash || !preStroke_.has_value() ||
+      layerIndex_ >= preStroke_->layers.size())
+    return nullptr;
+  const Layer& before = preStroke_->layers[layerIndex_];
+  wash_.before = before.pigmentTiles.has_value() ? &*before.pigmentTiles : &washNothingBefore_;
+  return &wash_;
 }
 
 void StrokeSession::replayWithExitTaper() {
@@ -2388,7 +2401,7 @@ void StrokeSession::depositPending(bool isEndFlush) {
               ? rgb_.depositDab(*layer.rgbTiles, dabTip, centre, doc.width, doc.height, selection,
                                 &frameTiles_)
               : depositDab(*layer.pigmentTiles, dabTip, centre, doc.width, doc.height, selection,
-                          &frameTiles_, pigmentBuildup_, &pigmentLaid_);
+                          &frameTiles_, pigmentBuildup_, washFor());
       frameTexels += c.texels;
     }
     ++dabs_;

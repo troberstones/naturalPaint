@@ -5807,8 +5807,8 @@ void drawBrushPaintGroup(AppState& st) {
     // the exact complaint this disabled-rather-than-hidden treatment was written
     // to answer.
     //
-    // `cpu-deposit` reads it only while BUILDUP's stroke ceiling is on
-    // (brush/Deposit.hpp §1a), its one per-stroke accumulator. The pigment ERASE
+    // `cpu-deposit` reads it only in BUILDUP's Wash mode (brush/Deposit.hpp
+    // §1a), the one way that route keeps a per-stroke accumulator. The pigment ERASE
     // needs no such switch -- `E` is the fraction removed, dimensionless, so the
     // floor `mass_0 * (1 - strength)` needs nothing the deposit was missing.
     const bool erasing =
@@ -5859,7 +5859,7 @@ void drawBrushPaintGroup(AppState& st) {
     else if (honoured)
       ImGui::TextDisabled("Flow is how fast paint builds; opacity is where it stops.");
     else if (route == StrokeRoute::CpuDeposit)
-      ImGui::TextDisabled("On a Pigment layer, turn on BUILDUP > Limit one stroke to its Opacity.");
+      ImGui::TextDisabled("On a Pigment layer, Opacity needs BUILDUP > Wash.");
     else
       ImGui::TextDisabled("Opacity is a stroke ceiling; this stroke goes to %s.",
                           strokeRouteName(route));

@@ -537,19 +537,29 @@ bool runStabiliserTest() {
     g.showString = false;
 
     StrokePreferencesStore store;
-    // brush/Deposit.hpp §1a's two switches share this record, so they share
-    // its round-trip: both non-default, so a serializer that dropped either
-    // would come back as the default rather than as the value written.
+    // brush/Deposit.hpp §1a's mode shares this record, so it shares its
+    // round-trip: non-default, so a serializer that dropped it would come back
+    // as the default rather than as the value written.
     PigmentBuildup b;
-    b.saturating = true;
-    b.strokeCeiling = true;
+    b.mode = PigmentBuildupMode::Wash;
     const std::string written = store.serialize(g, b);
     StabiliserParams reloaded;
     PigmentBuildup reloadedBuildup;
     StrokePreferencesStore reader;
     reader.parse(written, reloaded, reloadedBuildup);
-    check(reloadedBuildup.saturating && reloadedBuildup.strokeCeiling,
-          "stroke-preferences.txt: both pigment buildup switches round-trip");
+    check(reloadedBuildup.mode == PigmentBuildupMode::Wash,
+          "stroke-preferences.txt: the pigment buildup mode round-trips");
+
+    // A file written by the build that had two buildup switches instead.
+    StabiliserParams oldGlobal;
+    PigmentBuildup oldBuildup;
+    StrokePreferencesStore oldReader;
+    oldReader.parse("naturalPaint-stroke-preferences 1\nbuildupSaturating 1\n"
+                    "buildupStrokeCeiling 1\n",
+                    oldGlobal, oldBuildup);
+    check(oldReader.unknownLines().empty() && oldBuildup.mode == PigmentBuildupMode::BuildUp,
+          "stroke-preferences.txt: the two retired buildup switches are dropped, not carried "
+          "forward as unknown lines, and select nothing");
     check(reloaded.mode == g.mode && reloaded.stringPx == g.stringPx &&
               reloaded.strength == g.strength && reloaded.responsiveness == g.responsiveness &&
               reloaded.catchUpAtEnd == g.catchUpAtEnd &&

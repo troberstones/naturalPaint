@@ -6633,8 +6633,8 @@ bool runStabiliserTest();
 // app/selftest/BrushTaper.cpp.
 bool runBrushTaperTest();
 
-// app/selftest/PigmentBuildup.cpp -- brush/Deposit.hpp §1a's two buildup
-// rules, and that both off is the route's historical arithmetic bit for bit.
+// app/selftest/PigmentBuildup.cpp -- brush/Deposit.hpp §1a: Wash against
+// Build-up, and that Build-up is the route's historical arithmetic bit for bit.
 bool runPigmentBuildupTest();
 
 // ui/AppIcon: the embedded PNG decodes at 512 px, matches the committed file

@@ -348,13 +348,13 @@ float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept {
   return std::clamp(combineDualCoverage(tip.dualBlend, base, second), 0.0f, 1.0f);
 }
 
-bool pigmentBuildupEqual(const PigmentBuildup& a, const PigmentBuildup& b) noexcept {
-  return a.saturating == b.saturating && a.strokeCeiling == b.strokeCeiling &&
-         a.opacity == b.opacity;
+float washAmount(float laid, float rate, float ceiling) noexcept {
+  if (!(laid < ceiling)) return laid;
+  return laid + std::min(rate, 1.0f) * (ceiling - laid);
 }
 
 PigmentTexel depositTexel(const PigmentTexel& dst, const Latent& pigment, float deltaMass,
-                          float selection, const MassRule& rule) noexcept {
+                          float selection) noexcept {
   const float denom = dst.mass + deltaMass;
   // Header §1(ii): the limit as dm -> 0+ on empty paper, not a convention.
   const float w = (denom > 0.0f) ? (deltaMass / denom) : 1.0f;
@@ -387,25 +387,7 @@ PigmentTexel depositTexel(const PigmentTexel& dst, const Latent& pigment, float 
   float cap = kMaxMass * sel;
   if (cap < dst.mass) cap = dst.mass;
   if (cap > kMaxMass) cap = kMaxMass;
-
-  // Header §1a's two optional rules, both shaping how much of `deltaMass`
-  // actually lands. With `rule` defaulted -- `saturating` false, `strokeRoom`
-  // infinite -- `add` is `deltaMass` untouched and the last two lines are
-  // `denom < cap ? denom : cap`, the rule §1 and §4 describe, computed from
-  // the identical two floats. That is what makes the modes free when off, and
-  // the capped branch stores `cap` itself rather than `dst.mass + (cap -
-  // dst.mass)`, which is the same number only in exact arithmetic.
-  float add = deltaMass;
-  if (rule.saturating && cap > 0.0f) {
-    // A share of what is still EMPTY, not a fixed amount: on bare paper
-    // (`dst.mass == 0`) this is `deltaMass` exactly, so a stroke's first touch
-    // is unchanged and only its overlaps diminish.
-    const float empty = 1.0f - dst.mass / cap;
-    add = deltaMass * (empty > 0.0f ? empty : 0.0f);
-  }
-  if (add > rule.strokeRoom) add = rule.strokeRoom > 0.0f ? rule.strokeRoom : 0.0f;
-  const float reached = dst.mass + add;
-  out.mass = reached < cap ? reached : cap;
+  out.mass = denom < cap ? denom : cap;
   return out;
 }
 
@@ -458,13 +440,14 @@ PixelBounds dabPixelBounds(const BrushTip& tip, Vec2 centre, int32_t canvasW,
 DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centre,
                         int32_t canvasW, int32_t canvasH, const Selection* selection,
                         std::vector<TileCoord>* touchedOut, PigmentBuildup buildup,
-                        StrokeMassStore* laid) {
+                        WashStroke* wash) {
   DepositCount count;
   if (!(tip.flow > 0.0f)) return count;
 
-  // §1a, hoisted: both are properties of the stroke, not of a texel.
-  const bool ceiling = buildup.strokeCeiling && laid != nullptr;
-  const float strokeCap = std::clamp(buildup.opacity, 0.0f, 1.0f) * kMaxMass;
+  // §1a, hoisted: properties of the stroke, not of a texel.
+  const bool washing =
+      buildup.mode == PigmentBuildupMode::Wash && wash != nullptr && wash->before != nullptr;
+  const float washCeiling = std::clamp(buildup.opacity, 0.0f, 1.0f) * kMaxMass;
 
   const PixelBounds b = dabPixelBounds(tip, centre, canvasW, canvasH);
   if (b.empty()) return count;
@@ -506,12 +489,11 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
       // this tile -- header §3, fact 2. A tile the bounding box clipped but
       // the disc missed is never created and never reported.
       PigmentTile* tile = nullptr;
-      // The stroke's own record of what it has already laid here (§1a),
-      // fetched beside the document tile so the two cannot disagree about
-      // which tiles this stroke has reached. Scratch rather than document: it
-      // carries no undo and is dropped at pen-up, so creating one costs
-      // nothing a caller has to know about.
+      // A Wash stroke's buffer and pen-down texels (§1a), fetched beside the
+      // document tile. The buffer is scratch -- no undo, dropped at pen-up --
+      // so creating a tile of it costs a caller nothing.
       StrokeMassTile* laidTile = nullptr;
+      const PigmentTile* beforeTile = nullptr;
 
       for (int32_t y = y0; y <= y1; ++y) {
         const float dy = (static_cast<float>(y) + 0.5f) - centre.y;
@@ -557,21 +539,21 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
             ++count.tiles;
             if (touchedOut != nullptr) touchedOut->push_back(coord);
           }
-          if (laid != nullptr && laidTile == nullptr) laidTile = &laid->getOrCreate(coord);
-
-          MassRule rule;
-          rule.saturating = buildup.saturating;
-          // §1a: the ceiling is honoured only with a memory to measure it
-          // against -- `ceiling` is false when no store was supplied, because
-          // a ceiling read fresh every dab clamps the DAB and is a different,
-          // wrong model rather than a weaker version of this one.
-          const float laidHere = laidTile != nullptr ? laidTile->at(local) : 0.0f;
-          if (ceiling) rule.strokeRoom = strokeCap - laidHere;
-
-          const PigmentTexel before = tile->readTexel(local);
-          const PigmentTexel after = depositTexel(before, tip.pigment, deltaMass, sel, rule);
-          tile->writeTexel(local, after);
-          if (laidTile != nullptr) laidTile->set(local, laidHere + (after.mass - before.mass));
+          if (!washing) {
+            tile->writeTexel(local,
+                             depositTexel(tile->readTexel(local), tip.pigment, deltaMass, sel));
+          } else {
+            if (laidTile == nullptr) {
+              laidTile = &wash->laid.getOrCreate(coord);
+              beforeTile = wash->before->find(coord);
+            }
+            const float s = washAmount(laidTile->at(local), deltaMass, washCeiling);
+            laidTile->set(local, s);
+            // A tile absent at pen-down was bare paper, which a default texel is.
+            const PigmentTexel before =
+                beforeTile != nullptr ? beforeTile->readTexel(local) : PigmentTexel{};
+            tile->writeTexel(local, depositTexel(before, tip.pigment, s, sel));
+          }
           ++count.texels;
         }
       }

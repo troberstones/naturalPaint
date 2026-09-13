@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "app/DocumentLifecycle.hpp"
 #include "app/LayerEditor.hpp"
@@ -12,16 +15,14 @@
 namespace np {
 
 // ---------------------------------------------------------------------------
-// brush/Deposit.hpp §1a -- how a pigment deposit builds up where a stroke
-// overlaps ITSELF. Two rules, independently switchable, both off by default:
-// `saturating` (each overlap adds a share of what is still empty) and
-// `strokeCeiling` (`opacity` is the most mass one stroke may lay at a texel).
+// brush/Deposit.hpp §1a -- how a pigment stroke builds up where it overlaps
+// itself: Build-up (every dab straight into the layer, the route's historical
+// rule) or Wash (a per-stroke buffer that eases toward the stroke's opacity,
+// applied to the layer as it was at pen-down).
 //
-// Reported from a tablet against a Photoshop reference: "the overall buildup
-// feels odd on overlaps." Linear accumulation gives a single pass a dark core
-// and light rims -- a texel under the middle of a stroke is covered by more
-// dabs than one under its edge -- and makes a self-crossing disproportionately
-// darker than either pass.
+// Reported from a tablet against Photoshop: "the overall buildup feels odd on
+// overlaps", and then, of a hard per-stroke clamp, "it feels unnatural". Wash
+// is Krita's indirect Wash mode on this route's quantities.
 // ---------------------------------------------------------------------------
 bool runPigmentBuildupTest() {
   bool ok = true;
@@ -30,11 +31,9 @@ bool runPigmentBuildupTest() {
     if (!cond) ok = false;
   };
 
-  // Hand-built rather than palette-derived: every claim in this file is about
-  // the MASS rule, and an unloaded `MixboxLut` maps two different palette
-  // entries to the same latent -- which silently turns the hue assertion below
-  // into a comparison of one colour with itself. Two latents that simply
-  // differ are exactly what these assertions need.
+  // Hand-built rather than palette-derived: an unloaded `MixboxLut` maps two
+  // different palette entries to the same latent, which would silently turn
+  // every hue assertion below into a comparison of one colour with itself.
   const Latent kBlue{{0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
   const Latent kRed{{1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}};
 
@@ -52,6 +51,10 @@ bool runPigmentBuildupTest() {
                                  makePigmentLayer("Pigment")));
     return od;
   };
+  const auto texelAt = [](const PigmentTileStore& store, int32_t x, int32_t y) {
+    const PigmentTile* t = store.find(tileCoordAt(PixelCoord{x, y}));
+    return t != nullptr ? t->readTexel(tileLocalOffset(PixelCoord{x, y})) : PigmentTexel{};
+  };
   const auto worstMass = [](const PigmentTileStore& store) {
     float worst = 0.0f;
     for (const auto& [coord, tile] : store) {
@@ -62,247 +65,157 @@ bool runPigmentBuildupTest() {
     }
     return worst;
   };
+  // Mass is stored as binary16, whose ulp at 0.4 is 2^-12 = 2.44e-4, so a
+  // ceiling read back from the layer holds to a few ulps rather than exactly.
+  constexpr float kF16Slack = 1.0e-3f;
+  PigmentBuildup wash;
+  wash.mode = PigmentBuildupMode::Wash;
 
   // ======================================================================
-  // 1. Both rules off is §1's rule, bit for bit
-  // ======================================================================
-  //
-  // This is what lets the modes be runtime toggles rather than a fork: with a
-  // default `MassRule` the arithmetic must be the same floats the route stored
-  // before §1a existed, for every mass, every dab and every selection
-  // coverage -- including the two clauses §4 argues (never below the mass
-  // already stored, never above `kMaxMass`).
-  {
-    const float masses[] = {0.0f, 0.1f, 0.5f, 0.9f, 1.0f};
-    const float deltas[] = {0.01f, 0.3f, 2.0f};
-    const float sels[] = {1.0f, 0.5f, 0.25f};
-    bool identical = true;
-    for (float m : masses)
-      for (float dm : deltas)
-        for (float sel : sels) {
-          PigmentTexel dst;
-          dst.latent = kRed;
-          dst.mass = m;
-          float cap = kMaxMass * sel;
-          if (cap < m) cap = m;
-          if (cap > kMaxMass) cap = kMaxMass;
-          const float want = (m + dm) < cap ? (m + dm) : cap;
-          if (depositTexel(dst, kBlue, dm, sel).mass != want) identical = false;
-        }
-    check(identical,
-          "buildup off: the mass rule is min(m + dm, cap) bit for bit, over every mass, dab "
-          "and selection coverage -- the modes are free when off");
-  }
-
-  // ======================================================================
-  // 2. Saturating: the first touch is unchanged, the overlaps diminish
+  // 1. The Wash rule on its own
   // ======================================================================
   {
-    MassRule sat;
-    sat.saturating = true;
+    // Approaches, never clamps: after k dabs of rate r the amount is exactly
+    // the closed form, so a soft tip's lighter texels stay lighter rather than
+    // being flattened into a plateau with a cliff at its edge.
+    float s = 0.0f;
+    for (int k = 0; k < 6; ++k) s = washAmount(s, 0.18f, 0.4f);
+    const float closed = 0.4f * (1.0f - std::pow(0.82f, 6.0f));
+    std::printf("  [measured] six rate-0.18 dabs toward 0.4: %.6f, closed form %.6f\n", s,
+                closed);
+    check(std::fabs(s - closed) < 1.0e-5f && s < 0.4f - 0.1f,
+          "wash: an amount eases toward the ceiling by the closed form, and six dabs are "
+          "still well short of it -- no corner where a clamp would bite");
 
-    PigmentTexel bare;
-    bare.mass = 0.0f;
-    check(depositTexel(bare, kBlue, 0.18f, 1.0f, sat).mass ==
-              depositTexel(bare, kBlue, 0.18f, 1.0f).mass,
-          "saturating: on bare paper it lays exactly what the linear rule lays -- a stroke's "
-          "first touch is untouched and only its overlaps differ");
-
-    // Ten dabs of the user's own load at one texel, which is roughly what the
-    // middle of one pass of a stroke receives at the default spacing.
-    PigmentTexel lin;
-    PigmentTexel sam;
-    float firstLin = 0.0f;
-    float firstSat = 0.0f;
-    for (int i = 0; i < 10; ++i) {
-      const float beforeLin = lin.mass;
-      const float beforeSat = sam.mass;
-      lin = depositTexel(lin, kBlue, 0.18f, 1.0f);
-      sam = depositTexel(sam, kBlue, 0.18f, 1.0f, sat);
-      if (i == 1) {
-        firstLin = lin.mass - beforeLin;
-        firstSat = sam.mass - beforeSat;
-      }
+    float many = 0.0f;
+    bool neverOver = true;
+    for (int k = 0; k < 200; ++k) {
+      many = washAmount(many, 0.9f, 0.4f);
+      if (many > 0.4f) neverOver = false;
     }
-    std::printf("  [measured] ten load-0.18 dabs at one texel: mass %.4f linear vs %.4f "
-                "saturating; the SECOND dab adds %.4f vs %.4f\n",
-                lin.mass, sam.mass, firstLin, firstSat);
-    check(sam.mass < lin.mass && firstSat < firstLin,
-          "saturating: ten overlapping dabs land less mass than ten linear ones, and the "
-          "second dab already adds less than the first did");
-    check(sam.mass > 0.18f,
-          "saturating: it still builds -- diminishing returns, not a per-dab clamp");
+    check(neverOver && washAmount(0.0f, 5.0f, 0.4f) == 0.4f,
+          "wash: no number of dabs and no rate above one takes an amount past its ceiling");
 
-    // §4's two clauses, which the new rate must not be able to violate: a
-    // texel already thicker than a partial selection allows keeps what it has.
-    PigmentTexel thick;
-    thick.mass = 0.9f;
-    check(depositTexel(thick, kBlue, 0.5f, 0.25f, sat).mass == 0.9f,
-          "saturating: a deposit still never REMOVES paint -- a texel over a partial "
-          "selection's cap keeps its mass rather than being pulled down to it");
+    // Order-independent, because what is left below the ceiling is a product
+    // of (1 - rate) terms. That is what lets a stroke's crossings and its
+    // passes arrive in any order and come out the same.
+    const float abc = washAmount(washAmount(washAmount(0.0f, 0.1f, 0.7f), 0.5f, 0.7f), 0.3f, 0.7f);
+    const float cba = washAmount(washAmount(washAmount(0.0f, 0.3f, 0.7f), 0.5f, 0.7f), 0.1f, 0.7f);
+    check(std::fabs(abc - cba) < 1.0e-6f,
+          "wash: the same dabs in a different order reach the same amount");
   }
 
   // ======================================================================
-  // 3. The stroke ceiling, and what it is a ceiling ON
+  // 2. Build-up is the route's historical rule, whatever else is supplied
   // ======================================================================
-  //
-  // Dabs stamped at one place, which is the worst case a self-crossing stroke
-  // makes: with no ceiling the paper fills, with one the stroke stops at its
-  // own opacity however many dabs it spends.
   {
-    const auto stampRepeatedly = [&](PigmentBuildup buildup, StrokeMassStore* laid, int dabs) {
+    const auto paint = [&](PigmentBuildup buildup, bool withWash, bool withBefore) {
       OpenDocument od = makePigmentDoc(128, 128);
       PigmentTileStore& store = *od.document.layers[1].pigmentTiles;
-      const BrushTip t = tip(12.0f, 0.5f, 0.18f, kBlue);
-      for (int i = 0; i < dabs; ++i)
-        depositDab(store, t, Vec2{64.5f, 64.5f}, 128, 128, nullptr, nullptr, buildup, laid);
-      return worstMass(store);
+      depositDab(store, tip(30.0f, 0.5f, 0.6f, kBlue), Vec2{64.0f, 64.0f}, 128, 128, nullptr,
+                 nullptr);
+      const PigmentTileStore before = store;
+      WashStroke w;
+      if (withBefore) w.before = &before;
+      for (int i = 0; i < 10; ++i)
+        depositDab(store, tip(12.0f, 0.4f, 0.18f, kRed),
+                   Vec2{40.0f + 5.0f * static_cast<float>(i), 60.0f + static_cast<float>(i)},
+                   128, 128, nullptr, nullptr, buildup, withWash ? &w : nullptr);
+      std::vector<PigmentTexel> texels;
+      for (int32_t y = 0; y < 128; ++y)
+        for (int32_t x = 0; x < 128; ++x) texels.push_back(texelAt(store, x, y));
+      return texels;
     };
-
-    PigmentBuildup ceil04;
-    ceil04.strokeCeiling = true;
-    ceil04.opacity = 0.4f;
-    StrokeMassStore laid;
-    const float capped = stampRepeatedly(ceil04, &laid, 20);
-    const float uncapped = stampRepeatedly(PigmentBuildup{}, nullptr, 20);
-    std::printf("  [measured] 20 load-0.18 dabs in one place: worst mass %.4f at opacity 0.4 "
-                "with the ceiling on vs %.4f with it off\n",
-                capped, uncapped);
-    // Mass is stored as binary16, whose ulp at 0.4 is 2^-12 = 2.44e-4, and the
-    // memory accumulates the deltas that storage actually kept -- so the
-    // ceiling holds to within a couple of ulps of the format rather than
-    // exactly. Rounding toward zero at the point of storage would make it
-    // exact and would break §1's bit-for-bit identity when the modes are off,
-    // which is the more valuable of the two guarantees.
-    check(capped <= 0.4f + 1.0e-3f,
-          "stroke ceiling: no number of dabs takes one stroke past its own opacity, which is "
-          "what makes a self-crossing flat instead of darker");
-    check(uncapped > 0.9f,
-          "...and without it the same dabs fill the paper -- the fixture discriminates");
-
-    // The ceiling must be a ceiling on the STROKE, not on the document: a
-    // second stroke starts with an empty memory and layers over the first,
-    // exactly as a second pass in Photoshop does.
-    PigmentBuildup ceil04b = ceil04;
-    StrokeMassStore first;
-    OpenDocument od = makePigmentDoc(128, 128);
-    PigmentTileStore& store = *od.document.layers[1].pigmentTiles;
-    const BrushTip t = tip(12.0f, 0.5f, 0.18f, kBlue);
-    for (int i = 0; i < 20; ++i)
-      depositDab(store, t, Vec2{64.5f, 64.5f}, 128, 128, nullptr, nullptr, ceil04b, &first);
-    const float afterOne = worstMass(store);
-    StrokeMassStore second;  // a new stroke: a new memory
-    for (int i = 0; i < 20; ++i)
-      depositDab(store, t, Vec2{64.5f, 64.5f}, 128, 128, nullptr, nullptr, ceil04b, &second);
-    const float afterTwo = worstMass(store);
-    std::printf("  [measured] a second stroke over the first, both at opacity 0.4: %.4f -> "
-                "%.4f\n",
-                afterOne, afterTwo);
-    check(afterTwo > afterOne + 0.05f,
-          "stroke ceiling: a SECOND stroke layers past it -- the memory belongs to the stroke, "
-          "not to the document, so repeated passes still darken");
-
-    // §1a's documented divergence from the RGB route, which skips a dab
-    // outright once its ceiling is reached: here mass and hue are separate
-    // quantities and only one of them is full, so a texel that can hold no
-    // more paint still takes on the colour of what is laid on it -- exactly
-    // what §1(iii) and §4 already settle for the paper cap and the
-    // selection's.
-    const PigmentTile* beforeTile = store.find(TileCoord{0, 0});
-    const PigmentTexel wasBlue = beforeTile->readTexel(tileLocalOffset(PixelCoord{64, 64}));
-    const BrushTip red = tip(12.0f, 0.5f, 0.18f, kRed);
-    StrokeMassStore third;
-    for (int i = 0; i < 20; ++i)
-      depositDab(store, red, Vec2{64.5f, 64.5f}, 128, 128, nullptr, nullptr, ceil04b, &third);
-    const PigmentTexel nowRed =
-        store.find(TileCoord{0, 0})->readTexel(tileLocalOffset(PixelCoord{64, 64}));
-    float hueMoved = 0.0f;
-    for (size_t i = 0; i < 3; ++i) {
-      hueMoved = std::max(hueMoved, std::fabs(nowRed.latent.c[i] - wasBlue.latent.c[i]));
-      hueMoved = std::max(hueMoved, std::fabs(nowRed.latent.res[i] - wasBlue.latent.res[i]));
-    }
-    std::printf("  [measured] red laid over a texel already at its ceiling: mass %.4f -> %.4f, "
-                "worst latent channel moved %.4f\n",
-                wasBlue.mass, nowRed.mass, hueMoved);
-    check(hueMoved > 0.01f,
-          "stroke ceiling: hue keeps moving once the ceiling is reached, as it does at the "
-          "paper cap -- a texel that can hold no more paint still takes the colour");
+    const auto same = [](const std::vector<PigmentTexel>& a, const std::vector<PigmentTexel>& b) {
+      for (size_t i = 0; i < a.size(); ++i)
+        if (a[i].mass != b[i].mass || a[i].latent.c != b[i].latent.c ||
+            a[i].latent.res != b[i].latent.res)
+          return false;
+      return true;
+    };
+    const auto plain = paint(PigmentBuildup{}, false, false);
+    check(same(plain, paint(PigmentBuildup{}, true, true)),
+          "build-up: handing the deposit a wash buffer and a snapshot changes nothing, bit "
+          "for bit -- the mode, not the arguments, decides");
+    check(same(plain, paint(wash, true, false)),
+          "wash with no snapshot falls back to build-up bit for bit, rather than washing "
+          "against the live layer");
+    check(!same(plain, paint(wash, true, true)),
+          "...and wash with one really is a different rule -- the fixture discriminates");
   }
 
   // ======================================================================
-  // 4. At opacity 1 the ceiling is a no-op, and the session clears its memory
-  // ======================================================================
-  {
-    const auto strokeThrough = [&](PigmentBuildup buildup, int passes, float opacity) {
-      OpenDocument od = makePigmentDoc(256, 128);
-      BrushState brush;
-      brush.model.tip.diameterPx = 24.0f;
-      brush.native.load = 0.18f;
-      brush.opacity = opacity;
-      MixboxLut noLut;
-      const BrushTip t = brushTipFor(brush, noLut, 1.0f);
-      std::string error;
-      // ONE session for every pass, which is how the application holds it --
-      // a session per pass would get a fresh accumulator from the member's own
-      // constructor and could not tell whether `beginRoutes()` resets it.
-      StrokeSession session;
-      for (int p = 0; p < passes; ++p) {
-        session.begin(od, 1, t, Tool::Brush, &error, /*model=*/nullptr, DynamicInputs{},
-                      /*clone=*/nullptr, StabiliserParams{}, 1.0f, &brush.native, buildup);
-        for (int i = 0; i <= 12; ++i) session.addPoint(40.0f + static_cast<float>(i) * 8.0f, 64.0f);
-        session.end();
-      }
-      return worstMass(*od.document.layers[1].pigmentTiles);
-    };
-
-    PigmentBuildup ceilingOn;
-    ceilingOn.strokeCeiling = true;
-    const float onAtFull = strokeThrough(ceilingOn, 1, 1.0f);
-    const float offAtFull = strokeThrough(PigmentBuildup{}, 1, 1.0f);
-    std::printf("  [measured] one stroke at opacity 1: worst mass %.6f with the ceiling on vs "
-                "%.6f with it off\n",
-                onAtFull, offAtFull);
-    check(onAtFull == offAtFull,
-          "the ceiling is exactly a no-op at opacity 1 -- the paper cap already enforces it, "
-          "so turning the mode on cannot change a stroke at the default");
-
-    // The session drops the memory per stroke (`beginRoutes()`); without that,
-    // pass two would find pass one's ceiling already spent. Measured at
-    // opacity 0.4 and NOT at 1, because at 1 the ceiling is the no-op just
-    // asserted above -- a reset test there cannot fail whether the reset
-    // happens or not.
-    const float onePass = strokeThrough(ceilingOn, 1, 0.4f);
-    const float twoPasses = strokeThrough(ceilingOn, 2, 0.4f);
-    std::printf("  [measured] one pass vs two, ceiling on at opacity 0.4: %.6f -> %.6f\n",
-                onePass, twoPasses);
-    check(onePass <= 0.4f + 1.0e-3f && twoPasses > onePass + 0.1f,
-          "the session clears the stroke's mass memory at pen-down -- one pass stops at the "
-          "opacity, and a second pass is not capped by what the first one spent");
-  }
-
-  // ======================================================================
-  // 5. A stroke that crosses itself, through the session and the chrome's gate
+  // 3. Wash meets the paint already there ONCE
   // ======================================================================
   //
-  // The user's own case end to end: one X-shaped stroke of a soft brush at load
-  // 0.18, read at the crossing. Then the predicate the Opacity slider greys
-  // itself out by -- it once left the slider disabled on the Pigment deposit
-  // over a ceiling that worked, so turning the switch on changed nothing a
-  // painter could reach.
+  // Forty red dabs in one place over a blue texel. Build-up mixes every dab
+  // into what the last one left, so the blue is driven out however low the
+  // opacity; Wash lays one glaze of its amount on the blue as it was.
   {
-    const auto crossingOf = [&](PigmentBuildup buildup, float opacity) {
-      OpenDocument od = makePigmentDoc(256, 256);
+    const auto stack = [&](PigmentBuildup buildup, float opacity) {
+      OpenDocument od = makePigmentDoc(128, 128);
+      PigmentTileStore& store = *od.document.layers[1].pigmentTiles;
+      depositDab(store, tip(30.0f, 1.0f, 0.5f, kBlue), Vec2{64.0f, 64.0f}, 128, 128, nullptr,
+                 nullptr);
+      const PigmentTileStore before = store;
+      WashStroke w;
+      w.before = &before;
+      buildup.opacity = opacity;
+      for (int i = 0; i < 40; ++i)
+        depositDab(store, tip(12.0f, 1.0f, 0.18f, kRed), Vec2{64.0f, 64.0f}, 128, 128, nullptr,
+                   nullptr, buildup, &w);
+      return std::make_pair(texelAt(before, 64, 64), texelAt(store, 64, 64));
+    };
+    const auto [blue, washed] = stack(wash, 0.3f);
+    const auto [blue2, builtUp] = stack(PigmentBuildup{}, 0.3f);
+    (void)blue2;
+    float amount = 0.0f;
+    for (int i = 0; i < 40; ++i) amount = washAmount(amount, 0.18f, 0.3f);
+    const PigmentTexel once = depositTexel(blue, kRed, amount, 1.0f);
+    float offOnce = std::fabs(washed.mass - once.mass);
+    for (size_t i = 0; i < 3; ++i) offOnce = std::max(offOnce, std::fabs(washed.latent.c[i] - once.latent.c[i]));
+    std::printf("  [measured] 40 red dabs over blue (mass %.3f): blue channel %.4f washed at "
+                "opacity 0.3 vs %.4f built up; mass %.4f vs %.4f\n",
+                blue.mass, washed.latent.c[2], builtUp.latent.c[2], washed.mass, builtUp.mass);
+    check(offOnce < kF16Slack,
+          "wash: the layer texel is one deposit of the stroke's amount onto the texel as it "
+          "was at pen-down -- not forty");
+    check(washed.latent.c[2] > builtUp.latent.c[2] + 0.2f,
+          "wash: a low-opacity glaze leaves the colour underneath showing, where build-up "
+          "drives it out");
+    check(washed.mass >= blue.mass && washed.mass <= blue.mass + 0.3f + kF16Slack,
+          "wash: it glazes on top of the paint there -- never removing any, never adding more "
+          "than its opacity");
+  }
+
+  // ======================================================================
+  // 4. Through the session: a self-crossing stroke, a second pass, the taper
+  // ======================================================================
+  {
+    struct Stroke {
+      PigmentBuildup buildup;
+      float opacity = 1.0f;
+      bool exitTaper = false;
+    };
+    const auto brushFor = [](float opacity, float hardness, float diameter) {
       BrushState brush;
-      brush.model.tip.diameterPx = 40.0f;
-      brush.model.tip.hardness = 0.3f;
+      brush.model.tip.diameterPx = diameter;
+      brush.model.tip.hardness = hardness;
       brush.native.load = 0.18f;
       brush.opacity = opacity;
+      return brush;
+    };
+    // The user's case: one X-shaped stroke of a soft brush, read at the
+    // crossing and at a point one pass covers.
+    const auto xStroke = [&](PigmentBuildup buildup, float opacity) {
+      OpenDocument od = makePigmentDoc(256, 256);
+      BrushState brush = brushFor(opacity, 0.3f, 40.0f);
       MixboxLut noLut;
-      const BrushTip t = brushTipFor(brush, noLut, 1.0f);
       std::string error;
       StrokeSession session;
-      session.begin(od, 1, t, Tool::Brush, &error, /*model=*/nullptr, DynamicInputs{},
-                    /*clone=*/nullptr, StabiliserParams{}, 1.0f, &brush.native, buildup);
+      session.begin(od, 1, brushTipFor(brush, noLut, 1.0f), Tool::Brush, &error,
+                    /*model=*/nullptr, DynamicInputs{}, /*clone=*/nullptr, StabiliserParams{},
+                    1.0f, &brush.native, buildup);
       const float pts[4][2] = {{40, 40}, {216, 216}, {216, 40}, {40, 216}};
       for (int s = 0; s < 3; ++s)
         for (int i = 0; i < 44; ++i) {
@@ -312,35 +225,74 @@ bool runPigmentBuildupTest() {
         }
       session.addPoint(40.0f, 216.0f);
       session.end();
-      const PigmentTile* tile = od.document.layers[1].pigmentTiles->find(TileCoord{1, 1});
-      return tile != nullptr ? tile->readTexel(tileLocalOffset(PixelCoord{128, 128})).mass
-                             : 0.0f;
+      const PigmentTileStore& store = *od.document.layers[1].pigmentTiles;
+      return std::make_pair(texelAt(store, 216, 128).mass, texelAt(store, 128, 128).mass);
     };
-    PigmentBuildup sat;
-    sat.saturating = true;
-    PigmentBuildup cap;
-    cap.strokeCeiling = true;
-    const float linear = crossingOf(PigmentBuildup{}, 1.0f);
-    const float saturating = crossingOf(sat, 1.0f);
-    const float capped = crossingOf(cap, 0.5f);
-    std::printf("  [measured] an X stroke's crossing: mass %.4f linear, %.4f saturating, "
-                "%.4f with the ceiling at opacity 0.5\n",
-                linear, saturating, capped);
-    check(linear > 0.9f && saturating < linear - 0.2f,
-          "a self-crossing stroke: diminishing overlaps lightens the crossing a painter "
-          "actually draws, not only a stack of dabs at one point");
-    check(capped <= 0.5f + 1.0e-3f,
-          "a self-crossing stroke: with the ceiling on, the crossing stops at the opacity");
+    const auto [builtSingle, builtCross] = xStroke(PigmentBuildup{}, 1.0f);
+    const auto [washSingle, washCross] = xStroke(wash, 0.5f);
+    std::printf("  [measured] X stroke, single pass / crossing: build-up %.4f / %.4f, wash at "
+                "opacity 0.5 %.4f / %.4f\n",
+                builtSingle, builtCross, washSingle, washCross);
+    check(builtCross > 0.9f && washCross <= 0.5f + kF16Slack,
+          "a self-crossing stroke: build-up fills the paper at the crossing, wash stays under "
+          "the stroke's opacity");
+    check(washSingle > 0.0f && washSingle < washCross,
+          "...and wash still eases up where the stroke crosses itself rather than flattening "
+          "one pass and the crossing into the same plateau");
 
-    OpenDocument od = makePigmentDoc(16, 16);
+    // ONE session for both passes, as the application holds it. Cleared per
+    // stroke, the second pass lays the same amount again on top of the first
+    // (mass doubles); a buffer carried over would start pass two part way to
+    // its ceiling and land noticeably more.
+    const auto passes = [&](int count) {
+      OpenDocument od = makePigmentDoc(256, 128);
+      BrushState brush = brushFor(0.4f, 1.0f, 24.0f);
+      MixboxLut noLut;
+      std::string error;
+      StrokeSession session;
+      for (int p = 0; p < count; ++p) {
+        session.begin(od, 1, brushTipFor(brush, noLut, 1.0f), Tool::Brush, &error,
+                      /*model=*/nullptr, DynamicInputs{}, /*clone=*/nullptr, StabiliserParams{},
+                      1.0f, &brush.native, wash);
+        for (int i = 0; i <= 12; ++i)
+          session.addPoint(40.0f + static_cast<float>(i) * 8.0f, 64.0f);
+        session.end();
+      }
+      return texelAt(*od.document.layers[1].pigmentTiles, 100, 64).mass;
+    };
+    const float one = passes(1);
+    const float two = passes(2);
+    std::printf("  [measured] wash at opacity 0.4, one pass vs two: %.5f -> %.5f\n", one, two);
+    check(one > 0.05f && std::fabs(two - 2.0f * one) < 0.01f,
+          "wash: a second stroke glazes the same amount again on top of the first -- the "
+          "session starts each stroke with an empty buffer");
+
+    // The exit taper's repaint puts the stroke's tiles back and replays it,
+    // which for Wash means washing against the same pen-down picture again.
+    OpenDocument od = makePigmentDoc(256, 128);
+    BrushState brush = brushFor(0.4f, 1.0f, 24.0f);
+    brush.native.taperOut.on = true;
+    brush.native.taperOut.lengthPx = 40.0f;
+    MixboxLut noLut;
+    std::string error;
+    StrokeSession session;
+    session.begin(od, 1, brushTipFor(brush, noLut, 1.0f), Tool::Brush, &error, nullptr,
+                  DynamicInputs{}, nullptr, StabiliserParams{}, 1.0f, &brush.native, wash);
+    for (int i = 0; i <= 12; ++i) session.addPoint(40.0f + static_cast<float>(i) * 8.0f, 64.0f);
+    session.end();
+    const float taperedWorst = worstMass(*od.document.layers[1].pigmentTiles);
+    std::printf("  [measured] wash with an exit taper, after the repaint: worst mass %.5f\n",
+                taperedWorst);
+    check(taperedWorst > 0.1f && taperedWorst <= 0.4f + kF16Slack,
+          "wash: the exit taper's repaint lays the stroke again under the same ceiling");
+
+    // What the Opacity slider greys itself out by.
     const StrokeRoute pigment = strokeRouteFor(Tool::Brush, &od.document.layers[1]);
     check(pigment == StrokeRoute::CpuDeposit &&
-              !opacityReachesRoute(pigment, PigmentBuildup{}) &&
-              opacityReachesRoute(pigment, cap),
-          "the Opacity slider is live on a Pigment layer exactly while the stroke ceiling is "
-          "on -- the switch is not left pointing at a greyed-out control");
+              !opacityReachesRoute(pigment, PigmentBuildup{}) && opacityReachesRoute(pigment, wash),
+          "the Opacity slider is live on a Pigment layer exactly in Wash");
     check(opacityReachesRoute(StrokeRoute::RgbDeposit, PigmentBuildup{}) &&
-              !opacityReachesRoute(StrokeRoute::Smudge, cap),
+              !opacityReachesRoute(StrokeRoute::Smudge, wash),
           "...and the other routes answer as the slider always did, whatever BUILDUP says");
   }
 

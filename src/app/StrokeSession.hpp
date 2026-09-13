@@ -1040,9 +1040,9 @@ inline bool grainReachesRoute(StrokeRoute route) noexcept {
 
 // Whether a stroke on `route` reads OPACITY (`BrushState::opacity`) -- what
 // the Brush Settings slider greys itself out by. The Pigment deposit is the one
-// route whose answer is a SETTING rather than a fact: its only per-stroke
-// accumulator is BUILDUP's stroke ceiling (brush/Deposit.hpp §1a), so with that
-// off there is no ceiling for the slider to move. Answered here because the
+// route whose answer is a SETTING rather than a fact: only a Wash stroke has a
+// ceiling (brush/Deposit.hpp §1a), so in Build-up there is nothing for the
+// slider to move. Answered here because the
 // slider's own copy of this list is what left the slider greyed out over a
 // ceiling that worked.
 inline bool opacityReachesRoute(StrokeRoute route, const PigmentBuildup& buildup) noexcept {
@@ -1055,7 +1055,7 @@ inline bool opacityReachesRoute(StrokeRoute route, const PigmentBuildup& buildup
     case StrokeRoute::Heal:
       return true;
     case StrokeRoute::CpuDeposit:
-      return buildup.strokeCeiling;
+      return buildup.mode == PigmentBuildupMode::Wash;
     default:
       return false;
   }
@@ -2035,6 +2035,10 @@ class StrokeSession {
   // the exit taper's repaint -- that function's own comment says why a
   // repaint may not inherit an accumulator.
   void beginRoutes(Layer& layer);
+  // The Pigment deposit's Wash state for this dab, or null for Build-up -- and
+  // null when there is no snapshot to wash against, which falls back to
+  // Build-up rather than washing against the live layer.
+  WashStroke* washFor() noexcept;
   // True when this stroke will be repainted at `end()`: an exit taper with a
   // length, on a route whose store the repaint can put back (`preStroke_`).
   bool exitTaperRepaintPending() const noexcept;
@@ -2209,11 +2213,14 @@ class StrokeSession {
   // clone/heal source offset (the only thing those two read from the
   // `AppState::CloneSourceState` this class deliberately does not keep).
   float resolvedOpacity_ = 1.0f;
-  // brush/Deposit.hpp §1a: the two buildup rules, latched at pen-down, and the
-  // per-texel memory the stroke ceiling needs. A sibling of `rgb_`'s own
-  // accumulator, cleared in `beginRoutes()` for that one's reason.
+  // brush/Deposit.hpp §1a: the buildup mode, latched at pen-down, and a Wash
+  // stroke's buffer -- a sibling of `rgb_`'s accumulator, cleared in
+  // `beginRoutes()` for that one's reason. Its `before` is pointed into
+  // `preStroke_` by `washFor()`, or at `washNothingBefore_` when the layer had
+  // no pigment store at pen-down.
   PigmentBuildup pigmentBuildup_;
-  StrokeMassStore pigmentLaid_;
+  WashStroke wash_;
+  PigmentTileStore washNothingBefore_;
   Vec2 cloneOffset_{};
   // --- the exit taper's repaint ------------------------------------------
   //
@@ -2233,7 +2240,8 @@ class StrokeSession {
   // The document as it was at pen-down, sharing every tile rather than
   // copying it (`TileStoreOf`'s copy constructor, and `shareTileFrom()` for
   // the restore). Engaged only when a repaint is pending, so a stroke with no
-  // exit taper holds nothing and pays nothing.
+  // exit taper holds nothing and pays nothing. A Wash stroke engages it too:
+  // every dab is computed against the texel as it was here.
   std::optional<Document> preStroke_;
   // Set only for the duration of the repaint's own `depositPending()` call:
   // what tells it to resolve the exit ramp and NOT to record the dabs it is

@@ -29,10 +29,7 @@ StrokeRoute activeRoute(AppState& st) {
 // switches that read "Saturate" over a stroke they cannot reach look broken.
 std::string compactLabel(const PigmentBuildup& b, StrokeRoute route) {
   if (route != StrokeRoute::CpuDeposit) return "Off here";
-  if (b.saturating && b.strokeCeiling) return "Sat + cap";
-  if (b.saturating) return "Saturate";
-  if (b.strokeCeiling) return "Stroke cap";
-  return "Linear";
+  return b.mode == PigmentBuildupMode::Wash ? "Wash" : "Build-up";
 }
 
 }  // namespace
@@ -44,37 +41,38 @@ void drawBuildupControls(AppState& st) {
   const StrokeRoute route = activeRoute(st);
   const bool reaches = route == StrokeRoute::CpuDeposit;
 
-  ImGui::TextDisabled("Where a stroke crosses itself");
+  ImGui::TextDisabled("How a stroke builds where it overlaps");
   ImGui::Spacing();
   if (route == StrokeRoute::RgbDeposit) {
     ImGui::TextUnformatted("This layer is RGB, where strokes already\n"
                            "diminish on overlap and stop at Opacity.\n"
-                           "These switches are for Pigment layers.");
+                           "Build-up and Wash are for Pigment layers.");
     ImGui::Spacing();
   } else if (!reaches) {
-    ImGui::Text("No effect on this stroke (%s).\nThese switches are for Pigment layers.",
+    ImGui::Text("No effect on this stroke (%s).\nBuild-up and Wash are for Pigment layers.",
                 strokeRouteName(route));
     ImGui::Spacing();
   }
   ImGui::BeginDisabled(!reaches);
 
-  if (ImGui::Checkbox("Diminishing overlaps", &b.saturating)) save(st);
-  ImGui::SetItemTooltip(
-      "Each overlap adds a share of what is still empty, so paint approaches the paper's "
-      "capacity instead of reaching it in a fixed number of passes. The first touch of a "
-      "stroke is unchanged.");
-
-  if (ImGui::Checkbox("Limit one stroke to its Opacity", &b.strokeCeiling)) save(st);
-  ImGui::SetItemTooltip(
-      "One stroke lays at most its Opacity of paint at any one place, however often it "
-      "crosses itself. A second stroke still layers over the first.");
-  if (b.strokeCeiling) {
-    // Here as well as in Brush Settings, because the switch is useless without
-    // it and the options bar has no room for a field of its own.
+  const bool wash = b.mode == PigmentBuildupMode::Wash;
+  if (ImGui::RadioButton("Build-up", !wash)) {
+    b.mode = PigmentBuildupMode::BuildUp;
+    save(st);
+  }
+  ImGui::SetItemTooltip("Every dab adds paint, so a stroke darkens wherever it overlaps, "
+                        "itself included.");
+  if (ImGui::RadioButton("Wash", wash)) {
+    b.mode = PigmentBuildupMode::Wash;
+    save(st);
+  }
+  ImGui::SetItemTooltip("A stroke eases toward its Opacity instead of piling up, and meets the "
+                        "paint already on the layer once, as a single glaze.");
+  if (wash) {
+    // Here as well as in Brush Settings: Wash is where Opacity matters on this
+    // route, and the options bar has no room for a field of its own.
     ImGui::SetNextItemWidth(180.0f);
     ImGui::SliderFloat("Opacity", &st.brush.opacity, 0.0f, 1.0f, "%.2f");
-    if (st.brush.opacity >= 1.0f)
-      ImGui::TextDisabled("At 100%% this changes nothing.");
   }
   ImGui::EndDisabled();
 }
