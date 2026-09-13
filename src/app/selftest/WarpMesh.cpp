@@ -511,6 +511,16 @@ bool runWarpMeshTest() {
           "an identity net returns its source bit-identical");
   }
 
+  // --- 15. With several controls in range, the nearest one wins --------------
+  {
+    // Controls 10 px apart; a 15 px radius around a cursor 1 px from (0, 0)
+    // also reaches (0, 1), (1, 0) and (1, 1), which a row-major scan meets later.
+    const WarpMesh m = WarpMesh::flat(DocumentRegion{0, 0, 90u, 90u}, 3);
+    const Point2 nearCorner{m.at(0, 0).x + 1.0f, m.at(0, 0).y + 1.0f};
+    check(hitTestWarpControl(m, nearCorner, 15.0f) == (WarpControlRef{true, 0, 0}),
+          "several controls in range: the hit test picks the nearest, not the last scanned");
+  }
+
   std::printf("[selftest] warp mesh %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }
