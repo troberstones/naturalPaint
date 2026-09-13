@@ -362,7 +362,7 @@ void runUiLayerDemo(np::OpenDocument& od, bool clip) {
     const size_t i = np::layerIndexForPanelRow(row, count);
     std::printf("[ui-layer-demo]   %s %-24s %s\n", np::layerKindGlyph(od.document.layers[i].kind),
                 np::layerRowTitle(od.document.layers[i], i).c_str(),
-                np::layerRowSubLine(od.document.layers[i]).c_str());
+                np::layerRowSubLine(od.document, i).c_str());
   }
 }
 
@@ -1104,7 +1104,7 @@ void runUiMergeDemo(np::OpenDocument& od, std::string_view list) {
     const size_t i = np::layerIndexForPanelRow(row, count);
     std::printf("[ui-merge-demo]   %s %-24s %s\n", np::layerKindGlyph(od.document.layers[i].kind),
                 np::layerRowTitle(od.document.layers[i], i).c_str(),
-                np::layerRowSubLine(od.document.layers[i]).c_str());
+                np::layerRowSubLine(od.document, i).c_str());
   }
 }
 
@@ -1302,7 +1302,7 @@ void runCompsDemo(np::OpenDocument& od, size_t restoreIndex, bool dropALayer) {
   for (size_t i = 0; i < doc.layers.size(); ++i)
     std::printf("[comps-demo]   layer %zu %-24s %s\n", i,
                 np::layerRowTitle(doc.layers[i], i).c_str(),
-                np::layerRowSubLine(doc.layers[i]).c_str());
+                np::layerRowSubLine(doc, i).c_str());
 }
 
 // --split-demo [rows] (PLAN.md Phase 5 step 14): **open two documents and turn

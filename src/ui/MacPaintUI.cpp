@@ -3554,7 +3554,7 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
       // exist for that function.
       {
         pushAtelierMono();
-        const std::string sub = layerRowSubLine(layer);
+        const std::string sub = layerRowSubLine(doc, i);
         drawClippedText(dl, ImVec2(textX, o.y + kLayerRowPadY + lineH + kLayerLineGap), textW,
                         inSelection ? atelierToken(kLayerSelMeta) : mutedCol, sub.c_str());
         popAtelierMono();
