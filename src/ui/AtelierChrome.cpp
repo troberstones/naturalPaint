@@ -1035,17 +1035,11 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
   ImGui::SameLine(0.0f, 8.0f);
   ImGui::TextUnformatted(toolName(st.brush.tool));
 
-  // --- Warp's grid-size choice and the Free Transform <-> Warp toggle
-  //     (PRD D23) -------------------------------------------------------
+  // --- Warp's grid-size choice and the Free Transform <-> Warp toggle ------
   //
-  // Placed first, ahead of every tool-specific block below: the palette is
-  // pinned to `Tool::Move` for a session's whole duration
-  // (`app/ToolSwitch.hpp` section 5), which has no options of its own, so
-  // warping is the one thing "the active tool" can mean here while a
-  // transform is live. Drawn for BOTH modes, not only while already
-  // warping, so the grid-size choice is visible and settable before the
-  // user ever switches into Warp -- `setWarpMode()` reads `st.warpGridN`
-  // the moment it does.
+  // The palette is pinned to `Tool::Move` while a transform is live, which
+  // has no options of its own -- drawn for both modes so the grid choice is
+  // settable before the user switches into Warp.
   if (st.transform.active()) {
     bandSeparator();
     capsLabel("GRID");
@@ -1063,11 +1057,7 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
                               ImGui::ColorConvertU32ToFloat4(atelierToken(kAccent)));
       if (ImGui::SmallButton(label)) {
         st.warpGridN = n;
-        // Re-fits a live warp net in place (exact for one nobody has bent
-        // yet, `app/WarpMesh::refit()`'s own header); a no-op while still
-        // in Affine mode -- the choice just takes effect the next time the
-        // user switches into Warp.
-        if (warping) st.transform.setWarpMode(true, n);
+        if (warping) st.transform.setWarpMode(true, n);  // re-fits the live net in place
       }
       if (selected) ImGui::PopStyleColor();
       ImGui::SetItemTooltip("%dx%d control cells for the next Warp -- PRD D23's own choice, "
@@ -1077,9 +1067,7 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     popAtelierMono();
 
     bandSeparator();
-    // The identical request `Edit > Warp` raises -- one code path, not a
-    // second way to flip the same bit (`AppState::requestWarp`'s own
-    // comment for why this is a request rather than a direct call here).
+    // Same request `Edit > Warp` raises -- one code path, not a second bit.
     if (ImGui::SmallButton(warping ? "Free Transform" : "Warp")) st.requestWarp = true;
     ImGui::SetItemTooltip(warping
                              ? "Back to the affine box (the bent net is discarded, not "

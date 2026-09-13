@@ -440,6 +440,45 @@ void TransformSession::warpUpdateDrag(Point2 curCursor) noexcept {
 
 void TransformSession::warpEndDrag() noexcept { warpDrag_.active = false; }
 
+// Mirrors commit()'s own Warp branch below, read-only: same refusals, same
+// warpRgbTiles()/cutThroughSelection()/compositeStoreOverRegion() sequence,
+// but writing into `*out` (a copy) instead of `od.document`.
+bool TransformSession::previewWarpDocument(const OpenDocument& od, ResampleKernel kernel,
+                                           Document* out) const {
+  if (out == nullptr || !active_ || mode_ != TransformMode::Warp) return false;
+  if (target_ == TransformTarget::LayerSet || duplicate_) return false;
+  if (layerIndex_ >= od.document.layers.size() ||
+      od.document.layers[layerIndex_].id != layerId_)
+    return false;
+  const Layer& layer = od.document.layers[layerIndex_];
+  if (layer.locked || layer.kind == LayerKind::Pigment || !layer.rgbTiles.has_value())
+    return false;
+  if (target_ == TransformTarget::Layer && layer.mask.has_value()) return false;
+
+  const DocumentRegion dstRegion = warpedRegion(warp_, warpChordSubdivisions(warp_));
+  if (dstRegion.empty()) return false;
+
+  std::string err;
+  if (target_ == TransformTarget::Layer) {
+    TileStore newRgb;
+    if (!warpRgbTiles(*layer.rgbTiles, warp_, dstRegion, kernel, &newRgb, &err)) return false;
+    *out = od.document;
+    *out->layers[layerIndex_].rgbTiles = std::move(newRgb);
+    return true;
+  }
+
+  // SelectionPixels: cut a copy of the layer, never the real one.
+  Layer cutCopy = layer;
+  Clipboard clip = cutThroughSelection(cutCopy, &selectionSnapshot_);
+  if (clip.empty() || !clip.rgbTiles.has_value()) return false;
+  TileStore moved;
+  if (!warpRgbTiles(*clip.rgbTiles, warp_, dstRegion, kernel, &moved, &err)) return false;
+  compositeStoreOverRegion(moved, dstRegion, &*cutCopy.rgbTiles);
+  *out = od.document;
+  out->layers[layerIndex_].rgbTiles = std::move(cutCopy.rgbTiles);
+  return true;
+}
+
 void TransformSession::cancel() noexcept { *this = TransformSession{}; }
 
 TransformBeginResult TransformSession::beginLayer(OpenDocument& od, size_t layerIndex,
@@ -715,7 +754,7 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
       out.error = "warp commit refused: " + layerLabel(od.document, layerIndex_) +
                   " -- warping a Pigment layer needs the identical mass-weighted, lobe-free-"
                   "kernel bridge ops/DocumentTransform.hpp already built for the AFFINE path, run "
-                  "through a non-linear map instead of a Mat3 (app/WarpMesh.hpp section 6); that "
+                  "through a non-linear map instead of a Mat3 (app/WarpMesh.hpp); that "
                   "is real, separate machinery this track's time did not extend to. A layer with "
                   "no RGB pixels (Text, Group, Adjustment, Strokes, Flats, Media) has nothing for "
                   "a warp to resample either.";
@@ -774,10 +813,26 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
       return out;
     }
     compositeStoreOverRegion(moved, dstRegion, &*layer.rgbTiles);
-    // Section 9: the selection's own coverage is NOT moved here -- named,
-    // not silent. `od.selection` keeps its pre-warp shape.
+
+    // The selection moves with the pixels, same net and regions -- the warp
+    // sibling of the affine path's `transformSelectionCoverage()` call above.
+    const std::optional<Selection> beforeSelection = od.selection;
+    Selection movedSelection;
+    std::string selErr;
+    const bool selectionMoved = warpSelectionCoverage(
+        selectionSnapshot_, sourceBounds_, warp_, dstRegion, params.pixels.kernel,
+        &movedSelection, &selErr);
+    if (selectionMoved) od.selection = movedSelection;
+
     const std::string label = "warp selection";
     od.recordEdit(label, EditKind::Structural);
+    // `od.selection` is outside `core::History` (app/DocumentLifecycle.hpp);
+    // this is what lets ordinary Undo/Redo put it back too, keyed by the
+    // entry this recordEdit() just pushed.
+    if (selectionMoved) {
+      od.warpSelectionUndo.push_back({od.history.entries()[od.history.cursor()].serial,
+                                      beforeSelection, od.selection});
+    }
     active_ = false;
     out.ok = true;
     out.editLabel = label;

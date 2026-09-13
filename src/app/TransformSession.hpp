@@ -383,52 +383,26 @@ namespace np {
 //     geometry (a pure function of `sourceBounds()`/`pending()`) is exact
 //     either way -- what is missing is only the live paint inside it.
 // ==========================================================================
-// ==========================================================================
 // (9) WARP: A SECOND SHAPE FOR THE SAME SESSION (PRD D23, track `warp`)
 // ==========================================================================
 //
-// `TransformMode::Warp` is a Free Transform ⇄ Warp TOGGLE on the SAME live
-// session, not a second session type: `beginLayer()`/`beginSelectionPixels()`
-// are unchanged, and everything section 1-8 says about `sourceBounds_`,
-// `documentId_`, `layerIndex_`/`layerId_` and cancel needing no restore step
-// applies to a warp exactly as it does to an affine drag.
+// A Free Transform <-> Warp TOGGLE on the same live session, not a second
+// session type -- `beginLayer()`/`beginSelectionPixels()` are unchanged.
+// `setWarpMode(true, gridN)` bakes the current affine `pending()` into a
+// flat `WarpMesh` (so mid-drag switching keeps the work); switching back
+// discards the net and restores `pending_` as it stood, rather than
+// approximating the bend as one matrix. A grid-size change while already
+// warping goes through `WarpMesh::refit()`.
 //
-// **`setWarpMode(true, gridN)` bakes the CURRENT affine `pending()` into the
-// warp's starting net.** `app/WarpMesh::flat(sourceBounds_, gridN)` is an
-// evenly-spaced net that reproduces `sourceBounds_` exactly (its own header
-// section 2); mapping every one of its control points through `pending_`
-// bakes in whatever rotate/scale/translate the user had already dragged, so
-// switching to Warp mid-drag does not throw away work -- PRD D23's own
-// "switching keeps the session" requirement. Switching back
-// (`setWarpMode(false)`) discards the net and returns to `pending_` as it
-// stood at the LAST affine drag (not recomputed from the warp shape, which
-// is generally not affine at all and has no single matrix to recover it
-// from) -- a decision this file makes rather than the brief, named here: a
-// user who bends the net and then flips back to Free Transform gets the
-// pre-warp box back, not an attempt to approximate the bend as one matrix.
-//
-// **`setWarpMode(true, differentGridN)` while already warping** re-fits the
-// net via `WarpMesh::refit()` -- exact if the net is still affine (nobody
-// has dragged a control point since the bake), an approximation otherwise,
-// exactly as that function's own header documents.
-//
-// **Commit, targets, and what is refused.** `TransformTarget::LayerSet` is
-// refused BY NAME in `Warp` mode: `app/WarpMesh.hpp` section 6 already
-// states why (no per-member live-preview story exists for a set, the
-// identical gap section 8 above states for the affine case, generalised).
-// `TransformTarget::Layer` warps `rgbTiles` only -- a Pigment layer or one
-// carrying a mask is refused by name, `app/WarpMesh.hpp` section 6's own
-// "what is not here": both need the identical dual-image / hide-space
-// bridge `ops/DocumentTransform.hpp` already built for the AFFINE path, run
-// through a non-linear map instead of a `Mat3`, which is real, separate
-// machinery this track's time did not extend to. `TransformTarget::
-// SelectionPixels` warps the covered pixels exactly as the affine path does
-// (`cutThroughSelection()`/`copyThroughSelection()`, `warpRgbTiles()`, a
-// straight premultiplied `over` splice back) but -- named, not silent --
-// does **not** move the selection's own coverage: `ops::
-// transformSelectionCoverage()` has no warp equivalent here (`app/WarpMesh.hpp`
-// section 6), so `od.selection` keeps its pre-warp shape after a
-// `SelectionPixels` warp commits.
+// `LayerSet` is refused in Warp mode (no per-member preview story, same gap
+// as the affine case in section 8). `Layer` warps `rgbTiles` only -- Pigment
+// and masked layers refused by name (app/WarpMesh.hpp: needs the affine
+// path's dual-image/hide-space bridge re-run through a non-linear map,
+// unbuilt). `SelectionPixels` warps the covered pixels the same way the
+// affine path does, and moves `od.selection` too via `warpSelectionCoverage()`
+// -- keyed for Undo/Redo through `OpenDocument::warpSelectionUndo`
+// (app/DocumentLifecycle.hpp), since `core::History` itself excludes
+// `selection`.
 enum class TransformMode { Affine, Warp };
 
 enum class TransformTarget { Layer, SelectionPixels, LayerSet };
@@ -630,6 +604,13 @@ class TransformSession {
   void warpBeginDrag(WarpControlRef ref, Point2 startCursor) noexcept;
   void warpUpdateDrag(Point2 curCursor) noexcept;
   void warpEndDrag() noexcept;
+
+  // `*out` = `od.document` with the warp target's pixels already replaced by
+  // what `commit()` would write -- no mutation, no history entry. The live
+  // preview composites this instead of the real document. False for any of
+  // `commit()`'s own refusals; the caller then falls back to the unwarped
+  // document.
+  bool previewWarpDocument(const OpenDocument& od, ResampleKernel kernel, Document* out) const;
 
   // Begins a transform of `doc.layers[layerIndex]`'s own pixels (and, at
   // commit, its mask). Refuses a locked layer or an out-of-range index by

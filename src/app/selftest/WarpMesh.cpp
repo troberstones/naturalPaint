@@ -359,6 +359,109 @@ bool runWarpMeshTest() {
     check(exact, "refit() of an affine net reproduces the same shape at every sampled fraction");
   }
 
+  // --- 11. Selection follows the warp, with a matching undo record ----------
+  {
+    OpenDocument od = makeBlankOpenDocument(64, 64, WorkingSpace{});
+    od.document.layers[0].rgbTiles->getOrCreate(tileCoordAt(PixelCoord{10, 10}))
+        .writePixel(tileLocalOffset(PixelCoord{10, 10}), {0.4f, 0.4f, 0.4f, 1.0f});
+    od.recordEdit("fixture", EditKind::Content);
+    // As `ui/MacPaintUI.cpp`'s own call sites do: `od.selection` engaged
+    // BEFORE the session begins, and that same object passed in.
+    od.selection = selectRectangle(8.0f, 8.0f, 24.0f, 24.0f);
+
+    TransformSession session;
+    const TransformBeginResult began = session.beginSelectionPixels(od, *od.selection, 0);
+    check(began.ok, "selection-follows-warp fixture: beginSelectionPixels() succeeds");
+    session.setWarpMode(true, 3);
+    // The interior anchor from case 7 -- convex hull keeps the warped shape
+    // inside the original box, so the sampled points below stay meaningful.
+    session.warpBeginDrag(WarpControlRef{true, 3, 3}, Point2{0.0f, 0.0f});
+    session.warpUpdateDrag(Point2{-2.0f, 1.5f});
+    session.warpEndDrag();
+    const WarpMesh meshAfterDrag = session.warpMesh();
+    const TransformCommitResult done = session.commit(od);
+    check(done.ok, "selection-follows-warp: commit succeeds");
+
+    if (done.ok) {
+      check(od.selection.has_value(), "warping SelectionPixels leaves od.selection engaged");
+      if (od.selection.has_value()) {
+        // The mesh's own centre, u=v=1.5 of the 3x3 grid: inside its convex
+        // hull by construction, and inside the pre-warp full-box selection
+        // too -- so the warped coverage there should still read "selected".
+        const Point2 inside = meshAfterDrag.evaluate(1.5f, 1.5f);
+        const float insideCoverage = selectionCoverageAt(
+            &*od.selection, PixelCoord{static_cast<int32_t>(std::lround(inside.x)),
+                                       static_cast<int32_t>(std::lround(inside.y))});
+        check(insideCoverage > 0.9f,
+              "warped coverage at evaluate()'s own interior point matches the mesh: selected");
+      }
+      const float outsideCoverage = selectionCoverageAt(&*od.selection, PixelCoord{2, 2});
+      check(outsideCoverage < 0.05f, "warped coverage well outside the box is unselected");
+
+      // `OpenDocument::warpSelectionUndo` is what lets ordinary Undo restore
+      // the selection too (ui/MacPaintUI.cpp's moveHistoryCursor()) -- keyed
+      // by the serial of the entry `commit()` just pushed.
+      const uint64_t committedSerial = od.history.entries()[od.history.cursor()].serial;
+      const OpenDocument::WarpSelectionUndo* rec = nullptr;
+      for (const auto& u : od.warpSelectionUndo)
+        if (u.serial == committedSerial) rec = &u;
+      check(rec != nullptr, "commit() recorded a warpSelectionUndo entry for its own history entry");
+      if (rec != nullptr) {
+        check(rec->before.has_value() && selectionCoverageAt(&*rec->before, PixelCoord{2, 2}) < 0.05f &&
+                  selectionCoverageAt(&*rec->before, PixelCoord{16, 16}) > 0.9f,
+              "the recorded 'before' selection is the pre-warp rectangle");
+        // The exact restore `moveHistoryCursor()` performs on Undo.
+        od.selection = rec->before;
+      }
+    }
+    const Document* prior = od.history.undo();
+    check(prior != nullptr, "selection-follows-warp: one undo() call succeeds");
+    if (prior != nullptr) od.document = *prior;
+    check(od.selection.has_value() &&
+              selectionCoverageAt(&*od.selection, PixelCoord{16, 16}) > 0.9f &&
+              selectionCoverageAt(&*od.selection, PixelCoord{2, 2}) < 0.05f,
+          "after undo (pixels via History, selection via warpSelectionUndo) the original box reads back");
+  }
+
+  // --- 12. previewWarpDocument() matches what commit() actually writes ------
+  // The pure function ui/MacPaintUI.cpp's live preview composites -- this is
+  // "the preview at full resolution equals what commit() writes", asserted.
+  {
+    OpenDocument od = makeBlankOpenDocument(48, 48, WorkingSpace{});
+    TileStore& rgb = *od.document.layers[0].rgbTiles;
+    for (int32_t y = 0; y < 48; ++y) {
+      for (int32_t x = 0; x < 48; ++x) {
+        rgb.getOrCreate(tileCoordAt(PixelCoord{x, y}))
+            .writePixel(tileLocalOffset(PixelCoord{x, y}),
+                       {static_cast<float>(x) / 48.0f, static_cast<float>(y) / 48.0f, 0.5f, 1.0f});
+      }
+    }
+    od.recordEdit("fixture", EditKind::Content);
+
+    TransformSession session;
+    session.beginLayer(od, 0);
+    session.setWarpMode(true, 3);
+    session.warpBeginDrag(WarpControlRef{true, 3, 3}, Point2{0.0f, 0.0f});
+    session.warpUpdateDrag(Point2{6.0f, -4.0f});
+    session.warpEndDrag();
+
+    Document preview;
+    const bool previewOk = session.previewWarpDocument(od, ResampleKernel::CatmullRom, &preview);
+    check(previewOk, "previewWarpDocument() succeeds mid-drag for a Layer target");
+
+    const TransformCommitResult done = session.commit(od);
+    check(done.ok, "preview-vs-commit fixture: the same warp commits");
+    if (previewOk && done.ok) {
+      const TransformImage previewImg = imageFromTileStore(*preview.layers[0].rgbTiles, 0, 0, 48, 48);
+      const TransformImage committedImg =
+          imageFromTileStore(*od.document.layers[0].rgbTiles, 0, 0, 48, 48);
+      check(previewImg.px.size() == committedImg.px.size() &&
+                std::memcmp(previewImg.px.data(), committedImg.px.data(),
+                           previewImg.px.size() * sizeof(float)) == 0,
+            "previewWarpDocument()'s pixels are bit-identical to what commit() wrote");
+    }
+  }
+
   return ok;
 }
 

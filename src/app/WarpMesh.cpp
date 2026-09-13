@@ -502,4 +502,44 @@ bool warpRgbTiles(const TileStore& in, const WarpMesh& mesh, const DocumentRegio
   return true;
 }
 
+bool warpSelectionCoverage(const Selection& in, const DocumentRegion& srcRegion,
+                          const WarpMesh& mesh, const DocumentRegion& dstRegion,
+                          ResampleKernel kernel, Selection* out, std::string* errorOut) {
+  if (out == nullptr) {
+    if (errorOut) *errorOut = "warp refused: no destination selection was given.";
+    return false;
+  }
+  *out = Selection{};
+  if (srcRegion.empty() || dstRegion.empty()) return true;
+
+  TransformImage src;
+  src.width = srcRegion.width;
+  src.height = srcRegion.height;
+  src.px.assign(static_cast<size_t>(srcRegion.width) * srcRegion.height * 4u, 0.0f);
+  for (uint32_t y = 0; y < srcRegion.height; ++y) {
+    for (uint32_t x = 0; x < srcRegion.width; ++x) {
+      const PixelCoord doc{srcRegion.x + static_cast<int32_t>(x),
+                           srcRegion.y + static_cast<int32_t>(y)};
+      const SelectionTile* tile = in.tiles.find(tileCoordAt(doc));
+      const float c = tile ? tile->coverageAt(tileLocalOffset(doc)) : 0.0f;
+      float* d = src.px.data() + (static_cast<size_t>(y) * srcRegion.width + x) * 4u;
+      d[0] = d[1] = d[2] = d[3] = c;
+    }
+  }
+
+  TransformImage dst;
+  if (!warpImage(src, mesh, dstRegion, kernel, &dst, errorOut)) return false;
+
+  for (uint32_t y = 0; y < dstRegion.height; ++y) {
+    for (uint32_t x = 0; x < dstRegion.width; ++x) {
+      const float c = dst.px[(static_cast<size_t>(y) * dstRegion.width + x) * 4u + 3u];
+      if (!(c > 0.0f)) continue;  // keeps the "no all-zero tile" invariant for free
+      const PixelCoord doc{dstRegion.x + static_cast<int32_t>(x),
+                           dstRegion.y + static_cast<int32_t>(y)};
+      out->tiles.getOrCreate(tileCoordAt(doc)).writeCoverage(tileLocalOffset(doc), c);
+    }
+  }
+  return true;
+}
+
 }  // namespace np

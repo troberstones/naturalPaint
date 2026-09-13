@@ -1730,10 +1730,8 @@ int main(int argc, char** argv) {
   // `--transform-demo 1` alone (no pen demo) is the `transform_stack`
   // golden case.
   int transformDemoLayer = -1;
-  // PRD D23: `--transform-demo warp` -- the literal token "warp" in the same
-  // argument slot a layer index would otherwise occupy, so it toggles the
-  // freshly-begun session into Warp mode and bends one control point,
-  // rather than reading `std::atoi("warp")`'s silent 0 as layer index 0.
+  // `--transform-demo warp`: the literal token in the layer-index slot,
+  // checked before `std::atoi` so "warp" cannot silently parse as index 0.
   bool transformDemoWarp = false;
   bool demoDocument = false;
   bool pigmentStrokeDemo = false;
