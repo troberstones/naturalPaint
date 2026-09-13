@@ -1,5 +1,12 @@
 #include "app/selftest/Support.hpp"
 
+#include <string>
+
+#include "app/StrokeSession.hpp"
+#include "app/DocumentLifecycle.hpp"
+#include "app/LayerEditor.hpp"
+#include "core/LayerOps.hpp"
+#include "paint/Palette.hpp"
 #include "brush/Deposit.hpp"
 #include "brush/Grain.hpp"
 #include "brush/PigmentErase.hpp"
@@ -382,6 +389,142 @@ bool runPaperTextureTest() {
     check(grainWashWeightAt(other, 0.6f, 0.3f, 3, 5) == grainWeightAt(other, 0.6f, 0.3f, 3, 5) &&
               grainWashWeightAt(paper, 0.6f, 0.0f, 3, 5) == grainWeightAt(paper, 0.6f, 0.0f, 3, 5),
           "paper/wash: every other blend, and zero flow, keep the Build-up weight");
+  }
+
+  {
+    // Texture Each Tip OFF: the paper is cut from the stroke's accumulated
+    // weight once, so overlap fills a hollow only as far as the stroke's weight
+    // reaches -- where per tip, a hollow deeper than one dab's weight stays
+    // empty however many dabs cross it.
+    GrainParams paper;
+    paper.enabled = true;
+    paper.blend = CoverageBlend::Height;
+    paper.depth = 0.3f;
+    paper.field = makeChecker(8, 8);
+    int32_t hx = -1, hy = -1, px = -1, py = -1;
+    float deepest = -1.0f, shallowest = 2.0f;
+    for (int32_t y = 56; y < 72; ++y)
+      for (int32_t x = 56; x < 72; ++x) {
+        const float g = grainHeightAt(paper, x, y);
+        if (g > deepest) { deepest = g; hx = x; hy = y; }
+        if (g < shallowest) { shallowest = g; px = x; py = y; }
+      }
+    const auto stroke = [&](bool rgbRoute, bool eachTip, bool wash, float flow) {
+      BrushTip t;
+      t.radius = 20.0f;
+      t.hardness = 1.0f;
+      t.flow = flow;
+      t.grain = paper;
+      t.grain.eachTip = eachTip;
+      TileStore rgbStore;
+      RgbStroke rgb;
+      rgb.begin({1.0f, 1.0f, 1.0f}, 1.0f, false, BlendMode::Normal, wash);
+      PigmentTileStore pigStore;
+      StrokeTexture texture;
+      for (int k = 0; k < 40; ++k) {
+        if (rgbRoute)
+          rgb.depositDab(rgbStore, t, Vec2{64.0f, 64.0f}, 128, 128, nullptr, nullptr, Vec2{},
+                         nullptr, &texture);
+        else
+          depositDab(pigStore, t, Vec2{64.0f, 64.0f}, 128, 128, nullptr, nullptr, PigmentBuildup{},
+                     nullptr, Vec2{}, nullptr, &texture);
+      }
+      const auto read = [&](int32_t x, int32_t y) {
+        const PixelCoord pc{x, y};
+        if (rgbRoute) {
+          const Tile* tl = rgbStore.find(tileCoordAt(pc));
+          return tl != nullptr ? tl->readPixel(tileLocalOffset(pc))[3] : 0.0f;
+        }
+        const PigmentTile* tl = pigStore.find(tileCoordAt(pc));
+        return tl != nullptr ? tl->readTexel(tileLocalOffset(pc)).mass : 0.0f;
+      };
+      return std::make_pair(read(hx, hy), read(px, py));
+    };
+    float union40 = 0.0f;
+    for (int k = 0; k < 40; ++k) union40 = union40 + 0.3f * (1.0f - union40);
+    const float wantHollow = grainCoverageAt(paper, union40, hx, hy);
+    const float wantPeak = grainCoverageAt(paper, union40, px, py);
+    for (const bool rgbRoute : {false, true}) {
+      const auto [tipHollow, tipPeak] = stroke(rgbRoute, true, false, 0.3f);
+      const auto [strokeHollow, strokePeak] = stroke(rgbRoute, false, false, 0.3f);
+      std::printf("    [measured] %s build-up, 40 dabs at flow 0.3, hollow / peak: each tip %.4f / "
+                  "%.4f, stroke %.4f / %.4f (paper cut from the stroke: %.4f / %.4f)\n",
+                  rgbRoute ? "RGB" : "Pigment", tipHollow, tipPeak, strokeHollow, strokePeak,
+                  wantHollow, wantPeak);
+      // Both layers store binary16: near full coverage its step is ~5e-4, and
+      // the stroke's last increments are smaller than that.
+      const float tol = 2e-3f;
+      check(tipHollow == 0.0f && std::fabs(strokeHollow - wantHollow) <= tol &&
+                std::fabs(strokePeak - wantPeak) <= tol && wantHollow > 0.1f,
+            rgbRoute ? "paper/each tip off: RGB lays the paper cut once from the stroke's weight"
+                     : "paper/each tip off: Pigment lays the paper cut once from the stroke's weight");
+    }
+    const auto [washTipHollow, washTipPeak] = stroke(true, true, true, 0.25f);
+    const auto [washStrokeHollow, washStrokePeak] = stroke(true, false, true, 0.25f);
+    std::printf("    [measured] RGB wash at flow 0.25, peak: each tip %.4f, stroke %.4f\n",
+                washTipPeak, washStrokePeak);
+    check(washTipPeak > 0.9f && washStrokePeak <= 0.25f + 2e-3f && washStrokePeak > 0.2f &&
+              washTipHollow == 0.0f && washStrokeHollow == 0.0f,
+          "paper/each tip off: a Wash stroke stays as light as its flow, grain cut from that");
+    GrainParams off = paper;
+    off.eachTip = false;
+    check(!grainParamsEqual(paper, off), "paper/each tip: the flag is part of a tip's identity");
+
+    // The Brush Settings checkbox reaches the tip, and a session stroke on
+    // either layer honours it -- through ONE reused session, so a stroke that
+    // inherited the last one's texture weight would show here.
+    StrokeSession shared;
+    for (const bool rgbLayer : {false, true}) {
+      float firstOff = -1.0f;
+      for (const bool eachTip : {true, false, false}) {
+        OpenDocument od = makeBlankOpenDocument(128, 128, WorkingSpace{}, "each tip");
+        recordLayerEdit(od, addLayer(od.document, od.document.layers.size(),
+                                     rgbLayer ? makeRgbLayer("RGB") : makePigmentLayer("Pigment")));
+        BrushState brush;
+        brush.model.tip.diameterPx = 40.0f;
+        brush.model.tip.hardness = 1.0f;
+        brush.model.tip.spacingPercent = 5.0f;
+        brush.native.load = 0.3f;
+        brush.native.grain = paper;
+        brush.model.texture.enabled = true;
+        brush.model.texture.eachTip = eachTip;
+        MixboxLut noLut;
+        const BrushTip base = brushTipFor(brush, noLut, 1.0f);
+        std::string error;
+        shared.begin(od, 1, base, Tool::Brush, &error, &brush.model, DynamicInputs{}, nullptr,
+                     StabiliserParams{}, 1.0f, &brush.native);
+        for (int32_t i = 54; i <= 74; i += 2) shared.addPoint(static_cast<float>(i), 64.0f);
+        shared.end();
+        const Layer& layer = od.document.layers[1];
+        const PixelCoord pc{hx, hy};
+        float hollow = 0.0f;
+        if (layer.pigmentTiles.has_value()) {
+          if (const PigmentTile* tl = layer.pigmentTiles->find(tileCoordAt(pc)))
+            hollow = tl->readTexel(tileLocalOffset(pc)).mass;
+        } else if (const Tile* tl = layer.rgbTiles->find(tileCoordAt(pc))) {
+          hollow = tl->readPixel(tileLocalOffset(pc))[3];
+        }
+        if (eachTip) {
+          check(base.grain.eachTip && hollow == 0.0f,
+                rgbLayer ? "paper/each tip: an RGB session stroke textured per tip keeps the hollows empty"
+                         : "paper/each tip: a Pigment session stroke textured per tip keeps the hollows empty");
+        } else if (firstOff < 0.0f) {
+          firstOff = hollow;
+          check(!base.grain.eachTip && hollow > 0.1f,
+                rgbLayer ? "paper/each tip: an RGB session stroke with Each Tip off fills them as far as the stroke reaches"
+                         : "paper/each tip: a Pigment session stroke with Each Tip off fills them as far as the stroke reaches");
+        } else {
+          check(hollow == firstOff,
+                rgbLayer ? "paper/each tip: RGB, each stroke starts with an empty texture weight"
+                         : "paper/each tip: Pigment, each stroke starts with an empty texture weight");
+        }
+      }
+    }
+    BrushState native;
+    native.native.grain = paper;
+    MixboxLut noLut;
+    check(brushTipFor(native, noLut, 1.0f).grain.eachTip,
+          "paper/each tip: a brush with no imported texture is textured per dab, as before");
   }
 
   // ======================================================================

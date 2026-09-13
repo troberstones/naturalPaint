@@ -135,7 +135,8 @@ float grainWeightAt(const GrainParams& params, float coverage, float flow, int32
 float grainWashWeightAt(const GrainParams& params, float coverage, float flow, int32_t x,
                         int32_t y) noexcept {
   const float w = grainWeightAt(params, coverage, flow, x, y);
-  if (params.enabled && params.blend == CoverageBlend::Height && flow > 0.0f) return w / flow;
+  if (params.enabled && params.eachTip && params.blend == CoverageBlend::Height && flow > 0.0f)
+    return w / flow;
   return w;
 }
 
@@ -148,7 +149,7 @@ bool grainParamsEqual(const GrainParams& a, const GrainParams& b) noexcept {
   return a.enabled == b.enabled && a.periodX == b.periodX && a.periodY == b.periodY &&
          a.depth == b.depth && a.strength == b.strength && a.field == b.field &&
          a.scale == b.scale && a.invert == b.invert && a.brightness == b.brightness &&
-         a.contrast == b.contrast && a.blend == b.blend;
+         a.contrast == b.contrast && a.blend == b.blend && a.eachTip == b.eachTip;
 }
 
 }  // namespace np

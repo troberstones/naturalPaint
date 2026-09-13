@@ -283,6 +283,13 @@ struct GrainParams {
   // other modes arrive with the Texture panel, whose `textureBlendMode` names
   // seven across the packs measured.
   CoverageBlend blend = CoverageBlend::Subtract;
+
+  // Photoshop's "Texture Each Tip". On (the default, and every brush that is
+  // not an imported texture with it unticked): the paper is applied to each
+  // dab. Off: to the stroke's accumulated weight, once (`StrokeTexture`,
+  // brush/Deposit.hpp) -- so overlapping dabs cannot fill the paper's hollows
+  // one subtraction at a time. Read by the Pigment and RGB deposit routes only.
+  bool eachTip = true;
 };
 
 // G: the grain surface height at absolute document texel `(x, y)`, in
@@ -343,9 +350,11 @@ float grainCoverageAt(const GrainParams& params, float coverage, int32_t x, int3
 float grainWeightAt(const GrainParams& params, float coverage, float flow, int32_t x,
                     int32_t y) noexcept;
 
-// The weight a Wash stroke keeps (brush/Deposit.hpp §1a). For Height, flow only
-// decides how far into the paper the tip reaches and the kept strength is the
-// tip's own: `grainWeightAt() / flow`. Wash keeps the strongest dab rather than
+// The weight a Wash stroke keeps (brush/Deposit.hpp §1a). For Height textured
+// at each tip, flow only decides how far into the paper the tip reaches and the
+// kept strength is the tip's own: `grainWeightAt() / flow`. Textured at the
+// stroke (`eachTip` off) the paper cuts the stroke's own amount, which Wash
+// holds at flow, so the stroke stays as light as its flow. Wash keeps the strongest dab rather than
 // summing, so a flow-scaled weight left low-flow grain as a faint glaze that
 // never builds to the specks a Photoshop stroke shows. Every other blend, and
 // Build-up, keeps `grainWeightAt()`.

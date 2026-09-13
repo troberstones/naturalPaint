@@ -827,6 +827,19 @@ struct DualStroke {
   StrokeMassStore primary;
   StrokeMassStore second;
 };
+// A Build-up stroke textured once rather than per dab (`GrainParams::eachTip`
+// off): `weight` is each dab's `flow * coverage` unioned (`m + w(1 - m)`), and
+// the texel's stroke amount is `grainCoverageAt()` of that -- the paper cut
+// from the stroke, so no amount of overlap fills a hollow deeper than the
+// stroke's weight. `laid` is what the Pigment route has deposited towards it;
+// the RGB route reads its own stroke alpha instead. Wash needs neither: it keeps
+// the strongest dab, and every texture blend rises with coverage, so texturing
+// the strongest dab IS texturing the stroke.
+struct StrokeTexture {
+  StrokeMassStore weight;
+  StrokeMassStore laid;
+};
+
 // One tile of each, fetched lazily by `dualStrokeCoverage()`.
 struct DualStrokeTile {
   StrokeMassTile* primary = nullptr;
@@ -1350,7 +1363,7 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
                         int32_t canvasW, int32_t canvasH, const Selection* selection,
                         std::vector<TileCoord>* touchedOut, PigmentBuildup buildup = {},
                         WashStroke* wash = nullptr, Vec2 sweep = {},
-                        DualStroke* dual = nullptr);
+                        DualStroke* dual = nullptr, StrokeTexture* texture = nullptr);
 
 // Sorts ascending by (y, x) and removes duplicates, in place.
 //

@@ -603,7 +603,7 @@ class RgbStroke {
   DepositCount depositDab(TileStore& store, const BrushTip& tip, Vec2 centre, int32_t canvasW,
                           int32_t canvasH, const Selection* selection,
                           std::vector<TileCoord>* touchedOut, Vec2 sweep = {},
-                          DualStroke* dual = nullptr);
+                          DualStroke* dual = nullptr, StrokeTexture* texture = nullptr);
 
   // Deposits every dab in `dabs`, in order. Order matters here for the same
   // reason it does for pigment, though for a different mechanism: `A` is a

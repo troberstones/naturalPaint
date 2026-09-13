@@ -2223,6 +2223,9 @@ class StrokeSession {
   // The Dual Brush's two stroke masks (brush/Deposit.hpp §2d), on both deposit
   // routes; cleared with `wash_`.
   DualStroke dual_;
+  // A Build-up stroke's paper applied once (brush/Deposit.hpp `StrokeTexture`),
+  // for a texture with Each Tip off. Cleared with `dual_`.
+  StrokeTexture strokeTexture_;
   // Where the Dual Brush's own cadence has reached along the path (brush/
   // Deposit.hpp §2d): off without a model, when each primary dab stamps the
   // second tip at its own centre instead. Reset with `dual_`.

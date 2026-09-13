@@ -1153,6 +1153,9 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // the matrix or the model.
   tip.opacity = brush.opacity;
   tip.grain = brush.native.grain;
+  // Photoshop's Texture Each Tip, read live off the model so the Brush Settings
+  // checkbox takes effect; per dab for every brush without an imported texture.
+  tip.grain.eachTip = !model.texture.enabled || model.texture.eachTip;
 
   // --- the smudge's own block (brush/Smudge.hpp §3b) ----------------------
   //
@@ -1496,6 +1499,7 @@ void StrokeSession::beginRoutes(Layer& layer) {
   // repaint comes back through here and must not find its ceiling spent.
   wash_ = WashStroke{};
   dual_ = DualStroke{};
+  strokeTexture_ = StrokeTexture{};
   haveDualLast_ = false;
   dualCarry_ = 0.0f;
   dualStamps_ = 0;
@@ -2476,9 +2480,9 @@ void StrokeSession::depositPending(bool isEndFlush) {
                               &frameTiles_)
           : route_ == StrokeRoute::RgbDeposit
               ? rgb_.depositDab(*layer.rgbTiles, dabTip, centre, doc.width, doc.height, selection,
-                                &frameTiles_, sweep, &dual_)
+                                &frameTiles_, sweep, &dual_, &strokeTexture_)
               : depositDab(*layer.pigmentTiles, dabTip, centre, doc.width, doc.height, selection,
-                          &frameTiles_, pigmentBuildup_, washFor(), sweep, &dual_);
+                          &frameTiles_, pigmentBuildup_, washFor(), sweep, &dual_, &strokeTexture_);
       frameTexels += c.texels;
     }
     ++dabs_;

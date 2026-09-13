@@ -551,7 +551,8 @@ PixelBounds sweptDabBounds(const BrushTip& tip, Vec2 centre, Vec2 sweep, int32_t
 DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centre,
                         int32_t canvasW, int32_t canvasH, const Selection* selection,
                         std::vector<TileCoord>* touchedOut, PigmentBuildup buildup,
-                        WashStroke* wash, Vec2 sweep, DualStroke* dual) {
+                        WashStroke* wash, Vec2 sweep, DualStroke* dual,
+                        StrokeTexture* texture) {
   DepositCount count;
   if (!(tip.flow > 0.0f)) return count;
 
@@ -560,6 +561,8 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
   const bool washing =
       buildup.mode == PigmentBuildupMode::Wash && wash != nullptr && wash->before != nullptr;
   const float washCeiling = std::clamp(buildup.opacity, 0.0f, 1.0f) * kMaxMass;
+  const bool strokeTextured =
+      texture != nullptr && tip.grain.enabled && !tip.grain.eachTip && !washing;
 
   const PixelBounds b = sweptDabBounds(tip, centre, sweep, canvasW, canvasH);
   if (b.empty()) return count;
@@ -607,6 +610,8 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
       StrokeMassTile* laidTile = nullptr;
       const PigmentTile* beforeTile = nullptr;
       DualStrokeTile dualTile;
+      StrokeMassTile* texWeight = nullptr;
+      StrokeMassTile* texLaid = nullptr;
 
       for (int32_t y = y0; y <= y1; ++y) {
         const float dy = (static_cast<float>(y) + 0.5f) - centre.y;
@@ -630,8 +635,25 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
           // line a no-op for every brush that has not turned grain on.
           // Flow included: `grainWeightAt()` (Height subtracts the paper from
           // flow times coverage, not from coverage alone).
-          const float cov = washing ? grainWashWeightAt(tip.grain, rawCov, tip.flow, x, y)
-                                    : grainWeightAt(tip.grain, rawCov, tip.flow, x, y);
+          float cov = 0.0f;
+          if (strokeTextured) {
+            if (texWeight == nullptr) {
+              texWeight = &texture->weight.getOrCreate(coord);
+              texLaid = &texture->laid.getOrCreate(coord);
+            }
+            const float w = std::clamp(tip.flow * rawCov, 0.0f, 1.0f);
+            const float m0 = texWeight->at(local);
+            const float m = m0 + w * (1.0f - m0);
+            texWeight->set(local, m);
+            const float target = grainCoverageAt(tip.grain, m, x, y);
+            const float laid = texLaid->at(local);
+            if (!(target > laid)) continue;
+            texLaid->set(local, target);
+            cov = target - laid;
+          } else {
+            cov = washing ? grainWashWeightAt(tip.grain, rawCov, tip.flow, x, y)
+                          : grainWeightAt(tip.grain, rawCov, tip.flow, x, y);
+          }
           if (!(cov > 0.0f)) continue;  // a grain peak too tall for this pressure
 
           const float sel = selection != nullptr ? selectionTileCoverage(cover, local) : 1.0f;
