@@ -134,6 +134,21 @@ std::vector<uint8_t> oneTexturedBrushDesc(const char* name, const char* patternI
   return f.bytes;
 }
 
+// Texture Brightness and Contrast as Photoshop writes them: `long`, not a unit
+// float, so a reader of unit floats alone drops both.
+std::vector<uint8_t> oneAdjustedTextureBrushDesc(int32_t brightness, int32_t contrast) {
+  DescFixture f;
+  f.version();
+  f.descriptor("null", "null", 1);
+  f.key4("Brsh").vlls(1);
+  f.objc("brushPreset", "brushPreset", 4);
+  f.key4("Nm  ").textv("Adjusted Paper");
+  f.keyN("useTexture").boolv(true);
+  f.keyN("textureBrightness").longv(brightness);
+  f.keyN("textureContrast").longv(contrast);
+  return f.bytes;
+}
+
 }  // namespace
 
 // io/AbrBrushes' `samp` block (brush/Deposit.hpp §2c): the bitmap tip a
@@ -757,6 +772,16 @@ bool runAbrSampledTipsTest() {
                 m.texture.pattern.name == "Kyle's Rough Watercolor Paper",
             "abr-samp/model: the importer writes the Texture panel onto presets[i].model, by "
             "name and id -- not just a bit saying something was on");
+    }
+
+    // E1b. Brightness and Contrast arrive as integers.
+    {
+      const AbrImportResult adjusted =
+          importAbrBrushes(wrapAbrWithSamp({}, oneAdjustedTextureBrushDesc(-42, 50)));
+      const bool one = adjusted.ok && adjusted.presets.size() == 1;
+      check(one && adjusted.presets[0].model.texture.brightness == -42.0f &&
+                adjusted.presets[0].model.texture.contrast == 50.0f,
+            "abr-samp/model: Texture Brightness and Contrast are read from `long` keys");
     }
 
     // E2. Duplicate preserves the model. This is the defect itself: before

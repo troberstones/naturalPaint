@@ -722,7 +722,12 @@ void readPercentField(const DescriptorRef& owner, const char* key, float& out) {
 
 void readRawField(const DescriptorRef& owner, const char* key, float& out) {
   double d = 0.0;
-  if (unitValue(owner.field(key), d)) out = static_cast<float>(d);
+  if (unitValue(owner.field(key), d)) {
+    out = static_cast<float>(d);
+  } else if (const auto i = owner.field(key).asInteger()) {
+    // Texture Brightness and Contrast are written as `long`, not a unit float.
+    out = static_cast<float>(*i);
+  }
 }
 
 
@@ -928,7 +933,10 @@ bool grainFromTexture(const PsTexture& texture,
   // because a pattern stretched a hundredfold is a flat colour, not paper.
   grain.scale = clampf(texture.scalePercent / 100.0f, 0.01f, 16.0f);
   grain.invert = texture.invert;
-  grain.brightness = clampf(texture.brightness / 100.0f, -1.0f, 1.0f);
+  // Brightness in 8-bit levels: its -150..150 range is Photoshop's Brightness/
+  // Contrast adjustment's (INFERRED for the Texture panel). Read as hundredths,
+  // Brightness -50 blanked Perfect Pencil Basic and Dry Brush Linework.
+  grain.brightness = clampf(texture.brightness / 255.0f, -1.0f, 1.0f);
   grain.contrast = clampf(texture.contrast / 100.0f, -1.0f, 1.0f);
   grain.blend = texture.blend;
   // `strength` stays at its default 1.0: Photoshop's Texture panel has no

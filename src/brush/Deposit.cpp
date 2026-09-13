@@ -634,7 +634,7 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
           // `tip.grain` is off (its own default), which is what keeps this
           // line a no-op for every brush that has not turned grain on.
           // Flow included: `grainWeightAt()` (Height subtracts the paper from
-          // flow times coverage, not from coverage alone).
+          // flow, then scales by coverage).
           float cov = 0.0f;
           if (strokeTextured) {
             if (texWeight == nullptr) {

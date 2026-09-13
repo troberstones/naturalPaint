@@ -266,7 +266,8 @@ struct GrainParams {
   // Photoshop's Invert checkbox, on for 40 of the 84 textured presets
   // measured. Applied to the SAMPLED height before `depth` scales it, so
   // inverting a paper swaps which parts of it resist paint rather than
-  // changing how deep the tooth is.
+  // changing how deep the tooth is. Off, the lightest texels take the most
+  // paint (Adobe's Texture help); on, the darkest do.
   bool invert = false;
 
   // Photoshop's Brightness and Contrast, both in the panel's own -150..150
@@ -343,10 +344,13 @@ inline constexpr float kHeightDepthGain = 10.0f;
 float heightDepthGain(float depth) noexcept;
 float grainCoverageAt(const GrainParams& params, float coverage, int32_t x, int32_t y) noexcept;
 
-// `flow * grainCoverageAt()` -- except for Height, where flow joins the tip's
-// coverage BEFORE the paper is subtracted (`P` in the overlay fraction is how
-// hard the tip presses). So lowering flow opens more of the paper: a Height
-// brush turns from dense to grainy as flow comes down, not merely paler.
+// `flow * grainCoverageAt()` -- except for Height, where the paper is subtracted
+// from flow alone (`P` in the overlay fraction is how hard the stroke presses
+// into the tooth) and the tip's coverage then scales what gets through. So
+// lowering flow opens more of the paper -- dense to grainy, not merely paler --
+// while a faint scanned tip (Kyle's Soft Pastel peaks at 0.67) still builds to
+// solid wherever its flow clears the paper. Subtracting from `flow * coverage`
+// erased such a tip almost everywhere.
 float grainWeightAt(const GrainParams& params, float coverage, float flow, int32_t x,
                     int32_t y) noexcept;
 

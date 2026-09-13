@@ -54,6 +54,8 @@ bool runPaperTextureTest() {
   };
 
   // A checkerboard of period 2: `(x + y) % 2 == 0` is a peak at full height.
+  // Peaks are stored BLACK: with Invert off the darkest texels take the least
+  // paint (brush/Grain.hpp, `GrainParams::invert`).
   auto makeChecker = [](int32_t w, int32_t h) {
     auto f = std::make_shared<PaperField>();
     f->width = w;
@@ -61,11 +63,12 @@ bool runPaperTextureTest() {
     f->height8.resize(static_cast<size_t>(w) * static_cast<size_t>(h));
     for (int32_t y = 0; y < h; ++y)
       for (int32_t x = 0; x < w; ++x)
-        f->height8[static_cast<size_t>(y) * w + x] = ((x + y) % 2 == 0) ? 255 : 0;
+        f->height8[static_cast<size_t>(y) * w + x] = ((x + y) % 2 == 0) ? 0 : 255;
     return f;
   };
   // A left-to-right ramp, for the shaping checks where a two-value field
   // cannot distinguish brightness from contrast.
+  // Stored black to white, so its HEIGHT runs 1 down to 0.
   auto makeRamp = [](int32_t w) {
     auto f = std::make_shared<PaperField>();
     f->width = w;
@@ -148,7 +151,20 @@ bool runPaperTextureTest() {
     p.field = makeChecker(4, 4);
 
     check(grainHeightAt(p, 0, 0) == 1.0f && grainHeightAt(p, 1, 0) == 0.0f,
-          "paper/sample: a texel reads its own height, 255 -> depth and 0 -> 0");
+          "paper/sample: a black texel holds paint off by depth, a white one not at all");
+
+    // Adobe's direction, through the whole formula: with Invert off the lightest
+    // texels receive the most paint.
+    {
+      GrainParams subtract = p;
+      subtract.depth = 0.5f;
+      const float onWhite = grainCoverageAt(subtract, 0.75f, 1, 0);
+      const float onBlack = grainCoverageAt(subtract, 0.75f, 0, 0);
+      std::printf("    [measured] coverage 0.75, depth 0.5: white texel %.3f, black texel %.3f\n",
+                  static_cast<double>(onWhite), static_cast<double>(onBlack));
+      check(onWhite == 0.75f && onBlack == 0.25f,
+            "paper/direction: with Invert off a white texel takes the paint, a black one resists");
+    }
 
     // **Tiling is the property the whole feature stands on** (brush/Grain.hpp
     // §3): keyed by absolute document position, so the same brush picks up
@@ -207,19 +223,19 @@ bool runPaperTextureTest() {
     GrainParams r;
     r.enabled = true;
     r.depth = 1.0f;
-    r.field = makeRamp(5);  // 0, 63, 127, 191, 255 -> 0, .247, .498, .749, 1
+    r.field = makeRamp(5);  // 0, 63, 127, 191, 255 -> heights 1, .753, .502, .251, 0
     const float mid = grainHeightAt(r, 2, 0);
 
     GrainParams rb = r;
     rb.brightness = 0.25f;
-    check(grainHeightAt(rb, 2, 0) > mid && grainHeightAt(rb, 4, 0) == 1.0f,
-          "paper/brightness: lifts the field, and clamps rather than overflowing");
+    check(grainHeightAt(rb, 2, 0) < mid && grainHeightAt(rb, 4, 0) == 0.0f,
+          "paper/brightness: a brighter paper holds less paint off, and clamps at white");
 
     GrainParams rc = r;
     rc.contrast = 1.0f;  // (h - 0.5) * 2 + 0.5
-    check(grainHeightAt(rc, 0, 0) == 0.0f && grainHeightAt(rc, 4, 0) == 1.0f &&
-              grainHeightAt(rc, 3, 0) > grainHeightAt(r, 3, 0),
-          "paper/contrast: pivots about mid-grey, pushing highs up and lows down");
+    check(grainHeightAt(rc, 0, 0) == 1.0f && grainHeightAt(rc, 4, 0) == 0.0f &&
+              grainHeightAt(rc, 3, 0) < grainHeightAt(r, 3, 0),
+          "paper/contrast: pivots about mid-grey, pushing lights lighter and darks darker");
     GrainParams rflat = r;
     rflat.contrast = -1.0f;  // (h - 0.5) * 0 + 0.5 -- every texel identical
     check(grainHeightAt(rflat, 0, 0) == 0.5f && grainHeightAt(rflat, 4, 0) == 0.5f,
@@ -327,6 +343,16 @@ bool runPaperTextureTest() {
           "paper/Height: lowering flow opens more of the paper, not merely a paler stroke");
     check(otherBlendsScale,
           "paper/weight: every other blend is exactly flow times its grain coverage");
+
+    // A faint tip at full flow: the paper is measured against the flow, so a
+    // peak the flow clears still takes some of the tip -- where subtracting
+    // from flow times coverage left nothing.
+    const float faintOnPeak = grainWeightAt(h, 0.25f, 1.0f, 0, 0);
+    const float fullOnPeak = grainWeightAt(h, 1.0f, 1.0f, 0, 0);
+    std::printf("    [measured] Height depth 0.3, flow 1, on a peak: tip 0.25 -> %.4f, tip 1 -> %.4f\n",
+                static_cast<double>(faintOnPeak), static_cast<double>(fullOnPeak));
+    check(faintOnPeak > 0.0f && std::abs(faintOnPeak - 0.25f * fullOnPeak) < 1e-6f,
+          "paper/Height: a faint tip keeps its share where the flow clears the paper");
   }
 
   {

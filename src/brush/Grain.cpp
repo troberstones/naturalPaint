@@ -55,7 +55,9 @@ float sampledHeightAt(const GrainParams& params, int32_t x, int32_t y) noexcept 
   h = std::clamp(h + params.brightness, 0.0f, 1.0f);
   if (params.contrast != 0.0f)
     h = std::clamp((h - 0.5f) * (1.0f + params.contrast) + 0.5f, 0.0f, 1.0f);
-  if (params.invert) h = 1.0f - h;
+  // `h` is how far a texel holds paint off. Adobe: with Invert off "the lightest
+  // areas in the pattern receive the most paint".
+  if (!params.invert) h = 1.0f - h;
 
   return h * std::max(params.depth, 0.0f);
 }
@@ -127,8 +129,8 @@ float grainCoverageAt(const GrainParams& params, float coverage, int32_t x, int3
 float grainWeightAt(const GrainParams& params, float coverage, float flow, int32_t x,
                     int32_t y) noexcept {
   if (params.enabled && params.blend == CoverageBlend::Height)
-    return grainOverlayFraction(flow * coverage, params.strength, 1.0f,
-                                grainHeightAt(params, x, y) * heightDepthGain(params.depth));
+    return coverage * grainOverlayFraction(flow, params.strength, 1.0f,
+                                           grainHeightAt(params, x, y) * heightDepthGain(params.depth));
   return flow * grainCoverageAt(params, coverage, x, y);
 }
 
