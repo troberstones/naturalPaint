@@ -37,7 +37,7 @@ paid for `Vector` by `vectorContentHash()`. A PSD importer that produces
 `LayerKind::Vector` inherits that. (See [[dirtytiles-parametric-whitelist]].)
 
 What was **missing** and could not be papered over: `Paint` had no gradient and
-no pattern (argued at `core/VectorShape.hpp:33-49`), and there are no boolean
+no pattern (argued at `core/VectorShape.hpp:33-49`), and there were no boolean
 path operations anywhere in the tree — `app/PathOps.hpp:149`'s eleven verbs
 are `Close … MakeCompound`, and none of them is union or subtract.
 
@@ -331,8 +331,8 @@ the descriptors for anything else.
 ## Still open after steps 1-5 landed
 
 Steps 1 through 4 imported a Photoshop shape layer. A second wave closed S1,
-S4 and S5 and left S2 and S3, which are the two that need engine work rather
-than importer work. What follows is the current state, not the plan.
+S4 and S5 and left S2 and S3, which needed engine work rather than importer
+work; both have since landed. What follows is the current state, not the plan.
 
 ### S1. Shape layers now export as shape layers. CLOSED
 
@@ -477,19 +477,36 @@ Two findings from writing the reversal, recorded rather than only fixed:
   gradients" pass would have to be an explicit edit rewriting every index in
   the document at once.
 
-### S3. Intersect is refused by name. STILL OPEN
+### S3. Intersect and mixed Exclude import exactly. CLOSED
 
-Union, Subtract and Exclude all fall out of one compound path plus a fill
-rule. Intersect does not, and `composePsdSubPaths()` refuses the layer rather
-than guessing. Closing it means real boolean path operations, which belong to
-`app/PathOps` and the PATHS panel -- `app/PathOps.hpp:149`'s eleven verbs are
-`Close … MakeCompound` and none of them is a boolean. A layer mixing Exclude
-with the others is refused for the same reason and falls out of the same work.
+`core/PathBoolean` computes union, intersection, difference and XOR of two
+filled regions, each read under its own fill rule. `app/PathOps` exposes it as
+the PATHS panel's COMBINE row (UNITE, INTERSECT, SUBTRACT, EXCLUDE). It lives
+in `core/` rather than `app/` because `io/` never includes `app/`, and the
+importer is its second caller.
 
-The double-coverage soundness heuristic is the other thing exact boolean ops
-would finish: it is now **tight** bounds per subpath rather than control-point
-hulls, which strictly shrinks the false-positive set without ever hiding a
-real overlap, but a bounding box is still not an intersection test.
+`composePsdSubPaths()` now folds every multi-subpath layer exactly, left to
+right; a `MergeWithPrevious` subpath joins its predecessor's group as authored
+winding. The one-fill-rule compound is still built wherever it can be, and is
+**kept only when its XOR with the exact fold is under 0.25 px²** -- so curves
+survive whenever the compound is right, and an unsound compound is replaced
+rather than warned about. Only an unrecognised operation code still refuses.
+
+**A boolean's result is polygonal.** Operands are flattened at 0.1 px and the
+output is straight segments, and a layer that takes the exact route says so in
+its warning. Keeping curves would need cubic-cubic intersection throughout.
+
+**The bounding-box heuristic this replaced missed more than it admitted.** It
+only looked for a subtracted region covered *twice*. Two unsound cases gave it
+nothing to compare: a Subtract over no fill at all (the reversed subpath paints
+solid under NonZero), and a hole authored with the opposite winding (the
+reversal turns it back into fill). Both are asserted now, each with a premise
+check that the compound really does draw it wrong.
+
+Neither sample file reaches the exact route: no layer in either warns, so every
+shape keeps its compound, `App Icon Shape` included. Intersect and mixed Exclude
+are verified against hand-built streams only, and their operation numbers are
+still psd-tools' reading.
 
 ### S4. A vector mask on a raster layer. CLOSED
 

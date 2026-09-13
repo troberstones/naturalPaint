@@ -1081,7 +1081,7 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 #     and would need a reference diff to spot in a one-row crop.
 #
 #   paths_panel / paths_panel_component -- the PATHS panel, whose whole claim
-#     is that its eleven verbs GREY THEMSELVES against the selection
+#     is that its fifteen verbs GREY THEMSELVES against the selection
 #     (app/PathOps.hpp section 2). `--selftest` proves `pathOpAvailability()`
 #     headlessly; only a photograph proves the buttons wear what it returns.
 #

@@ -1,5 +1,7 @@
 #include "app/selftest/Support.hpp"
 
+#include "core/PathBoolean.hpp"
+
 #include <cstdlib>
 
 #include <algorithm>
@@ -2119,30 +2121,35 @@ bool runPsdImportTest() {
           "'no fill' is a state Paint models, and dropping the path would lose everything");
   }
   {
-    // Intersect: geometry this codebase cannot express. The layer must still
-    // import, and must say why it is empty rather than silently omitting it.
+    // Intersect, end to end: [4,24]^2 intersected with [14,30]^2 is [14,24]^2,
+    // area 100 -- Union would be 556, so the two answers cannot coincide.
     const std::vector<std::pair<double, double>> square = {{4, 4}, {24, 4}, {24, 24}, {4, 24}};
     LayerSpec bad;
     bad.pascalName = "intersected";
     bad.channels = {{0, {}}, {1, {}}, {2, {}}, {-1, {}}};
     ByteWriter two;
     const std::vector<uint8_t> a = vsmsBlock(square, 32, 32, /*op=*/1);
-    const std::vector<uint8_t> b = vsmsBlock(square, 32, 32, /*op=*/3);
+    const std::vector<std::pair<double, double>> other = {{14, 14}, {30, 14}, {30, 30}, {14, 30}};
+    const std::vector<uint8_t> b = vsmsBlock(other, 32, 32, /*op=*/3);
     two.bytes(a);
     // Append the second block's records (skipping its 8-byte header and its
     // two fill-rule records) so one block holds two subpaths.
     for (size_t i = 8 + 52; i < b.size(); ++i) two.u8(b[i]);
     bad.extraBlocks = {{"vsms", two.b}, {"SoCo", hexBlock(kRealSocoHex)}};
     const PsdImportResult r = importPsd(buildPsd(32, 32, 8, {bad}));
-    check(r.ok && r.document.layers.size() == 1,
-          "E5: a layer whose operations cannot be expressed still imports, rather than "
-          "refusing the whole file");
+    const bool shaped = r.ok && r.document.layers.size() == 1 &&
+                        r.document.layers[0].kind == LayerKind::Vector &&
+                        r.document.layers[0].shapes.size() == 1;
+    const double area = shaped ? pathBooleanArea(r.document.layers[0].shapes[0].path) : 0.0;
+    std::printf("  [measured] intersected layer area %.4f (expected 100)\n", area);
+    check(shaped && std::fabs(area - 100.0) < 1e-3,
+          "E5: an Intersect layer imports as a Vector shape of the overlap's area, 100");
     bool named = false;
     for (const std::string& w : r.warnings)
       if (w.find("intersected") != std::string::npos && w.find("Intersect") != std::string::npos)
         named = true;
-    check(named, "E5: and a warning names the layer AND the operation -- a shape that quietly "
-                 "vanished would look like artwork the file never had");
+    check(named, "E5: and a warning names the layer AND the operation, since its curves were "
+                 "flattened");
   }
 
   {

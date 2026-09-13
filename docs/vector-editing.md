@@ -295,7 +295,7 @@ photographed** (golden views `vector_shape`, `vector_components`,
   (`docs/path-editing-plan.md` §4). `ControlsSection::Paths` is a `Tool`-role
   panel on the flyout rail, revealed on the transition into a Vector layer the
   way FLATS TOOLS is revealed on the transition into a Flats layer. It carries
-  `app/PathOps`' eleven verbs — each greyed on its own `pathOpCanRun()` answer,
+  `app/PathOps`' fifteen verbs — each greyed on its own `pathOpCanRun()` answer,
   so a lit button cannot refuse — the per-shape fill rule, cap and join, and a
   MAKE row that is `app/PathConsumers`' first UI caller anywhere in the tree.
   `pathToSelection()` installs the selection with no `recordEdit()`;
