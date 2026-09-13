@@ -4269,6 +4269,8 @@ int main(int argc, char** argv) {
     const bool strokeInputOk = np::runStrokeInputTest();
     const bool pointerQueueOk = np::runPointerQueueTest();
     const bool appIconOk = np::runAppIconTest();
+    // PRD M9: Paste Into and Paste as New Document. Headless and GPU-free.
+    const bool pasteCommandsOk = np::runPasteCommandsTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4340,7 +4342,8 @@ int main(int argc, char** argv) {
                     penToolOk && pathOpsOk && pathBooleanOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
-                    nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk;
+                    nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
+                    pasteCommandsOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -5591,6 +5594,10 @@ int main(int argc, char** argv) {
         else if (action == "copy_merged") st.requestCopyMerged = true;
         else if (action == "cut") st.requestCut = true;
         else if (action == "paste") st.requestPaste = true;
+        // PRD M9: same request-flag route as Paste above, consumed alongside
+        // it in ui/MacPaintUI.cpp.
+        else if (action == "paste_into") st.requestPasteInto = true;
+        else if (action == "paste_as_new_document") st.requestPasteAsNewDocument = true;
         else if (action == "delete_selection") st.requestDeleteSelection = true;
         // D1 (reachability audit): ⌘Z/⇧⌘Z did not exist as keymap actions at
         // all -- there was no "undo"/"redo" name for `resolve()` to return,

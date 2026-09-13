@@ -103,6 +103,17 @@ const MenuItemSpec* specTable() {
     set(MenuAction::CopyMerged, "Copy Merged", "Cmd+Shift+C",
         MenuKeyEquivalent{'c', kMenuModCmd | kMenuModShift, "copy_merged"});
     set(MenuAction::Paste, "Paste", "Cmd+V", MenuKeyEquivalent{'v', kMenuModCmd, "paste"});
+    // PRD M9. "Paste Into...", not "Paste Into" -- it needs a selection AND
+    // clipboard content, and Photoshop's own convention marks it with "..."
+    // whenever an item can refuse for a reason worth a tooltip
+    // (buildMenuModel()'s Edit section below supplies it). Chord checked free
+    // in keymaps/default.json before being claimed, same discipline as every
+    // other chord in this file.
+    set(MenuAction::PasteInto, "Paste Into", "Shift+Opt+Cmd+V",
+        MenuKeyEquivalent{'v', kMenuModCmd | kMenuModShift | kMenuModOption, "paste_into"});
+    // No chord: Photoshop ships none for this one either, and this build's
+    // Cmd+V/Shift+Opt+Cmd+V pair already claims every plausible variant of V.
+    set(MenuAction::PasteAsNewDocument, "Paste as New Document", "");
     // No key equivalent: `keymaps/default.json` binds Delete Selection to bare
     // Backspace/Delete, and MenuKeyEquivalent's own rule (this header, above)
     // is that a chord with no Command modifier must not be claimed here --
@@ -444,6 +455,8 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::Copy: return "Copy";
     case MenuAction::CopyMerged: return "CopyMerged";
     case MenuAction::Paste: return "Paste";
+    case MenuAction::PasteInto: return "PasteInto";
+    case MenuAction::PasteAsNewDocument: return "PasteAsNewDocument";
     case MenuAction::DeleteSelection: return "DeleteSelection";
     case MenuAction::SelectAll: return "SelectAll";
     case MenuAction::Deselect: return "Deselect";
@@ -632,6 +645,11 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::Copy:
     case MenuAction::CopyMerged:
     case MenuAction::Paste:
+    // Both insert a layer or open a whole new document -- at least as
+    // disruptive to a live gizmo as `Paste` above, whose own row this
+    // comment already covers ("Paste inserts a layer").
+    case MenuAction::PasteInto:
+    case MenuAction::PasteAsNewDocument:
     case MenuAction::DeleteSelection:
     case MenuAction::SelectAll:
     case MenuAction::Deselect:
@@ -909,6 +927,28 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     e.push_back(item(MenuAction::Copy, ctx.hasActiveLayer));
     e.push_back(item(MenuAction::CopyMerged, ctx.hasDocument));
     e.push_back(item(MenuAction::Paste, ctx.hasDocument && ctx.clipboardHasContent));
+    // Needs BOTH an engaged selection and clipboard content -- `ctx.
+    // hasEngagedSelection` rather than `ctx.hasSelection`, matching the Select
+    // menu's own refine items just below: a selection that is engaged but
+    // happens to cover nothing is refused by name at the point of the paste
+    // (app/PasteCommands.cpp), the same "clickable in that rare state" shape
+    // this codebase already uses for Grow/Shrink/Feather.
+    {
+      MenuNode n = item(MenuAction::PasteInto, ctx.hasEngagedSelection && ctx.clipboardHasContent);
+      if (!ctx.hasEngagedSelection)
+        n.tooltip = "Paste Into needs an active selection to paste inside of.";
+      else if (!ctx.clipboardHasContent)
+        n.tooltip = "The clipboard is empty.";
+      e.push_back(std::move(n));
+    }
+    // Always enabled, even with nothing to offer -- `RecoverDocuments`'s own
+    // reasoning just above in the File menu applies unchanged: the command
+    // checks the internal clipboard AND, failing that, the OS pasteboard
+    // (app/PasteCommands.cpp), and greying this on `ctx.clipboardHasContent`
+    // (the internal-only signal `Paste`/`PasteInto` use) would hide it in
+    // exactly the one case an OS-copied image is what the user reached for
+    // it to use.
+    e.push_back(item(MenuAction::PasteAsNewDocument));
     e.push_back(item(MenuAction::DeleteSelection, ctx.hasEditableLayer));
     e.push_back(separator());
     e.push_back(item(MenuAction::SelectAll, ctx.hasDocument));

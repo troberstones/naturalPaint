@@ -230,6 +230,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/GradientTool.cpp
   app/selftest/MaskTarget.cpp
   app/selftest/MoveTool.cpp
+  app/selftest/PasteCommands.cpp
   app/selftest/CropTool.cpp
   app/selftest/PathRaster.cpp
   app/selftest/SvgImport.cpp
@@ -309,6 +310,7 @@ add_executable(naturalPaint
   app/LayerEditor.cpp
   app/TransformSession.cpp
   app/MoveTool.cpp
+  app/PasteCommands.cpp
   app/ToolSwitch.cpp
   app/FramePacing.cpp
   app/ToolSurface.cpp

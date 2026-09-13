@@ -176,6 +176,12 @@ enum class MenuAction : uint16_t {
   Copy,
   CopyMerged,
   Paste,
+  // PRD M9: Paste Into pastes the clipboard as a new layer masked by the
+  // active selection, centred on its bounds; Paste as New Document opens a
+  // document sized to the clipboard's content. Both are session state
+  // (app/CommandCoverage.cpp), like `Paste` above.
+  PasteInto,
+  PasteAsNewDocument,
   DeleteSelection,
   SelectAll,
   Deselect,

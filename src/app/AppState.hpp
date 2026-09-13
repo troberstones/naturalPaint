@@ -1350,6 +1350,10 @@ struct AppState {
   bool requestCopyMerged = false;
   bool requestCut = false;
   bool requestPaste = false;
+  // PRD M9: session state for the same reason `requestPaste` is -- a native
+  // menu callback has no safe way to reach `st.documents` either.
+  bool requestPasteInto = false;
+  bool requestPasteAsNewDocument = false;
   bool requestDeleteSelection = false;
 
   // Image > Crop to Selection and Image > Trim to Content

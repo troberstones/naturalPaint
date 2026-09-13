@@ -381,7 +381,7 @@ void TransformSession::endDrag() noexcept { drag_.active = false; }
 void TransformSession::cancel() noexcept { *this = TransformSession{}; }
 
 TransformBeginResult TransformSession::beginLayer(OpenDocument& od, size_t layerIndex,
-                                                  const Mat3& initialPending) {
+                                                  const Mat3& initialPending, bool duplicate) {
   const Document& doc = od.document;
   TransformBeginResult r;
   if (layerIndex >= doc.layers.size()) {
@@ -444,6 +444,7 @@ TransformBeginResult TransformSession::beginLayer(OpenDocument& od, size_t layer
   layerId_ = layerId;
   target_ = TransformTarget::Layer;
   pending_ = initialPending;
+  duplicate_ = duplicate;
   active_ = true;
   r.ok = true;
   return r;
@@ -451,7 +452,7 @@ TransformBeginResult TransformSession::beginLayer(OpenDocument& od, size_t layer
 
 TransformBeginResult TransformSession::beginSelectionPixels(OpenDocument& od,
                                                              const Selection& selection,
-                                                             size_t layerIndex) {
+                                                             size_t layerIndex, bool duplicate) {
   const Document& doc = od.document;
   TransformBeginResult r;
   if (layerIndex >= doc.layers.size()) {
@@ -507,6 +508,7 @@ TransformBeginResult TransformSession::beginSelectionPixels(OpenDocument& od,
   // and gets the identical stamp.
   layerId_ = layerId;
   target_ = TransformTarget::SelectionPixels;
+  duplicate_ = duplicate;
   active_ = true;
   r.ok = true;
   return r;
@@ -623,7 +625,10 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
   // An identity transform is a no-op: nothing is written, nothing is
   // recorded. See this header's section 7 for why that is this file's own
   // decision rather than inherited from TransformStack's "no-op" rule.
-  if (pending_.m == mat3Identity().m) {
+  // Duplicate mode is the one exception: a zero-distance Option-drag still
+  // stamps a copy, exactly as Photoshop's own Option-click does, so it falls
+  // through to the branches below instead of short-circuiting here.
+  if (!duplicate_ && pending_.m == mat3Identity().m) {
     active_ = false;
     out.ok = true;
     out.exact = ExactRemap::Identity;
@@ -664,6 +669,38 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
   }
 
   if (target_ == TransformTarget::Layer) {
+    // PRD M9's Option-drag duplicate: insert the copy first and transform
+    // THAT index, leaving `layerIndex_` (the source) untouched. A failed
+    // transform rolls the insert back via `removeLayer()` so a refused
+    // duplicate leaves the document exactly as `cutThroughSelection()`'s own
+    // refusal path does elsewhere in this function -- unchanged.
+    if (duplicate_) {
+      const LayerOpResult dup = duplicateLayer(od.document, layerIndex_);
+      if (!dup.ok) {
+        out.error = dup.error;
+        return out;
+      }
+      const size_t newIndex = dup.index;
+      const bool textLayer = od.document.layers[newIndex].kind == LayerKind::Text;
+      const LayerTransformResult r = textLayer
+                                         ? transformTextLayer(od.document, newIndex, pending_)
+                                         : transformLayer(od.document, newIndex, pending_, params);
+      if (!r.ok) {
+        removeLayer(od.document, newIndex);
+        out.error = r.error;
+        return out;
+      }
+      od.activeLayer = newIndex;
+      const std::string label = "duplicate and move " + layerLabel(od.document, newIndex);
+      od.recordEdit(label, EditKind::Structural);
+      active_ = false;
+      out.ok = true;
+      out.editLabel = label;
+      out.exact = r.exact;
+      out.reconstructionPasses = r.reconstructionPasses;
+      return out;
+    }
+
     // A Text layer's geometry is `TextContent::origin`, not a tile store, so
     // it takes the one path that moves a point instead of resampling pixels.
     // `transformLayer()` would walk it, find no stores and report success
@@ -724,7 +761,11 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
     return out;
   }
 
-  Clipboard clip = cutThroughSelection(layer, &selectionSnapshot_);
+  // PRD M9's Option-drag duplicate: copy rather than cut, so the source
+  // pixels are never removed -- `duplicate_` is the only difference between
+  // this path and a plain Move.
+  Clipboard clip = duplicate_ ? copyThroughSelection(layer, &selectionSnapshot_)
+                              : cutThroughSelection(layer, &selectionSnapshot_);
   if (clip.empty() || !clip.rgbTiles.has_value()) {
     out.error = "transform commit refused: the selection covers no pixels on this layer. "
                "Nothing was changed.";
@@ -738,10 +779,12 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
                          &report, &err)) {
     // Unreachable given the checks above (same matrix, same regions the
     // invertibility/extent checks already passed) -- but if it ever does
-    // happen, restore what cutThroughSelection() removed rather than leave a
-    // hole with nothing to show for it.
-    compositeStoreOverRegion(*clip.rgbTiles, sourceBounds_, &*layer.rgbTiles);
-    out.error = "transform commit refused: " + err + " The cut content was restored in place.";
+    // happen and this was a cut, restore what cutThroughSelection() removed
+    // rather than leave a hole with nothing to show for it. Nothing to
+    // restore when duplicating: the source was only ever read.
+    if (!duplicate_) compositeStoreOverRegion(*clip.rgbTiles, sourceBounds_, &*layer.rgbTiles);
+    out.error = "transform commit refused: " + err +
+               (duplicate_ ? " Nothing was changed." : " The cut content was restored in place.");
     return out;
   }
 
@@ -759,10 +802,11 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
     od.selection = movedSelection;
   }
 
-  od.recordEdit("transform selection", EditKind::Structural);
+  const std::string label = duplicate_ ? "duplicate and move selection" : "transform selection";
+  od.recordEdit(label, EditKind::Structural);
   active_ = false;
   out.ok = true;
-  out.editLabel = "transform selection";
+  out.editLabel = label;
   out.exact = report.exact;
   out.reconstructionPasses = report.reconstructionPasses;
   return out;
