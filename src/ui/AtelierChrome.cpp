@@ -2344,8 +2344,10 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
   // the gradient's early returns give: SIZE, HARD, LOAD and WET are read by no
   // code path a click on the wand or the bucket can reach, and a live control
   // over something the tool provably never reads is the same defect as a
-  // palette cell for a tool that does not exist.
-  if (flood == nullptr) {
+  // palette cell for a tool that does not exist. A live transform is skipped
+  // too: it locks the palette, so nothing can paint, and the Warp controls
+  // need the room or the modal notice runs off the window.
+  if (flood == nullptr && !st.transform.active()) {
     bandSeparator();
     capsLabel("SIZE");
     ImGui::SameLine();
