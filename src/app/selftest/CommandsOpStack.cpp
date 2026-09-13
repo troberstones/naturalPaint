@@ -1,6 +1,7 @@
 #include "app/selftest/Support.hpp"
 
 #include "app/Command.hpp"
+#include "app/CommandsOpStack.hpp"
 #include "color/Space.hpp"
 #include "core/Channels.hpp"
 #include "core/LayerOps.hpp"
@@ -748,6 +749,22 @@ bool runCommandsOpStackTest() {
     check(deleted.ok && od.document.channels.size() == 1 &&
               od.document.channels[0].name == "Keep",
           "delete_channel: removes the named channel and leaves the other in place");
+
+    // The CHANNELS panel sends these encoders, not hand-built JSON, so each has to
+    // reach its reader intact.
+    check(applyCommand(od, renameChannelCommand("Keep", "Kept")).ok &&
+              od.document.channels[0].name == "Kept",
+          "rename_channel: renameChannelCommand() carries both names to the reader");
+    od.selection = selectRectangle(0.0f, 0.0f, 4.0f, 4.0f);
+    check(applyCommand(od, saveSelectionAsChannelCommand("Saved")).ok &&
+              findChannel(od.document, "Saved") != nullptr,
+          "save_selection_as_channel: saveSelectionAsChannelCommand() carries the name");
+    od.selection.reset();
+    check(applyCommand(od, loadChannelAsSelectionCommand("Kept")).ok && od.selection.has_value(),
+          "load_channel_as_selection: loadChannelAsSelectionCommand() carries the name");
+    check(applyCommand(od, deleteChannelCommand("Saved")).ok &&
+              findChannel(od.document, "Saved") == nullptr,
+          "delete_channel: deleteChannelCommand() carries the name");
   }
 
   std::printf("  -- H. PRD E4/E8/E9's five refines, as command rows --\n");
@@ -964,6 +981,7 @@ bool runCommandsOpStackTest() {
     }
   }
 
+  std::printf("[selftest] commands op stack %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }
 
