@@ -3840,6 +3840,12 @@ int main(int argc, char** argv) {
     // kind NAME, and the selection rows that cross the session/document line.
     // See app/SelfTest.hpp.
     const bool commandsOpStackOk = np::runCommandsOpStackTest();
+    // app/ChannelsPanel: the CHANNELS dock tab's pure row mapping. See
+    // app/SelfTest.hpp.
+    const bool channelsPanelOk = np::runChannelsPanelTest();
+    // PRD E12's app-level half: toggleQuickMask() and brush/QuickMaskPaint's
+    // dab arithmetic. See app/SelfTest.hpp.
+    const bool quickMaskPaintOk = np::runQuickMaskPaintTest();
     // app/CommandsImage: the thirty rows that change pixels or the document's
     // geometry, and the adapter layer between a JSON object and the appliers
     // they drive. See app/SelfTest.hpp for the four ways an adapter can be
@@ -4303,6 +4309,7 @@ int main(int argc, char** argv) {
                     batchOk && batchDialogOk &&
                     actionsPanelOk &&
                     commandsOpStackOk &&
+                    channelsPanelOk && quickMaskPaintOk &&
                     commandOk && jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     commandsImageOk &&
                     commandsPatternsOk &&

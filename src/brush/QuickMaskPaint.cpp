@@ -20,7 +20,13 @@ size_t paintQuickMaskDab(QuickMask& mask, const BrushTip& tip, Vec2 centre, int3
       if (!(cov > 0.0f)) continue;
       const PixelCoord texel{x, y};
       const float before = quickMaskCoverageAt(mask, texel);
-      const float after = combineCoverage(before, tip.flow * cov, op);
+      // Opacity folded into the per-dab weight, not latched as a separate
+      // ceiling the way brush/RgbDeposit's is -- see this file's header:
+      // `max`/`min` are already idempotent, so a weight capped at
+      // `flow * opacity` never climbs past it no matter how many dabs of a
+      // lingering stroke propose the identical bound, which is a per-stroke
+      // ceiling MaskPaint needs an accumulator to get and this gets for free.
+      const float after = combineCoverage(before, tip.flow * tip.opacity * cov, op);
       // Same value in, same value quantised out -- `paintQuickMask()` would
       // skip this write anyway, but testing here also skips the redundant
       // find()/getOrCreate() pair on a texel this dab cannot change.

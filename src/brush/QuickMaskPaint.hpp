@@ -14,6 +14,11 @@
 // (`core::combineCoverage()`'s max/min), and both are already idempotent
 // under overlap, so there is no ceiling or per-stroke accumulator to latch --
 // unlike a layer mask's sample, which has no privileged end and needs one.
+// Opacity folds straight into the per-dab weight for the identical reason:
+// `max(base, flow*opacity*cov)` cannot climb past `flow*opacity` no matter
+// how many dabs of a lingering stroke propose it, so the ceiling brush/
+// RgbDeposit needs an accumulator to enforce falls out of `max`/`min` here
+// for free.
 //
 // Deliberately not a `StrokeRoute`: a quick mask has no `Layer`, no
 // `core::History` entry and no revision, so it does not answer

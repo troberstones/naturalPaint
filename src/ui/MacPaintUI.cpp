@@ -99,6 +99,7 @@
 #include "io/ExportStates.hpp"
 #include "io/GradientPresetFile.hpp"
 #include "brush/BrushModelFields.hpp"
+#include "brush/QuickMaskPaint.hpp"
 #include "ui/BrushFieldPresentation.hpp"
 #include "ui/BrushSettingsWindow.hpp"
 #include "ui/CanvasQuad.hpp"
@@ -6469,6 +6470,15 @@ void toggleQuickMask(OpenDocument& od) {
     od.quickMask.reset();
   } else {
     od.quickMask = quickMaskFromSelection(od.selection.has_value() ? &*od.selection : nullptr);
+    // Suspended, not deselected: a stale `od.selection` left standing while
+    // the mask is what the user is actually editing would let another
+    // command read it mid-session and double-restrict against a marquee
+    // nothing on screen shows any more. Bumps `selectionRevision` directly
+    // rather than through `installSelection()`, which would also set
+    // `lastDeselected` -- entering quick mask is not a Deselect, and Reselect
+    // (Cmd+Shift+D) should not arm on it.
+    od.selection.reset();
+    ++od.selectionRevision;
   }
 }
 
@@ -20514,11 +20524,23 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // solver, exactly `app/ToolSurface`'s `toolActsWithoutDocument()` (which
     // this predicate must keep agreeing with) says for Brush/Water/Dry
     // Brush now that PaintSim no longer stands with nothing open.
+    // PRD E12. Computed here, ahead of `paintTool`, so it can gate that leaf
+    // predicate too and not only `strokeTool` below -- this file's own
+    // documented failure mode a few lines up is exactly "gating only the
+    // derived predicate reroutes a stroke", and Brush is in BOTH `paintTool`
+    // (the solver) and `strokeTool` (the layer), so leaving either one
+    // untouched would let a Brush stroke leak into it the moment quick mask
+    // is engaged. Eraser is never in `paintTool`, so this term is a no-op
+    // there and only matters for Brush.
+    const bool quickMaskTool = (st.brush.tool == Tool::Brush || st.brush.tool == Tool::Eraser) &&
+                               !transformActive && st.documents.active() != nullptr &&
+                               st.documents.active()->quickMask.has_value();
     // `!flatsToolOwnsCanvas` on all three: these are the flags that deposit,
     // and a flatting tool being active has to mean they do not. Without this
     // the palette says DELETE and a drag lays down paint, which is the
     // "two tools active at once" this whole revision is about.
-    const bool paintTool = !flatsToolOwnsCanvas && (st.brush.tool == Tool::Brush ||
+    const bool paintTool = !flatsToolOwnsCanvas && !quickMaskTool &&
+                           (st.brush.tool == Tool::Brush ||
                             st.brush.tool == Tool::Water ||
                             st.brush.tool == Tool::DryBrush) &&
                            !transformActive && st.documents.active() != nullptr;
@@ -20616,8 +20638,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // `!cloneAnchoring` term is the one thing the derived predicate cannot know:
     // an Option-click that sets the clone source must not also start a stroke,
     // which is a property of the GESTURE rather than of the tool.
+    // `!quickMaskTool`: PRD E12's redirect owns Brush/Eraser while a quick
+    // mask is engaged, and gating this derived predicate is safe here only
+    // because `paintTool` above carries the identical term -- neither of the
+    // two branches this feeds can leak the stroke into the other.
     const bool strokeTool =
-        toolBeginsStroke(st.brush.tool) && !transformActive && !cloneAnchoring;
+        toolBeginsStroke(st.brush.tool) && !transformActive && !cloneAnchoring && !quickMaskTool;
     const bool inside = tx >= 0 && ty >= 0 && tx < texW && ty < texH;
     const bool down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
     if (cloneTool && hovered && inside && !panning && !rotating && !sizingHeld &&
@@ -20725,7 +20751,30 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const Layer* strokeTarget = strokeDoc != nullptr ? activeLayerOf(*strokeDoc) : nullptr;
     const StrokeRoute route = strokeRouteFor(st.brush.tool, strokeTarget);
 
-    if (strokeTool && down && hovered && inside && !panning && !rotating && !sizingHeld &&
+    if (quickMaskTool && down && hovered && inside && !panning && !rotating && !sizingHeld &&
+        !st.pendingGuide.has_value()) {
+      // PRD E12. Not `app::StrokeSession` -- brush/QuickMaskPaint.hpp's own
+      // header argues why: a quick mask has no Layer, no history entry and
+      // no revision, so `StrokeSession::begin()`'s `strokeRouteWritesLayer()`
+      // gate would refuse it outright rather than answer a question it does
+      // not have. This reuses the arc-length emitter the solver route below
+      // does (`AppState::quickMaskStrokePath`, a dab stream with neutral
+      // axes), not `g_stroke`'s own.
+      st.paintingThisFrame = true;
+      if (!st.quickMaskStrokeActive) {
+        st.quickMaskStrokePath.reset();
+        st.quickMaskStrokeActive = true;
+      }
+      const BrushTip tip = brushTipFor(st.brush, lut, DynamicInputs{});
+      std::vector<Vec2> dabs;
+      st.quickMaskStrokePath.addPoint(tx, ty, std::max(tip.spacingPx(), 0.1f), dabs);
+      const bool erase = st.brush.tool == Tool::Eraser;
+      for (const Vec2& dab : dabs)
+        paintQuickMaskDab(*strokeDoc->quickMask, tip, dab, strokeDoc->document.width,
+                          strokeDoc->document.height, erase);
+      st.lastX = tx;
+      st.lastY = ty;
+    } else if (strokeTool && down && hovered && inside && !panning && !rotating && !sizingHeld &&
         !st.pendingGuide.has_value() && strokeRouteWritesLayer(route)) {
       // **The pen reaches a Layer.** app/StrokeSession section 4 said this was
       // "a missing decision rather than missing plumbing", and the decision it
@@ -21092,6 +21141,22 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         applyDabsToOilSegment();
       }
       st.strokeActive = false;
+      // PRD E12's pen-up: the quick-mask stroke's own tail segment, its own
+      // flag -- see AppState::quickMaskStrokeActive on why this is not the
+      // oil route's `strokeActive` above.
+      if (st.quickMaskStrokeActive) {
+        OpenDocument* qmDoc = st.documents.active();
+        if (qmDoc != nullptr && qmDoc->quickMask.has_value()) {
+          const BrushTip tip = brushTipFor(st.brush, lut, DynamicInputs{});
+          std::vector<Vec2> tailDabs;
+          st.quickMaskStrokePath.flush(std::max(tip.spacingPx(), 0.1f), tailDabs);
+          const bool erase = st.brush.tool == Tool::Eraser;
+          for (const Vec2& dab : tailDabs)
+            paintQuickMaskDab(*qmDoc->quickMask, tip, dab, qmDoc->document.width,
+                              qmDoc->document.height, erase);
+        }
+        st.quickMaskStrokeActive = false;
+      }
       // The CPU route's pen-up. Separate from `strokeActive`, which is the
       // solver's flag: the two routes never run at once (the route is decided
       // per frame and one branch above is taken), but a stroke that began on

@@ -218,13 +218,18 @@ bool runMenuModelTest() {
   // (View > Show Frames and Slices, `AppState::showRegions`) -- counted the
   // same way, off `MenuAction`'s enumerators in the merged header (101
   // including `Count`), never by adding 2 to 98.
-  check(kMenuActionCount == 100,
-        "ids: exactly 100 actions -- the original 41-item extraction plus D1/D2's "
+  //
+  // 100 -> 103 in the `channels` track (PRD E11/E12): `SaveSelectionAsChannel`,
+  // `LoadChannelAsSelection` and `ToggleQuickMask` -- counted off the merged
+  // header's enumerators (104 including `Count`), not by adding 3 to 100.
+  check(kMenuActionCount == 103,
+        "ids: exactly 103 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
         "dialog, Brush Settings, the crop pair, Pigment, Batch, Inpaint, D8's "
-        "make-tileable pair, the 3x3 repeat preview and the region export/show "
-        "pair, so an item lost in a later edit fails here");
+        "make-tileable pair, the 3x3 repeat preview, the region export/show pair "
+        "and PRD E11/E12's save/load channel and quick-mask trio, so an item "
+        "lost in a later edit fails here");
 
   {
     std::set<MenuAction> seen;

@@ -52,6 +52,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/BucketRefusal.cpp
   app/selftest/CanvasDimensions.cpp
   app/selftest/Channels.cpp
+  app/selftest/ChannelsPanel.cpp
   app/selftest/CheckedAdd.cpp
   app/selftest/ChromeConsistency.cpp
   app/selftest/Clipboard.cpp
@@ -124,6 +125,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/BatchDialog.cpp
   app/selftest/ActionsPanel.cpp
   app/selftest/CommandsOpStack.cpp
+  app/selftest/QuickMaskPaint.cpp
   app/selftest/CommandsImage.cpp
   app/selftest/CommandCallsites.cpp
   app/selftest/Json.cpp
