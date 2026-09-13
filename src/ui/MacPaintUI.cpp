@@ -40,6 +40,7 @@
 #include "app/Command.hpp"
 #include "app/CommandsImage.hpp"
 #include "app/CommandsLayers.hpp"
+#include "app/CommandsOpStack.hpp"
 #include "app/CompPanel.hpp"
 #include "app/CropTool.hpp"  // Tool::Crop, both modes
 #include "app/RegionTool.hpp"  // Tool::Frame, Tool::Slice
@@ -1399,7 +1400,7 @@ float distancePointToSegment(ImVec2 p, ImVec2 a, ImVec2 b) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// The three UI -> command-layer boundaries (ui/MacPaintUI.hpp)
+// The four UI -> command-layer boundaries (ui/MacPaintUI.hpp)
 // ---------------------------------------------------------------------------
 //
 // At file scope, not in the anonymous namespace above, because `--selftest`
@@ -1408,10 +1409,10 @@ float distancePointToSegment(ImVec2 p, ImVec2 a, ImVec2 b) {
 // `g_layers` and every other file-local of this translation unit, which is
 // what lets `runLayerCommand()` below stay the panel-shaped wrapper it was.
 //
-// **These three are the whole boundary.** A widget that reaches an `applyX()`
+// **These four are the whole boundary.** A widget that reaches an `applyX()`
 // directly runs correctly and records nothing -- the recorder's tap is inside
 // `applyCommand()` -- and no assertion in this repository can see it happen.
-// docs/automation.md §2.3 and §7 say so at length; a fourth door belongs here,
+// docs/automation.md §2.3 and §7 say so at length; a new door belongs here,
 // at file scope, beside these, with its own case in
 // app/selftest/CommandCallsites.cpp section A.
 //
@@ -1479,6 +1480,22 @@ LayerCommandOutcome runActiveLayerSetter(OpenDocument& od, const Command& comman
   out.error = r.ok ? std::string() : r.status;
   out.warnings = r.warnings;
   return out;
+}
+
+std::string runSelectionCommand(OpenDocument& od, const Command& command) {
+  const CommandResult r = applyCommand(od, command);
+  return r.ok ? std::string() : r.status;
+}
+
+Command selectRefineCommand(MenuAction action, float radius) {
+  switch (action) {
+    case MenuAction::SelectGrow: return selectGrowCommand(radius);
+    case MenuAction::SelectShrink: return selectShrinkCommand(radius);
+    case MenuAction::SelectFeather: return selectFeatherCommand(radius);
+    // An unregistered id, so a miswired dialog is refused by name rather than
+    // silently committing some other refine.
+    default: return Command{"select_refine_unmapped", JsonValue::object()};
+  }
 }
 
 bool drawCurveWidget(Curve& curve, float plotSize = 200.0f) {
@@ -6470,63 +6487,6 @@ bool selectRangeEnabled(const OpenDocument& od) noexcept {
 
 bool selectUndoRefineEnabled(const OpenDocument& od) noexcept {
   return !od.refineUndoStack.empty();
-}
-
-Selection applySelectRefineAction(MenuAction action, const Selection& current, float radius) {
-  // One switch, one engine call per case -- the shape `performMenuAction()`
-  // itself uses, and for the identical reason stated there: a call site that
-  // fell through to a default would be a menu item wired to nothing, which is
-  // worse than wired to the wrong thing because it is silent. There is no
-  // `default:` here for the same reason -- an action added to the enum
-  // without a row here should fail to compile once this switch is marked
-  // exhaustive, not fall through to returning `current` unchanged, which
-  // would look like a working "Grow" that grows nothing.
-  switch (action) {
-    case MenuAction::SelectGrow: return growSelection(current, radius);
-    case MenuAction::SelectShrink: return shrinkSelection(current, radius);
-    case MenuAction::SelectFeather: return featherSelection(current, radius);
-    default: return current;
-  }
-}
-
-Selection applySelectColourRangeAction(const std::array<float, 3>& swatchSrgb, float tolerance,
-                                       float edgeBand, const TileStore& source, int32_t width,
-                                       int32_t height) {
-  // sRGB -> STRAIGHT LINEAR, per channel -- the identical conversion
-  // foregroundLinearRgba() applies to the swatch above, and for the identical
-  // reason: `selectColourRange()` wants straight linear RGBA
-  // (core/SelectionRefine.hpp says so at the parameter), and skipping this
-  // selects a colour roughly twice as dark as the one the swatch showed,
-  // which reads as a colour-management bug rather than a missing conversion.
-  const std::array<float, 4> linear = {srgbDecode(swatchSrgb[0]), srgbDecode(swatchSrgb[1]),
-                                       srgbDecode(swatchSrgb[2]), 1.0f};
-  SelectionRangeParams params;
-  params.tolerance = tolerance;
-  // Clamped here rather than left to core/SelectionRefine's own internal
-  // clamp (SelectionRangeParams::edgeBand's comment says it clamps to
-  // tolerance) so a caller inspecting `params` before the call sees the value
-  // that will actually be used, not one that only becomes correct inside the
-  // engine.
-  params.edgeBand = std::min(edgeBand, tolerance);
-  return selectColourRange(source, linear, width, height, params);
-}
-
-Selection applySelectLuminanceRangeAction(float low, float high, float edgeBand,
-                                          const TileStore& source, int32_t width,
-                                          int32_t height) {
-  SelectionLuminanceRange range;
-  range.low = low;
-  range.high = high;
-  range.edgeBand = edgeBand;
-  return selectLuminanceRange(source, width, height, range);
-}
-
-void installRefinedSelection(OpenDocument& od, std::optional<Selection> result) {
-  // Pushed BEFORE installSelection() moves od.selection out from under this
-  // read -- the ordering that makes "one entry per operation" true rather
-  // than aspirational.
-  od.refineUndoStack.push_back(od.selection);
-  installSelection(od, std::move(result));
 }
 
 bool undoLastRefine(OpenDocument& od) {
@@ -12212,14 +12172,37 @@ struct RefineRadiusDialog {
   const char* popupId;
   const char* verb;          // the confirm button's label: "Grow", "Shrink", "Feather"
   const char* explanation;
-  MenuAction action;         // which of applySelectRefineAction()'s three cases to reach
+  MenuAction action;         // which of selectRefineCommand()'s three cases to reach
   float radius = 4.0f;
+  std::string status;
 };
+
+// The footer all five Select dialogs share. Takes only a `Command`, like
+// pixelOpFooter(), so a dialog cannot commit around the recorder's tap.
+void selectionCommandFooter(OpenDocument* od, bool usable, const char* verb, std::string& status,
+                            const Command& command) {
+  dialogStatusLine(DialogStatus::Error, status);
+  DialogFooter footer;
+  footer.commit = verb;
+  footer.commitEnabled = usable;
+  switch (dialogFooter(footer)) {
+    case DialogAction::Commit:
+      status = runSelectionCommand(*od, command);
+      if (status.empty()) ImGui::CloseCurrentPopup();
+      break;
+    case DialogAction::Cancel:
+      status.clear();
+      ImGui::CloseCurrentPopup();
+      break;
+    default:
+      break;
+  }
+}
 
 // One popup, shared by all three static instances in drawSelectMenuDialogs()
 // below. `*requested` is the flag `performMenuAction()` set; `dlg.action`
-// (not a passed-in function pointer) is what selects growSelection() /
-// shrinkSelection() / featherSelection() inside applySelectRefineAction() --
+// (not a passed-in function pointer) is what selects select_grow /
+// select_shrink / select_feather inside selectRefineCommand() --
 // keeping that dispatch in ONE switch, shared with --selftest, rather than
 // wiring each call site to a function pointer here where nothing but a
 // human reading the diff could notice two dialogs pointed at the same one.
@@ -12246,20 +12229,8 @@ void drawRefineRadiusDialog(AppState& st, RefineRadiusDialog& dlg, bool* request
   if (od == nullptr) dialogHint("No document is open.");
   else if (!usable) dialogHint("Nothing is selected, so there is no edge to move.");
 
-  DialogFooter footer;
-  footer.commit = dlg.verb;
-  footer.commitEnabled = usable;
-  switch (dialogFooter(footer)) {
-    case DialogAction::Commit:
-      installRefinedSelection(*od, applySelectRefineAction(dlg.action, *od->selection, dlg.radius));
-      ImGui::CloseCurrentPopup();
-      break;
-    case DialogAction::Cancel:
-      ImGui::CloseCurrentPopup();
-      break;
-    default:
-      break;
-  }
+  selectionCommandFooter(od, usable, dlg.verb, dlg.status,
+                         selectRefineCommand(dlg.action, dlg.radius));
   endDialog();
 }
 
@@ -12279,6 +12250,7 @@ void drawSelectColourRangeDialog(AppState& st) {
   // already knows what this slider does.
   static float tolerance = kFloodDefaultTolerance;
   static float edgeBand = kFloodDefaultEdgeBand;
+  static std::string status;
 
   if (g_selectColourRangeRequested) {
     g_selectColourRangeRequested = false;
@@ -12292,34 +12264,18 @@ void drawSelectColourRangeDialog(AppState& st) {
   dialogColor("Colour", swatchSrgb);
   dialogSlider("Tolerance", &tolerance, 0.0f, 1.0f, "%.3f");
   // Capped at `tolerance` on the slider itself as well as internally
-  // (applySelectColourRangeAction() clamps again) -- an edge band wider than
+  // (select_colour_range clamps again) -- an edge band wider than
   // the tolerance it is softening the OUTSIDE of is not a state the dialog
   // should let a user reach and then silently correct underneath them.
   dialogSlider("Softness", &edgeBand, 0.0f, std::max(tolerance, 0.001f), "%.3f");
 
   OpenDocument* od = st.documents.active();
   const bool usable = od != nullptr && selectRangeEnabled(*od);
-  const Layer* target = usable ? activeLayerOf(*od) : nullptr;
   if (!usable) dialogHint("The active layer has no colour pixels to sample.");
 
-  DialogFooter footer;
-  footer.commit = "Select";
-  footer.commitEnabled = usable;
-  switch (dialogFooter(footer)) {
-    case DialogAction::Commit: {
-      const std::array<float, 3> swatch = {swatchSrgb[0], swatchSrgb[1], swatchSrgb[2]};
-      installRefinedSelection(
-          *od, applySelectColourRangeAction(swatch, tolerance, edgeBand, *target->rgbTiles,
-                                            od->document.width, od->document.height));
-      ImGui::CloseCurrentPopup();
-      break;
-    }
-    case DialogAction::Cancel:
-      ImGui::CloseCurrentPopup();
-      break;
-    default:
-      break;
-  }
+  selectionCommandFooter(
+      od, usable, "Select", status,
+      selectColourRangeCommand({swatchSrgb[0], swatchSrgb[1], swatchSrgb[2]}, tolerance, edgeBand));
   endDialog();
 }
 
@@ -12328,6 +12284,7 @@ void drawSelectLuminanceRangeDialog(AppState& st) {
   static float low = 0.0f;
   static float high = 1.0f;
   static float edgeBand = kFloodDefaultEdgeBand;
+  static std::string status;
 
   if (g_selectLuminanceRangeRequested) {
     g_selectLuminanceRangeRequested = false;
@@ -12351,25 +12308,10 @@ void drawSelectLuminanceRangeDialog(AppState& st) {
 
   OpenDocument* od = st.documents.active();
   const bool usable = od != nullptr && selectRangeEnabled(*od);
-  const Layer* target = usable ? activeLayerOf(*od) : nullptr;
   if (!usable) dialogHint("The active layer has no colour pixels to sample.");
 
-  DialogFooter footer;
-  footer.commit = "Select";
-  footer.commitEnabled = usable;
-  switch (dialogFooter(footer)) {
-    case DialogAction::Commit:
-      installRefinedSelection(
-          *od, applySelectLuminanceRangeAction(low, high, edgeBand, *target->rgbTiles,
-                                               od->document.width, od->document.height));
-      ImGui::CloseCurrentPopup();
-      break;
-    case DialogAction::Cancel:
-      ImGui::CloseCurrentPopup();
-      break;
-    default:
-      break;
-  }
+  selectionCommandFooter(od, usable, "Select", status,
+                         selectLuminanceRangeCommand(low, high, edgeBand));
   endDialog();
 }
 
@@ -13125,10 +13067,7 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     // identical reason: opening the dialog is `ImGui::OpenPopup()`, which
     // must not be called from a native menu's AppKit callback. The engine
     // call itself happens in drawSelectMenuDialogs()'s confirm button, through
-    // applySelectRefineAction() / applySelectColourRangeAction() /
-    // applySelectLuminanceRangeAction() (ui/MacPaintUI.hpp) -- the boundary
-    // app/selftest/SelectMenu.cpp exercises directly, since it cannot open a
-    // popup either.
+    // runSelectionCommand() (ui/MacPaintUI.hpp), so the recorder sees it.
     case MenuAction::SelectGrow:
       g_selectGrowRequested = true;
       break;

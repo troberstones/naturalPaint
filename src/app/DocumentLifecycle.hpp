@@ -272,16 +272,9 @@ struct OpenDocument {
   // nameable step the way core::History's own entries are. `undoLastRefine()`
   // (ui/MacPaintUI.hpp) is the only function that pops.
   //
-  // **Two functions push, and they are deliberately two.**
-  // `ui::installRefinedSelection()` is the menus' route;
   // `installRefinedSelectionForCommand()` (app/CommandsOpStack.cpp §4) is the
-  // command table's, added when PRD E4/E8/E9's five refines were registered as
-  // recordable commands. They are not shared because the UI copy has internal
-  // linkage and app/ must not include ui/ (docs/automation-plan.md §7: the UI
-  // path calls the document path, never the reverse), and the command copy
-  // exists at all so that step 2's call-site migration -- which is meant to
-  // change no behaviour -- cannot quietly delete Select > Undo Refine. When
-  // that migration lands, the UI copy is what goes.
+  // only function that pushes; the Select menu's dialogs reach it through
+  // `applyCommand()`.
   //
   // This stack is also why `MenuAction::SelectUndoRefine` is classified
   // NotRecordable while the five refines that fill it are Registered: see

@@ -140,14 +140,9 @@
 // the step: `"colour": [r, g, b]`, display-encoded sRGB, the same three
 // numbers the swatch showed.
 //
-// **The engine is called directly, not through ui/MacPaintUI.hpp's
-// `applySelectRefineAction()` family.** Those four functions are the *UI's*
-// dialog-to-engine boundary and app/ must not include ui/ -- §7 of the plan
-// again, the UI path calls the document path and never the reverse. That
-// leaves two boundaries doing the same decode until step 2 migrates the call
-// sites and deletes the UI half, so app/selftest/CommandsOpStack.cpp asserts
-// the two agree bit for bit rather than trusting a comment to keep them in
-// step.
+// **These rows are the only decoder.** The Select menu's dialogs encode with
+// the `select*Command()` functions below and commit through
+// `ui::runSelectionCommand()`; the UI's own appliers were deleted.
 //
 // **A refine pushes the selection it replaced onto `refineUndoStack`**, which
 // is what makes Select > Undo Refine keep working once step 2 routes the menu
@@ -784,17 +779,9 @@ CommandResult doLoadChannelAsSelection(OpenDocument& doc, const JsonValue& param
 
 // --- the five refine adapters (§4) ---------------------------------------
 
-// The app-side twin of `ui::installRefinedSelection()`: push what is being
-// replaced onto the refine-undo stack, then install. Duplicated rather than
-// shared for the reason `installSelectionForCommand()` above is duplicated --
-// the UI's copy has internal linkage in ui/MacPaintUI.cpp and app/ must not
-// include ui/ -- and it exists at all so that step 2's call-site migration,
-// which is meant to change no behaviour, does not quietly delete Select >
-// Undo Refine.
-//
-// Pushed BEFORE the install moves `doc.selection` out from under this read,
-// which is the ordering that makes "one entry per refine" true rather than
-// aspirational; the UI copy states the same thing at its own push.
+// Push what is being replaced onto the refine-undo stack, then install, so
+// Select > Undo Refine can pop it. Pushed BEFORE the install moves
+// `doc.selection` out from under this read: one entry per refine.
 void installRefinedSelectionForCommand(OpenDocument& doc, std::optional<Selection> refined) {
   doc.refineUndoStack.push_back(doc.selection);
   installSelectionForCommand(doc, std::move(refined));
@@ -893,7 +880,7 @@ std::string rangeSourceUnavailable(const OpenDocument& doc, const char* commandI
 }
 
 // The swatch, carried by value. Three display-encoded sRGB numbers -- what
-// `ImGui::ColorEdit3` holds and what `applySelectColourRangeAction()` takes --
+// `ImGui::ColorEdit3` holds --
 // and **required**, because every candidate default is somebody's session
 // state rather than the engine's: the dialog's own 0.5 grey, or `AppState`'s
 // foreground. §4 is about exactly this key.
@@ -938,9 +925,8 @@ CommandResult doSelectColourRange(OpenDocument& doc, const JsonValue& params) {
   // exactly as the magic wand does, which is what a reader of the file would
   // assume.
   range.tolerance = floatOr(params, "tolerance", range.tolerance);
-  // Clamped here as well as inside the engine, for the reason
-  // `applySelectColourRangeAction()` gives: a caller inspecting the params it
-  // is about to pass should see the value that will actually be used.
+  // Clamped here as well as inside the engine, so the params passed are the
+  // values actually used.
   range.edgeBand = std::min(floatOr(params, "edge_band", range.edgeBand), range.tolerance);
 
   // sRGB -> STRAIGHT LINEAR. `selectColourRange()` names that convention on
@@ -1030,6 +1016,37 @@ void registerOpStackCommands(std::vector<CommandSpec>* out) {
                   {"low", "high", "edge_band"},
                   luminanceRangeUnavailable,
                   doSelectLuminanceRange});
+}
+
+namespace {
+Command radiusCommand(const char* id, float radius) {
+  JsonValue p = JsonValue::object();
+  p.set("radius", JsonValue::number(radius));
+  return Command{id, std::move(p)};
+}
+}  // namespace
+
+Command selectGrowCommand(float radius) { return radiusCommand("select_grow", radius); }
+Command selectShrinkCommand(float radius) { return radiusCommand("select_shrink", radius); }
+Command selectFeatherCommand(float radius) { return radiusCommand("select_feather", radius); }
+
+Command selectColourRangeCommand(const std::array<float, 3>& swatchSrgb, float tolerance,
+                                 float edgeBand) {
+  JsonValue colour = JsonValue::array();
+  for (float c : swatchSrgb) colour.push(JsonValue::number(c));
+  JsonValue p = JsonValue::object();
+  p.set("colour", std::move(colour));
+  p.set("tolerance", JsonValue::number(tolerance));
+  p.set("edge_band", JsonValue::number(edgeBand));
+  return Command{"select_colour_range", std::move(p)};
+}
+
+Command selectLuminanceRangeCommand(float low, float high, float edgeBand) {
+  JsonValue p = JsonValue::object();
+  p.set("low", JsonValue::number(low));
+  p.set("high", JsonValue::number(high));
+  p.set("edge_band", JsonValue::number(edgeBand));
+  return Command{"select_luminance_range", std::move(p)};
 }
 
 }  // namespace np

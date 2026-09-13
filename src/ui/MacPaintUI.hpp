@@ -585,18 +585,10 @@ LayerCommandOutcome runActiveLayerSetter(OpenDocument& od, const Command& comman
 // ---------------------------------------------------------------------------
 //
 // The ImGui popups around these (ui/MacPaintUI.cpp's drawSelectMenuDialogs())
-// cannot run headless -- there is no window, no frame, nothing for
-// `ImGui::BeginPopupModal()` to draw into. What CAN run headless, and what
-// app/selftest/SelectMenu.cpp actually needs proven, is the boundary between
-// "what the dialog holds" and "what the engine sees": that
-// `MenuAction::SelectGrow` reaches `growSelection()` and not
-// `shrinkSelection()`, that the radius on screen is the radius the engine
-// receives rather than a hardcoded default, and that colour/luminance range
-// decode and forward their sliders rather than falling back to
-// `SelectionRangeParams{}`'s defaults. These six functions ARE that boundary
-// -- every popup's confirm button calls exactly one of them and nothing else,
-// so a test that calls them the same way the button does is testing the real
-// wiring and not a re-implementation of it.
+// cannot run headless. Every popup's confirm button builds a `Command` with an
+// encoder (app/CommandsOpStack.hpp, or `selectRefineCommand()` below) and
+// commits it through `runSelectionCommand()` and nothing else, so a test that
+// does the same is testing the real wiring.
 
 // The enable predicate for Grow, Shrink and Feather: an ENGAGED selection.
 // All three take a `const Selection&` (core/SelectionRefine.hpp,
@@ -609,48 +601,19 @@ bool selectRefineEnabled(const OpenDocument& od) noexcept;
 // so unlike the three above they need NO selection already drawn.
 bool selectRangeEnabled(const OpenDocument& od) noexcept;
 
-// The enable predicate for `MenuAction::SelectUndoRefine`: the stack this
-// file's own `installRefinedSelection()` pushes to is non-empty.
+// The enable predicate for `MenuAction::SelectUndoRefine`: the stack the
+// refine commands push to is non-empty.
 bool selectUndoRefineEnabled(const OpenDocument& od) noexcept;
 
-// The dialog -> engine boundary for Grow, Shrink and Feather. `action` picks
-// the engine function -- `SelectGrow` to `growSelection()`, `SelectShrink` to
-// `shrinkSelection()`, `SelectFeather` to `featherSelection()` -- and
-// `radius` is passed through exactly as the dialog's slider holds it. Any
-// other `action` returns `current` unchanged; the three popups this backs
-// never pass one.
-Selection applySelectRefineAction(MenuAction action, const Selection& current, float radius);
+// The fourth UI -> command-layer boundary (docs/automation.md §2.3): a Select
+// menu refine or range dialog's commit, through `applyCommand()`. Returns
+// empty on success, or the refusal sentence for the dialog's red line.
+std::string runSelectionCommand(OpenDocument& od, const Command& command);
 
-// The dialog -> engine boundary for Colour Range. `swatchSrgb` is the
-// dialog's `ImGui::ColorEdit3` value -- display-encoded sRGB, matching
-// `foregroundLinearRgba()`'s own input above -- and is decoded to STRAIGHT
-// LINEAR here, the one boundary core/SelectionRefine.hpp asks for, rather
-// than at every call site. `tolerance`/`edgeBand` are the dialog's own
-// sliders, forwarded into a `SelectionRangeParams` rather than left at that
-// struct's defaults.
-Selection applySelectColourRangeAction(const std::array<float, 3>& swatchSrgb, float tolerance,
-                                       float edgeBand, const TileStore& source, int32_t width,
-                                       int32_t height);
-
-// The dialog -> engine boundary for Luminance Range. `low`/`high`/`edgeBand`
-// are the dialog's own sliders -- display-encoded Rec.709 luminance
-// (core/SelectionRefine.hpp), forwarded into a `SelectionLuminanceRange`
-// rather than left at that struct's defaults (which select nearly
-// everything: 0..1).
-Selection applySelectLuminanceRangeAction(float low, float high, float edgeBand,
-                                          const TileStore& source, int32_t width, int32_t height);
-
-// Where every one of the six functions above ends up: installs `result` as
-// `od.selection` (through `installSelection()`, so the revision bump and the
-// existing `lastDeselected` bookkeeping happen exactly once) and pushes what
-// it REPLACED onto `od.refineUndoStack` first. See that member's own comment
-// (app/DocumentLifecycle.hpp) for why this is a dedicated stack and not
-// `core::History`.
-//
-// Not `installSelection()` itself: that function is also what every
-// interactive marquee drag calls, once a frame, for as long as the drag
-// lasts -- and a marquee drag is not five hundred refine-undo entries.
-void installRefinedSelection(OpenDocument& od, std::optional<Selection> result);
+// Grow, Shrink and Feather share one dialog; `action` picks select_grow,
+// select_shrink or select_feather. Any other action encodes an unregistered
+// id, which `runSelectionCommand()` refuses by name.
+Command selectRefineCommand(MenuAction action, float radius);
 
 // `MenuAction::SelectUndoRefine`'s body. Pops the most recent entry off
 // `od.refineUndoStack` and restores exactly the selection it replaced

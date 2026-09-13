@@ -5,6 +5,7 @@
 #include <optional>
 
 #include "app/AppState.hpp"
+#include "app/CommandsOpStack.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "color/Space.hpp"
 #include "core/SelectionMask.hpp"
@@ -36,6 +37,22 @@ bool identicalOver(const Selection& a, const Selection& b, int32_t x0, int32_t y
   return true;
 }
 
+// The dialogs' own commit path: an encoder, then runSelectionCommand(). A
+// refusal returns an empty selection so it cannot pass as the input.
+Selection refinedByDialog(MenuAction action, const Selection& current, float radius) {
+  OpenDocument od = makeBlankOpenDocument(64, 64, WorkingSpace{});
+  od.selection = current;
+  if (!runSelectionCommand(od, selectRefineCommand(action, radius)).empty()) return Selection{};
+  return od.selection.value_or(Selection{});
+}
+
+Selection rangedByDialog(const TileStore& src, int32_t w, int32_t h, const Command& command) {
+  OpenDocument od = makeBlankOpenDocument(w, h, WorkingSpace{});
+  od.document.layers[od.activeLayer].rgbTiles = src;
+  if (!runSelectionCommand(od, command).empty()) return Selection{};
+  return od.selection.value_or(Selection{});
+}
+
 }  // namespace
 
 // app/selftest/SelectMenu -- docs/reachability-audit.md C5, PRD E4/E8/E9.
@@ -64,16 +81,10 @@ bool identicalOver(const Selection& a, const Selection& b, int32_t x0, int32_t y
 // and to stay green no matter how the underlying engine's numbers move.
 //
 // **Why this can run with no window at all.** The ImGui popups
-// (ui/MacPaintUI.cpp's drawSelectMenuDialogs()) cannot run headless -- there
-// is nothing for `ImGui::BeginPopupModal()` to draw into. But every popup's
-// confirm button does exactly one thing: it hands the dialog's own held
-// values to one of six small functions declared in ui/MacPaintUI.hpp
-// (applySelectRefineAction(), applySelectColourRangeAction(),
-// applySelectLuminanceRangeAction(), installRefinedSelection(),
-// undoLastRefine(), and the three enable predicates). Those six ARE the
-// dialog-to-engine boundary, factored out for exactly this reason, and they
-// are plain functions of their arguments -- no ImGui, no window, no
-// AppState beyond what a test can build by hand.
+// (ui/MacPaintUI.cpp's drawSelectMenuDialogs()) cannot run headless, but every
+// popup's confirm button only encodes its held values into a `Command` and
+// hands it to runSelectionCommand(). `refinedByDialog()` and `rangedByDialog()`
+// below do exactly that, so these assertions exercise the real commit path.
 bool runSelectMenuTest() {
   bool ok = true;
   auto check = [&](bool cond, const char* what) {
@@ -96,10 +107,10 @@ bool runSelectMenuTest() {
     // pass by coincidence.
     const float dialogRadius = 6.25f;
 
-    const Selection grown = applySelectRefineAction(MenuAction::SelectGrow, rect, dialogRadius);
-    const Selection shrunk = applySelectRefineAction(MenuAction::SelectShrink, rect, dialogRadius);
+    const Selection grown = refinedByDialog(MenuAction::SelectGrow, rect, dialogRadius);
+    const Selection shrunk = refinedByDialog(MenuAction::SelectShrink, rect, dialogRadius);
     const Selection feathered =
-        applySelectRefineAction(MenuAction::SelectFeather, rect, dialogRadius);
+        refinedByDialog(MenuAction::SelectFeather, rect, dialogRadius);
 
     check(identicalOver(grown, growSelection(rect, dialogRadius), 0, 0, 40, 40),
           "wiring: SelectGrow reaches growSelection() with the dialog's own radius -- bit for "
@@ -152,7 +163,7 @@ bool runSelectMenuTest() {
           "null-tile-means-zero rule, not the opposite rule a null Selection* uses");
 
     const Selection grownAcrossTileEdge =
-        applySelectRefineAction(MenuAction::SelectGrow, edge, 10.0f);
+        refinedByDialog(MenuAction::SelectGrow, edge, 10.0f);
     // x=132 is 4 texels past the tile boundary at x=128, well inside a
     // radius-10 grow and far from where coverage would still be fractional
     // (that transition sits within ~1 texel of x=138); x=200 is 62 texels
@@ -194,9 +205,9 @@ bool runSelectMenuTest() {
           "closing: the gap texel starts UNSELECTED -- neither strip covers x=6");
 
     const Selection grownStrips =
-        applySelectRefineAction(MenuAction::SelectGrow, twoStrips, bridgeRadius);
+        refinedByDialog(MenuAction::SelectGrow, twoStrips, bridgeRadius);
     const Selection roundTrip =
-        applySelectRefineAction(MenuAction::SelectShrink, grownStrips, bridgeRadius);
+        refinedByDialog(MenuAction::SelectShrink, grownStrips, bridgeRadius);
 
     check(coverageAt(grownStrips, 6, 0) > 0.99f,
           "closing: growing by 8 comfortably bridges a 1-texel gap -- the midpoint is fully "
@@ -262,7 +273,7 @@ bool runSelectMenuTest() {
     const float edgeBand = 0.01f;
 
     const Selection viaWiring =
-        applySelectColourRangeAction(swatchSrgb, tolerance, edgeBand, src, 60, 60);
+        rangedByDialog(src, 60, 60, selectColourRangeCommand(swatchSrgb, tolerance, edgeBand));
 
     const std::array<float, 4> linear = {srgbDecode(swatchSrgb[0]), srgbDecode(swatchSrgb[1]),
                                          srgbDecode(swatchSrgb[2]), 1.0f};
@@ -298,7 +309,8 @@ bool runSelectMenuTest() {
     // the low band is inside with 0.04 to spare and both others are outside by
     // 2x and 6x the edge band.
     const float low = 0.3f, high = 0.58f, lumBand = 0.02f;
-    const Selection viaWiringLum = applySelectLuminanceRangeAction(low, high, lumBand, src, 60, 60);
+    const Selection viaWiringLum =
+        rangedByDialog(src, 60, 60, selectLuminanceRangeCommand(low, high, lumBand));
     SelectionLuminanceRange rangeDirect;
     rangeDirect.low = low;
     rangeDirect.high = high;
@@ -362,7 +374,7 @@ bool runSelectMenuTest() {
     const Selection before = *od.selection;
     check(od.refineUndoStack.empty(), "undo: starts empty");
 
-    installRefinedSelection(od, growSelection(before, 3.0f));
+    check(runSelectionCommand(od, selectGrowCommand(3.0f)).empty(), "undo: the Grow commit ran");
     check(od.refineUndoStack.size() == 1,
           "undo: one refine pushes EXACTLY one entry -- neither zero (unrecoverable) nor two "
           "(a double-push that would need two Undo Refines to reverse one Grow)");
@@ -392,7 +404,8 @@ bool runSelectMenuTest() {
     check(!noSelectionYet.selection.has_value(),
           "undo: sanity -- a fresh document has no selection, the OTHER absence "
           "core/SelectionMask.hpp names (opposite of an engaged-but-empty one)");
-    installRefinedSelection(noSelectionYet, selectRectangle(0.0f, 0.0f, 10.0f, 10.0f));
+    check(runSelectionCommand(noSelectionYet, selectLuminanceRangeCommand(0.0f, 1.0f, 0.0f)).empty(),
+          "undo: the Luminance Range commit ran with nothing selected");
     check(noSelectionYet.refineUndoStack.size() == 1 && noSelectionYet.selection.has_value(),
           "undo: a range op run with nothing selected still pushes one entry (holding "
           "std::nullopt) and installs its result");

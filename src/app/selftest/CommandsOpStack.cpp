@@ -759,24 +759,22 @@ bool runCommandsOpStackTest() {
 
     // --- the anti-drift cross-check ---------------------------------------
     //
-    // The command decodes the step; ui/MacPaintUI.cpp's boundary decodes the
-    // dialog. Two decoders of one set of values is the shape
-    // docs/automation-plan.md §7 calls out for op encodings ("two encoders of
-    // one op list will drift"), and it applies here for as long as both exist.
+    // Each row against its engine function called directly, so a row wired
+    // to the wrong engine (or dropping the radius) cannot pass.
     {
       OpenDocument od = rectDoc();
       const Selection before = *od.selection;
       check(applyCommand(od, Command{"select_grow", r8}).ok,
             "refine: select_grow ran");
       check(sameCoverage(od.selection,
-                         applySelectRefineAction(MenuAction::SelectGrow, before, 8.0f), w, h),
-            "refine: select_grow agrees with the Grow dialog, texel for texel");
+                         growSelection(before, 8.0f), w, h),
+            "refine: select_grow agrees with growSelection(), texel for texel");
 
       OpenDocument shrunk = rectDoc();
       check(applyCommand(shrunk, Command{"select_shrink", r8}).ok &&
                 sameCoverage(shrunk.selection,
-                             applySelectRefineAction(MenuAction::SelectShrink, before, 8.0f), w, h),
-            "refine: select_shrink agrees with the Shrink dialog");
+                             shrinkSelection(before, 8.0f), w, h),
+            "refine: select_shrink agrees with shrinkSelection()");
       // The assertion that stops the three rows from being wired to one
       // engine function: a shrink is not a grow.
       check(!sameCoverage(od.selection, shrunk.selection, w, h),
@@ -785,9 +783,8 @@ bool runCommandsOpStackTest() {
       OpenDocument feathered = rectDoc();
       check(applyCommand(feathered, Command{"select_feather", r8}).ok &&
                 sameCoverage(feathered.selection,
-                             applySelectRefineAction(MenuAction::SelectFeather, before, 8.0f), w,
-                             h),
-            "refine: select_feather agrees with the Feather dialog");
+                             featherSelection(before, 8.0f), w, h),
+            "refine: select_feather agrees with featherSelection()");
     }
 
     // --- Undo Refine still has something to pop ----------------------------
@@ -857,11 +854,12 @@ bool runCommandsOpStackTest() {
       const Layer* src = activeLayerOf(viaDialog);
       check(src != nullptr && src->rgbTiles.has_value() &&
                 sameCoverage(od.selection,
-                             applySelectColourRangeAction(swatch, kFloodDefaultTolerance,
-                                                          kFloodDefaultEdgeBand, *src->rgbTiles, w,
-                                                          h),
+                             selectColourRange(*src->rgbTiles,
+                                               {srgbDecode(swatch[0]), srgbDecode(swatch[1]),
+                                                srgbDecode(swatch[2]), 1.0f},
+                                               w, h, SelectionRangeParams{}),
                              w, h),
-            "colour range: agrees with the Colour Range dialog, texel for texel");
+            "colour range: agrees with selectColourRange() on the decoded colour");
 
       OpenDocument noPixels = makeOpStackDocument();
       noPixels.document.layers[0].rgbTiles.reset();
@@ -893,12 +891,15 @@ bool runCommandsOpStackTest() {
       OpenDocument viaDialog = makeOpStackDocument();
       const Layer* src = activeLayerOf(viaDialog);
       check(src != nullptr &&
-                sameCoverage(od.selection,
-                             applySelectLuminanceRangeAction(luma - 0.05f, luma + 0.05f,
-                                                             kFloodDefaultEdgeBand, *src->rgbTiles,
-                                                             w, h),
-                             w, h),
-            "luminance range: agrees with the Luminance Range dialog, texel for texel");
+                [&] {
+                  SelectionLuminanceRange direct;
+                  direct.low = luma - 0.05f;
+                  direct.high = luma + 0.05f;
+                  direct.edgeBand = kFloodDefaultEdgeBand;
+                  return sameCoverage(od.selection,
+                                      selectLuminanceRange(*src->rgbTiles, w, h, direct), w, h);
+                }(),
+            "luminance range: agrees with selectLuminanceRange(), texel for texel");
 
       // core/SelectionRefine.hpp: "low > high selects nothing (an empty band
       // is empty, not inverted)". The dialog says so in yellow beside the
