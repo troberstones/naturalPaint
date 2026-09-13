@@ -4291,6 +4291,12 @@ int main(int argc, char** argv) {
     // PRD D23: app/WarpMesh's bicubic lattice and app/TransformSession's Warp
     // mode built on it. Headless and GPU-free.
     const bool warpMeshOk = np::runWarpMeshTest();
+    // P2 "filters" track (PRD D11): Filter > Dust & Scratches --
+    // ops/Filters.hpp section 11. Headless and GPU-free.
+    const bool dustScratchesOk = np::runDustScratchesTest();
+    // P2 "filters" track (PRD D12): Image > Adjustments > Shadows/Highlights
+    // -- ops/Filters.hpp section 12. Headless and GPU-free.
+    const bool shadowsHighlightsOk = np::runShadowsHighlightsTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4364,7 +4370,8 @@ int main(int argc, char** argv) {
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
                     nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
-                    pasteCommandsOk && commandsFillOk && zoomToSelectionOk && warpMeshOk;
+                    pasteCommandsOk && commandsFillOk && zoomToSelectionOk && warpMeshOk &&
+                    dustScratchesOk && shadowsHighlightsOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

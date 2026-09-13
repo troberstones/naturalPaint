@@ -146,6 +146,18 @@ FilterOpResult applyLocalContrast(OpenDocument& doc, const LocalContrastParams& 
   return applyPixelFilter(doc, localContrastTiles, params, "local contrast");
 }
 
+// P2 "filters" track (PRD D11/D12): median gated by a threshold, and a
+// blurred-luminance-guided tone push. Same `applyPixelFilter()`/
+// `computePixelFilter()` machinery as every filter above -- both engines
+// share the `(TileStore&, PixelRect, Params, TileStore*) -> bool` shape.
+FilterOpResult applyDustScratches(OpenDocument& doc, const DustScratchesParams& params) {
+  return applyPixelFilter(doc, dustScratchesTiles, params, "dust & scratches");
+}
+
+FilterOpResult applyShadowsHighlights(OpenDocument& doc, const ShadowsHighlightsParams& params) {
+  return applyPixelFilter(doc, shadowsHighlightsTiles, params, "shadows/highlights");
+}
+
 namespace {
 
 // **The one expression in this build that fills in `InpaintParams::hole`.**
@@ -242,6 +254,17 @@ FilterOpResult previewHighpass(const OpenDocument& doc, float sigma, TileStore* 
 FilterOpResult previewLocalContrast(const OpenDocument& doc, const LocalContrastParams& params,
                                     TileStore* previewOut) {
   return computePixelFilter(doc, localContrastTiles, params, previewOut);
+}
+
+FilterOpResult previewDustScratches(const OpenDocument& doc, const DustScratchesParams& params,
+                                    TileStore* previewOut) {
+  return computePixelFilter(doc, dustScratchesTiles, params, previewOut);
+}
+
+FilterOpResult previewShadowsHighlights(const OpenDocument& doc,
+                                        const ShadowsHighlightsParams& params,
+                                        TileStore* previewOut) {
+  return computePixelFilter(doc, shadowsHighlightsTiles, params, previewOut);
 }
 
 FilterOpResult previewInpaint(const OpenDocument& doc, int32_t radius, TileStore* previewOut) {

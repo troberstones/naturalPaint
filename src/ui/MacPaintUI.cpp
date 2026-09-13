@@ -11,6 +11,8 @@
 #include "ui/FileDialog.hpp"
 #include "ui/FillDialog.hpp"
 #include "ui/FilterDialogsExtra.hpp"
+#include "ui/DustScratchesDialog.hpp"
+#include "ui/ShadowsHighlightsDialog.hpp"
 #include "ui/Dialog.hpp"
 #include "ui/LabelledControl.hpp"
 #include "ui/AtelierLayout.hpp"
@@ -12177,6 +12179,8 @@ void serviceAdjustmentRequest(AppState& st) {
     case AdjustmentRequest::Posterize:          ImGui::OpenPopup("Posterize"); break;
     case AdjustmentRequest::Threshold:          ImGui::OpenPopup("Threshold"); break;
     case AdjustmentRequest::GradientMap:        ImGui::OpenPopup("Gradient Map"); break;
+    // P2 "filters" track (PRD D12): ui/ShadowsHighlightsDialog.hpp.
+    case AdjustmentRequest::ShadowsHighlights:  ImGui::OpenPopup("Shadows/Highlights"); break;
 
     // The six that act on the spot.
     case AdjustmentRequest::Desaturate:
@@ -12218,6 +12222,7 @@ void drawAdjustmentDialogs(AppState& st) {
   drawPosterizeDialog(st);
   drawThresholdDialog(st);
   drawGradientMapDialog(st);
+  drawShadowsHighlightsDialog(st);
 }
 
 // ---------------------------------------------------------------------------
@@ -13848,6 +13853,8 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     case MenuAction::Highpass:      requestHighpassDialog();      break;
     case MenuAction::LocalContrast: requestLocalContrastDialog(); break;
     case MenuAction::LensCorrect:   requestLensCorrectDialog();   break;
+    // P2 "filters" track (PRD D11): ui/DustScratchesDialog.hpp.
+    case MenuAction::DustScratches: requestDustScratchesDialog(); break;
 
     // --- Image ----------------------------------------------------------
     case MenuAction::ImageSize:  g_imageSizeRequested = true;  break;
@@ -13924,6 +13931,11 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
       break;
     case MenuAction::AdjustEqualize:
       st.requestAdjustment = AdjustmentRequest::Equalize;
+      break;
+    // P2 "filters" track (PRD D12): Photoshop's own placement
+    // (Image > Adjustments), ui/ShadowsHighlightsDialog.hpp.
+    case MenuAction::AdjustShadowsHighlights:
+      st.requestAdjustment = AdjustmentRequest::ShadowsHighlights;
       break;
 
     // Not a silent default: a `MenuAction` added to the enum without a body
@@ -16983,6 +16995,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   drawHighpassDialog(st);
   drawLocalContrastDialog(st);
   drawLensCorrectDialog(st);
+  // P2 "filters" track (PRD D11): ui/DustScratchesDialog.hpp, same placement
+  // rule again.
+  drawDustScratchesDialog(st);
   drawAdjustmentDialogs(st);
   // PRD D24: the gradient tool's own stop editor, opened from the options
   // bar's swatch rather than a menu -- same placement rule again, so it

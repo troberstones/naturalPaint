@@ -601,6 +601,10 @@ enum class AdjustmentRequest {
   AutoContrast,
   AutoColor,
   Equalize,
+
+  // P2 "filters" track (PRD D12): ops/Filters.hpp §12. Photoshop's own
+  // placement (Image > Adjustments), not Filter -- ui/ShadowsHighlightsDialog.hpp.
+  ShadowsHighlights,
 };
 
 // Which tool the user was in before this one, and whether the Hand is being

@@ -10,6 +10,7 @@
 #include "app/CommandsImage.hpp"
 #include "app/CommandSupport.hpp"
 #include "app/FilterCommandsExtra.hpp"
+#include "app/FilterCommandsFilters.hpp"
 #include "app/CropTool.hpp"
 #include "app/FilterOps.hpp"
 #include "app/TransformSession.hpp"
@@ -417,6 +418,28 @@ CommandResult doMedian(OpenDocument& doc, const JsonValue& params) {
     return commandRefused(std::string("refused: ") + kId +
                           " was given a window ops/Filters cannot build.");
   return fromFilterResult(applyMedian(doc, p), doc, "median");
+}
+
+// Dust & scratches (ops/Filters.hpp §11): median gated by a threshold.
+// `radius` refused below 1 for `doMedian()`'s own reason -- 0 is the
+// documented identity. `threshold` is optional: 0 is a real, non-identity
+// request ("replace every texel that differs from its median at all"), not
+// a degenerate one, so it is not gated by `requireAbove()`/`requireNonZero()`
+// the way a magnitude whose zero IS the identity would be.
+CommandResult doDustScratches(OpenDocument& doc, const JsonValue& params) {
+  DustScratchesParams p;
+  const char* kId = "filter_dust_scratches";
+  std::string why = readWhole(params, kId, "radius", kRequired, &p.radius);
+  if (why.empty() && p.radius < 1)
+    why = refuseValue(kId, "radius",
+                      "at least 1 texel; radius 0 is a 1x1 window, which ops/Filters "
+                      "short-circuits to a bit-exact copy");
+  if (why.empty()) why = readNumber(params, kId, "threshold", kOptional, &p.threshold);
+  if (!why.empty()) return commandRefused(why);
+  if (!dustScratchesParamsValid(p))
+    return commandRefused(std::string("refused: ") + kId +
+                          " was given a request ops/Filters cannot build a gate from.");
+  return fromFilterResult(applyDustScratches(doc, p), doc, "dust & scratches");
 }
 
 CommandResult doMotionBlur(OpenDocument& doc, const JsonValue& params) {
@@ -936,6 +959,39 @@ CommandResult doPhotoFilter(OpenDocument& doc, const JsonValue& params) {
   return fromFilterResult(applyPhotoFilterAdjustment(doc, p), doc, "photo filter");
 }
 
+// Shadows/Highlights (ops/Filters.hpp §12, PRD D12). Photoshop's own menu
+// puts this under Image > Adjustments, not Filter, so it sits here beside
+// Colour Balance and Photo Filter -- the `filter_` id stays (the brief names
+// it), which is the one place in this file an id's prefix does not match its
+// menu, exactly the way `filter_inpaint`'s `selectionBounded` flag is
+// already a documented exception to its own usual reading.
+//
+// `radius` (the guide blur's sigma) is required and refused at 0 for
+// `filter_local_contrast`'s own reason: a zero-radius guide equals the
+// source exactly, collapsing "local" tone mapping into a flat curve. Any ONE
+// of `shadows`/`highlights` is enough -- `requireAnyOf()`'s own precedent
+// (Colour Balance, Black & White) -- since a step naming neither would change
+// nothing and report success.
+CommandResult doShadowsHighlights(OpenDocument& doc, const JsonValue& params) {
+  ShadowsHighlightsParams p;
+  const char* kId = "filter_shadows_highlights";
+  std::string why = readNumber(params, kId, "radius", kRequired, &p.blur.sigma);
+  if (why.empty()) why = requireAbove(kId, "radius", p.blur.sigma, 0.0f);
+  if (why.empty()) why = requireAnyOf(params, kId, {"shadows", "highlights"});
+  if (why.empty()) why = readNumber(params, kId, "shadows", kOptional, &p.shadows);
+  if (why.empty()) why = readNumber(params, kId, "highlights", kOptional, &p.highlights);
+  if (why.empty()) why = readNumber(params, kId, "tonal_width", kOptional, &p.tonalWidth);
+  if (why.empty() && !(p.tonalWidth > 0.0f))
+    why = refuseValue(kId, "tonal_width",
+                      "greater than 0 -- it is the shaper-domain division base of the "
+                      "shadow/highlight transition");
+  if (!why.empty()) return commandRefused(why);
+  if (!shadowsHighlightsParamsValid(p))
+    return commandRefused(std::string("refused: ") + kId +
+                          " was given a request ops/Filters cannot build a guide from.");
+  return fromFilterResult(applyShadowsHighlights(doc, p), doc, "shadows/highlights");
+}
+
 CommandResult doPosterize(OpenDocument& doc, const JsonValue& params) {
   PosterizeParams p;
   const char* kId = "adjust_posterize";
@@ -1219,6 +1275,11 @@ void registerImageCommands(std::vector<CommandSpec>* out) {
                   doEmboss, /*selectionBounded=*/true});
   out->push_back({"filter_median", "Median", {"radius"}, pixelOpUnavailable, doMedian,
                   /*selectionBounded=*/true});
+  out->push_back({"filter_dust_scratches",
+                  "Dust & Scratches",
+                  {"radius", "threshold"},
+                  pixelOpUnavailable,
+                  doDustScratches, /*selectionBounded=*/true});
   out->push_back({"filter_motion_blur",
                   "Motion Blur",
                   {"radius", "angle_radians"},
@@ -1294,6 +1355,12 @@ void registerImageCommands(std::vector<CommandSpec>* out) {
                   {"density", "color", "preserve_luminosity"},
                   pixelOpUnavailable,
                   doPhotoFilter, /*selectionBounded=*/true});
+  // `filter_` id, `adjust_` menu -- see doShadowsHighlights()'s own comment.
+  out->push_back({"filter_shadows_highlights",
+                  "Shadows/Highlights",
+                  {"radius", "shadows", "highlights", "tonal_width"},
+                  pixelOpUnavailable,
+                  doShadowsHighlights, /*selectionBounded=*/true});
   out->push_back({"adjust_posterize", "Posterize", {"levels"}, pixelOpUnavailable, doPosterize,
                   /*selectionBounded=*/true});
   out->push_back({"adjust_threshold", "Threshold", {"threshold", "amount"}, pixelOpUnavailable,
@@ -1419,6 +1486,24 @@ Command medianCommand(const MedianParams& m) {
   JsonValue p = JsonValue::object();
   p.set("radius", JsonValue::number(m.radius));
   return command("filter_median", std::move(p));
+}
+
+// app/FilterCommandsFilters.hpp's two -- see that header for why they have a
+// declaration site of their own.
+Command dustScratchesCommand(const DustScratchesParams& d) {
+  JsonValue p = JsonValue::object();
+  p.set("radius", JsonValue::number(d.radius));
+  p.set("threshold", JsonValue::number(d.threshold));
+  return command("filter_dust_scratches", std::move(p));
+}
+
+Command shadowsHighlightsCommand(const ShadowsHighlightsParams& s) {
+  JsonValue p = JsonValue::object();
+  p.set("radius", JsonValue::number(s.blur.sigma));
+  p.set("shadows", JsonValue::number(s.shadows));
+  p.set("highlights", JsonValue::number(s.highlights));
+  p.set("tonal_width", JsonValue::number(s.tonalWidth));
+  return command("filter_shadows_highlights", std::move(p));
 }
 
 Command motionBlurCommand(const MotionBlurParams& m) {

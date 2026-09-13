@@ -9,6 +9,7 @@
 #include "color/Shaper.hpp"
 #include "core/Parallel.hpp"
 #include "core/Tile.hpp"
+#include "ops/PointOps.hpp"  // computeLuma(), kRec709LumaWeights -- section 12's guide luminance
 
 namespace np {
 
@@ -389,6 +390,65 @@ void scatterPlaneParallel(const PixelRect& outRect, TileStore* dst, Produce&& pr
       }
     }
   });
+}
+
+// Section 8's own per-texel median, extracted so section 11 (dust &
+// scratches) can call the identical rank computation `medianTiles()` uses
+// rather than a second copy that could silently drift from it -- both this
+// function's callers gather with `medianRoiOp()`, so `plane`/`need` already
+// hold the window either one reads.
+std::array<float, 4> medianTexel(const std::vector<float>& plane, const PixelRect& need,
+                                 int32_t x, int32_t y, int32_t r) {
+  // `thread_local`, not a per-texel heap allocation -- see this function's
+  // callers for the argument; both are reached from `scatterPlaneParallel()`'s
+  // fixed worker pool.
+  thread_local std::vector<float> alphas;
+  thread_local std::vector<float> rs;
+  thread_local std::vector<float> gs;
+  thread_local std::vector<float> bs;
+  alphas.clear();
+  rs.clear();
+  gs.clear();
+  bs.clear();
+
+  // The true, source-gathered window -- see ops/Filters.hpp's section 8 on
+  // why this is a plain re-scan of `plane` rather than an incrementally
+  // updated running histogram.
+  for (int32_t wy = y - r; wy <= y + r; ++wy) {
+    for (int32_t wx = x - r; wx <= x + r; ++wx) {
+      const std::array<float, 4> t = planeTexel(plane, need, wx, wy);
+      alphas.push_back(t[3]);
+      if (t[3] > 0.0f) {
+        const float inv = 1.0f / t[3];
+        rs.push_back(t[0] * inv);
+        gs.push_back(t[1] * inv);
+        bs.push_back(t[2] * inv);
+      }
+    }
+  }
+
+  // Coverage's median: every sample votes, including the fully transparent
+  // ones -- coverage is meaningful at 0. The window is always `(2r+1)^2`,
+  // odd by construction, so `size/2` is the true middle rank.
+  const size_t aMid = alphas.size() / 2;
+  std::nth_element(alphas.begin(), alphas.begin() + static_cast<ptrdiff_t>(aMid), alphas.end());
+  const float aMed = alphas[aMid];
+
+  // No sample in the window had any colour to grade -- `aMed` is necessarily
+  // 0 too, so this is the same "nothing there is nothing to grade" answer
+  // sections 5 and 6 both give.
+  if (rs.empty()) return std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f};
+
+  // Each straight colour channel's OWN rank, independently -- a deterministic,
+  // reproducible order-statistic choice, not a two-value mean.
+  const size_t rMid = rs.size() / 2;
+  std::nth_element(rs.begin(), rs.begin() + static_cast<ptrdiff_t>(rMid), rs.end());
+  const size_t gMid = gs.size() / 2;
+  std::nth_element(gs.begin(), gs.begin() + static_cast<ptrdiff_t>(gMid), gs.end());
+  const size_t bMid = bs.size() / 2;
+  std::nth_element(bs.begin(), bs.begin() + static_cast<ptrdiff_t>(bMid), bs.end());
+
+  return std::array<float, 4>{rs[rMid] * aMed, gs[gMid] * aMed, bs[bMid] * aMed, aMed};
 }
 
 }  // namespace
@@ -821,70 +881,7 @@ bool medianTiles(const TileStore& src, const PixelRect& outRect, const MedianPar
 
   const int32_t r = p.radius;
   scatterPlaneParallel(outRect, dst, [&](int32_t x, int32_t y) -> std::array<float, 4> {
-    // `thread_local`, not a per-texel heap allocation: `dispatch_apply`'s
-    // worker pool is a small, fixed set of OS threads that this function is
-    // called on repeatedly, so each thread's buffer is allocated once (on
-    // its first texel) and reused -- amortized cost, not per-texel cost --
-    // and reading two different worker threads' buffers can never alias
-    // because `thread_local` storage is, by definition, private to the
-    // thread that touches it.
-    thread_local std::vector<float> alphas;
-    thread_local std::vector<float> rs;
-    thread_local std::vector<float> gs;
-    thread_local std::vector<float> bs;
-    alphas.clear();
-    rs.clear();
-    gs.clear();
-    bs.clear();
-
-    // The true, source-gathered window -- see ops/Filters.hpp's section 8 on
-    // why this is a plain re-scan of `plane` rather than an incrementally
-    // updated running histogram: the incremental form is exactly the
-    // algorithm whose usual bootstrap-at-the-request-rectangle's-own-edge
-    // behaviour would reintroduce the seam bug in rank-statistic form.
-    for (int32_t wy = y - r; wy <= y + r; ++wy) {
-      for (int32_t wx = x - r; wx <= x + r; ++wx) {
-        const std::array<float, 4> t = planeTexel(plane, need, wx, wy);
-        alphas.push_back(t[3]);
-        if (t[3] > 0.0f) {
-          const float inv = 1.0f / t[3];
-          rs.push_back(t[0] * inv);
-          gs.push_back(t[1] * inv);
-          bs.push_back(t[2] * inv);
-        }
-      }
-    }
-
-    // Coverage's median: every sample votes, including the fully
-    // transparent ones -- coverage is meaningful at 0. The window is always
-    // `(2r+1)^2`, odd by construction, so `size/2` is the true middle rank
-    // rather than either half of an ambiguous even split.
-    const size_t aMid = alphas.size() / 2;
-    std::nth_element(alphas.begin(), alphas.begin() + static_cast<ptrdiff_t>(aMid), alphas.end());
-    const float aMed = alphas[aMid];
-
-    // No sample in the window had any colour to grade -- `aMed` is
-    // necessarily 0 too (a median of all-zero coverage cannot be positive),
-    // so this is the same "nothing there is nothing to grade" answer
-    // section 5 (add noise) and section 6 (local contrast) both give.
-    if (rs.empty()) return std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f};
-
-    // Each straight colour channel's OWN rank, independently -- `rs`/`gs`/
-    // `bs` may be even-sized (only the alpha list is guaranteed odd), so
-    // `size/2` picks the upper of the two middle values rather than
-    // averaging them. A deterministic, reproducible order-statistic choice,
-    // not the textbook two-value mean -- averaging would blend two distinct
-    // source colours into one no sample in the window ever held, precisely
-    // the failure this filter's un-premultiply step exists to avoid one
-    // level up.
-    const size_t rMid = rs.size() / 2;
-    std::nth_element(rs.begin(), rs.begin() + static_cast<ptrdiff_t>(rMid), rs.end());
-    const size_t gMid = gs.size() / 2;
-    std::nth_element(gs.begin(), gs.begin() + static_cast<ptrdiff_t>(gMid), gs.end());
-    const size_t bMid = bs.size() / 2;
-    std::nth_element(bs.begin(), bs.begin() + static_cast<ptrdiff_t>(bMid), bs.end());
-
-    return std::array<float, 4>{rs[rMid] * aMed, gs[gMid] * aMed, bs[bMid] * aMed, aMed};
+    return medianTexel(plane, need, x, y, r);
   });
   return true;
 }
@@ -1102,6 +1099,131 @@ bool removeLightingGradientTiles(const TileStore& src, const PixelRect& outRect,
     // the half, and an inf poisons every later blur's whole apron.
     return std::array<float, 4>{clampStorable(k[0] * r[0]), clampStorable(k[1] * r[1]),
                                 clampStorable(k[2] * r[2]), s[3]};
+  });
+  return true;
+}
+
+// ==========================================================================
+// 11. Dust & scratches
+// ==========================================================================
+
+bool dustScratchesParamsValid(const DustScratchesParams& p) noexcept {
+  return p.radius >= 0 && std::isfinite(p.threshold) && p.threshold >= 0.0f;
+}
+
+RoiOp dustScratchesRoiOp(const DustScratchesParams& p) noexcept {
+  return medianRoiOp(MedianParams{p.radius});
+}
+
+float dustScratchesDiff(const std::array<float, 4>& src,
+                        const std::array<float, 4>& median) noexcept {
+  // unsharpGain()'s own measure (section 2): shaper domain, straight colour,
+  // alpha undivided -- see ops/Filters.hpp section 11 for why a linear-light
+  // threshold would be wildly uneven across tone.
+  float worst = std::fabs(src[3] - median[3]);
+  if (src[3] > 0.0f && median[3] > 0.0f) {
+    const float invS = 1.0f / src[3];
+    const float invM = 1.0f / median[3];
+    for (int32_t c = 0; c < 3; ++c) {
+      const size_t i = static_cast<size_t>(c);
+      const float d = std::fabs(shaperEncode(src[i] * invS) - shaperEncode(median[i] * invM));
+      worst = std::max(worst, d);
+    }
+  }
+  return worst;
+}
+
+bool dustScratchesTiles(const TileStore& src, const PixelRect& outRect,
+                        const DustScratchesParams& p, TileStore* dst) {
+  if (dst == nullptr || dst == &src) return false;
+  if (!dustScratchesParamsValid(p)) return false;
+  if (roiIsEmpty(outRect)) return false;
+
+  // Section 8's own identity: a 1x1 median window is its own sample, so every
+  // difference is exactly 0 and a threshold >= 0 never opens the gate.
+  if (p.radius == 0) {
+    scatterAligned(src, outRect, dst,
+                   [](int32_t, int32_t, const std::array<float, 4>& s) { return s; });
+    return true;
+  }
+
+  PixelRect need{};
+  std::vector<float> plane;
+  if (!gatherRawPlane(src, outRect, dustScratchesRoiOp(p), &need, &plane)) return false;
+
+  const int32_t r = p.radius;
+  const float threshold = p.threshold;
+  scatterPlaneParallel(outRect, dst, [&](int32_t x, int32_t y) -> std::array<float, 4> {
+    const std::array<float, 4> s = planeTexel(plane, need, x, y);
+    const std::array<float, 4> m = medianTexel(plane, need, x, y, r);
+    return dustScratchesDiff(s, m) > threshold ? m : s;
+  });
+  return true;
+}
+
+// ==========================================================================
+// 12. Shadows / highlights
+// ==========================================================================
+
+bool shadowsHighlightsParamsValid(const ShadowsHighlightsParams& p) noexcept {
+  return blurParamsValid(p.blur) && std::isfinite(p.shadows) && std::isfinite(p.highlights) &&
+        std::isfinite(p.tonalWidth) && p.tonalWidth > 0.0f;
+}
+
+RoiOp shadowsHighlightsRoiOp(const ShadowsHighlightsParams& p) noexcept {
+  return blurRoiOp(p.blur);
+}
+
+float shadowsHighlightsGain(const ShadowsHighlightsParams& p, float guideLuminance) noexcept {
+  // No usable tone to push -- section 10's own guard, restated: a floor this
+  // far below the f16 store's smallest normal is "nothing here", not a value
+  // a user can see.
+  if (!(guideLuminance > kLightingGradientFloor)) return 1.0f;
+  // One stop's own shaper-domain size, derived rather than a retyped
+  // Shaper.cpp constant -- ops/Filters.hpp section 12's own argument.
+  const float kOneStopShaper = shaperEncode(2.0f) - shaperEncode(1.0f);
+  const float pivot = shaperEncode(kShadowsHighlightsMidGray);
+  const float g = shaperEncode(guideLuminance);
+  const float wShadow = std::clamp((pivot - g) / p.tonalWidth, 0.0f, 1.0f);
+  const float wHighlight = std::clamp((g - pivot) / p.tonalWidth, 0.0f, 1.0f);
+  const float shift = (p.shadows * wShadow - p.highlights * wHighlight) * kOneStopShaper;
+  // The per-texel guard the header promises: a texel the tent does not reach
+  // gets gain 1 exactly, not a shaper round trip that could drift from 1.0 by
+  // float rounding.
+  if (shift == 0.0f) return 1.0f;
+  return shaperDecode(g + shift) / guideLuminance;
+}
+
+bool shadowsHighlightsTiles(const TileStore& src, const PixelRect& outRect,
+                            const ShadowsHighlightsParams& p, TileStore* dst) {
+  if (dst == nullptr || dst == &src) return false;
+  if (!shadowsHighlightsParamsValid(p)) return false;
+  if (roiIsEmpty(outRect)) return false;
+
+  // Both amounts 0: `shift` is 0 for every guide value, so the whole gather
+  // is skipped and the result is the source, bit for bit.
+  if (p.shadows == 0.0f && p.highlights == 0.0f) {
+    scatterAligned(src, outRect, dst,
+                   [](int32_t, int32_t, const std::array<float, 4>& s) { return s; });
+    return true;
+  }
+
+  PixelRect need{};
+  std::vector<float> plane;
+  if (!gatherBlurredPlane(src, outRect, p.blur, &need, &plane)) return false;
+
+  scatterAligned(src, outRect, dst, [&](int32_t x, int32_t y, const std::array<float, 4>& s) {
+    const std::array<float, 4> guide = planeTexel(plane, need, x, y);
+    // No coverage in the guide's own neighbourhood -- nothing to grade,
+    // sections 5/6/8's own convention.
+    if (!(guide[3] > 0.0f)) return s;
+    const std::array<float, 3> straight{guide[0] / guide[3], guide[1] / guide[3],
+                                        guide[2] / guide[3]};
+    const float guideLuma = computeLuma(straight, kRec709LumaWeights);
+    const float gain = shadowsHighlightsGain(p, guideLuma);
+    if (gain == 1.0f) return s;
+    return std::array<float, 4>{clampStorable(s[0] * gain), clampStorable(s[1] * gain),
+                                clampStorable(s[2] * gain), s[3]};
   });
   return true;
 }

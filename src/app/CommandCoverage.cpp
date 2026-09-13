@@ -387,6 +387,11 @@ CommandCoverage coverageFor(MenuAction action) {
               "toggles the live transform session's shape between an affine box and a warp net; "
               "begins/continues an interactive gesture with on-canvas handles, exactly as "
               "FreeTransform above -- the session owns the live transform"};
+    // P2 "filters" track (PRD D11/D12): ops/Filters.hpp sections 11-12.
+    case MenuAction::DustScratches:
+      return {CommandCoverageKind::Registered, "filter_dust_scratches", nullptr};
+    case MenuAction::AdjustShadowsHighlights:
+      return {CommandCoverageKind::Registered, "filter_shadows_highlights", nullptr};
     case MenuAction::Count:
       // Not an action: the enum's own size marker.
       return {CommandCoverageKind::NotRecordable, nullptr, "the enum's count marker, not an action"};

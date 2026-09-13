@@ -269,6 +269,9 @@ set(NP_SELFTEST_SOURCES
   app/selftest/AppIcon.cpp
   # PRD Q1 zoom to selection.
   app/selftest/ZoomToSelection.cpp
+  # P2 "filters" track (PRD D11/D12): Dust & Scratches, Shadows/Highlights.
+  app/selftest/DustScratches.cpp
+  app/selftest/ShadowsHighlights.cpp
 )
 
 add_executable(naturalPaint
@@ -527,6 +530,9 @@ add_executable(naturalPaint
   # Highpass/Local Contrast/Lens Correction.
   app/ZoomToSelection.cpp
   ui/FilterDialogsExtra.cpp
+  # P2 "filters" track (PRD D11/D12): Dust & Scratches, Shadows/Highlights.
+  ui/DustScratchesDialog.cpp
+  ui/ShadowsHighlightsDialog.cpp
 )
 
 # NP_SELFTEST's two halves: the 236 section TUs, and the guard main.cpp's

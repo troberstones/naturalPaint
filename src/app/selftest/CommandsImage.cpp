@@ -265,6 +265,16 @@ std::vector<ImageCommandFixture> imageCommandFixtures() {
     p.set("radius", num(2));
     add("filter_median", p);
   }
+  // P2 "filters" track (PRD D11): a threshold of 0 always changes SOME texel
+  // of a non-flat fixture (ops/Filters.hpp section 11's own "threshold 0
+  // equals plain median on every texel that differs at all"), which the
+  // hash-pattern content above guarantees plenty of.
+  {
+    JsonValue p = JsonValue::object();
+    p.set("radius", num(2));
+    p.set("threshold", num(0.0));
+    add("filter_dust_scratches", p);
+  }
   {
     JsonValue p = JsonValue::object();
     p.set("radius", num(3));
@@ -371,6 +381,18 @@ std::vector<ImageCommandFixture> imageCommandFixtures() {
     p.set("color", arrayOf({1.0, 0.5, 0.2}));
     p.set("preserve_luminosity", JsonValue::boolean(true));
     add("adjust_photo_filter", p);
+  }
+  // P2 "filters" track (PRD D12): `filter_` id, `adjust_` menu -- see
+  // doShadowsHighlights()'s own comment in app/CommandsImage.cpp. The wide
+  // histogram this fixture already carries (for the four auto solvers) gives
+  // the guide real dark-to-bright variation to push against.
+  {
+    JsonValue p = JsonValue::object();
+    p.set("radius", num(10.0));
+    p.set("shadows", num(0.6));
+    p.set("highlights", num(0.6));
+    p.set("tonal_width", num(0.15));
+    add("filter_shadows_highlights", p);
   }
   {
     JsonValue p = JsonValue::object();

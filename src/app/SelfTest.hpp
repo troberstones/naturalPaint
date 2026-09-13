@@ -6776,4 +6776,23 @@ bool runZoomToSelectionTest();
 // touches ui/. See app/selftest/WarpMesh.cpp.
 bool runWarpMeshTest();
 
+// P2 "filters" track (PRD D11): Filter > Dust & Scratches -- ops/Filters.hpp
+// section 11's median-gated-by-a-threshold engine, the gate's own shaper-
+// domain difference measure proved sensitive against a real speck, the
+// radius-0 and above-every-difference identities, threshold 0's agreement
+// with a plain median on every texel that actually differs, the encoder's
+// bit-identical replay through applyCommand(), refused parameters, and a
+// selection bound. Headless and GPU-free. See app/selftest/DustScratches.cpp.
+bool runDustScratchesTest();
+
+// P2 "filters" track (PRD D12): Image > Adjustments > Shadows/Highlights --
+// ops/Filters.hpp section 12's blurred-luminance-guided tone push. The
+// SPATIAL property two same-valued texels in different neighbourhoods are
+// pushed differently, which a per-pixel curve cannot do; the shadows/
+// highlights mean shift in a synthetic dark/bright region; the zero-amount
+// and out-of-band identities; the encoder's bit-identical replay through
+// applyCommand(); refused parameters; and a selection bound. Headless and
+// GPU-free. See app/selftest/ShadowsHighlights.cpp.
+bool runShadowsHighlightsTest();
+
 }  // namespace np

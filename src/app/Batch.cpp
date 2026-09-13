@@ -145,6 +145,16 @@ constexpr PixelUnitParam kPixelUnitParams[] = {
     // texels.
     {"filter_highpass", "sigma"},
     {"filter_local_contrast", "radius"},
+    // P2 "filters" track (PRD D11/D12): `filter_dust_scratches`'s `radius` is
+    // the median window's own half-width (ops/Filters.hpp §11, texels);
+    // `filter_shadows_highlights`'s `radius` is its guide blur's sigma
+    // (§12), the identical quantity `filter_local_contrast`'s own row above
+    // names. Neither command's `threshold`/`shadows`/`highlights`/
+    // `tonal_width` is here -- all four are shaper-domain magnitudes, the
+    // same value-space classification `select_colour_range`'s `tolerance`
+    // gets above.
+    {"filter_dust_scratches", "radius"},
+    {"filter_shadows_highlights", "radius"},
 };
 
 // "filter_gaussian_blur's sigma" for every pixel-unit parameter `action`

@@ -223,6 +223,18 @@ FilterOpResult applyLocalContrast(OpenDocument& doc, const LocalContrastParams& 
 FilterOpResult previewLocalContrast(const OpenDocument& doc, const LocalContrastParams& params,
                                     TileStore* previewOut);
 
+// P2 "filters" track (PRD D11/D12, ops/Filters.hpp sections 11-12): median
+// gated by a threshold, and a blurred-luminance-guided shadows/highlights
+// push. Same machinery, same "one struct, no drift" reason.
+FilterOpResult applyDustScratches(OpenDocument& doc, const DustScratchesParams& params);
+FilterOpResult previewDustScratches(const OpenDocument& doc, const DustScratchesParams& params,
+                                    TileStore* previewOut);
+
+FilterOpResult applyShadowsHighlights(OpenDocument& doc, const ShadowsHighlightsParams& params);
+FilterOpResult previewShadowsHighlights(const OpenDocument& doc,
+                                        const ShadowsHighlightsParams& params,
+                                        TileStore* previewOut);
+
 // ==========================================================================
 // Inpaint, and the one place this header's own selection rule is inverted
 // ==========================================================================
