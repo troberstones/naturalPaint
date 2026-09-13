@@ -1041,6 +1041,13 @@ Two constraints on any restyling this file's design language would drive:
 - **The error and warning rows in §1's table are the only red and amber a
   dialog may use** -- `dialogStatusLine()` / `dialogStatusColor()` are how a
   call site reaches them, and there are no literals left to copy from.
+- **A dialog may put handles on the canvas behind it.** Filter > Radial Blur
+  draws a centre disc and one amount handle (Spin: an arc showing the real
+  ±amount/2 sweep, 72 px out; Zoom: a segment showing 1 ∓ amount of that
+  radius) while it is open. The dialog stays modal, so ImGui reports no hover
+  for the canvas; the handles read the pointer themselves wherever no window is
+  under it, and the tools stay blocked. Geometry and drag maths are
+  `app/RadialBlurHandles`, tested apart from the drawing.
 
 ## 5b. Split View and Match Zoom
 

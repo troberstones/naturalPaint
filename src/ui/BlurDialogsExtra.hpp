@@ -18,12 +18,20 @@
 // Live preview through the same two door functions ui/FilterDialogsExtra.hpp
 // already uses (`setExternalFilterPreview()`/`clearExternalFilterPreview()`,
 // ui/MacPaintUI.hpp).
+#include "app/ViewTransform.hpp"
+
+struct ImDrawList;
+
 namespace np {
 
 struct AppState;
 
 void requestRadialBlurDialog();
 void drawRadialBlurDialog(AppState& st);
+// While Radial Blur is open, its centre and amount handles over the active
+// canvas pane (screen rect paneMin..paneMax), dragged with the pointer.
+void drawRadialBlurCanvasHandles(AppState& st, const ViewTransform& view, Vec2 paneMin,
+                                 Vec2 paneMax, ImDrawList* dl);
 
 void requestLensBlurDialog();
 void drawLensBlurDialog(AppState& st);

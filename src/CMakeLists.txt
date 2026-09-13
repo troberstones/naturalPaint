@@ -98,6 +98,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/Filters.cpp
   app/selftest/FiltersExt.cpp
   app/selftest/BlurFilters.cpp
+  app/selftest/RadialBlurHandles.cpp
   app/selftest/FloodFill.cpp
   app/selftest/FloodFillOptions.cpp
   app/selftest/Fonts.cpp
@@ -540,6 +541,7 @@ add_executable(naturalPaint
   app/ZoomToSelection.cpp
   ui/FilterDialogsExtra.cpp
   app/SplitView.cpp
+  app/RadialBlurHandles.cpp
   ui/DustScratchesDialog.cpp
   ui/ShadowsHighlightsDialog.cpp
   ui/RepairDialogs.cpp

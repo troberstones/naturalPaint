@@ -39,9 +39,10 @@ struct RadialBlurParams {
   float centerX = 0.0f;
   float centerY = 0.0f;
 
-  // Spin: the total arc swept, in degrees, either sign. Zoom: the radial
-  // scale fraction each tap reaches at its extreme, either sign (negative
-  // zooms out instead of in). **0 is the exact identity for either method**
+  // Spin: the total arc swept, in degrees. Zoom: the radial scale fraction
+  // each tap reaches at its extreme. The taps run symmetrically about zero, so
+  // a negative amount gives the same result as a positive one.
+  // **0 is the exact identity for either method**
   // -- `radialBlurTiles()` short-circuits to a bit-exact copy rather than
   // let a zero sweep/scale reach the trig at all.
   float amount = 0.0f;

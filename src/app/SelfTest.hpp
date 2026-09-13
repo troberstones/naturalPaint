@@ -6803,6 +6803,9 @@ bool runWarpMeshTest();
 // reset and focus swap. Headless.
 bool runSplitViewTest();
 
+// app/RadialBlurHandles: the Radial Blur dialog's on-canvas handles.
+bool runRadialBlurHandlesTest();
+
 // Filter > Dust & Scratches (PRD D11): median gated by a threshold. Headless.
 bool runDustScratchesTest();
 

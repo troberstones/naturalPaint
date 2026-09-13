@@ -21971,6 +21971,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
 
+    // Filter > Radial Blur's centre and amount handles, while its dialog is open.
+    if (documentOpen)
+      drawRadialBlurCanvasHandles(st, xform, Vec2{paintOrigin.x, paintOrigin.y},
+                                  Vec2{paintOrigin.x + avail.x, paintOrigin.y + avail.y}, dl);
+
     if (st.marqueeDragging &&
         (st.brush.tool == Tool::Marquee || st.brush.tool == Tool::EllipseMarquee)) {
       // The live rubber band. T10: `marqueeBoxX0..Y1` is this frame's

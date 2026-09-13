@@ -4361,6 +4361,7 @@ int main(int argc, char** argv) {
     // mode built on it. Headless and GPU-free.
     const bool warpMeshOk = np::runWarpMeshTest();
     const bool splitViewOk = np::runSplitViewTest();
+    const bool radialBlurHandlesOk = np::runRadialBlurHandlesTest();
     const bool dustScratchesOk = np::runDustScratchesTest();
     const bool shadowsHighlightsOk = np::runShadowsHighlightsTest();
     const bool versionOk = np::runVersionTest();
@@ -4439,7 +4440,7 @@ int main(int argc, char** argv) {
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
                     nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
                     pasteCommandsOk && commandsFillOk && zoomToSelectionOk && warpMeshOk &&
-                    splitViewOk && dustScratchesOk && shadowsHighlightsOk && versionOk &&
+                    splitViewOk && radialBlurHandlesOk && dustScratchesOk && shadowsHighlightsOk && versionOk &&
                     flatsKeysOk;
     s->shutdown();
     gpu.shutdown();

@@ -868,6 +868,34 @@ bool runBlurFiltersTest() {
     check(alphaSame, "lens: the highlight boost leaves alpha exactly as boost 0 does");
   }
 
+  std::printf("  -- Q. RadialBlur: the sign of amount changes nothing --\n");
+  {
+    // The canvas handles set only a magnitude on the strength of this.
+    const TileStore field = blurWholeField(64, 31);
+    const PixelRect whole{0, 0, 64, 64};
+    for (const RadialBlurParams& pos : {RadialBlurParams{RadialBlurMethod::Spin, 22.0f, 40.0f, 37.0f, 6},
+                                        RadialBlurParams{RadialBlurMethod::Zoom, 22.0f, 40.0f, 0.45f, 6}}) {
+      RadialBlurParams neg = pos;
+      neg.amount = -pos.amount;
+      TileStore a, b;
+      radialBlurTiles(field, whole, pos, &a);
+      radialBlurTiles(field, whole, neg, &b);
+      float signDiff = 0.0f, blurDiff = 0.0f;
+      for (int32_t y = 0; y < 64; ++y)
+        for (int32_t x = 0; x < 64; ++x) {
+          const std::array<float, 4> pa = blurReadAt(a, x, y), pb = blurReadAt(b, x, y),
+                                     src = blurReadAt(field, x, y);
+          for (size_t c = 0; c < 4; ++c) {
+            signDiff = std::max(signDiff, std::fabs(pa[c] - pb[c]));
+            blurDiff = std::max(blurDiff, std::fabs(pa[c] - src[c]));
+          }
+        }
+      const bool spin = pos.method == RadialBlurMethod::Spin;
+      check(blurDiff > 0.05f, spin ? "sign fixture: Spin 37 visibly blurs" : "sign fixture: Zoom 0.45 visibly blurs");
+      check(signDiff < 1e-5f, spin ? "radial: Spin -37 equals Spin 37" : "radial: Zoom -0.45 equals Zoom 0.45");
+    }
+  }
+
   std::printf("[selftest] blurFilters %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

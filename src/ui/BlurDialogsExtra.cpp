@@ -1,5 +1,6 @@
 #include "ui/BlurDialogsExtra.hpp"
 
+#include <cmath>
 #include <optional>
 #include <string>
 #include <utility>
@@ -7,6 +8,9 @@
 #include "app/AppState.hpp"
 #include "app/BlurCommandsExtra.hpp"
 #include "app/FilterOps.hpp"
+#include "app/RadialBlurHandles.hpp"
+#include "ui/AtelierChrome.hpp"
+#include "ui/AtelierTheme.hpp"
 #include "ui/Dialog.hpp"
 #include "ui/MacPaintUI.hpp"
 
@@ -21,6 +25,12 @@ namespace {
 
 bool g_radialBlurRequested = false;
 bool g_lensBlurRequested = false;
+
+// Shared with the canvas handles, which draw later in the same frame.
+RadialBlurParams g_radialParams;
+bool g_radialDialogOpen = false;
+bool g_radialHandleSettled = false;
+RadialBlurHandleDrag g_radialDrag;
 
 void filterExtraFooter(OpenDocument* od, std::string& status, const Command& command,
                        const char* nothingChangedText) {
@@ -68,7 +78,7 @@ void updateExternalPreview(OpenDocument* od, PreviewFn previewFn, const Params& 
 void requestRadialBlurDialog() { g_radialBlurRequested = true; }
 
 void drawRadialBlurDialog(AppState& st) {
-  static RadialBlurParams params;
+  RadialBlurParams& params = g_radialParams;
   static int methodIdx = 0;  // 0 = Spin, 1 = Zoom -- RadialBlurMethod's order
   static std::string status;
   static bool wasOpen = false;  // see ui/MacPaintUI.cpp's Gaussian Blur dialog
@@ -90,13 +100,20 @@ void drawRadialBlurDialog(AppState& st) {
   }
   if (!beginDialog("Radial Blur")) {
     wasOpen = false;
+    g_radialDialogOpen = false;
     clearExternalFilterPreview();
     return;
   }
+  g_radialDialogOpen = true;
 
   OpenDocument* od = st.documents.active();
 
   DialogEdit edited;
+  if (g_radialHandleSettled) {
+    g_radialHandleSettled = false;
+    edited.changed = true;
+    edited.settled = true;
+  }
   static const char* kMethods[] = {"Spin", "Zoom"};
   if (dialogRadioRow("Method", &methodIdx, kMethods, 2)) {
     edited.changed = true;
@@ -131,8 +148,9 @@ void drawRadialBlurDialog(AppState& st) {
   edited |= samplesEdit;
 
   dialogHint(
-      "Spin blurs along circles about the centre; Zoom blurs along rays from it. Amount 0 "
-      "leaves the image unchanged. The preview updates when you release a slider.");
+      "Spin blurs along circles about the centre; Zoom blurs along rays from it. Drag the "
+      "handles on the canvas to move the centre and set the amount. Amount 0 leaves the "
+      "image unchanged. The preview updates when you release a slider or a handle.");
 
   if (edited.settled || !wasOpen) updateExternalPreview(od, previewRadialBlur, params);
   wasOpen = true;
@@ -140,6 +158,78 @@ void drawRadialBlurDialog(AppState& st) {
   filterExtraFooter(od, status, radialBlurCommand(params),
                     "Nothing changed (amount 0, or no selected texels).");
   endDialog();
+}
+
+void drawRadialBlurCanvasHandles(AppState& st, const ViewTransform& view, Vec2 paneMin,
+                                 Vec2 paneMax, ImDrawList* dl) {
+  const OpenDocument* od = st.documents.active();
+  if (!g_radialDialogOpen || od == nullptr) {
+    g_radialDrag = RadialBlurHandleDrag{};
+    return;
+  }
+  const float docW = static_cast<float>(od->document.width);
+  const float docH = static_cast<float>(od->document.height);
+
+  // The dialog is modal, so ImGui reports no hover for the canvas. The handles
+  // read the pointer themselves, only where no window (the dialog) is under it.
+  const ImVec2 mouse = ImGui::GetIO().MousePos;
+  const Vec2 pointer{mouse.x, mouse.y};
+  const bool overCanvas = !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) &&
+                          pointer.x >= paneMin.x && pointer.x < paneMax.x &&
+                          pointer.y >= paneMin.y && pointer.y < paneMax.y;
+
+  RadialBlurHandle hovered = RadialBlurHandle::None;
+  if (overCanvas)
+    hovered = radialBlurHandleAt(radialBlurHandleShape(g_radialParams, view), pointer);
+  if (g_radialDrag.handle == RadialBlurHandle::None && hovered != RadialBlurHandle::None &&
+      ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    g_radialDrag = beginRadialBlurHandleDrag(hovered, g_radialParams, view, pointer);
+  }
+  if (g_radialDrag.handle != RadialBlurHandle::None) {
+    if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      updateRadialBlurHandleDrag(g_radialDrag, view, pointer, docW, docH, &g_radialParams);
+    } else {
+      g_radialDrag = RadialBlurHandleDrag{};
+      g_radialHandleSettled = true;
+    }
+  }
+
+  const RadialBlurHandleShape shape = radialBlurHandleShape(g_radialParams, view);
+  const RadialBlurHandle lit =
+      g_radialDrag.handle != RadialBlurHandle::None ? g_radialDrag.handle : hovered;
+  const ImU32 casing = IM_COL32(0, 0, 0, 160);
+  const ImU32 accent = atelierToken(kAccent);
+  const ImVec2 c(shape.center.x, shape.center.y);
+
+  if (g_radialParams.method == RadialBlurMethod::Spin) {
+    dl->AddCircle(c, kRadialBlurGuidePx, IM_COL32(0, 0, 0, 90), 96, 3.0f);
+    dl->AddCircle(c, kRadialBlurGuidePx, IM_COL32(255, 255, 255, 110), 96, 1.0f);
+  } else {
+    // A tick where the handle rests at amount 0.
+    const float dx = shape.rest.x - shape.center.x, dy = shape.rest.y - shape.center.y;
+    const float len = std::max(1e-3f, std::hypot(dx, dy));
+    const float nx = -dy / len * 6.0f, ny = dx / len * 6.0f;
+    const ImVec2 t0(shape.rest.x - nx, shape.rest.y - ny), t1(shape.rest.x + nx, shape.rest.y + ny);
+    dl->AddLine(t0, t1, casing, 3.0f);
+    dl->AddLine(t0, t1, IM_COL32(255, 255, 255, 200), 1.0f);
+  }
+  if (shape.guide.size() >= 2) {
+    std::vector<ImVec2> pts;
+    pts.reserve(shape.guide.size());
+    for (const Vec2& g : shape.guide) pts.emplace_back(g.x, g.y);
+    dl->AddPolyline(pts.data(), static_cast<int>(pts.size()), casing, ImDrawFlags_None, 4.0f);
+    dl->AddPolyline(pts.data(), static_cast<int>(pts.size()), accent, ImDrawFlags_None, 2.0f);
+  }
+
+  const float amountGrow = lit == RadialBlurHandle::Amount ? 1.5f : 0.0f;
+  const ImVec2 h(shape.amountHandle.x, shape.amountHandle.y);
+  dl->AddCircleFilled(h, 5.0f + amountGrow, casing);
+  dl->AddCircleFilled(h, 3.5f + amountGrow, accent);
+
+  const float centreGrow = lit == RadialBlurHandle::Center ? 1.5f : 0.0f;
+  dl->AddCircleFilled(c, 5.5f + centreGrow, casing);
+  dl->AddCircleFilled(c, 4.0f + centreGrow,
+                      lit == RadialBlurHandle::Center ? accent : IM_COL32(255, 255, 255, 245));
 }
 
 void requestLensBlurDialog() { g_lensBlurRequested = true; }
