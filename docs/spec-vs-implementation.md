@@ -457,8 +457,9 @@ Recorded so the corrections do not have to be rediscovered:
   View > Match Zoom makes the companion follow the focused one
   (`app/SplitView`). No golden view covers it: `--split-demo --screenshot`
   exits 1 on the base commit too.
-* **Four of the five tracks had a production path no test could see**, found
-  only by sabotage: an encoder whose round-trip fixture could not tell two
-  parameters apart, Match Zoom's per-frame choice inline in a UI draw block,
-  a seam-heal fixture with one seam, and `main.cpp`'s Flats key-action chain.
-  Each now has a test that fails when that code is broken.
+* **Every one of the five tracks had a production path no test could see**,
+  found only by sabotage: an encoder whose round-trip fixture could not tell
+  two parameters apart, Match Zoom's per-frame choice inline in a UI draw
+  block, a seam-heal fixture with one seam, `main.cpp`'s Flats key-action
+  chain, and blur tests that checked which axis a sweep moves but never how
+  far. Each now has a test that fails when that code is broken.
