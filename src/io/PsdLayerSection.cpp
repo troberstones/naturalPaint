@@ -421,10 +421,6 @@ bool buildPsdLayerRecord(const Layer& layer, const Document& doc, PsdLayerRecord
                          "' has no PSD key in this landing and was written as Normal.");
   }
 
-  if (layer.mask.has_value())
-    warnings.push_back("layer " + quoted(layer.name) +
-                       ": its layer mask is not carried into this PSD.");
-
   // **A Vector layer's pixels are not on the layer.** core/VectorRaster.hpp
   // section 1 argues at length why a Vector layer stores geometry and no
   // tiles, so the raster that goes in this record's channel data is built
@@ -680,6 +676,12 @@ PsdLayerSectionResult writePsdLayerAndMaskInfo(PsdWriter& w, const Document& doc
 
     if (entry.role != PsdRecordRole::kLayer) {
       records.push_back(makeGroupBoundaryRecord(entry.role, layer));
+      // A group record has no mask block, so a group's own mask is the one
+      // mask this export drops. A fully revealing one loses nothing.
+      PsdMaskRect groupMask;
+      if (entry.role == PsdRecordRole::kGroupHeader && psdMaskRect(layer, groupMask))
+        result.warnings.push_back("layer " + quoted(layer.name) +
+                                  ": a group's layer mask is not carried into this PSD.");
       continue;
     }
 
