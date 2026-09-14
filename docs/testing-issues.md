@@ -1091,15 +1091,16 @@ preview at view resolution, or on a downsampled proxy. Not built.
 
 ---
 
-## T16 — The mask chip is not a control, and no mask can be painted · PARTLY BUILT
+## T16 — The mask chip is not a control, and no mask can be painted · BUILT
 
 **Reported.** When a layer has a layer mask, paint into it when the layer mask
 icon is active; disable it if you shift-click it; and show its result when you
 use the Photoshop command that shows the mask (⌥-click).
 
-**Built: gesture 1 (paint into the mask), plus the two thumbnails the panel
-needed to make it a gesture at all. Gestures 2 and 3 are still open**, and the
-"Remaining work" section below says what each costs.
+**Built: all three gestures.** Gesture 1 (paint into the mask) and the two
+thumbnails landed first; Shift-click, ⌥-click and the other tools on a mask
+followed, and "Gestures 2 and 3, and the other tools" below records them. Heal
+on a mask is the one tool still refused.
 
 ### What was wrong with this entry's own analysis
 
@@ -1147,27 +1148,36 @@ Covered by `app/selftest/MaskTarget.cpp` and by three golden views
 (`layer_thumbs`, `mask_target`, `mask_content`) reachable through the new
 `--mask-demo` flag.
 
-### Remaining work
+### Gestures 2 and 3, and the other tools · BUILT
 
-1. **Shift-click disables the mask.** Unchanged from this entry's original
-   analysis and still the expensive half: `Layer::maskEnabled`, its `.npaint`
-   attribute, its reader/writer, its row in the format table, and — the part
-   that is easy to underestimate — gating **every leaf** that reads
-   `Layer::mask` in `core/Composite.cpp` rather than one derived predicate.
-   That file reads the mask in the main walk and in both opaque-floor
-   shortcuts, and a gate applied to only some of them composites a disabled
-   mask as enabled in exactly the cases the shortcuts fire.
-   It should round-trip: a disabled mask that silently re-enables on reload is
-   a data-shaped surprise, unlike the group-collapse state (PRD C7) which is
-   genuinely view-only.
-2. **⌥-click shows the mask alone in the canvas** — a view mode, not a
-   document change, so it belongs beside the grayscale check in
-   `docs/operations.md §7` rather than in the layer model.
-3. **The other tools on a mask.** Only Brush and DryBrush take the mask route;
-   every other tool refuses by name. Eraser, Pencil, Dodge/Burn, Clone Stamp
-   and Smudge each need their own answer about what that operation means on a
-   scalar coverage field — `app/StrokeSession.cpp`'s mask arm lists the
-   question for each.
+* **Shift-click disables the mask.** `Layer::maskEnabled`, set through
+  `core::setLayerMaskEnabled()` (undoable; the `set_layer_mask_enabled`
+  command), saved as `np:maskOff` (docs/document-format.md) and carried
+  through PSD mask flags bit 1 in both directions -- a disabled mask in a PSD
+  now imports disabled rather than being dropped. Every leaf in
+  `core/Composite.cpp` reads the mask through `layerActiveMask()`: the main
+  walk, the adjustment walk, clip members, both halves of a mixed pair,
+  `layerMaskCoverageAt()` (so the probe), and both opaque-floor searches. A
+  gate missing from a floor search changes no pixel, only how often it skips,
+  so `takeOpaqueFloorSumForTesting()` is what the test watches there.
+  `core/DirtyTiles` recomposites on the flip, the mask thumbnail draws a red X,
+  and the row sub-line says `MASK OFF`.
+* **⌥-click shows the mask alone** as greyscale coverage
+  (`OpenDocument::maskViewLayerIndex`, a view mode beside the channel view,
+  with `MASK VIEW` in the status bar). ⌥-click again, or a click on the layer
+  thumbnail, exits; selecting another row stops it applying. The click rules
+  live in `app/LayerThumbClick`, and the panel's buttons go through
+  `layerThumbButton()`, which the selftest drives with headless ImGui frames.
+* **Other tools on a mask target**, with Photoshop's semantics: Pencil paints
+  hard-edged coverage, Eraser always reveals, Dodge raises and Burn lowers
+  coverage (the tonal gamma applied to coverage, so 0 and 1 are fixed points),
+  Smudge smears coverage, and Clone Stamp copies coverage from the clone offset
+  within the same mask (`brush/MaskTools`). **Heal still refuses by name**: a
+  harmonic correction of one scalar coverage is well defined, but whether that
+  is what a user means by healing a mask needs a ruling.
+
+Covered by `app/selftest/MaskControls.cpp`. `--mask-demo off` and
+`--mask-demo view` reach the two new states for golden views.
 
 ---
 

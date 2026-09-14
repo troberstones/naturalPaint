@@ -438,8 +438,10 @@ bool runMaskControlsTest() {
     check(maskViewLayer(od) == nullptr && !od.maskIsEditTarget,
           "E click on the layer thumbnail: leaves the view and aims at the pixels");
     click(maskAt2, false, true);
+    addLayerMask(od.document, 1);  // so the other row has a mask the view could wrongly show
     setActiveLayer(od, 1);
-    check(maskViewLayer(od) == nullptr, "E selecting another row: the view no longer applies");
+    check(maskViewLayer(od) == nullptr,
+          "E selecting another row, itself masked: the view no longer applies");
 
     ImGui::DestroyContext(context);
     ImGui::SetCurrentContext(previous);
