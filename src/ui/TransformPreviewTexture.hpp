@@ -166,8 +166,10 @@ struct GpuContext;
 // reused rather than reinvented so this quad and the document quad it draws
 // beside need only one shared mental model. Empty for a Pigment layer (see
 // this header's own scope note) or an empty `sourceBounds`.
+// `gradients` is the owning document's table, read by a Vector layer's shapes.
 std::vector<uint16_t> transformPreviewStraightHalf(const Layer& layer, const Selection* selection,
-                                                    const DocumentRegion& sourceBounds);
+                                                    const DocumentRegion& sourceBounds,
+                                                    const GradientTable& gradients);
 
 // The GPU half: one small texture, written once per session.
 class TransformPreviewTexture {
@@ -180,7 +182,7 @@ class TransformPreviewTexture {
   // or an empty region -- the caller's cue to fall back to the wireframe-only
   // box.
   bool upload(GpuContext& gpu, const Layer& layer, const Selection* selection,
-             const DocumentRegion& sourceBounds);
+             const DocumentRegion& sourceBounds, const GradientTable& gradients);
 
   // The view to hand `addCanvasQuad()`, or nullptr if nothing is uploaded.
   WGPUTextureView view() const noexcept { return view_; }
