@@ -142,6 +142,9 @@ const MenuItemSpec* specTable() {
     set(MenuAction::Fill, "Fill...", "");
     set(MenuAction::Stroke, "Stroke...", "");
     set(MenuAction::DefinePattern, "Define Pattern...", "");
+    // PRD D7's second half. No key equivalent, the identical
+    // reason.
+    set(MenuAction::ContentAwareFill, "Content-Aware Fill...", "");
 
     family(MenuAction::LayerCommandItem);
     family(MenuAction::LayerSetCommandItem);
@@ -241,6 +244,14 @@ const MenuItemSpec* specTable() {
     set(MenuAction::Snap, "Snap", "Cmd+Shift+;",
         MenuKeyEquivalent{';', kMenuModCmd | kMenuModShift, "toggle_snapping"});
 
+    // No key equivalent: `keymaps/default.json` binds no
+    // chord to either `split_view` action string, on the same "not
+    // speculatively" reasoning `BrushSettings` below already states, so
+    // claiming one from a native menu here would consume a chord nothing
+    // else in the shortcut table asks for.
+    set(MenuAction::SplitView, "Split View", "");
+    set(MenuAction::MatchZoom, "Match Zoom", "");
+
     // No key equivalent. `docs/shortcuts.md` assigns nothing here, and
     // claiming a chord from a native menu **consumes** it before SDL sees it
     // (MenuKeyEquivalent's own header) -- not a thing to do speculatively for
@@ -271,11 +282,19 @@ const MenuItemSpec* specTable() {
     // before SDL sees it -- not a thing to claim speculatively.
     set(MenuAction::RemoveLightingGradient, "Remove Lighting Gradient...", "");
     set(MenuAction::Offset, "Offset...", "");
+    // PRD D8's missing third piece. No key equivalent, the
+    // identical reason.
+    set(MenuAction::SeamHeal, "Seam Heal...", "");
     // No key equivalents, same reason as the two
     // above: `docs/shortcuts.md` assigns none of these three.
     set(MenuAction::Highpass, "Highpass...", "");
     set(MenuAction::LocalContrast, "Local Contrast...", "");
     set(MenuAction::LensCorrect, "Lens Correction...", "");
+    // PRD D11. No key equivalent, same reason as the
+    // three above.
+    set(MenuAction::DustScratches, "Dust & Scratches...", "");
+    set(MenuAction::RadialBlur, "Radial Blur...", "");
+    set(MenuAction::LensBlur, "Lens Blur...", "");
 
     // --- Image ----------------------------------------------------------
     set(MenuAction::ImageSize, "Image Size...", "");
@@ -335,6 +354,9 @@ const MenuItemSpec* specTable() {
     set(MenuAction::AdjustAutoColor, "Auto Colour", "Shift+Cmd+B",
         MenuKeyEquivalent{'b', kMenuModCmd | kMenuModShift, "adjust_auto_color"});
     set(MenuAction::AdjustEqualize, "Equalize", "");
+    // PRD D12. No key equivalent: docs/shortcuts.md
+    // assigns none.
+    set(MenuAction::AdjustShadowsHighlights, "Shadows/Highlights...", "");
     return true;
   }();
   (void)built;
@@ -532,6 +554,8 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::Grid: return "Grid";
     case MenuAction::ShowRegions: return "ShowRegions";
     case MenuAction::Snap: return "Snap";
+    case MenuAction::SplitView: return "SplitView";
+    case MenuAction::MatchZoom: return "MatchZoom";
     case MenuAction::ImGuiDemo: return "ImGuiDemo";
     case MenuAction::ActivateDocument: return "ActivateDocument";
     case MenuAction::GaussianBlur: return "GaussianBlur";
@@ -542,11 +566,15 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::Median: return "Median";
     case MenuAction::MotionBlur: return "MotionBlur";
     case MenuAction::Inpaint: return "Inpaint";
+    case MenuAction::ContentAwareFill: return "ContentAwareFill";
     case MenuAction::RemoveLightingGradient: return "RemoveLightingGradient";
     case MenuAction::Offset: return "Offset";
+    case MenuAction::SeamHeal: return "SeamHeal";
     case MenuAction::Highpass: return "Highpass";
     case MenuAction::LocalContrast: return "LocalContrast";
     case MenuAction::LensCorrect: return "LensCorrect";
+    case MenuAction::RadialBlur: return "RadialBlur";
+    case MenuAction::LensBlur: return "LensBlur";
     case MenuAction::ImageSize: return "ImageSize";
     case MenuAction::CanvasSize: return "CanvasSize";
     case MenuAction::CropToSelection: return "CropToSelection";
@@ -571,6 +599,8 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::AdjustAutoColor: return "AdjustAutoColor";
     case MenuAction::AdjustEqualize: return "AdjustEqualize";
     case MenuAction::Warp: return "Warp";
+    case MenuAction::DustScratches: return "DustScratches";
+    case MenuAction::AdjustShadowsHighlights: return "AdjustShadowsHighlights";
     case MenuAction::Count: break;
   }
   // Not a fallback string: reaching this means an enumerator was added without
@@ -611,6 +641,9 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::Grid:
     case MenuAction::ShowRegions:
     case MenuAction::Snap:
+    // `g_split` and its `CanvasView`s, not `OpenDocument`.
+    case MenuAction::SplitView:
+    case MenuAction::MatchZoom:
     // Merged in from main 2026-09-10 and classified here because `-Wswitch`
     // would not let it be inherited: `setTilePreview()` writes
     // `st.tilePreview` and `st.view`, so a tiled preview is a way of LOOKING
@@ -760,14 +793,24 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     // over documents. All four are the default answer, and the default is what
     // `-Wswitch` made someone look at rather than inherit.
     case MenuAction::Inpaint:
+    case MenuAction::ContentAwareFill:
     case MenuAction::RemoveLightingGradient:
     case MenuAction::Offset:
+    case MenuAction::SeamHeal:
     // The same seat as GaussianBlur above -- each
     // rewrites the active layer's own texels.
     case MenuAction::Highpass:
     case MenuAction::LocalContrast:
     case MenuAction::LensCorrect:
+    // Radial and Lens Blur, the same seat as GaussianBlur above -- each
+    // rewrites the active layer's own texels.
+    case MenuAction::RadialBlur:
+    case MenuAction::LensBlur:
     case MenuAction::Batch:
+    // Each rewrites the active layer's own texels or
+    // opens a modal, the identical seat as the rows just above.
+    case MenuAction::DustScratches:
+    case MenuAction::AdjustShadowsHighlights:
     case MenuAction::Count:
       return true;
   }
@@ -824,14 +867,20 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     case MenuAction::Median:
     case MenuAction::MotionBlur:
     case MenuAction::Inpaint:
-    // PRD D8's two, for the identical reason -- each opens a modal.
+    // two (PRD D7 second half, D8), for the identical
+    // reason -- each opens a modal (ui/RepairDialogs.hpp).
+    case MenuAction::ContentAwareFill:
     case MenuAction::RemoveLightingGradient:
     case MenuAction::Offset:
+    case MenuAction::SeamHeal:
     // The identical reason -- each opens a modal
     // (ui/FilterDialogsExtra.hpp).
     case MenuAction::Highpass:
     case MenuAction::LocalContrast:
     case MenuAction::LensCorrect:
+    // The identical reason -- each opens a modal (ui/BlurDialogsExtra.hpp).
+    case MenuAction::RadialBlur:
+    case MenuAction::LensBlur:
     case MenuAction::ImageSize:
     case MenuAction::CanvasSize:
     // Image > Adjustments' four dialogs, for the identical reason: opening one
@@ -880,6 +929,14 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     case MenuAction::Fill:
     case MenuAction::Stroke:
     case MenuAction::DefinePattern:
+      return MenuEffect::Deferred;
+
+    // Each opens a modal (ui/DustScratchesDialog.hpp,
+    // ui/ShadowsHighlightsDialog.hpp), the identical reason as every dialog
+    // above -- listed explicitly rather than left to `default:` below so a
+    // native menu callback is never asked to open one directly.
+    case MenuAction::DustScratches:
+    case MenuAction::AdjustShadowsHighlights:
       return MenuEffect::Deferred;
 
     default:
@@ -1051,6 +1108,22 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
       e.push_back(fillMenuItem(MenuAction::DefinePattern));
     }
     e.push_back(separator());
+    // PRD D7's second half (ops/PatchMatch.hpp): same selection-is-the-hole
+    // shape as Filter > Inpaint, so the identical second-question enable
+    // predicate and tooltip apply -- see that item's own comment in the
+    // Filter menu below.
+    {
+      const bool usable = ctx.filterLayerUsable && ctx.hasEngagedSelection;
+      MenuNode n = item(MenuAction::ContentAwareFill, usable);
+      if (!ctx.filterLayerUsable) {
+        n.tooltip = ctx.filterRefusalNote;
+      } else if (!ctx.hasEngagedSelection) {
+        n.tooltip = "Content-Aware Fill synthesises the SELECTED texels from the surrounding "
+                    "texture. Select the area to remove first.";
+      }
+      e.push_back(std::move(n));
+    }
+    e.push_back(separator());
     e.push_back(item(MenuAction::ClearCanvas));
     bar.push_back(std::move(edit));
   }
@@ -1169,6 +1242,10 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
       adjust.children.push_back(item(MenuAction::AdjustAutoContrast, ctx.hasDocument));
       adjust.children.push_back(item(MenuAction::AdjustAutoColor, ctx.hasDocument));
       adjust.children.push_back(item(MenuAction::AdjustEqualize, ctx.hasDocument));
+      // PRD D12: Photoshop's own placement, appended
+      // rather than grouped with the tonal controls above -- see
+      // MenuAction::AdjustShadowsHighlights's own comment.
+      adjust.children.push_back(item(MenuAction::AdjustShadowsHighlights, ctx.hasDocument));
       image.children.push_back(std::move(adjust));
     }
     bar.push_back(std::move(image));
@@ -1309,6 +1386,11 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     // Local Contrast set apart, a tonal op rather than a blur-based one.
     flt.push_back(filterItem(MenuAction::Highpass));
     flt.push_back(filterItem(MenuAction::LocalContrast));
+    // PRD D11: the median-gated despeckle.
+    flt.push_back(filterItem(MenuAction::DustScratches));
+    // Beside the blur family; Lens Blur is not directional like Motion Blur.
+    flt.push_back(filterItem(MenuAction::RadialBlur));
+    flt.push_back(filterItem(MenuAction::LensBlur));
     // Set apart, and the separator is the point: the eight above are filters
     // BOUNDED by the selection, and this one FILLS it (ops/Inpaint.hpp
     // section 1). It is also the only one whose enable predicate asks a
@@ -1335,6 +1417,12 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     flt.push_back(separator());
     flt.push_back(filterItem(MenuAction::RemoveLightingGradient));
     flt.push_back(filterItem(MenuAction::Offset));
+    // Make-tileable's missing third piece (PRD D8, ops/SeamHeal.hpp). Shares
+    // Offset's own predicate -- `seamHealRefusalFor()` refuses outright under
+    // ANY live selection, the identical reason `offsetRefusalFor()` does, so
+    // there is no second question to ask before the click the way Inpaint's
+    // item has.
+    flt.push_back(filterItem(MenuAction::SeamHeal));
     // PRD D22. Set apart from D8's make-tileable pair
     // above it -- a geometric correction, not a tiling workflow step -- but
     // sharing their enable predicate: `lensCorrectTiles()` is bounded by the
@@ -1381,6 +1469,19 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     v.push_back(check(MenuAction::Grid, ctx.showGrid));
     v.push_back(check(MenuAction::ShowRegions, ctx.showRegions));
     v.push_back(check(MenuAction::Snap, ctx.snappingEnabled));
+    v.push_back(separator());
+    {
+      // Enabled even at one document, like the tab strip's own two split
+      // icons -- toggling off is always legal, so the item disables only
+      // for "there is nothing a second pane could show", the same
+      // `canSplitView` the refusal status line explains in words.
+      MenuNode n = check(MenuAction::SplitView, ctx.splitViewActive,
+                         ctx.canSplitView || ctx.splitViewActive);
+      if (!ctx.canSplitView && !ctx.splitViewActive)
+        n.tooltip = "Needs a second open document.";
+      v.push_back(std::move(n));
+    }
+    v.push_back(check(MenuAction::MatchZoom, ctx.matchZoomActive, ctx.splitViewActive));
     bar.push_back(std::move(view));
   }
 

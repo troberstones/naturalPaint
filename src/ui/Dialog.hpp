@@ -76,6 +76,17 @@ constexpr float kDialogLabelColumn = 116.0f;
 // when the popup is not open, exactly as BeginPopupModal does; the caller
 // still owns `OpenPopup()`.
 bool beginDialog(const char* title, DialogWidth width = DialogWidth::Standard);
+
+// For a dialog whose canvas handles a centred sheet would cover: opened in the
+// work-area corner farthest from `keepClear` (screen points) instead.
+constexpr float kDialogCornerMargin = 24.0f;
+struct DialogCorner {
+  ImVec2 pos;
+  ImVec2 pivot;  // which corner of the window sits on `pos`, so no size is needed
+};
+DialogCorner dialogCornerAwayFrom(ImVec2 workMin, ImVec2 workMax, ImVec2 keepClear, float margin);
+bool beginDialogAwayFrom(const char* title, ImVec2 keepClear,
+                         DialogWidth width = DialogWidth::Standard);
 void endDialog();
 
 // --- Content -----------------------------------------------------------------

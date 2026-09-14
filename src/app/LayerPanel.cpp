@@ -4,11 +4,13 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <memory>
 #include <optional>
 #include <utility>
 
 #include "core/Blend.hpp"
 #include "core/LayerOps.hpp"
+#include "flats/FlatsLayer.hpp"
 
 namespace np {
 
@@ -182,13 +184,30 @@ std::string layerRowTitle(const Layer& layer, size_t layerIndex) {
   return "Layer " + std::to_string(layerIndex + 1);
 }
 
-std::string layerRowSubLine(const Layer& layer) {
+namespace {
+
+// Shared by both `layerRowSubLine()` overloads. `fillCount` is only ever
+// non-nullopt from the document-aware one below, so the plain-`Layer`
+// overload's output is byte-identical to what it was before this function
+// existed -- exactly what app/selftest/LayerPanel2a.cpp already pins for
+// every kind, Flats included when it has no document to peek through.
+std::string layerRowSubLineImpl(const Layer& layer, std::optional<size_t> fillCount) {
   // U+00B7 MIDDLE DOT, docs/ui.md's own separator.
   static constexpr const char* kSep = " \xC2\xB7 ";
 
   std::string s = layerKindName(layer.kind);
   for (char& c : s)
     if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+
+  // docs/ui.md §3.2: a Flats row's sub-line is "suffixed with the fill
+  // count", right after the kind -- `FLATS · 153 FILLS · NORMAL · 100%`.
+  // Always "FILLS", never singularised: the one existing readout of this
+  // same number (ui/MacPaintUI.cpp's HOW MANY FILLS panel) never singularises
+  // it either, and a row is not the place to invent a second convention.
+  if (fillCount.has_value()) {
+    s += kSep;
+    s += std::to_string(*fillCount) + " FILLS";
+  }
 
   s += kSep;
   std::string blend = layer.blend;
@@ -290,6 +309,32 @@ std::string layerRowSubLine(const Layer& layer) {
       s += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
   }
   return s;
+}
+
+}  // namespace
+
+std::string layerRowSubLine(const Layer& layer) { return layerRowSubLineImpl(layer, std::nullopt); }
+
+std::string layerRowSubLine(const Document& doc, size_t layerIndex) {
+  if (layerIndex >= doc.layers.size()) return std::string();
+  const Layer& layer = doc.layers[layerIndex];
+  std::optional<size_t> fillCount;
+  if (layer.kind == LayerKind::Flats) {
+    // Peek only -- see this overload's own comment in LayerPanel.hpp for why
+    // a row draw must never be what triggers a flats evaluation.
+    if (const std::shared_ptr<const FlatEvaluation> eval = flatsPeekEvaluation(doc, layerIndex)) {
+      // The same count ui/MacPaintUI.cpp's HOW MANY FILLS readout shows, not
+      // `eval->roots().size()` unfiltered: a root can be the background or a
+      // deleted fill, and neither is a "fill" a user would count.
+      size_t n = 0;
+      for (const int r : eval->roots()) {
+        const FlatFill& f = eval->fills[static_cast<size_t>(r)];
+        if (!f.isBg && !f.deleted) ++n;
+      }
+      fillCount = n;
+    }
+  }
+  return layerRowSubLineImpl(layer, fillCount);
 }
 
 std::vector<BlendMode> blendMenuForLayer(const Document& doc, size_t layerIndex) {

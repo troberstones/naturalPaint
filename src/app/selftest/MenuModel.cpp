@@ -223,16 +223,19 @@ bool runMenuModelTest() {
   // `SaveSelectionAsChannel`, `LoadChannelAsSelection` and `ToggleQuickMask`.
   // 108 -> 113: PRD Q1's `ZoomToSelection`, PRD D22/reachability-audit C1's
   // `Highpass`, `LocalContrast` and `LensCorrect`, and PRD D23's `Warp`.
-  check(kMenuActionCount == 113,
-        "ids: exactly 113 actions -- the original 41-item extraction plus D1/D2's "
+  // Counted off the enum: SplitView, MatchZoom, DustScratches,
+  // AdjustShadowsHighlights, ContentAwareFill, SeamHeal, RadialBlur, LensBlur.
+  check(kMenuActionCount == 121,
+        "ids: exactly 121 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
         "dialog, Brush Settings, the crop pair, Pigment, Batch, Inpaint, D8's "
         "make-tileable pair, the 3x3 repeat preview, the region export/show pair, "
         "Paste Into / Paste as New Document, Fill/Stroke/Define Pattern, the "
         "save/load channel and quick-mask trio, Zoom to Selection/Highpass/Local "
-        "Contrast/Lens Correction, and Warp, so an item lost in a later edit fails "
-        "here");
+        "Contrast/Lens Correction, Warp, Split View/Match Zoom, Dust & "
+        "Scratches/Shadows-Highlights, Content-Aware Fill/Seam Heal and Radial/Lens "
+        "Blur, so an item lost in a later edit fails here");
 
   {
     std::set<MenuAction> seen;

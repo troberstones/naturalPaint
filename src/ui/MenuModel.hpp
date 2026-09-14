@@ -294,6 +294,11 @@ enum class MenuAction : uint16_t {
   // after switching away", not the only way to see them.
   ShowRegions,
   Snap,
+  // `SplitView` refuses (a status line, no state change) with
+  // fewer than two open documents; `MatchZoom` is enabled only while a split
+  // is active. app/CommandCoverage.cpp: both NotRecordable, session state.
+  SplitView,
+  MatchZoom,
 
   // --- Window -------------------------------------------------------------
   //
@@ -347,14 +352,19 @@ enum class MenuAction : uint16_t {
   // Select menu's refine commands, which need an engaged selection for the
   // same structural reason, so this needs no new context field.
   Inpaint,
-  // PRD D8 / PLAN.md phase 9 ("Tile it"): the two make-tileable pixel ops,
-  // through app/FilterOps.hpp's `applyRemoveLightingGradient`/`applyOffset`
-  // and their `preview*` twins. **Two and not four**: D8 also names seam heal
-  // and a 3x3 repeat preview, and this header's own rule above holds -- an
-  // operation with no engine behind it stays out of the menu rather than
-  // appearing and doing nothing.
+  // PRD D7's second half (ops/PatchMatch.hpp): texture-synthesis fill,
+  // through `applyContentAwareFill()`/`previewContentAwareFill()`. Same
+  // selection-is-the-hole enable predicate as `Inpaint` just above, and the
+  // same reason.
+  ContentAwareFill,
+  // PRD D8 / PLAN.md phase 9 ("Tile it"): the make-tileable pixel ops,
+  // through app/FilterOps.hpp's `applyRemoveLightingGradient`/`applyOffset`/
+  // `applySeamHeal` and their `preview*` twins. D8 also names a 3x3 repeat
+  // preview, still out of the menu by this header's own rule -- no engine
+  // behind it yet.
   RemoveLightingGradient,
   Offset,
+  SeamHeal,
 
   // Three more engines with no menu path before
   // this (docs/reachability-audit.md C1) -- `ops/Filters.hpp`'s
@@ -364,6 +374,13 @@ enum class MenuAction : uint16_t {
   Highpass,
   LocalContrast,
   LensCorrect,
+
+  // docs/operations.md §2.2: Radial/Spin+Zoom blur
+  // (ops/RadialBlur.hpp) and Lens blur (ops/LensBlur.hpp), the same wiring
+  // shape as the three above -- app/FilterOps.hpp's `applyRadialBlur`/
+  // `applyLensBlur` and their `preview*` twins.
+  RadialBlur,
+  LensBlur,
 
   // --- Image ------------------------------------------------------------
   //
@@ -451,6 +468,14 @@ enum class MenuAction : uint16_t {
   // it sits beside it in the Edit menu for the identical "no Transform
   // submenu to put it in" reason `FreeTransform`'s own comment gives.
   Warp,
+
+  // PRD D11/D12: ops/Filters.hpp sections 11-12.
+  // `DustScratches` sits in the Filter menu beside Median
+  // (ui/DustScratchesDialog.hpp); `AdjustShadowsHighlights` sits in
+  // Image > Adjustments, Photoshop's own placement
+  // (ui/ShadowsHighlightsDialog.hpp).
+  DustScratches,
+  AdjustShadowsHighlights,
 
   Count,
 };
@@ -823,6 +848,9 @@ struct MenuContext {
   bool showRegions = false;
   bool snappingEnabled = false;
   bool hasGuides = false;           // Clear Guides is dead with none placed
+  bool canSplitView = false;        // Split View needs a second open document
+  bool splitViewActive = false;     // g_split.mode != Single (ui/MacPaintUI.cpp)
+  bool matchZoomActive = false;     // g_split.matchZoom
 
   // --- Window -------------------------------------------------------------
   bool showBrushSettings = false;

@@ -193,6 +193,12 @@ AtelierPanes atelierSplitPanes(const AtelierRect& canvas, AtelierSplit split) {
   return panes;
 }
 
+int atelierPaneAt(const AtelierPanes& panes, float x, float y) noexcept {
+  if (panes.pane[0].contains(x, y)) return 0;
+  if (panes.count == 2 && panes.pane[1].contains(x, y)) return 1;
+  return -1;
+}
+
 AtelierRect atelierNavigatorRect(const AtelierRect& canvas, float docW, float docH) {
   if (docW <= 0.0f || docH <= 0.0f) return AtelierRect{};
 

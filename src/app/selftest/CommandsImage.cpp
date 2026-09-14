@@ -265,11 +265,42 @@ std::vector<ImageCommandFixture> imageCommandFixtures() {
     p.set("radius", num(2));
     add("filter_median", p);
   }
+  // PRD D11: a threshold of 0 always changes SOME texel
+  // of a non-flat fixture (ops/Filters.hpp section 11's own "threshold 0
+  // equals plain median on every texel that differs at all"), which the
+  // hash-pattern content above guarantees plenty of.
+  {
+    JsonValue p = JsonValue::object();
+    p.set("radius", num(2));
+    p.set("threshold", num(0.0));
+    add("filter_dust_scratches", p);
+  }
   {
     JsonValue p = JsonValue::object();
     p.set("radius", num(3));
     p.set("angle_radians", num(0.5));
     add("filter_motion_blur", p);
+  }
+  // docs/operations.md §2.2. Centre inside the fixture's own
+  // content band (8..48) and selection (4..52), so the aperture/sweep has
+  // real, non-flat content to change.
+  {
+    JsonValue p = JsonValue::object();
+    p.set("method", JsonValue::string("spin"));
+    p.set("center_x", num(28.0));
+    p.set("center_y", num(26.0));
+    p.set("amount", num(20.0));
+    p.set("samples", num(6));
+    add("filter_radial_blur", p);
+  }
+  {
+    JsonValue p = JsonValue::object();
+    p.set("radius", num(6));
+    p.set("blade_count", num(6));
+    p.set("blade_rotation_radians", num(0.2));
+    p.set("highlight_threshold", num(0.5));
+    p.set("highlight_boost", num(0.3));
+    add("filter_lens_blur", p);
   }
   {
     JsonValue p = JsonValue::object();
@@ -371,6 +402,18 @@ std::vector<ImageCommandFixture> imageCommandFixtures() {
     p.set("color", arrayOf({1.0, 0.5, 0.2}));
     p.set("preserve_luminosity", JsonValue::boolean(true));
     add("adjust_photo_filter", p);
+  }
+  // PRD D12: `filter_` id, `adjust_` menu -- see
+  // doShadowsHighlights()'s own comment in app/CommandsImage.cpp. The wide
+  // histogram this fixture already carries (for the four auto solvers) gives
+  // the guide real dark-to-bright variation to push against.
+  {
+    JsonValue p = JsonValue::object();
+    p.set("radius", num(10.0));
+    p.set("shadows", num(0.6));
+    p.set("highlights", num(0.6));
+    p.set("tonal_width", num(0.15));
+    add("filter_shadows_highlights", p);
   }
   {
     JsonValue p = JsonValue::object();

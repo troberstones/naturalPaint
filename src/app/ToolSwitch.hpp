@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
+#include <string_view>
 
 #include "app/AppState.hpp"
 
@@ -270,6 +272,27 @@ void clearFlatsEditSelection(AppState& st) noexcept;
 // a flatting gesture armed under a gizmo hands the canvas away exactly as an
 // ordinary tool change would.
 bool setFlatsTool(AppState& st, FlatsTool next) noexcept;
+
+// Selects `next`, or deselects back to `FlatsTool::None` if it is already
+// the active flats tool -- the FLATS TOOLS palette's own click rule
+// (ui/MacPaintUI.cpp's `flatsToolButton()`), factored out so the six
+// Flats-scoped tool-selection keys (docs/shortcuts.md §1.1) can make the
+// identical decision instead of re-deriving it. Both callers route through
+// `setFlatsTool()` above, so a key and the palette cell it names cannot
+// disagree about what picking a tool means -- including its refusal under a
+// live transform gizmo, which this inherits by calling it.
+bool toggleFlatsTool(AppState& st, FlatsTool next) noexcept;
+
+// Maps a Flats-scoped keymap tool-selection action ("flats_tool_shape_fill"
+// etc.) to the `FlatsTool` it names, or nullopt for anything else. Mirrors
+// `ui/AtelierChrome`'s `toolFromSelectAction()` for the ordinary tool
+// palette: one small pure table, so main.cpp's key handler and the selftest
+// read the same answer rather than two that can drift apart.
+std::optional<FlatsTool> flatsToolForKeyAction(std::string_view action) noexcept;
+
+// The one-shot Flats keys' action strings, for the same reason: main.cpp and the
+// selftest read one table. A tool-picking action is not in it.
+std::optional<FlatsAction> flatsActionForKeyAction(std::string_view action) noexcept;
 
 // **Is the flatting tool the active tool right now?**
 //

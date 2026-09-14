@@ -509,8 +509,9 @@ gradient-domain solve · diffusion inpaint (Telea).
 
 ## 9 — Tile it
 Lighting-gradient removal (divide by a heavily blurred copy, re-centre the mean) ·
-offset by half · seam heal · **3×3 repeat preview** · PatchMatch as a cached class-D op
-with a Recompute button and a deterministic seed.
+offset by half · seam heal · **3×3 repeat preview** · PatchMatch, destructive and seeded
+(2026-09-13 owner decision, not the cached class-D op first sketched here) -- a Recompute
+button and a recorded seed are what make a replay reproduce the same fill.
 
 **Primary user's workflow is complete here.**
 

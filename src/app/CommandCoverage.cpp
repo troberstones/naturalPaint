@@ -258,6 +258,12 @@ CommandCoverage coverageFor(MenuAction action) {
     case MenuAction::Snap:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "a tool behaviour"};
+    case MenuAction::SplitView:
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "the session's pane arrangement, not the document"};
+    case MenuAction::MatchZoom:
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "a view toggle; the document is unchanged"};
     case MenuAction::BrushSettings:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "a panel"};
@@ -288,8 +294,21 @@ CommandCoverage coverageFor(MenuAction action) {
       // as the second bounded exception (beside `crop_to_selection`) in
       // app/selftest/Command.cpp section H.
       return {CommandCoverageKind::Registered, "filter_inpaint", nullptr};
+    case MenuAction::ContentAwareFill:
+      // PRD D7's second half. Same inverted-selection
+      // reasoning as `Inpaint` just above -- `content_aware_fill` is
+      // `selectionBounded` for the identical reason: the recorder's channel-
+      // match rule is the protection this op needs against a live, unsaved
+      // marquee even though "absent means whole canvas" does not literally
+      // describe it.
+      return {CommandCoverageKind::Registered, "content_aware_fill", nullptr};
     case MenuAction::RemoveLightingGradient:
       return {CommandCoverageKind::Registered, "filter_remove_lighting_gradient", nullptr};
+    case MenuAction::SeamHeal:
+      // PRD D8. NOT `selectionBounded`, for `Offset`'s own
+      // reason just below: `seamHealRefusalFor()` refuses outright under ANY
+      // live selection.
+      return {CommandCoverageKind::Registered, "seam_heal", nullptr};
     case MenuAction::Offset:
       // `dx`/`dy` are recorded as `dx_fraction`/`dy_fraction` -- a FRACTION of
       // the canvas, not the texels `offsetByHalf()` resolves them to -- because
@@ -324,6 +343,11 @@ CommandCoverage coverageFor(MenuAction action) {
       return {CommandCoverageKind::Registered, "filter_local_contrast", nullptr};
     case MenuAction::LensCorrect:
       return {CommandCoverageKind::Registered, "lens_correct", nullptr};
+    // docs/operations.md §2.2.
+    case MenuAction::RadialBlur:
+      return {CommandCoverageKind::Registered, "filter_radial_blur", nullptr};
+    case MenuAction::LensBlur:
+      return {CommandCoverageKind::Registered, "filter_lens_blur", nullptr};
     case MenuAction::ImageSize:
       return {CommandCoverageKind::Registered, "image_size", nullptr};
     case MenuAction::CanvasSize:
@@ -387,6 +411,11 @@ CommandCoverage coverageFor(MenuAction action) {
               "toggles the live transform session's shape between an affine box and a warp net; "
               "begins/continues an interactive gesture with on-canvas handles, exactly as "
               "FreeTransform above -- the session owns the live transform"};
+    // PRD D11/D12: ops/Filters.hpp sections 11-12.
+    case MenuAction::DustScratches:
+      return {CommandCoverageKind::Registered, "filter_dust_scratches", nullptr};
+    case MenuAction::AdjustShadowsHighlights:
+      return {CommandCoverageKind::Registered, "filter_shadows_highlights", nullptr};
     case MenuAction::Count:
       // Not an action: the enum's own size marker.
       return {CommandCoverageKind::NotRecordable, nullptr, "the enum's count marker, not an action"};

@@ -122,7 +122,7 @@ bool keyPressedOnce(ImGuiKey key) { return ImGui::IsKeyPressed(key, false); }
 
 // ---------------------------------------------------------------- window
 
-bool beginDialog(const char* title, DialogWidth width) {
+static bool beginDialogPlaced(const char* title, DialogWidth width, ImVec2 pos, ImVec2 pivot) {
   const float w = width == DialogWidth::Wide ? kDialogWideWidth : kDialogStandardWidth;
   const ImGuiViewport* vp = ImGui::GetMainViewport();
   // `Appearing`, not `FirstUseEver`: a dialog dragged aside and reopened comes
@@ -131,9 +131,8 @@ bool beginDialog(const char* title, DialogWidth width) {
   // centred for the size it has now. `Always` for the settling frames after
   // that -- see g_centreUntilFrame.
   const int frame = ImGui::GetFrameCount();
-  ImGui::SetNextWindowPos(vp->GetCenter(),
-                          frame <= g_centreUntilFrame ? ImGuiCond_Always : ImGuiCond_Appearing,
-                          ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowPos(pos, frame <= g_centreUntilFrame ? ImGuiCond_Always : ImGuiCond_Appearing,
+                          pivot);
   // Width pinned from both sides; height follows the content. The height cap
   // is on the BODY below, not on the window: a capped window would scroll its
   // footer away with everything else, and a dialog whose buttons have to be
@@ -159,6 +158,26 @@ bool beginDialog(const char* title, DialogWidth width) {
   ImGui::BeginChild("##dialogBody", ImVec2(0.0f, 0.0f), ImGuiChildFlags_AutoResizeY);
   g_bodyOpen = true;
   return true;
+}
+
+bool beginDialog(const char* title, DialogWidth width) {
+  return beginDialogPlaced(title, width, ImGui::GetMainViewport()->GetCenter(), ImVec2(0.5f, 0.5f));
+}
+
+DialogCorner dialogCornerAwayFrom(ImVec2 workMin, ImVec2 workMax, ImVec2 keepClear, float margin) {
+  const bool right = keepClear.x <= (workMin.x + workMax.x) * 0.5f;
+  const bool bottom = keepClear.y <= (workMin.y + workMax.y) * 0.5f;
+  return DialogCorner{ImVec2(right ? workMax.x - margin : workMin.x + margin,
+                             bottom ? workMax.y - margin : workMin.y + margin),
+                      ImVec2(right ? 1.0f : 0.0f, bottom ? 1.0f : 0.0f)};
+}
+
+bool beginDialogAwayFrom(const char* title, ImVec2 keepClear, DialogWidth width) {
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  const ImVec2 workMax(vp->WorkPos.x + vp->WorkSize.x, vp->WorkPos.y + vp->WorkSize.y);
+  const DialogCorner corner =
+      dialogCornerAwayFrom(vp->WorkPos, workMax, keepClear, kDialogCornerMargin);
+  return beginDialogPlaced(title, width, corner.pos, corner.pivot);
 }
 
 void endDialog() {

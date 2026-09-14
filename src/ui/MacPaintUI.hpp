@@ -182,6 +182,21 @@ void setDocumentStatusLine(std::string status);
 // `setLayersPanelSelection()`'s comment exists to prevent.
 void setSplitArrangement(AtelierSplit mode);
 
+// View > Split View and View > Match Zoom, reachable from a
+// bound key exactly as the menu items reach them
+// (`ui::toggleSplitView()`/`g_split.matchZoom`, both ui/MacPaintUI.cpp) --
+// `keymaps/default.json` binds no chord to either action string today, so
+// these are reachable only from the menu until one is added, the same
+// "unbound rather than speculative" call `BrushSettings`'s own comment makes
+// in ui/MenuModel.cpp.
+void toggleSplitViewKey(AppState& st);
+void toggleMatchZoomKey(AppState& st);
+
+// `--split-demo`'s own route into Match Zoom, `setSplitArrangement()`'s
+// sibling and for the identical reason: a screenshot needs the state already
+// set before the first frame, and there is no click for a flag to replay.
+void setSplitMatchZoom(bool on);
+
 // Where all five of PRD E3's selection tools end: the shape just drawn,
 // combined with what was installed through the PRD E7 modifier the gesture
 // latched (`AppState::marqueeCombine`), installed once.

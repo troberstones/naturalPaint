@@ -10,6 +10,10 @@
 #include "ops/Filters.hpp"
 #include "ops/Inpaint.hpp"
 #include "ops/Lens.hpp"
+#include "ops/LensBlur.hpp"
+#include "ops/PatchMatch.hpp"
+#include "ops/RadialBlur.hpp"
+#include "ops/SeamHeal.hpp"
 
 // app/FilterOps -- the wiring bridge for the Filter and Image menus
 // (docs/reachability-audit.md C1: "~93 entry points... no UI path to any of
@@ -223,6 +227,30 @@ FilterOpResult applyLocalContrast(OpenDocument& doc, const LocalContrastParams& 
 FilterOpResult previewLocalContrast(const OpenDocument& doc, const LocalContrastParams& params,
                                     TileStore* previewOut);
 
+// PRD D11/D12 (ops/Filters.hpp sections 11-12): median
+// gated by a threshold, and a blurred-luminance-guided shadows/highlights
+// push. Same machinery, same "one struct, no drift" reason.
+FilterOpResult applyDustScratches(OpenDocument& doc, const DustScratchesParams& params);
+FilterOpResult previewDustScratches(const OpenDocument& doc, const DustScratchesParams& params,
+                                    TileStore* previewOut);
+
+FilterOpResult applyShadowsHighlights(OpenDocument& doc, const ShadowsHighlightsParams& params);
+FilterOpResult previewShadowsHighlights(const OpenDocument& doc,
+                                        const ShadowsHighlightsParams& params,
+                                        TileStore* previewOut);
+
+// Radial (spin/zoom) and lens blur.
+FilterOpResult applyRadialBlur(OpenDocument& doc, const RadialBlurParams& params);
+FilterOpResult previewRadialBlur(const OpenDocument& doc, const RadialBlurParams& params,
+                                 TileStore* previewOut);
+FilterOpResult applyLensBlur(OpenDocument& doc, const LensBlurParams& params);
+FilterOpResult previewLensBlur(const OpenDocument& doc, const LensBlurParams& params,
+                               TileStore* previewOut);
+
+// The canvas centre in document texels. The dialog seeds from it and the
+// command reader fills an absent centre from it, so the two cannot disagree.
+PixelCoord defaultBlurCenter(const OpenDocument& doc) noexcept;
+
 // ==========================================================================
 // Inpaint, and the one place this header's own selection rule is inverted
 // ==========================================================================
@@ -345,6 +373,34 @@ FilterOpResult previewMotionBlur(const OpenDocument& doc, const MotionBlurParams
 // through `computePixelFilter()`, so the preview and the commit cannot pick
 // different holes.
 FilterOpResult previewInpaint(const OpenDocument& doc, int32_t radius, TileStore* previewOut);
+
+// ==========================================================================
+// Content-Aware Fill: PRD D7's second half (ops/PatchMatch.hpp)
+// ==========================================================================
+//
+// Same hole-not-bound inversion as Inpaint just above, same refusal
+// vocabulary, same `applyPixelFilter()`/`computePixelFilter()` wiring --
+// `patchMatchTiles()` shares the engine signature the bridge is written
+// against, so this is `applyInpaint()`'s shape with a different engine and a
+// seed. Destructive and seeded (2026-09-13 owner decision), not a cached op:
+// see ops/PatchMatch.hpp for why.
+struct ContentAwareFillRequest {
+  int32_t patchRadius = 3;
+  int32_t iterations = 5;
+  int32_t pyramidLevels = 4;
+  uint64_t seed = 0;
+};
+
+FilterOpResult applyContentAwareFill(OpenDocument& doc, const ContentAwareFillRequest& request);
+FilterOpResult previewContentAwareFill(const OpenDocument& doc,
+                                       const ContentAwareFillRequest& request,
+                                       TileStore* previewOut);
+// Layer refusals first, then `NoSelection` -- identical ordering to
+// `inpaintRefusal()` and for the identical reason: the hole IS the
+// selection, so an absent one is refused by name rather than read as "the
+// whole canvas".
+PixelOpRefusal contentAwareFillRefusal(const OpenDocument& doc);
+
 // ==========================================================================
 // PRD D8 / PLAN.md phase 9 -- the two make-tileable pixel ops
 // ==========================================================================
@@ -437,6 +493,29 @@ PixelOpRefusal offsetRefusalFor(const OpenDocument& doc) noexcept;
 FilterOpResult applyOffset(OpenDocument& doc, const OffsetRequest& request);
 FilterOpResult previewOffset(const OpenDocument& doc, const OffsetRequest& request,
                              TileStore* previewOut);
+
+// ==========================================================================
+// Seam Heal: make-tileable's missing third piece (ops/SeamHeal.hpp)
+// ==========================================================================
+//
+// `SeamHealRequest` is the dialog's four fields; `seamHealParamsFor()`
+// (below, file-private) fills in the canvas rectangle the engine needs and
+// cannot infer, exactly as `offsetParamsFor()` does for Offset. Refuses under
+// a selection for `offsetRefusalFor()`'s own reason, restated:
+// "heal the seam under this marquee" has no single meaning a wrap op can
+// honour, so it refuses rather than guessing one.
+struct SeamHealRequest {
+  int32_t bandWidth = 12;
+  int32_t patchRadius = 3;
+  int32_t iterations = 5;
+  int32_t pyramidLevels = 4;
+  uint64_t seed = 0;
+};
+
+PixelOpRefusal seamHealRefusalFor(const OpenDocument& doc) noexcept;
+FilterOpResult applySeamHeal(OpenDocument& doc, const SeamHealRequest& request);
+FilterOpResult previewSeamHeal(const OpenDocument& doc, const SeamHealRequest& request,
+                               TileStore* previewOut);
 
 // ==========================================================================
 // PRD D22 -- lens correction (ops/Lens.hpp)

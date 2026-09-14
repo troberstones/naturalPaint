@@ -1170,4 +1170,183 @@ inline constexpr float kLightingGradientFloor = 1.0e-06f;
 bool removeLightingGradientTiles(const TileStore& src, const PixelRect& outRect,
                                  const LightingGradientParams& p, TileStore* dst);
 
+// ==========================================================================
+// 11. Dust & scratches -- median()`, gated by a threshold
+// ==========================================================================
+//
+// docs/operations.md §2.1: "median gated by a threshold, so clean areas are
+// untouched". Per texel: run section 8's median, then keep the median result
+// only where the source texel differs from it by more than `threshold`;
+// elsewhere the source texel passes through bit-exactly.
+//
+// **The difference measure is unsharp's own `unsharpGain()` shape (section 2)
+// -- shaper domain, straight colour, alpha undivided -- not linear light.**
+// This gate has the identical problem unsharp's own header measures at
+// length: a linear-light threshold is a huge tonal step in the shadows and
+// nothing in the highlights (the 234.6x spread), so "ignore a speck that
+// differs by less than this" would mean a wildly different sensitivity by
+// tone. Unlike unsharp's gate, this one is HARD, not soft -- the brief's own
+// "keep the source texel bit-exactly" below the threshold rules out a ramped
+// blend, which would replace "untouched" with "slightly median'd".
+//
+// **`radius = 0` is the identity** for section 8's own reason: a 1x1
+// window's median is its own sample, so every texel's difference from it is
+// exactly 0 and never exceeds a `threshold >= 0`. **A `threshold` above every
+// difference the fixture can produce is the identity** for the same reason a
+// hard gate that never opens changes nothing. **`threshold = 0` equals plain
+// median on every texel that differs from it at all** -- the gate opens for
+// any nonzero difference, which is `medianTiles()`'s own output wherever the
+// source and its median disagree.
+struct DustScratchesParams {
+  // Median window half-width, in document texels -- `MedianParams::radius`'s
+  // own units and own identity at 0.
+  int32_t radius = 0;
+
+  // Shaper-domain magnitude a texel must differ from its median by, on the
+  // worst of its three straight colour channels and its own alpha, before
+  // the median replaces it. 0 replaces every texel that differs at all.
+  float threshold = 0.0f;
+};
+
+// False for a negative radius or a non-finite/negative threshold.
+bool dustScratchesParamsValid(const DustScratchesParams& p) noexcept;
+
+// Exactly the median's own dilation -- the gate reads only the output texel
+// and the median already gathered, so it widens nothing beyond section 8's
+// own window.
+RoiOp dustScratchesRoiOp(const DustScratchesParams& p) noexcept;
+
+// The gate's own difference measure between a source texel and its median,
+// both premultiplied -- exposed so --selftest can prove a fixture's speck
+// really exceeds the threshold used against it, rather than assuming so.
+float dustScratchesDiff(const std::array<float, 4>& src,
+                        const std::array<float, 4>& median) noexcept;
+
+bool dustScratchesTiles(const TileStore& src, const PixelRect& outRect,
+                        const DustScratchesParams& p, TileStore* dst);
+
+// ==========================================================================
+// 12. Shadows / highlights -- local tone mapping over a blurred luminance guide
+// ==========================================================================
+//
+// docs/operations.md §1.3: class B, P1, "needs a blurred luminance guide; it
+// is local tone mapping" -- PRD D12's own warning that a per-pixel curve is
+// the wrong shape for this control. The guide is a Gaussian blur of straight
+// luminance (linear light, this file's own averaging domain); a shadows
+// amount raises texels whose GUIDE is dark, a highlights amount lowers
+// texels whose guide is bright, and the push is applied as a single
+// per-texel GAIN on all three premultiplied colour channels, so hue and
+// chroma ratios do not move.
+//
+// **Two texels sharing a value but not a neighbourhood get different
+// treatment, by construction.** The gain is a pure function of the GUIDE at
+// a texel's own position, never of the texel's own value -- so a texel that
+// happens to sit in a locally dark region is treated as a shadow even if its
+// own value is mid-grey, and its twin elsewhere with the identical value but
+// a bright neighbourhood is not. That is the whole content of "local tone
+// mapping" and the property a flat per-pixel curve cannot have.
+//
+// **Domain: the guide's blur is linear (this file's own averaging rule);
+// the tone weight and the push are computed in the SHAPER domain, following
+// section 6's own local contrast precedent (a blur in linear light, its
+// difference/weighting taken in log domain) rather than ColourOps'
+// ColorBalance (a linear-domain tonal weight).** The reason is the shape of
+// the control, not a default: ColorBalance's weight is a fixed lift/gain
+// pivoted at linear 0.5 and this file already argues linear suits it there.
+// Here the pivot and its "how wide is a shadow" band are a **shaper-domain**
+// judgement -- exactly Curves' own domain (`color/LutBake.hpp`) -- because a
+// linear-light threshold has this file's own noise/unsharp problem: shadow
+// detail lives in a tiny sliver of the linear range, so a linear pivot and
+// width would put almost the whole picture in one band or the other. The
+// pivot is `shaperEncode(kShadowsHighlightsMidGray)`, computed rather than a
+// second hand-typed shaper constant, so it tracks Shaper.cpp's own numbers if
+// they are ever revisited.
+//
+// **The tent, and why texels outside it do not move at all.** With
+// `g = shaperEncode(guide luminance)` and `p = shaperEncode(midGray)`:
+//
+//     wShadow(g)    = clamp((p - g) / tonalWidth, 0, 1)
+//     wHighlight(g) = clamp((g - p) / tonalWidth, 0, 1)
+//     shift         = (shadows * wShadow(g) - highlights * wHighlight(g)) * kOneStopShaper
+//
+// `wShadow` and `wHighlight` are never both nonzero at the same `g` (the
+// first needs `g < p`, the second `g > p`), so `shift` is exactly one term's
+// contribution at any texel -- ColorBalance's own non-double-counting
+// argument, restated for a two-band tent rather than three overlapping ones.
+// At `g == p` (a guide reading exactly mid grey) and wherever both weights
+// are already 0, `shift == 0` and the gain is exactly 1 -- computed as a
+// guard, not through a shaper round trip, so a texel the tent does not reach
+// is untouched to the bit rather than to float tolerance.
+//
+// **`shadows`/`highlights` are in STOPS, not raw shaper units, and the
+// conversion is derived rather than a retyped Shaper.cpp constant.** The
+// shaper is a log2 encoding, so ONE STOP is a fixed shaper-domain distance
+// everywhere on the log branch: `kOneStopShaper = shaperEncode(2) -
+// shaperEncode(1)`. A raw shaper-domain amount is unusable as a dial -- 0.5
+// of it is roughly an 8.7-stop gain (2^(0.5/kOneStopShaper)) -- while "lift
+// the shadows by up to 1.5 stops" is the unit every exposure-shaped control
+// in this application already speaks (`ExposureParams::stops`). Computed
+// rather than hand-derived from ADR-0004's published constants, for the
+// identical reason the pivot above is computed: it tracks Shaper.cpp's own
+// numbers if they are ever revisited, rather than silently going stale.
+//
+// **The gain.** `gain = shaperDecode(g + shift) / shaperDecode(g)`, i.e. "the
+// ratio between the guide's shifted tone and its own tone", applied to the
+// texel's own three premultiplied colour channels (never alpha, section 6's
+// own "a tonal op must not move the shape's boundary" argument). Both
+// `shaperDecode(g)` and the guide's own straight luminance are the same
+// number by construction (`g` is that luminance's encode), so the division
+// is guarded the way section 10's divide-by-a-blur is: a guide at or below
+// `kLightingGradientFloor` has no usable tone to push and is left at
+// `gain = 1` rather than dividing by (near) zero.
+//
+// **Both amounts 0 is the exact identity.** `shift` is 0 at every texel
+// regardless of the guide, so the per-texel guard above fires everywhere and
+// the whole gather is skipped, matching every other zero-strength case in
+// this file.
+struct ShadowsHighlightsParams {
+  // The guide's blur -- Gaussian only, `blurRoiOp`'s own dilation. Radius 0
+  // is refused at the command layer (app/CommandsImage.cpp), the same choice
+  // `filter_local_contrast` makes for the identical reason: a zero-radius
+  // guide equals the source exactly, which collapses "local" tone mapping
+  // into a flat per-pixel curve and defeats the reason this op exists.
+  BlurParams blur;
+
+  // Stops of lift applied where the guide reads fully into the shadow band
+  // (`ExposureParams::stops`'s own unit). 0 disables it.
+  float shadows = 0.0f;
+
+  // Stops of pull-down applied where the guide reads fully into the
+  // highlight band. 0 disables it.
+  float highlights = 0.0f;
+
+  // Shaper-domain half-width of the transition around mid grey; must be
+  // finite and strictly positive (it is a division base). Not a percentage --
+  // see the header above for the two shaper-domain values it is measured
+  // against.
+  float tonalWidth = 0.15f;
+};
+
+// The mid-grey pivot the tonal tent is centred on, in LINEAR light -- the
+// photographic 18% grey card, the same pivot a spot meter is calibrated
+// against.
+inline constexpr float kShadowsHighlightsMidGray = 0.18f;
+
+// False for an invalid blur, a non-finite shadows/highlights amount, or a
+// tonal width that is not finite and strictly positive.
+bool shadowsHighlightsParamsValid(const ShadowsHighlightsParams& p) noexcept;
+
+// The guide blur's own dilation -- the tent and the gain read only the guide
+// already gathered, so this widens nothing beyond the blur's own apron.
+RoiOp shadowsHighlightsRoiOp(const ShadowsHighlightsParams& p) noexcept;
+
+// The per-texel gain the header derives, exposed so --selftest can assert
+// the SPATIAL property directly: the same guide luminance must produce the
+// same gain regardless of which texel asked for it, and two different guide
+// luminances must produce two different gains whenever `shift` differs.
+float shadowsHighlightsGain(const ShadowsHighlightsParams& p, float guideLuminance) noexcept;
+
+bool shadowsHighlightsTiles(const TileStore& src, const PixelRect& outRect,
+                            const ShadowsHighlightsParams& p, TileStore* dst);
+
 }  // namespace np

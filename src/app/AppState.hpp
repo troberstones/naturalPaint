@@ -601,6 +601,10 @@ enum class AdjustmentRequest {
   AutoContrast,
   AutoColor,
   Equalize,
+
+  // PRD D12: ops/Filters.hpp §12. Photoshop's own
+  // placement (Image > Adjustments), not Filter -- ui/ShadowsHighlightsDialog.hpp.
+  ShadowsHighlights,
 };
 
 // Which tool the user was in before this one, and whether the Hand is being
@@ -692,7 +696,10 @@ inline const char* bucketFillLabel(BucketFill mode) noexcept {
 
 // The flatting key actions, raised by the keymap while a Flats layer is
 // active (scoped bindings) and consumed by ui/MacPaintUI's canvas block.
-enum class FlatsAction { None, DeleteFill, MergePair, PrevGap, NextGap, AcceptGap, ClusterSmall };
+enum class FlatsAction {
+  None, DeleteFill, MergePair, PrevGap, NextGap, AcceptGap, ClusterSmall,
+  AcceptAllGaps,  // ⇧Enter (Flats): every pending gap, one undo step
+};
 
 // The flatting TOOLS: a sticky mode, picked in the FLATS TOOLS palette and
 // held until something else is picked -- the way a brush stays picked.

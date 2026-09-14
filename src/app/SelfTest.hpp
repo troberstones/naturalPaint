@@ -1007,6 +1007,11 @@ bool runFiltersTest();
 // on both axes at once. Also headless and GPU-free.
 bool runFiltersExtTest();
 
+// docs/operations.md §2.2: Radial/Spin+Zoom blur (ops/RadialBlur.hpp)
+// and Lens blur (ops/LensBlur.hpp), and their app/FilterOps.hpp/Command
+// wiring. Also headless and GPU-free.
+bool runBlurFiltersTest();
+
 // ops/Inpaint and Filter > Inpaint (PLAN.md "Phase 8 -- Repair it"; PRD D7's
 // first half, the diffusion one). Headless and GPU-free.
 //
@@ -1027,6 +1032,22 @@ bool runFiltersExtTest();
 // exactly that constant to the f16 store's own floor, and a horizontal ramp
 // filling as a monotone ramp rather than as a puddle of its rim's mean.
 bool runInpaintTest();
+
+// ops/PatchMatch and Edit > Content-Aware Fill (PRD D7's second half).
+// Headless and GPU-free. Same hole-not-bound inversion Inpaint's own section
+// asserts, plus what is specific to a search rather than a solve: same seed
+// twice is bit-identical, a different seed can differ, no accepted match's
+// source patch overlaps the hole (checked from outside the engine via its
+// own NNF instrumentation), and a periodic texture's fill continues the
+// period.
+bool runPatchMatchTest();
+
+// ops/SeamHeal and Filter > Seam Heal (PRD D8's missing third piece).
+// Headless and GPU-free. Both offsets are pure addressing changes, so the
+// property asserted is exactness outside the two bands, not merely
+// plausibility inside them.
+bool runSeamHealTest();
+
 // ---------------------------------------------------------------------------
 // PRD D8 / PLAN.md phase 9 ("Tile it"): the two make-tileable pixel ops
 // ---------------------------------------------------------------------------
@@ -6775,5 +6796,28 @@ bool runZoomToSelectionTest();
 // net's grid-size re-fit being exact. Headless and GPU-free -- nothing here
 // touches ui/. See app/selftest/WarpMesh.cpp.
 bool runWarpMeshTest();
+
+// View > Split View and Match Zoom: pane placement and the match-zoom solve
+// (checked by inverting the placement, with documents that fit, overflow, or
+// one of each), the pane hit-test, the toggle's refusal, the companion view's
+// reset and focus swap. Headless.
+bool runSplitViewTest();
+
+// app/RadialBlurHandles: the Radial Blur dialog's on-canvas handles.
+bool runRadialBlurHandlesTest();
+
+// Filter > Dust & Scratches (PRD D11): median gated by a threshold. Headless.
+bool runDustScratchesTest();
+
+// Image > Adjustments > Shadows/Highlights (PRD D12): a tone push driven by a
+// blurred luminance guide, so it is spatial rather than a point curve. Headless.
+bool runShadowsHighlightsTest();
+
+// `naturalPaint --version`: versionString()'s shape. Headless.
+bool runVersionTest();
+
+// docs/shortcuts.md §1.1's six Flats keys: Flats-scoped resolution, the same
+// toggle as the palette cells, and accept-all through the per-gap path. Headless.
+bool runFlatsKeysTest();
 
 }  // namespace np

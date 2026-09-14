@@ -83,6 +83,13 @@
     { "key": ",", "scope": "Flats", "action": "flats_prev_gap" },
     { "key": ".", "scope": "Flats", "action": "flats_next_gap" },
     { "key": "Return", "scope": "Flats", "action": "flats_accept_gap" },
-    { "key": "K", "mods": ["Cmd", "Shift"], "scope": "Flats", "action": "flats_cluster_small" }
+    { "key": "K", "mods": ["Cmd", "Shift"], "scope": "Flats", "action": "flats_cluster_small" },
+
+    { "key": "Y", "scope": "Flats", "action": "flats_tool_shape_fill" },
+    { "key": "K", "mods": ["Shift"], "scope": "Flats", "action": "flats_tool_group" },
+    { "key": "U", "mods": ["Shift"], "scope": "Flats", "action": "flats_tool_draw_merge" },
+    { "key": "B", "mods": ["Shift"], "scope": "Flats", "action": "flats_tool_bridge_pen" },
+    { "key": "V", "mods": ["Shift"], "scope": "Flats", "action": "flats_tool_select_edits" },
+    { "key": "Return", "mods": ["Shift"], "scope": "Flats", "action": "flats_accept_all_gaps" }
   ]
 }
