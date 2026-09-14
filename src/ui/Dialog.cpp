@@ -172,11 +172,23 @@ DialogCorner dialogCornerAwayFrom(ImVec2 workMin, ImVec2 workMax, ImVec2 keepCle
                       ImVec2(right ? 1.0f : 0.0f, bottom ? 1.0f : 0.0f)};
 }
 
+static ImVec2 g_dialogWorkMin{0.0f, 0.0f};
+static ImVec2 g_dialogWorkMax{0.0f, 0.0f};
+
+void setDialogWorkArea(ImVec2 min, ImVec2 max) {
+  g_dialogWorkMin = min;
+  g_dialogWorkMax = max;
+}
+
 bool beginDialogAwayFrom(const char* title, ImVec2 keepClear, DialogWidth width) {
   const ImGuiViewport* vp = ImGui::GetMainViewport();
-  const ImVec2 workMax(vp->WorkPos.x + vp->WorkSize.x, vp->WorkPos.y + vp->WorkSize.y);
-  const DialogCorner corner =
-      dialogCornerAwayFrom(vp->WorkPos, workMax, keepClear, kDialogCornerMargin);
+  ImVec2 workMin = vp->WorkPos;
+  ImVec2 workMax(vp->WorkPos.x + vp->WorkSize.x, vp->WorkPos.y + vp->WorkSize.y);
+  if (g_dialogWorkMax.x > g_dialogWorkMin.x && g_dialogWorkMax.y > g_dialogWorkMin.y) {
+    workMin = g_dialogWorkMin;
+    workMax = g_dialogWorkMax;
+  }
+  const DialogCorner corner = dialogCornerAwayFrom(workMin, workMax, keepClear, kDialogCornerMargin);
   return beginDialogPlaced(title, width, corner.pos, corner.pivot);
 }
 

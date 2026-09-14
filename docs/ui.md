@@ -522,7 +522,7 @@ T  [▨] Plate caption        TEXT · NORMAL · 100%
 | `✂` | Strokes |
 | `▤` | Adjustment |
 | `T` | Text |
-| `▩` | Flats — the fill count is not built; see the callout below |
+| `▩` | Flats |
 
 > ✅ **`CLIPPED` became real at PLAN.md Phase 5 step 9 (PRD C9).** The `ADJUSTMENT ·
 > CLIPPED` row above predated the feature by four steps; `app::layerRowSubLine()` now
@@ -541,31 +541,19 @@ layer panel useless. See
 The Media sub-line is also where **wet state** lives — remaining working time while
 wet, and the refuse-to-wet warning PRD H5 requires be *visible*.
 
-> ⚠️ **Two things in this section are still not built, and the panel does not
-> pretend otherwise — but they are no longer the same kind of gap.**
+> ⚠️ **Two things in this section are still not built.**
 >
 > The Media sub-line carries no wet state and no drying countdown, and that one
 > is not a presentation gap: the model cannot supply the number. `core::Layer`
 > has no medium name and no wet state; the wetness that exists is
 > `sim::PaintSim`'s single canvas-wide field with no layer awareness at all, and
-> nothing anywhere computes seconds-until-dry.
+> nothing anywhere computes seconds-until-dry. So a Media row reads
+> `MEDIA · NORMAL · 100%`.
 >
-> **The Flats half of this callout has been overtaken and is corrected here.** It
-> used to say a Flats layer has no regions and so there is nothing to count. That
-> was true before the autoFlats port and is false now: `FlatEvaluation::fills`
-> exists, and the SEGMENTATION panel reads it live as
-> `153 FILLS · 12 COLOURS · 3 GROUPS`. What is still missing is only the
-> *presentation* on the layer row — `app/LayerPanel.cpp` returns no sub-line for
-> Flats — and a per-fill list. Both are now ordinary UI work rather than
-> something the model cannot answer, and the row cost is why it has not been
-> done casually: the count comes from an evaluation the panel must ask for, which
-> is cheap through `flatsPeekEvaluation()` and is not free through
-> `flatsEvaluateLayer()`.
->
-> So a Media row reads `MEDIA · NORMAL · 100%` and a Flats row still reads
-> `FLATS · NORMAL · 100%`. Recorded here rather than quietly dropped, because
-> this file is the design's own statement of intent and a reader comparing it
-> against the running panel deserves to know which of the two is behind.
+> The Flats row's fill count is built: `app/LayerPanel.cpp`'s
+> `layerRowSubLineImpl()` emits `FLATS · 153 FILLS · NORMAL · 100%`, read cheaply
+> through `flatsPeekEvaluation()`. What is still missing is the per-fill list, the
+> Fills panel above.
 
 #### 3.2a The flats reference layer, and the bucket's SOURCE
 

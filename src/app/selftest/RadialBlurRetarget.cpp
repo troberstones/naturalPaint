@@ -98,6 +98,7 @@ bool runRadialBlurRetargetTest() {
   split.mode = AtelierSplit::Rows;
 
   bool otherModalRequested = false;
+  bool otherModalCloseRequested = false;
   auto frame = [&](ImVec2 mouse, bool down) {
     io.AddMousePosEvent(mouse.x, mouse.y);
     io.AddMouseButtonEvent(ImGuiMouseButton_Left, down);
@@ -109,6 +110,10 @@ bool runRadialBlurRetargetTest() {
     }
     if (beginDialog(kOtherModal)) {
       ImGui::TextUnformatted("Another modal.");
+      if (otherModalCloseRequested) {
+        otherModalCloseRequested = false;
+        ImGui::CloseCurrentPopup();
+      }
       endDialog();
     }
 
@@ -261,6 +266,31 @@ bool runRadialBlurRetargetTest() {
     check(activeId() == bId, "a click on the top pane leaves B focused");
     check(radialBlurDialogParams().centerX == static_cast<float>(bCentre.x),
           "and the blur's centre is untouched");
+  }
+
+  std::printf("  -- G. a corner dialog stays inside the chrome's work area --\n");
+  {
+    otherModalCloseRequested = true;
+    frame(idle, false);
+    frame(idle, false);
+    const ImGuiWindow* other = ImGui::FindWindowByName(kOtherModal);
+    check(other == nullptr || !other->Active, "fixture: the other modal is closed");
+
+    // As if a toolbar filled the top 60 px and a status bar the bottom 40.
+    const ImVec2 workMin(0.0f, 60.0f), workMax(kDisplayW, kDisplayH - 40.0f);
+    setDialogWorkArea(workMin, workMax);
+    requestRadialBlurDialog();
+    for (int i = 0; i < 8; ++i) frame(idle, false);
+    const ImGuiWindow* w = dialog();
+    check(w != nullptr && w->Active, "the dialog reopens");
+    check(w != nullptr && near(w->Pos.y, workMin.y + kDialogCornerMargin) &&
+              near(w->Pos.x + w->Size.x, workMax.x - kDialogCornerMargin),
+          "top-right of the work area, below the toolbar, not of the window");
+    setDialogWorkArea(ImVec2(0.0f, 0.0f), ImVec2(0.0f, 0.0f));
+    io.AddKeyEvent(ImGuiKey_Escape, true);
+    frame(idle, false);
+    io.AddKeyEvent(ImGuiKey_Escape, false);
+    frame(idle, false);
   }
 
   ImGui::DestroyContext(context);

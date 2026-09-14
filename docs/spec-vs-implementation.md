@@ -332,7 +332,8 @@ Recorded so the corrections do not have to be rediscovered:
   number the selftest pins.
 * **`docs/vector-editing.md` §8 is stale in two places** — the MODE segment
   and the drawn gnomon both landed in `58239cb`. Its third bullet, that scale
-  and rotate reach nothing, is still true and is now a row in §2 here.
+  and rotate reach nothing, was true then; scale and rotate landed on
+  2026-09-11 (`gnomonHandleAffine()`, §3's Phase 13 row).
 * **The ABR phase letters have no spec behind them in the tree.** They were
   carried forward from 2026-09-02 without a citation, and this refresh could
   not find one. Flagged in §4 rather than silently dropped.

@@ -17191,6 +17191,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       /*showTabStrip=*/!st.documents.empty(), dockExtents,
       nativeMenuBarInstalled() ? 0.0f : g_linuxMenuBarReservedW);
 
+  // Corner-placed dialogs stay between the top dock and the status bar.
+  {
+    float top = bands.titleBar.bottom();
+    if (!bands.topDock.empty()) top = std::max(top, bands.topDock.bottom());
+    const float bottom = bands.statusBar.empty() ? vp->Pos.y + vp->Size.y : bands.statusBar.y;
+    setDialogWorkArea(ImVec2(vp->Pos.x, top), ImVec2(vp->Pos.x + vp->Size.x, bottom));
+  }
+
   // Any dock, splitter or header gesture below sets this; it is written back
   // once, after every dock has drawn. One write per frame that changed
   // something, rather than one per gesture -- several can fire in a frame (a

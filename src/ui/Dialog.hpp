@@ -85,6 +85,10 @@ struct DialogCorner {
   ImVec2 pivot;  // which corner of the window sits on `pos`, so no size is needed
 };
 DialogCorner dialogCornerAwayFrom(ImVec2 workMin, ImVec2 workMax, ImVec2 keepClear, float margin);
+// The screen rect a corner-placed dialog keeps inside: the chrome sets it to the
+// area between the top dock and the status bar, since ImGui's own work area
+// starts under the toolbar row. An empty rect means the viewport's work area.
+void setDialogWorkArea(ImVec2 min, ImVec2 max);
 bool beginDialogAwayFrom(const char* title, ImVec2 keepClear,
                          DialogWidth width = DialogWidth::Standard);
 // Applies the next begin's placement even though the dialog is already open,
