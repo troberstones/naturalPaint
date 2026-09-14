@@ -135,6 +135,29 @@ FilterOpResult applyMotionBlur(OpenDocument& doc, const MotionBlurParams& params
   return applyPixelFilter(doc, motionBlurTiles, params, "motion blur");
 }
 
+FilterOpResult applyHighpass(OpenDocument& doc, float sigma) {
+  BlurParams params;
+  params.kind = BlurKind::Gaussian;
+  params.sigma = sigma;
+  return applyPixelFilter(doc, highpassTiles, params, "highpass");
+}
+
+FilterOpResult applyLocalContrast(OpenDocument& doc, const LocalContrastParams& params) {
+  return applyPixelFilter(doc, localContrastTiles, params, "local contrast");
+}
+
+// PRD D11/D12: median gated by a threshold, and a
+// blurred-luminance-guided tone push. Same `applyPixelFilter()`/
+// `computePixelFilter()` machinery as every filter above -- both engines
+// share the `(TileStore&, PixelRect, Params, TileStore*) -> bool` shape.
+FilterOpResult applyDustScratches(OpenDocument& doc, const DustScratchesParams& params) {
+  return applyPixelFilter(doc, dustScratchesTiles, params, "dust & scratches");
+}
+
+FilterOpResult applyShadowsHighlights(OpenDocument& doc, const ShadowsHighlightsParams& params) {
+  return applyPixelFilter(doc, shadowsHighlightsTiles, params, "shadows/highlights");
+}
+
 namespace {
 
 // **The one expression in this build that fills in `InpaintParams::hole`.**
@@ -221,6 +244,29 @@ FilterOpResult previewMotionBlur(const OpenDocument& doc, const MotionBlurParams
   return computePixelFilter(doc, motionBlurTiles, params, previewOut);
 }
 
+FilterOpResult previewHighpass(const OpenDocument& doc, float sigma, TileStore* previewOut) {
+  BlurParams params;
+  params.kind = BlurKind::Gaussian;
+  params.sigma = sigma;
+  return computePixelFilter(doc, highpassTiles, params, previewOut);
+}
+
+FilterOpResult previewLocalContrast(const OpenDocument& doc, const LocalContrastParams& params,
+                                    TileStore* previewOut) {
+  return computePixelFilter(doc, localContrastTiles, params, previewOut);
+}
+
+FilterOpResult previewDustScratches(const OpenDocument& doc, const DustScratchesParams& params,
+                                    TileStore* previewOut) {
+  return computePixelFilter(doc, dustScratchesTiles, params, previewOut);
+}
+
+FilterOpResult previewShadowsHighlights(const OpenDocument& doc,
+                                        const ShadowsHighlightsParams& params,
+                                        TileStore* previewOut) {
+  return computePixelFilter(doc, shadowsHighlightsTiles, params, previewOut);
+}
+
 FilterOpResult previewInpaint(const OpenDocument& doc, int32_t radius, TileStore* previewOut) {
   // The same refusal preamble `applyInpaint()` runs, then the same engine
   // with the same params built by the same function -- which is what makes
@@ -230,6 +276,60 @@ FilterOpResult previewInpaint(const OpenDocument& doc, int32_t radius, TileStore
   result.refusal = inpaintRefusal(doc);
   if (result.refusal != PixelOpRefusal::None) return result;
   return computePixelFilter(doc, inpaintTiles, inpaintParamsFor(doc, radius), previewOut);
+}
+
+namespace {
+
+// The one expression that fills in `PatchMatchParams::hole` -- the identical
+// reason `inpaintParamsFor()` is a single named function above: the engine's
+// hole and `compositeFilterResult()`'s selection must be the SAME object.
+PatchMatchParams contentAwareFillParamsFor(const OpenDocument& doc,
+                                           const ContentAwareFillRequest& request) {
+  PatchMatchParams params;
+  params.hole = doc.selection.has_value() ? &*doc.selection : nullptr;
+  params.patchRadius = request.patchRadius;
+  params.iterations = request.iterations;
+  params.pyramidLevels = request.pyramidLevels;
+  params.seed = request.seed;
+  return params;
+}
+
+// `patchMatchTiles()`'s fifth parameter (the NNF instrumentation) has a
+// default argument, which is invisible through a function POINTER --
+// `applyPixelFilter()`/`computePixelFilter()` call `engine` with exactly four
+// arguments, so `Engine` has to deduce a four-argument type. This trampoline
+// is that type.
+bool patchMatchTilesForBridge(const TileStore& src, const PixelRect& outRect,
+                              const PatchMatchParams& p, TileStore* dst) {
+  return patchMatchTiles(src, outRect, p, dst);
+}
+
+}  // namespace
+
+PixelOpRefusal contentAwareFillRefusal(const OpenDocument& doc) {
+  const PixelOpRefusal layer = pixelOpRefusalFor(activeLayerOf(doc));
+  if (layer != PixelOpRefusal::None) return layer;
+  const Selection* hole = doc.selection.has_value() ? &*doc.selection : nullptr;
+  if (hole == nullptr || selectionSelectsNothing(*hole)) return PixelOpRefusal::NoSelection;
+  return PixelOpRefusal::None;
+}
+
+FilterOpResult applyContentAwareFill(OpenDocument& doc, const ContentAwareFillRequest& request) {
+  FilterOpResult result;
+  result.refusal = contentAwareFillRefusal(doc);
+  if (result.refusal != PixelOpRefusal::None) return result;
+  return applyPixelFilter(doc, patchMatchTilesForBridge, contentAwareFillParamsFor(doc, request),
+                          "content-aware fill");
+}
+
+FilterOpResult previewContentAwareFill(const OpenDocument& doc,
+                                       const ContentAwareFillRequest& request,
+                                       TileStore* previewOut) {
+  FilterOpResult result;
+  result.refusal = contentAwareFillRefusal(doc);
+  if (result.refusal != PixelOpRefusal::None) return result;
+  return computePixelFilter(doc, patchMatchTilesForBridge, contentAwareFillParamsFor(doc, request),
+                            previewOut);
 }
 
 // --------------------------------------------------------------------------
@@ -314,6 +414,80 @@ FilterOpResult previewOffset(const OpenDocument& doc, const OffsetRequest& reque
   result.refusal = offsetRefusalFor(doc);
   if (result.refusal != PixelOpRefusal::None) return result;
   return computePixelFilter(doc, offsetTiles, offsetParamsFor(doc, request), previewOut);
+}
+
+namespace {
+
+SeamHealParams seamHealParamsFor(const OpenDocument& doc, const SeamHealRequest& request) {
+  SeamHealParams params;
+  params.wrapRect = canvasRectOf(doc);
+  params.bandWidth = request.bandWidth;
+  params.patchRadius = request.patchRadius;
+  params.iterations = request.iterations;
+  params.pyramidLevels = request.pyramidLevels;
+  params.seed = request.seed;
+  return params;
+}
+
+}  // namespace
+
+PixelOpRefusal seamHealRefusalFor(const OpenDocument& doc) noexcept {
+  const PixelOpRefusal layer = pixelOpRefusalFor(activeLayerOf(doc));
+  if (layer != PixelOpRefusal::None) return layer;
+  if (doc.selection.has_value()) return PixelOpRefusal::SelectionActive;
+  return PixelOpRefusal::None;
+}
+
+FilterOpResult applySeamHeal(OpenDocument& doc, const SeamHealRequest& request) {
+  FilterOpResult result;
+  result.refusal = seamHealRefusalFor(doc);
+  if (result.refusal != PixelOpRefusal::None) return result;
+  return applyPixelFilter(doc, seamHealTiles, seamHealParamsFor(doc, request), "seam heal");
+}
+
+FilterOpResult previewSeamHeal(const OpenDocument& doc, const SeamHealRequest& request,
+                               TileStore* previewOut) {
+  FilterOpResult result;
+  result.refusal = seamHealRefusalFor(doc);
+  if (result.refusal != PixelOpRefusal::None) return result;
+  return computePixelFilter(doc, seamHealTiles, seamHealParamsFor(doc, request), previewOut);
+}
+
+FilterOpResult applyLensCorrect(OpenDocument& doc, LensParams params) {
+  params.frame = canvasRectOf(doc);
+  return applyPixelFilter(doc, lensCorrectTiles, params, "lens correction");
+}
+
+FilterOpResult previewLensCorrect(const OpenDocument& doc, LensParams params,
+                                  TileStore* previewOut) {
+  params.frame = canvasRectOf(doc);
+  return computePixelFilter(doc, lensCorrectTiles, params, previewOut);
+}
+
+PixelCoord defaultBlurCenter(const OpenDocument& doc) noexcept {
+  // Same floor-division argument `offsetByHalf()` makes just below: a
+  // non-negative unsigned extent divided by two has no round-toward-zero
+  // case to get wrong.
+  return PixelCoord{static_cast<int32_t>(doc.document.width / 2),
+                    static_cast<int32_t>(doc.document.height / 2)};
+}
+
+FilterOpResult applyRadialBlur(OpenDocument& doc, const RadialBlurParams& params) {
+  return applyPixelFilter(doc, radialBlurTiles, params, "radial blur");
+}
+
+FilterOpResult previewRadialBlur(const OpenDocument& doc, const RadialBlurParams& params,
+                                 TileStore* previewOut) {
+  return computePixelFilter(doc, radialBlurTiles, params, previewOut);
+}
+
+FilterOpResult applyLensBlur(OpenDocument& doc, const LensBlurParams& params) {
+  return applyPixelFilter(doc, lensBlurTiles, params, "lens blur");
+}
+
+FilterOpResult previewLensBlur(const OpenDocument& doc, const LensBlurParams& params,
+                               TileStore* previewOut) {
+  return computePixelFilter(doc, lensBlurTiles, params, previewOut);
 }
 
 DocumentOpOutcome applyImageSize(OpenDocument& doc, uint32_t width, uint32_t height,

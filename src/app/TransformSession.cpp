@@ -378,10 +378,111 @@ void TransformSession::updateDrag(Point2 curCursor, bool shiftHeld, bool optionH
 
 void TransformSession::endDrag() noexcept { drag_.active = false; }
 
+// --------------------------------------------------------------------------
+// Warp (header section 9)
+// --------------------------------------------------------------------------
+
+void TransformSession::setWarpMode(bool warpOn, int gridN) noexcept {
+  if (!active_) return;
+  if (warpOn) {
+    if (mode_ == TransformMode::Warp) {
+      // Already warping: a grid-size change re-fits the existing shape
+      // rather than re-baking `pending_`, which would throw the bend away.
+      if (gridN != warp_.n()) warp_ = warp_.refit(gridN);
+      return;
+    }
+    // Bake the accumulated affine into the warp's starting net -- header
+    // section 9. `WarpMesh::flat()` reproduces `sourceBounds_` exactly;
+    // mapping every control point through `pending_` carries over whatever
+    // the user had already dragged.
+    WarpMesh flat = WarpMesh::flat(sourceBounds_, gridN);
+    const int side = flat.pointsPerSide();
+    for (int row = 0; row < side; ++row) {
+      for (int col = 0; col < side; ++col) {
+        flat.setAt(row, col, mat3MapPoint(pending_, flat.at(row, col)));
+      }
+    }
+    warp_ = std::move(flat);
+    mode_ = TransformMode::Warp;
+  } else {
+    // Section 9: the net is discarded, not collapsed into an approximating
+    // matrix -- there is generally no single affine map that reproduces a
+    // bent surface, and guessing one would silently lose the bend with no
+    // way for the user to tell.
+    mode_ = TransformMode::Affine;
+    warp_ = WarpMesh{};
+    warpDrag_ = WarpDragState{};
+  }
+}
+
+WarpControlRef TransformSession::warpHitTest(Point2 cursor, float radius) const noexcept {
+  if (!active_ || mode_ != TransformMode::Warp) return WarpControlRef{};
+  return hitTestWarpControl(warp_, cursor, radius);
+}
+
+void TransformSession::warpBeginDrag(WarpControlRef ref, Point2 startCursor) noexcept {
+  if (!active_ || mode_ != TransformMode::Warp || !ref.valid) return;
+  warpDrag_.active = true;
+  warpDrag_.ref = ref;
+  warpDrag_.start = startCursor;
+  warpDrag_.base = warp_;
+}
+
+void TransformSession::warpUpdateDrag(Point2 curCursor) noexcept {
+  if (!warpDrag_.active) return;
+  // Recomputed fresh from the drag's own baseline every frame -- section 6's
+  // discipline, applied here too, so a multi-frame drag never accumulates a
+  // delta onto a delta.
+  const Point2 delta{curCursor.x - warpDrag_.start.x, curCursor.y - warpDrag_.start.y};
+  warp_ = warpDrag_.base;
+  warp_.dragControl(warpDrag_.ref, delta);
+}
+
+void TransformSession::warpEndDrag() noexcept { warpDrag_.active = false; }
+
+// Mirrors commit()'s own Warp branch below, read-only: same refusals, same
+// warpRgbTiles()/cutThroughSelection()/compositeStoreOverRegion() sequence,
+// but writing into `*out` (a copy) instead of `od.document`.
+bool TransformSession::previewWarpDocument(const OpenDocument& od, ResampleKernel kernel,
+                                           Document* out) const {
+  if (out == nullptr || !active_ || mode_ != TransformMode::Warp) return false;
+  if (target_ == TransformTarget::LayerSet || duplicate_) return false;
+  if (layerIndex_ >= od.document.layers.size() ||
+      od.document.layers[layerIndex_].id != layerId_)
+    return false;
+  const Layer& layer = od.document.layers[layerIndex_];
+  if (layer.locked || layer.kind == LayerKind::Pigment || !layer.rgbTiles.has_value())
+    return false;
+  if (target_ == TransformTarget::Layer && layer.mask.has_value()) return false;
+
+  const DocumentRegion dstRegion = warpedRegion(warp_, warpChordSubdivisions(warp_));
+  if (dstRegion.empty()) return false;
+
+  std::string err;
+  if (target_ == TransformTarget::Layer) {
+    TileStore newRgb;
+    if (!warpRgbTiles(*layer.rgbTiles, warp_, dstRegion, kernel, &newRgb, &err)) return false;
+    *out = od.document;
+    *out->layers[layerIndex_].rgbTiles = std::move(newRgb);
+    return true;
+  }
+
+  // SelectionPixels: cut a copy of the layer, never the real one.
+  Layer cutCopy = layer;
+  Clipboard clip = cutThroughSelection(cutCopy, &selectionSnapshot_);
+  if (clip.empty() || !clip.rgbTiles.has_value()) return false;
+  TileStore moved;
+  if (!warpRgbTiles(*clip.rgbTiles, warp_, dstRegion, kernel, &moved, &err)) return false;
+  compositeStoreOverRegion(moved, dstRegion, &*cutCopy.rgbTiles);
+  *out = od.document;
+  out->layers[layerIndex_].rgbTiles = std::move(cutCopy.rgbTiles);
+  return true;
+}
+
 void TransformSession::cancel() noexcept { *this = TransformSession{}; }
 
 TransformBeginResult TransformSession::beginLayer(OpenDocument& od, size_t layerIndex,
-                                                  const Mat3& initialPending) {
+                                                  const Mat3& initialPending, bool duplicate) {
   const Document& doc = od.document;
   TransformBeginResult r;
   if (layerIndex >= doc.layers.size()) {
@@ -444,6 +545,7 @@ TransformBeginResult TransformSession::beginLayer(OpenDocument& od, size_t layer
   layerId_ = layerId;
   target_ = TransformTarget::Layer;
   pending_ = initialPending;
+  duplicate_ = duplicate;
   active_ = true;
   r.ok = true;
   return r;
@@ -451,7 +553,7 @@ TransformBeginResult TransformSession::beginLayer(OpenDocument& od, size_t layer
 
 TransformBeginResult TransformSession::beginSelectionPixels(OpenDocument& od,
                                                              const Selection& selection,
-                                                             size_t layerIndex) {
+                                                             size_t layerIndex, bool duplicate) {
   const Document& doc = od.document;
   TransformBeginResult r;
   if (layerIndex >= doc.layers.size()) {
@@ -507,6 +609,7 @@ TransformBeginResult TransformSession::beginSelectionPixels(OpenDocument& od,
   // and gets the identical stamp.
   layerId_ = layerId;
   target_ = TransformTarget::SelectionPixels;
+  duplicate_ = duplicate;
   active_ = true;
   r.ok = true;
   return r;
@@ -620,10 +723,123 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
     return out;
   }
 
+  // Header section 9: Warp branches off here, before the affine identity
+  // check below (a warp net has no single `pending_` to compare against
+  // identity -- `WarpMesh::isIdentity()` is its own, separate no-op test,
+  // applied inside `warpRgbTiles()`'s fast path rather than here).
+  if (mode_ == TransformMode::Warp) {
+    if (target_ == TransformTarget::LayerSet) {
+      out.error = "warp commit refused: a set of layers has no per-member live-preview story "
+                  "(app/TransformSession.hpp section 9, and section 8's identical gap for the "
+                  "affine case) -- warp one layer or one selection at a time.";
+      return out;
+    }
+    if (duplicate_) {
+      out.error = "warp commit refused: Option-drag duplicate is not built for Warp mode -- "
+                  "commit the duplicate as an ordinary Free Transform, or duplicate the layer or "
+                  "selection first and warp the copy.";
+      return out;
+    }
+    if (layerIndex_ >= od.document.layers.size()) {
+      out.error = "warp commit refused: the target layer no longer exists.";
+      return out;
+    }
+    Layer& layer = od.document.layers[layerIndex_];
+    if (layer.locked) {
+      out.error = "warp commit refused: " + layerLabel(od.document, layerIndex_) +
+                  " is locked. Unlock it first.";
+      return out;
+    }
+    if (layer.kind == LayerKind::Pigment || !layer.rgbTiles.has_value()) {
+      out.error = "warp commit refused: " + layerLabel(od.document, layerIndex_) +
+                  " -- warping a Pigment layer needs the identical mass-weighted, lobe-free-"
+                  "kernel bridge ops/DocumentTransform.hpp already built for the AFFINE path, run "
+                  "through a non-linear map instead of a Mat3 (app/WarpMesh.hpp); that "
+                  "is real, separate machinery this track's time did not extend to. A layer with "
+                  "no RGB pixels (Text, Group, Adjustment, Strokes, Flats, Media) has nothing for "
+                  "a warp to resample either.";
+      return out;
+    }
+    if (target_ == TransformTarget::Layer && layer.mask.has_value()) {
+      out.error = "warp commit refused: " + layerLabel(od.document, layerIndex_) +
+                  " carries a mask. Warping it needs the identical hide-space bridge "
+                  "ops/DocumentTransform.hpp's transformMaskTiles() already built for the affine "
+                  "path, run through this session's non-linear map instead of a Mat3 -- unbuilt "
+                  "for the same reason as the Pigment refusal above. Remove the mask, or use "
+                  "Free Transform instead.";
+      return out;
+    }
+    const int subdivisions = warpChordSubdivisions(warp_);
+    const DocumentRegion dstRegion = warpedRegion(warp_, subdivisions);
+    if (dstRegion.empty()) {
+      out.error = "warp commit refused: this net collapses the target to zero pixels. Nothing "
+                  "was changed.";
+      return out;
+    }
+    const bool identity = warp_.isIdentity();
+
+    if (target_ == TransformTarget::Layer) {
+      TileStore newRgb;
+      if (!warpRgbTiles(*layer.rgbTiles, warp_, dstRegion, params.pixels.kernel, &newRgb,
+                        &out.error))
+        return out;
+      *layer.rgbTiles = std::move(newRgb);
+      const std::string label = "warp layer";
+      od.recordEdit(label, EditKind::Structural);
+      active_ = false;
+      out.ok = true;
+      out.editLabel = label;
+      out.exact = identity ? ExactRemap::Identity : ExactRemap::None;
+      out.reconstructionPasses = identity ? 0 : 1;
+      return out;
+    }
+
+    // --- TransformTarget::SelectionPixels, warped -------------------------
+    Clipboard clip = cutThroughSelection(layer, &selectionSnapshot_);
+    if (clip.empty() || !clip.rgbTiles.has_value()) {
+      out.error = "warp commit refused: the selection covers no pixels on this layer. Nothing "
+                  "was changed.";
+      return out;
+    }
+    TileStore moved;
+    std::string err;
+    if (!warpRgbTiles(*clip.rgbTiles, warp_, dstRegion, params.pixels.kernel, &moved, &err)) {
+      // Unreachable in practice (the same regions and net that already
+      // produced a non-empty dstRegion above), but restore what
+      // cutThroughSelection() removed rather than leave a hole, matching the
+      // affine path's own recovery just below.
+      compositeStoreOverRegion(*clip.rgbTiles, sourceBounds_, &*layer.rgbTiles);
+      out.error = "warp commit refused: " + err + " The cut content was restored in place.";
+      return out;
+    }
+    compositeStoreOverRegion(moved, dstRegion, &*layer.rgbTiles);
+
+    // The selection moves with the pixels, same net and regions -- the warp
+    // sibling of the affine path's `transformSelectionCoverage()` call above.
+    Selection movedSelection;
+    std::string selErr;
+    const bool selectionMoved = warpSelectionCoverage(
+        selectionSnapshot_, sourceBounds_, warp_, dstRegion, params.pixels.kernel,
+        &movedSelection, &selErr);
+    if (selectionMoved) od.selection = movedSelection;
+
+    const std::string label = "warp selection";
+    od.recordEdit(label, EditKind::Structural);
+    active_ = false;
+    out.ok = true;
+    out.editLabel = label;
+    out.exact = identity ? ExactRemap::Identity : ExactRemap::None;
+    out.reconstructionPasses = identity ? 0 : 1;
+    return out;
+  }
+
   // An identity transform is a no-op: nothing is written, nothing is
   // recorded. See this header's section 7 for why that is this file's own
   // decision rather than inherited from TransformStack's "no-op" rule.
-  if (pending_.m == mat3Identity().m) {
+  // Duplicate mode is the one exception: a zero-distance Option-drag still
+  // stamps a copy, exactly as Photoshop's own Option-click does, so it falls
+  // through to the branches below instead of short-circuiting here.
+  if (!duplicate_ && pending_.m == mat3Identity().m) {
     active_ = false;
     out.ok = true;
     out.exact = ExactRemap::Identity;
@@ -664,6 +880,38 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
   }
 
   if (target_ == TransformTarget::Layer) {
+    // PRD M9's Option-drag duplicate: insert the copy first and transform
+    // THAT index, leaving `layerIndex_` (the source) untouched. A failed
+    // transform rolls the insert back via `removeLayer()` so a refused
+    // duplicate leaves the document exactly as `cutThroughSelection()`'s own
+    // refusal path does elsewhere in this function -- unchanged.
+    if (duplicate_) {
+      const LayerOpResult dup = duplicateLayer(od.document, layerIndex_);
+      if (!dup.ok) {
+        out.error = dup.error;
+        return out;
+      }
+      const size_t newIndex = dup.index;
+      const bool textLayer = od.document.layers[newIndex].kind == LayerKind::Text;
+      const LayerTransformResult r = textLayer
+                                         ? transformTextLayer(od.document, newIndex, pending_)
+                                         : transformLayer(od.document, newIndex, pending_, params);
+      if (!r.ok) {
+        removeLayer(od.document, newIndex);
+        out.error = r.error;
+        return out;
+      }
+      od.activeLayer = newIndex;
+      const std::string label = "duplicate and move " + layerLabel(od.document, newIndex);
+      od.recordEdit(label, EditKind::Structural);
+      active_ = false;
+      out.ok = true;
+      out.editLabel = label;
+      out.exact = r.exact;
+      out.reconstructionPasses = r.reconstructionPasses;
+      return out;
+    }
+
     // A Text layer's geometry is `TextContent::origin`, not a tile store, so
     // it takes the one path that moves a point instead of resampling pixels.
     // `transformLayer()` would walk it, find no stores and report success
@@ -724,7 +972,11 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
     return out;
   }
 
-  Clipboard clip = cutThroughSelection(layer, &selectionSnapshot_);
+  // PRD M9's Option-drag duplicate: copy rather than cut, so the source
+  // pixels are never removed -- `duplicate_` is the only difference between
+  // this path and a plain Move.
+  Clipboard clip = duplicate_ ? copyThroughSelection(layer, &selectionSnapshot_)
+                              : cutThroughSelection(layer, &selectionSnapshot_);
   if (clip.empty() || !clip.rgbTiles.has_value()) {
     out.error = "transform commit refused: the selection covers no pixels on this layer. "
                "Nothing was changed.";
@@ -738,10 +990,12 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
                          &report, &err)) {
     // Unreachable given the checks above (same matrix, same regions the
     // invertibility/extent checks already passed) -- but if it ever does
-    // happen, restore what cutThroughSelection() removed rather than leave a
-    // hole with nothing to show for it.
-    compositeStoreOverRegion(*clip.rgbTiles, sourceBounds_, &*layer.rgbTiles);
-    out.error = "transform commit refused: " + err + " The cut content was restored in place.";
+    // happen and this was a cut, restore what cutThroughSelection() removed
+    // rather than leave a hole with nothing to show for it. Nothing to
+    // restore when duplicating: the source was only ever read.
+    if (!duplicate_) compositeStoreOverRegion(*clip.rgbTiles, sourceBounds_, &*layer.rgbTiles);
+    out.error = "transform commit refused: " + err +
+               (duplicate_ ? " Nothing was changed." : " The cut content was restored in place.");
     return out;
   }
 
@@ -759,10 +1013,11 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
     od.selection = movedSelection;
   }
 
-  od.recordEdit("transform selection", EditKind::Structural);
+  const std::string label = duplicate_ ? "duplicate and move selection" : "transform selection";
+  od.recordEdit(label, EditKind::Structural);
   active_ = false;
   out.ok = true;
-  out.editLabel = "transform selection";
+  out.editLabel = label;
   out.exact = report.exact;
   out.reconstructionPasses = report.reconstructionPasses;
   return out;

@@ -26,6 +26,7 @@
 #include "io/OpSerial.hpp"
 #include "io/PathSerial.hpp"
 #include "io/FlatsSerial.hpp"
+#include "io/GradientSerial.hpp"
 #include "io/RegionSerial.hpp"
 #include "io/StrokesSerial.hpp"
 #include "io/TextSerial.hpp"
@@ -60,6 +61,13 @@ constexpr const char* kAttrComps = "np:comps";
 // array-typed header attributes on write. Written on part 0 and **only when
 // the document has regions**, `np:comps`'s own regression boundary.
 constexpr const char* kAttrRegions = "np:regions";
+
+// The document's gradient table (docs/psd-vector-shapes.md S2). io/GradientSerial
+// owns the encoding -- a hex `string` for `np:comps`' own reason. Written on
+// part 0 and **only when the table is non-empty**, `np:comps`' own regression
+// boundary: a document with no gradients produces exactly the bytes it
+// produced before this attribute existed.
+constexpr const char* kAttrGradients = "np:gradients";
 
 constexpr const char* kAttrKind = "np:kind";
 constexpr const char* kAttrName = "np:name";
@@ -302,7 +310,7 @@ std::vector<std::string> pigmentChannelNames(bool withMask) {
 
 bool isDocumentAttributeRecognised(const std::string& name) {
   return name == kAttrVersion || name == kAttrBasis || name == kAttrTileSize ||
-         name == kAttrComps || name == kAttrRegions;
+         name == kAttrComps || name == kAttrRegions || name == kAttrGradients;
 }
 
 bool isLayerAttributeRecognised(const std::string& name) {
@@ -1841,8 +1849,17 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
       // ORDER -- the fresh push happens after this replay, so it would win a
       // collision anyway -- which is an accident of layout and not a guarantee;
       // do not rely on it, and do not "tidy" that push above this loop.
+      //
+      // **`np:gradients` is the second such pair**, written for exactly the
+      // same reason and with exactly the same complementary guard further
+      // down: a table this build could not parse was carried verbatim by the
+      // loader, and a document that has no table of its own must put that one
+      // back rather than dropping it. See io/GradientSerial.hpp on why a
+      // refused table gives an unpainted shape rather than a wrong colour --
+      // which is precisely why the bytes must survive to the next save.
       if (isDocumentAttributeRecognised(a.name) &&
-          !(a.name == kAttrComps && doc.comps.empty()))
+          !(a.name == kAttrComps && doc.comps.empty()) &&
+          !(a.name == kAttrGradients && doc.gradients.empty()))
         continue;
       composite.attributes.push_back(a);
     }
@@ -1958,6 +1975,16 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     regions.regions = doc.regions;
     request.parts[0].attributes.push_back(
         stringAttr(kAttrRegions, serializeRegions(regions)));
+  }
+
+  // --- `np:gradients` (docs/psd-vector-shapes.md S2) -----------------------
+  //
+  // No layer join needed -- `Paint::gradient` is a position in this list, and
+  // the list travels whole -- so this is a plain carrier of
+  // `Document::gradients`, written **only when the table is non-empty**.
+  if (!doc.gradients.empty()) {
+    request.parts[0].attributes.push_back(
+        stringAttr(kAttrGradients, serializeGradients(doc.gradients)));
   }
 
   auto appendLayerPart = [&](size_t i) {
@@ -2485,6 +2512,34 @@ NpaintLoadResult loadNpaint(const std::string& path) {
         }
       }
       if (!regionsCarried) continue;
+      result.carry.documentAttributes.push_back(a);
+      continue;
+    }
+    // The document's gradient table. Applied straight onto `result.document`
+    // like regions: `Paint::gradient` is a position in it, so there is no
+    // layer-part join to wait for.
+    if (a.name == kAttrGradients) {
+      std::string why;
+      bool gradientsCarried = false;
+      if (a.type != NpaintAttribute::Type::String) {
+        gradientsCarried = true;
+        result.warnings.push_back(
+            "'" + path +
+            "' has an np:gradients attribute that is not a string; this build's gradient "
+            "carrier is a hex `string` (io/GradientSerial), so the value could not be "
+            "decoded. The document opened with no gradients -- every shape filled with one "
+            "therefore paints nothing rather than some colour this build invented -- and the "
+            "attribute is written back unchanged (PRD I10).");
+      } else {
+        GradientTable table;
+        if (deserializeGradients(a.stringValue, &table, &why)) {
+          result.document.gradients = std::move(table);
+        } else {
+          gradientsCarried = true;
+          result.warnings.push_back("'" + path + "': " + why);
+        }
+      }
+      if (!gradientsCarried) continue;
       result.carry.documentAttributes.push_back(a);
       continue;
     }

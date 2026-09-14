@@ -176,12 +176,28 @@ enum class MenuAction : uint16_t {
   Copy,
   CopyMerged,
   Paste,
+  // PRD M9: Paste Into pastes the clipboard as a new layer masked by the
+  // active selection, centred on its bounds; Paste as New Document opens a
+  // document sized to the clipboard's content. Both are session state
+  // (app/CommandCoverage.cpp), like `Paste` above.
+  PasteInto,
+  PasteAsNewDocument,
   DeleteSelection,
   SelectAll,
   Deselect,
   Reselect,
   InvertSelection,
   ClearCanvas,
+
+  // PRD D26: fill and stroke a selection or layer with colour,
+  // pattern or gradient, plus Define Pattern -- `app/CommandsPatterns.cpp`'s
+  // `define_pattern` had a command and no menu item at all until this track's
+  // dialog gave it one. Sit here, after Edit's other document edits, rather
+  // than between Cut/Copy and the selection items: neither is a clipboard nor
+  // a selection operation, and Photoshop places both under Edit too.
+  Fill,
+  Stroke,
+  DefinePattern,
 
   // --- Layer --------------------------------------------------------------
   LayerCommandItem,     // family: param = index into app::allLayerCommands()
@@ -220,6 +236,23 @@ enum class MenuAction : uint16_t {
   // uses for Reselect.
   SelectUndoRefine,
 
+  // PRD E11: save the active selection into the document as a named channel,
+  // and load a named channel back as the active selection. Both are already
+  // `Registered` commands (`save_selection_as_channel`/
+  // `load_channel_as_selection`, app/CommandsOpStack.cpp) reachable only from
+  // the CHANNELS panel (app/ChannelsPanel.hpp) before this pair; these are the
+  // Select menu's own doors to the same two commands, each opening a small
+  // modal exactly like the five refines above.
+  SaveSelectionAsChannel,
+  LoadChannelAsSelection,
+
+  // PRD E12: enter/leave quick mask. A Check like `GrayscalePreview` (View
+  // menu) -- a display/editing MODE the user leaves on, not a one-shot
+  // command -- and unlike every other row in this section it is session
+  // state (`OpenDocument::quickMask`), not a document edit: see
+  // `coverageFor()`'s classification.
+  ToggleQuickMask,
+
   // --- Medium / Goodies ---------------------------------------------------
   PaintModeItem,        // family: param = the PaintMode's integer value
   ToolItem,             // family: param = the Tool's integer value
@@ -228,6 +261,13 @@ enum class MenuAction : uint16_t {
 
   // --- View ---------------------------------------------------------------
   FitToWindow,
+  // PRD Q1 (P0). Fits the active selection's bounds
+  // into the canvas viewport, honouring the current rotation and the existing
+  // zoom limits -- app/ZoomToSelection.hpp's own header has the arithmetic.
+  // Disabled without an engaged selection, `hasEngagedSelection`'s own
+  // reading (`Inpaint`'s neighbouring comment already argues for this exact
+  // field rather than a new one).
+  ZoomToSelection,
   Zoom100,
   ZoomIn,
   ZoomOut,
@@ -254,6 +294,11 @@ enum class MenuAction : uint16_t {
   // after switching away", not the only way to see them.
   ShowRegions,
   Snap,
+  // `SplitView` refuses (a status line, no state change) with
+  // fewer than two open documents; `MatchZoom` is enabled only while a split
+  // is active. app/CommandCoverage.cpp: both NotRecordable, session state.
+  SplitView,
+  MatchZoom,
 
   // --- Window -------------------------------------------------------------
   //
@@ -307,14 +352,35 @@ enum class MenuAction : uint16_t {
   // Select menu's refine commands, which need an engaged selection for the
   // same structural reason, so this needs no new context field.
   Inpaint,
-  // PRD D8 / PLAN.md phase 9 ("Tile it"): the two make-tileable pixel ops,
-  // through app/FilterOps.hpp's `applyRemoveLightingGradient`/`applyOffset`
-  // and their `preview*` twins. **Two and not four**: D8 also names seam heal
-  // and a 3x3 repeat preview, and this header's own rule above holds -- an
-  // operation with no engine behind it stays out of the menu rather than
-  // appearing and doing nothing.
+  // PRD D7's second half (ops/PatchMatch.hpp): texture-synthesis fill,
+  // through `applyContentAwareFill()`/`previewContentAwareFill()`. Same
+  // selection-is-the-hole enable predicate as `Inpaint` just above, and the
+  // same reason.
+  ContentAwareFill,
+  // PRD D8 / PLAN.md phase 9 ("Tile it"): the make-tileable pixel ops,
+  // through app/FilterOps.hpp's `applyRemoveLightingGradient`/`applyOffset`/
+  // `applySeamHeal` and their `preview*` twins. D8 also names a 3x3 repeat
+  // preview, still out of the menu by this header's own rule -- no engine
+  // behind it yet.
   RemoveLightingGradient,
   Offset,
+  SeamHeal,
+
+  // Three more engines with no menu path before
+  // this (docs/reachability-audit.md C1) -- `ops/Filters.hpp`'s
+  // `highpassTiles()`/`localContrastTiles()` and `ops/Lens.hpp`'s
+  // `lensCorrectTiles()`. `lens_correct` (PRD D22) already existed as a
+  // command with no menu item; this is that door.
+  Highpass,
+  LocalContrast,
+  LensCorrect,
+
+  // docs/operations.md §2.2: Radial/Spin+Zoom blur
+  // (ops/RadialBlur.hpp) and Lens blur (ops/LensBlur.hpp), the same wiring
+  // shape as the three above -- app/FilterOps.hpp's `applyRadialBlur`/
+  // `applyLensBlur` and their `preview*` twins.
+  RadialBlur,
+  LensBlur,
 
   // --- Image ------------------------------------------------------------
   //
@@ -395,6 +461,21 @@ enum class MenuAction : uint16_t {
   AdjustAutoContrast,
   AdjustAutoColor,
   AdjustEqualize,
+
+  // PRD D23: a Free Transform <-> Warp TOGGLE on the live
+  // session (app/TransformSession.hpp section 9), not a second gesture --
+  // same enable predicate as `FreeTransform` (`ctx.hasEditableLayer`), and
+  // it sits beside it in the Edit menu for the identical "no Transform
+  // submenu to put it in" reason `FreeTransform`'s own comment gives.
+  Warp,
+
+  // PRD D11/D12: ops/Filters.hpp sections 11-12.
+  // `DustScratches` sits in the Filter menu beside Median
+  // (ui/DustScratchesDialog.hpp); `AdjustShadowsHighlights` sits in
+  // Image > Adjustments, Photoshop's own placement
+  // (ui/ShadowsHighlightsDialog.hpp).
+  DustScratches,
+  AdjustShadowsHighlights,
 
   Count,
 };
@@ -740,6 +821,14 @@ struct MenuContext {
   // why this is a separate stack from core::History's Undo/Redo.
   bool hasRefineUndo = false;
 
+  // PRD E11/E13: whether `Document::channels` has at least one entry, for
+  // Load Channel as Selection's greying -- `hasEngagedSelection` answers Save
+  // Selection as Channel's.
+  bool hasChannels = false;
+
+  // PRD E12: `OpenDocument::quickMask.has_value()`, for the Check mark.
+  bool quickMaskActive = false;
+
   // --- Medium / Goodies ---------------------------------------------------
   std::vector<MenuFamilyEntry> paintModes;
   std::vector<MenuFamilyEntry> tools;
@@ -759,6 +848,9 @@ struct MenuContext {
   bool showRegions = false;
   bool snappingEnabled = false;
   bool hasGuides = false;           // Clear Guides is dead with none placed
+  bool canSplitView = false;        // Split View needs a second open document
+  bool splitViewActive = false;     // g_split.mode != Single (ui/MacPaintUI.cpp)
+  bool matchZoomActive = false;     // g_split.matchZoom
 
   // --- Window -------------------------------------------------------------
   bool showBrushSettings = false;

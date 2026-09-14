@@ -10,6 +10,7 @@
     { "key": "=", "mods": ["Cmd"], "action": "zoom_in" },
     { "key": "-", "mods": ["Cmd"], "action": "zoom_out" },
     { "key": "0", "mods": ["Cmd"], "action": "fit_window" },
+    { "key": "0", "mods": ["Cmd", "Alt"], "action": "zoom_to_selection" },
     { "key": "0", "mods": ["Cmd", "Shift"], "action": "reset_view" },
     { "key": "1", "mods": ["Cmd"], "action": "zoom_100" },
     { "key": "[", "action": "size_down" },
@@ -27,10 +28,12 @@
     { "key": "D", "mods": ["Cmd"], "action": "deselect" },
     { "key": "D", "mods": ["Cmd", "Shift"], "action": "reselect" },
     { "key": "I", "mods": ["Cmd", "Shift"], "action": "invert_selection" },
+    { "key": "Q", "action": "quick_mask" },
     { "key": "C", "mods": ["Cmd"], "action": "copy" },
     { "key": "C", "mods": ["Cmd", "Shift"], "action": "copy_merged" },
     { "key": "X", "mods": ["Cmd"], "action": "cut" },
     { "key": "V", "mods": ["Cmd"], "action": "paste" },
+    { "key": "V", "mods": ["Cmd", "Shift", "Alt"], "action": "paste_into" },
     { "key": "Backspace", "action": "delete_selection" },
     { "key": "Delete", "action": "delete_selection" },
 
@@ -80,6 +83,13 @@
     { "key": ",", "scope": "Flats", "action": "flats_prev_gap" },
     { "key": ".", "scope": "Flats", "action": "flats_next_gap" },
     { "key": "Return", "scope": "Flats", "action": "flats_accept_gap" },
-    { "key": "K", "mods": ["Cmd", "Shift"], "scope": "Flats", "action": "flats_cluster_small" }
+    { "key": "K", "mods": ["Cmd", "Shift"], "scope": "Flats", "action": "flats_cluster_small" },
+
+    { "key": "Y", "scope": "Flats", "action": "flats_tool_shape_fill" },
+    { "key": "K", "mods": ["Shift"], "scope": "Flats", "action": "flats_tool_group" },
+    { "key": "U", "mods": ["Shift"], "scope": "Flats", "action": "flats_tool_draw_merge" },
+    { "key": "B", "mods": ["Shift"], "scope": "Flats", "action": "flats_tool_bridge_pen" },
+    { "key": "V", "mods": ["Shift"], "scope": "Flats", "action": "flats_tool_select_edits" },
+    { "key": "Return", "mods": ["Shift"], "scope": "Flats", "action": "flats_accept_all_gaps" }
   ]
 }

@@ -47,6 +47,14 @@ struct AtelierRect {
   constexpr float right() const noexcept { return x + w; }
   constexpr float bottom() const noexcept { return y + h; }
   constexpr bool empty() const noexcept { return w <= 0.0f || h <= 0.0f; }
+  // Half-open on both edges, matching how `atelierSplitPanes()` tiles a
+  // canvas: a point on the divider belongs to neither pane's rect, and a
+  // point on the shared far edge of the whole canvas still counts (`right()`/
+  // `bottom()` themselves do not, but nothing upstream ever tests exactly
+  // them -- ImGui hands back mouse coordinates, not rect corners).
+  constexpr bool contains(float px, float py) const noexcept {
+    return px >= x && px < right() && py >= y && py < bottom();
+  }
 };
 
 // docs/ui.md section 2. The trailing numbers in the diagram are heights; the
@@ -447,5 +455,12 @@ constexpr float kMinPaneH = kNavigatorMaxH + 2.0f * kNavigatorInset;
 // pane is *focused* is not decided here: it is session state, it lives with
 // the tab strip, and the geometry is the same either way.
 AtelierPanes atelierSplitPanes(const AtelierRect& canvas, AtelierSplit split);
+
+// Which pane a screen point falls in: 0 or 1, or -1 for the divider or
+// outside both rects entirely. The split view's own primitive for routing a
+// click before it reaches a tool -- built on `AtelierRect::contains()`
+// rather than a second hand-rolled bounds check, so it agrees with
+// `atelierSplitPanes()`'s own tiling by construction.
+int atelierPaneAt(const AtelierPanes& panes, float x, float y) noexcept;
 
 }  // namespace np

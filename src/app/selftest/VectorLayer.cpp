@@ -323,33 +323,33 @@ bool runVectorLayerTest() {
     VectorShape s = rectShape(0.0f, 0.0f, 10.0f, 10.0f);
     s.fill.on = true;
     base.push_back(s);
-    const uint64_t h0 = vectorContentHash(base);
-    check(vectorContentHash(base) == h0, "hash: is stable for unchanged content");
+    const uint64_t h0 = vectorContentHash(base, {});
+    check(vectorContentHash(base, {}) == h0, "hash: is stable for unchanged content");
 
     std::vector<VectorShape> moved = base;
     moved[0].path.subpaths[0].anchors[0].pt.x += 0.001f;
-    check(vectorContentHash(moved) != h0, "hash: a sub-texel anchor move changes it");
+    check(vectorContentHash(moved, {}) != h0, "hash: a sub-texel anchor move changes it");
 
     std::vector<VectorShape> handled = base;
     handled[0].path.subpaths[0].anchors[0].out.y += 1.0f;
-    check(vectorContentHash(handled) != h0, "hash: a HANDLE move changes it, not just an anchor");
+    check(vectorContentHash(handled, {}) != h0, "hash: a HANDLE move changes it, not just an anchor");
 
     std::vector<VectorShape> painted = base;
     painted[0].fill.rgba[2] = 0.5f;
-    check(vectorContentHash(painted) != h0, "hash: a paint change changes it");
+    check(vectorContentHash(painted, {}) != h0, "hash: a paint change changes it");
 
     std::vector<VectorShape> stroked = base;
     stroked[0].strokeStyle.dashOffset = 1.0f;
-    check(vectorContentHash(stroked) != h0, "hash: a dash-offset change changes it");
+    check(vectorContentHash(stroked, {}) != h0, "hash: a dash-offset change changes it");
 
     std::vector<VectorShape> pivoted = base;
     pivoted[0].pivot = PathPoint{1.0f, 2.0f};
-    check(vectorContentHash(pivoted) != h0,
+    check(vectorContentHash(pivoted, {}) != h0,
           "hash: a pivot move changes it, so a cache rebuild cannot drop the pivot");
 
     std::vector<VectorShape> ruled = base;
     ruled[0].path.rule = FillRule::EvenOdd;
-    check(vectorContentHash(ruled) != h0, "hash: a fill-rule change changes it");
+    check(vectorContentHash(ruled, {}) != h0, "hash: a fill-rule change changes it");
   }
 
   // --- 6. The layer holds no tiles, and neither does history ---------------
@@ -388,7 +388,7 @@ bool runVectorLayerTest() {
     doc.layers[0].shapes.push_back(s);
 
     VectorRasterCache cache;
-    const uint64_t h = vectorContentHash(doc.layers[0].shapes);
+    const uint64_t h = vectorContentHash(doc.layers[0].shapes, {});
     check(cache.lookup(77, h) == nullptr, "cache: starts empty");
 
     {
@@ -416,7 +416,7 @@ bool runVectorLayerTest() {
       (void)m;
     }
     check(cache.entryCount() == 1, "cache: an edit replaces the layer's entry rather than adding");
-    check(cache.lookup(77, vectorContentHash(moved.layers[0].shapes)) != nullptr,
+    check(cache.lookup(77, vectorContentHash(moved.layers[0].shapes, {})) != nullptr,
           "cache: and the new entry is under the new hash");
     std::printf("  [measured] one cached raster of a 26x26 shape: %zu bytes resident\n",
                 cache.residentBytes());
@@ -550,7 +550,7 @@ bool runVectorLayerTest() {
     // The hash is the strongest single statement of round-trip fidelity: it
     // covers every field that affects the raster plus the pivot, so agreement
     // means nothing was silently dropped.
-    check(vectorContentHash(back) == vectorContentHash(shapes),
+    check(vectorContentHash(back, {}) == vectorContentHash(shapes, {}),
           "serial: the content hash round-trips, so NO field was silently dropped");
 
     // Refusals. Each is a shape a `.npaint` could genuinely arrive carrying.
@@ -560,11 +560,15 @@ bool runVectorLayerTest() {
     // the version is inspected -- its two hex digits are truncated anyway --
     // so it passed with the version gate deleted. Sabotage found that; the
     // payload below can only be refused BY the version gate.
-    const std::string futureTagged = "npvec2:" + encoded.substr(std::strlen(kVectorShapeSerialPrefix));
+    //
+    // `npvec3:` and not `npvec2:` since S2: v2 is a version this build READS,
+    // so the old tag would now test nothing at all. The shape of the check is
+    // unchanged, and so is the property it defends.
+    const std::string futureTagged = "npvec3:" + encoded.substr(std::strlen(kVectorShapeSerialPrefix));
     check(!deserializeVectorShapes(futureTagged, &dummy, nullptr, &why),
           "serial: a FUTURE version is refused even when its payload is otherwise valid");
-    check(why.find("npvec1:") != std::string::npos,
-          "serial: and the refusal names the version this build speaks");
+    check(why.find("npvec1:") != std::string::npos && why.find("npvec2:") != std::string::npos,
+          "serial: and the refusal names BOTH versions this build speaks");
     check(!deserializeVectorShapes("npvec1:abc", &dummy, nullptr, &why),
           "serial: an odd hex length is refused as truncated");
     check(!deserializeVectorShapes("npvec1:zz", &dummy, nullptr, &why),
@@ -620,7 +624,7 @@ bool runVectorLayerTest() {
               "npaint: its ordinary layer metadata survives");
         check(v.shapes.size() == 1 && v.nextShapeId == 4,
               "npaint: one shape, and the id counter, come back");
-        check(vectorContentHash(v.shapes) == vectorContentHash(doc.layers[1].shapes),
+        check(vectorContentHash(v.shapes, {}) == vectorContentHash(doc.layers[1].shapes, {}),
               "npaint: the shape's content hash is identical across the round trip");
         check(v.shapes[0].pivot.has_value() && v.shapes[0].pivot->x == 9.0f,
               "npaint: including the pivot");
@@ -646,8 +650,8 @@ bool runVectorLayerTest() {
         if (again.ok) {
           const NpaintLoadResult twice = loadNpaint(path2);
           check(twice.ok && twice.document.layers.size() == 2 &&
-                    vectorContentHash(twice.document.layers[1].shapes) ==
-                        vectorContentHash(doc.layers[1].shapes),
+                    vectorContentHash(twice.document.layers[1].shapes, {}) ==
+                        vectorContentHash(doc.layers[1].shapes, {}),
                 "npaint: and a SECOND generation is still identical");
         }
         std::remove(path2);
@@ -688,12 +692,12 @@ bool runVectorLayerTest() {
         drawn.name = "drawn after the round trip";
         edited.layers[1].shapes.push_back(drawn);
         edited.layers[1].nextShapeId = 5;
-        const uint64_t editedHash = vectorContentHash(edited.layers[1].shapes);
+        const uint64_t editedHash = vectorContentHash(edited.layers[1].shapes, {});
         // Guard the guard: if the edit did not actually change the payload the
         // assertions below would pass under the sabotage for the wrong reason,
         // because a stale attribute winning would be indistinguishable from a
         // fresh one.
-        check(editedHash != vectorContentHash(doc.layers[1].shapes),
+        check(editedHash != vectorContentHash(doc.layers[1].shapes, {}),
               "npaint: the post-load edit really does change the vector payload (without "
               "this, the stale-attribute assertions below could not tell the two apart)");
 
@@ -707,7 +711,7 @@ bool runVectorLayerTest() {
           check(shaped && reread.document.layers[1].shapes.size() == 2,
                 "npaint: and BOTH shapes come back -- one shape here would be the stale "
                 "np:vector the file was opened with, replayed out of the carry");
-          check(shaped && vectorContentHash(reread.document.layers[1].shapes) == editedHash,
+          check(shaped && vectorContentHash(reread.document.layers[1].shapes, {}) == editedHash,
                 "npaint: the EDIT comes back, not the geometry the file was opened with -- a "
                 "stale np:vector left in the carry alongside a fresh one would silently win "
                 "here and nowhere else");

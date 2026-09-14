@@ -7,8 +7,12 @@
 #include <vector>
 
 #include "app/AdjustmentOps.hpp"
+#include "app/BlurCommandsExtra.hpp"
 #include "app/CommandsImage.hpp"
 #include "app/CommandSupport.hpp"
+#include "app/FilterCommandsExtra.hpp"
+#include "app/FilterCommandsFilters.hpp"
+#include "app/RepairCommandsExtra.hpp"
 #include "app/CropTool.hpp"
 #include "app/FilterOps.hpp"
 #include "app/TransformSession.hpp"
@@ -159,6 +163,21 @@ std::string readBool(const JsonValue& params, const char* id, const char* key, b
   return {};
 }
 
+// `filter_add_noise`'s own seed reasoning, shared: a JSON number is a double,
+// exact only to 2^53, so a uint64 seed above that would round on the way in
+// and silently stop being the seed the file names.
+std::string readSeed(const JsonValue& params, const char* id, uint64_t* io) {
+  const JsonValue* v = params.find("seed");
+  if (v == nullptr || v->isNull()) return {};
+  if (!v->isNumber()) return refuseValue(id, "seed", "a number");
+  const double d = v->asNumber();
+  if (!std::isfinite(d) || d != std::floor(d) || d < 0.0 || d > 9007199254740992.0)
+    return refuseValue(id, "seed",
+                       "a whole number from 0 to 2^53; a larger seed would round on the way in");
+  *io = static_cast<uint64_t>(d);
+  return {};
+}
+
 // An RGB triple, a per-band lift, a matrix row: JSON arrays of a fixed length.
 // The length is checked and named, because a two-element "colour" would
 // otherwise leave the third channel at whatever the params struct defaulted to
@@ -235,6 +254,17 @@ std::string requireAbove(const char* id, const char* key, float value, float flo
          "unmodified and reported as a success.";
 }
 
+// The same gate, for a magnitude that is legally negative -- `local_contrast`'s
+// `amount` (ops/Filters.hpp §6: negative *reduces* contrast) is the one filter
+// parameter here `requireAbove()` cannot police, because zero and not "at or
+// below zero" is its identity.
+std::string requireNonZero(const char* id, const char* key, float value) {
+  if (value != 0.0f) return {};
+  return std::string("refused: ") + id + "'s \"" + key +
+         "\" must not be zero; at zero the filter is the identity, which in a batch is a file "
+         "written unmodified and reported as a success.";
+}
+
 // ==========================================================================
 // Filters -- app/FilterOps.hpp's seven
 // ==========================================================================
@@ -245,6 +275,38 @@ CommandResult doGaussianBlur(OpenDocument& doc, const JsonValue& params) {
   if (why.empty()) why = requireAbove("filter_gaussian_blur", "sigma", sigma, 0.0f);
   if (!why.empty()) return commandRefused(why);
   return fromFilterResult(applyGaussianBlur(doc, sigma), doc, "gaussian blur");
+}
+
+// PLAN.md's highpass, `src - blur(src)`
+// (ops/Filters.hpp §1). Gaussian only -- the dialog exposes one "Radius"
+// slider, the identical shape `doGaussianBlur()` above takes, rather than
+// unsharp mask's Gaussian/box choice; nothing in PLAN.md's own formulation of
+// highpass asks for a box kernel.
+CommandResult doHighpass(OpenDocument& doc, const JsonValue& params) {
+  float sigma = 0.0f;
+  std::string why = readNumber(params, "filter_highpass", "sigma", kRequired, &sigma);
+  if (why.empty()) why = requireAbove("filter_highpass", "sigma", sigma, 0.0f);
+  if (!why.empty()) return commandRefused(why);
+  return fromFilterResult(applyHighpass(doc, sigma), doc, "highpass");
+}
+
+// Local contrast (ops/Filters.hpp §6). `radius` is
+// `LocalContrastParams::blur.sigma` -- Gaussian only, the same simplification
+// `doHighpass()` above makes -- and `amount` may be negative (it flattens
+// rather than sharpens), so it is gated by `requireNonZero()`, not
+// `requireAbove()`.
+CommandResult doLocalContrast(OpenDocument& doc, const JsonValue& params) {
+  LocalContrastParams p;
+  const char* kId = "filter_local_contrast";
+  std::string why = readNumber(params, kId, "radius", kRequired, &p.blur.sigma);
+  if (why.empty()) why = requireAbove(kId, "radius", p.blur.sigma, 0.0f);
+  if (why.empty()) why = readNumber(params, kId, "amount", kRequired, &p.amount);
+  if (why.empty()) why = requireNonZero(kId, "amount", p.amount);
+  if (!why.empty()) return commandRefused(why);
+  if (!localContrastParamsValid(p))
+    return commandRefused(std::string("refused: ") + kId +
+                          " was given a request ops/Filters cannot build a kernel from.");
+  return fromFilterResult(applyLocalContrast(doc, p), doc, "local contrast");
 }
 
 CommandResult doSharpen(OpenDocument& doc, const JsonValue& params) {
@@ -375,6 +437,28 @@ CommandResult doMedian(OpenDocument& doc, const JsonValue& params) {
   return fromFilterResult(applyMedian(doc, p), doc, "median");
 }
 
+// Dust & scratches (ops/Filters.hpp §11): median gated by a threshold.
+// `radius` refused below 1 for `doMedian()`'s own reason -- 0 is the
+// documented identity. `threshold` is optional: 0 is a real, non-identity
+// request ("replace every texel that differs from its median at all"), not
+// a degenerate one, so it is not gated by `requireAbove()`/`requireNonZero()`
+// the way a magnitude whose zero IS the identity would be.
+CommandResult doDustScratches(OpenDocument& doc, const JsonValue& params) {
+  DustScratchesParams p;
+  const char* kId = "filter_dust_scratches";
+  std::string why = readWhole(params, kId, "radius", kRequired, &p.radius);
+  if (why.empty() && p.radius < 1)
+    why = refuseValue(kId, "radius",
+                      "at least 1 texel; radius 0 is a 1x1 window, which ops/Filters "
+                      "short-circuits to a bit-exact copy");
+  if (why.empty()) why = readNumber(params, kId, "threshold", kOptional, &p.threshold);
+  if (!why.empty()) return commandRefused(why);
+  if (!dustScratchesParamsValid(p))
+    return commandRefused(std::string("refused: ") + kId +
+                          " was given a request ops/Filters cannot build a gate from.");
+  return fromFilterResult(applyDustScratches(doc, p), doc, "dust & scratches");
+}
+
 CommandResult doMotionBlur(OpenDocument& doc, const JsonValue& params) {
   MotionBlurParams p;
   const char* kId = "filter_motion_blur";
@@ -393,6 +477,56 @@ CommandResult doMotionBlur(OpenDocument& doc, const JsonValue& params) {
     return commandRefused(std::string("refused: ") + kId +
                           " was given a smear ops/Filters cannot build.");
   return fromFilterResult(applyMotionBlur(doc, p), doc, "motion blur");
+}
+
+// ==========================================================================
+// docs/operations.md §2.2: Radial/Spin+Zoom blur and Lens blur
+// ==========================================================================
+
+CommandResult doRadialBlur(OpenDocument& doc, const JsonValue& params) {
+  RadialBlurParams p;
+  const char* kId = "filter_radial_blur";
+  // Absent center_x/center_y default to the canvas centre -- the same
+  // function the dialog seeds its own initial state from
+  // (`defaultBlurCenter()`, app/FilterOps.hpp), pre-set here so `readNumber`'s
+  // kOptional leaves it untouched rather than falling back to (0, 0).
+  const PixelCoord center = defaultBlurCenter(doc);
+  p.centerX = static_cast<float>(center.x);
+  p.centerY = static_cast<float>(center.y);
+  std::string why = readEnumByName(params, kId, "method", radialBlurMethodFromName, &p.method);
+  if (why.empty()) why = readNumber(params, kId, "center_x", kOptional, &p.centerX);
+  if (why.empty()) why = readNumber(params, kId, "center_y", kOptional, &p.centerY);
+  if (why.empty()) why = readNumber(params, kId, "amount", kRequired, &p.amount);
+  if (why.empty()) why = requireNonZero(kId, "amount", p.amount);
+  if (why.empty()) why = readWhole(params, kId, "samples", kOptional, &p.samples);
+  if (!why.empty()) return commandRefused(why);
+  if (p.samples < 1)
+    return commandRefused(refuseValue(kId, "samples", "at least 1"));
+  if (!radialBlurParamsValid(p))
+    return commandRefused(std::string("refused: ") + kId +
+                          " was given a sweep ops/RadialBlur cannot build.");
+  return fromFilterResult(applyRadialBlur(doc, p), doc, "radial blur");
+}
+
+CommandResult doLensBlur(OpenDocument& doc, const JsonValue& params) {
+  LensBlurParams p;
+  const char* kId = "filter_lens_blur";
+  std::string why = readWhole(params, kId, "radius", kRequired, &p.radius);
+  if (why.empty()) why = readWhole(params, kId, "blade_count", kOptional, &p.bladeCount);
+  if (why.empty())
+    why = readNumber(params, kId, "blade_rotation_radians", kOptional, &p.bladeRotationRadians);
+  if (why.empty())
+    why = readNumber(params, kId, "highlight_threshold", kOptional, &p.highlightThreshold);
+  if (why.empty()) why = readNumber(params, kId, "highlight_boost", kOptional, &p.highlightBoost);
+  if (!why.empty()) return commandRefused(why);
+  // radius 0 is documented as the exact identity, refused for §2's reason.
+  if (p.radius < 1)
+    return commandRefused(
+        refuseValue(kId, "radius", "at least 1 texel; radius 0 is the documented identity"));
+  if (!lensBlurParamsValid(p))
+    return commandRefused(std::string("refused: ") + kId +
+                          " was given an aperture ops/LensBlur cannot build.");
+  return fromFilterResult(applyLensBlur(doc, p), doc, "lens blur");
 }
 
 // ==========================================================================
@@ -435,6 +569,47 @@ std::string inpaintUnavailable(const OpenDocument& doc, const JsonValue&) {
   const PixelOpRefusal why = inpaintRefusal(doc);
   if (why == PixelOpRefusal::None) return {};
   return pixelOpRefusalMessage(why, activeLayerOf(doc), "inpaint");
+}
+
+// ==========================================================================
+// Content-Aware Fill -- ops/PatchMatch, PRD D7's second half
+// ==========================================================================
+//
+// Same hole-not-bound shape as Inpaint just above: `contentAwareFillRefusal()`
+// is the precondition (an absent selection is a hard `NoSelection`, not "the
+// whole canvas"), and this adapter validates every OTHER field before handing
+// them to the engine, which gets the last word on a combination none of them
+// individually catches.
+CommandResult doContentAwareFill(OpenDocument& doc, const JsonValue& params) {
+  const char* kId = "content_aware_fill";
+  ContentAwareFillRequest r;
+  int32_t patchRadius = r.patchRadius;
+  int32_t iterations = r.iterations;
+  int32_t pyramidLevels = r.pyramidLevels;
+  std::string why = readWhole(params, kId, "patch_radius", kOptional, &patchRadius);
+  if (why.empty()) why = readWhole(params, kId, "iterations", kOptional, &iterations);
+  if (why.empty()) why = readWhole(params, kId, "pyramid_levels", kOptional, &pyramidLevels);
+  if (why.empty()) why = readSeed(params, kId, &r.seed);
+  if (!why.empty()) return commandRefused(why);
+  if (patchRadius < 1 || patchRadius > kPatchMatchMaxPatchRadius)
+    return commandRefused(refuseValue(
+        kId, "patch_radius", "from 1 to " + std::to_string(kPatchMatchMaxPatchRadius) + " texels"));
+  if (iterations < 1 || iterations > kPatchMatchMaxIterations)
+    return commandRefused(refuseValue(
+        kId, "iterations", "from 1 to " + std::to_string(kPatchMatchMaxIterations)));
+  if (pyramidLevels < 1 || pyramidLevels > kPatchMatchMaxPyramidLevels)
+    return commandRefused(refuseValue(
+        kId, "pyramid_levels", "from 1 to " + std::to_string(kPatchMatchMaxPyramidLevels)));
+  r.patchRadius = patchRadius;
+  r.iterations = iterations;
+  r.pyramidLevels = pyramidLevels;
+  return fromFilterResult(applyContentAwareFill(doc, r), doc, "content-aware fill");
+}
+
+std::string contentAwareFillUnavailable(const OpenDocument& doc, const JsonValue&) {
+  const PixelOpRefusal why = contentAwareFillRefusal(doc);
+  if (why == PixelOpRefusal::None) return {};
+  return pixelOpRefusalMessage(why, activeLayerOf(doc), "content-aware fill");
 }
 
 CommandResult doRemoveLightingGradient(OpenDocument& doc, const JsonValue& params) {
@@ -495,6 +670,52 @@ std::string offsetUnavailable(const OpenDocument& doc, const JsonValue&) {
   const PixelOpRefusal why = offsetRefusalFor(doc);
   if (why == PixelOpRefusal::None) return {};
   return pixelOpRefusalMessage(why, activeLayerOf(doc), "offset");
+}
+
+// ==========================================================================
+// Seam Heal -- ops/SeamHeal, make-tileable's missing third piece (PRD D8)
+// ==========================================================================
+//
+// Refuses under any live selection for `offsetUnavailable()`'s own reason --
+// this op is defined over the whole canvas as a torus, and a selection has
+// no single meaning against that. NOT `selectionBounded`, for the identical
+// reason `filter_offset` is not (app/CommandCoverage.cpp names it).
+CommandResult doSeamHeal(OpenDocument& doc, const JsonValue& params) {
+  const char* kId = "seam_heal";
+  SeamHealRequest r;
+  int32_t bandWidth = r.bandWidth;
+  int32_t patchRadius = r.patchRadius;
+  int32_t iterations = r.iterations;
+  int32_t pyramidLevels = r.pyramidLevels;
+  std::string why = readWhole(params, kId, "band_width", kOptional, &bandWidth);
+  if (why.empty()) why = readWhole(params, kId, "patch_radius", kOptional, &patchRadius);
+  if (why.empty()) why = readWhole(params, kId, "iterations", kOptional, &iterations);
+  if (why.empty()) why = readWhole(params, kId, "pyramid_levels", kOptional, &pyramidLevels);
+  if (why.empty()) why = readSeed(params, kId, &r.seed);
+  if (!why.empty()) return commandRefused(why);
+
+  if (bandWidth < 1)
+    return commandRefused(refuseValue(kId, "band_width", "at least 1 texel"));
+  if (patchRadius < 1 || patchRadius > kPatchMatchMaxPatchRadius)
+    return commandRefused(refuseValue(
+        kId, "patch_radius", "from 1 to " + std::to_string(kPatchMatchMaxPatchRadius) + " texels"));
+  if (iterations < 1 || iterations > kPatchMatchMaxIterations)
+    return commandRefused(refuseValue(
+        kId, "iterations", "from 1 to " + std::to_string(kPatchMatchMaxIterations)));
+  if (pyramidLevels < 1 || pyramidLevels > kPatchMatchMaxPyramidLevels)
+    return commandRefused(refuseValue(
+        kId, "pyramid_levels", "from 1 to " + std::to_string(kPatchMatchMaxPyramidLevels)));
+  r.bandWidth = bandWidth;
+  r.patchRadius = patchRadius;
+  r.iterations = iterations;
+  r.pyramidLevels = pyramidLevels;
+  return fromFilterResult(applySeamHeal(doc, r), doc, "seam heal");
+}
+
+std::string seamHealUnavailable(const OpenDocument& doc, const JsonValue&) {
+  const PixelOpRefusal why = seamHealRefusalFor(doc);
+  if (why == PixelOpRefusal::None) return {};
+  return pixelOpRefusalMessage(why, activeLayerOf(doc), "seam heal");
 }
 
 // ==========================================================================
@@ -892,6 +1113,39 @@ CommandResult doPhotoFilter(OpenDocument& doc, const JsonValue& params) {
   return fromFilterResult(applyPhotoFilterAdjustment(doc, p), doc, "photo filter");
 }
 
+// Shadows/Highlights (ops/Filters.hpp §12, PRD D12). Photoshop's own menu
+// puts this under Image > Adjustments, not Filter, so it sits here beside
+// Colour Balance and Photo Filter -- the `filter_` id stays (the brief names
+// it), which is the one place in this file an id's prefix does not match its
+// menu, exactly the way `filter_inpaint`'s `selectionBounded` flag is
+// already a documented exception to its own usual reading.
+//
+// `radius` (the guide blur's sigma) is required and refused at 0 for
+// `filter_local_contrast`'s own reason: a zero-radius guide equals the
+// source exactly, collapsing "local" tone mapping into a flat curve. Any ONE
+// of `shadows`/`highlights` is enough -- `requireAnyOf()`'s own precedent
+// (Colour Balance, Black & White) -- since a step naming neither would change
+// nothing and report success.
+CommandResult doShadowsHighlights(OpenDocument& doc, const JsonValue& params) {
+  ShadowsHighlightsParams p;
+  const char* kId = "filter_shadows_highlights";
+  std::string why = readNumber(params, kId, "radius", kRequired, &p.blur.sigma);
+  if (why.empty()) why = requireAbove(kId, "radius", p.blur.sigma, 0.0f);
+  if (why.empty()) why = requireAnyOf(params, kId, {"shadows", "highlights"});
+  if (why.empty()) why = readNumber(params, kId, "shadows", kOptional, &p.shadows);
+  if (why.empty()) why = readNumber(params, kId, "highlights", kOptional, &p.highlights);
+  if (why.empty()) why = readNumber(params, kId, "tonal_width", kOptional, &p.tonalWidth);
+  if (why.empty() && !(p.tonalWidth > 0.0f))
+    why = refuseValue(kId, "tonal_width",
+                      "greater than 0 -- it is the shaper-domain division base of the "
+                      "shadow/highlight transition");
+  if (!why.empty()) return commandRefused(why);
+  if (!shadowsHighlightsParamsValid(p))
+    return commandRefused(std::string("refused: ") + kId +
+                          " was given a request ops/Filters cannot build a guide from.");
+  return fromFilterResult(applyShadowsHighlights(doc, p), doc, "shadows/highlights");
+}
+
 CommandResult doPosterize(OpenDocument& doc, const JsonValue& params) {
   PosterizeParams p;
   const char* kId = "adjust_posterize";
@@ -1145,6 +1399,17 @@ void registerImageCommands(std::vector<CommandSpec>* out) {
   // ---- the Filter menu's seven, plus three more ---------------------------
   out->push_back({"filter_gaussian_blur", "Gaussian Blur", {"sigma"}, pixelOpUnavailable,
                   doGaussianBlur, /*selectionBounded=*/true});
+  // Two more engines with no menu path before this
+  // (docs/reachability-audit.md C1), registered beside their nearest sibling
+  // rather than at the end of this table -- `filter_gaussian_blur` reuses the
+  // identical `BlurParams`/Gaussian-only shape `filter_highpass` does.
+  out->push_back({"filter_highpass", "Highpass", {"sigma"}, pixelOpUnavailable, doHighpass,
+                  /*selectionBounded=*/true});
+  out->push_back({"filter_local_contrast",
+                  "Local Contrast",
+                  {"radius", "amount"},
+                  pixelOpUnavailable,
+                  doLocalContrast, /*selectionBounded=*/true});
   out->push_back({"filter_sharpen", "Sharpen", {"strength"}, pixelOpUnavailable, doSharpen,
                   /*selectionBounded=*/true});
   out->push_back({"filter_unsharp_mask",
@@ -1164,11 +1429,27 @@ void registerImageCommands(std::vector<CommandSpec>* out) {
                   doEmboss, /*selectionBounded=*/true});
   out->push_back({"filter_median", "Median", {"radius"}, pixelOpUnavailable, doMedian,
                   /*selectionBounded=*/true});
+  out->push_back({"filter_dust_scratches",
+                  "Dust & Scratches",
+                  {"radius", "threshold"},
+                  pixelOpUnavailable,
+                  doDustScratches, /*selectionBounded=*/true});
   out->push_back({"filter_motion_blur",
                   "Motion Blur",
                   {"radius", "angle_radians"},
                   pixelOpUnavailable,
                   doMotionBlur, /*selectionBounded=*/true});
+  out->push_back({"filter_radial_blur",
+                  "Radial Blur",
+                  {"method", "center_x", "center_y", "amount", "samples"},
+                  pixelOpUnavailable,
+                  doRadialBlur, /*selectionBounded=*/true});
+  out->push_back({"filter_lens_blur",
+                  "Lens Blur",
+                  {"radius", "blade_count", "blade_rotation_radians", "highlight_threshold",
+                   "highlight_boost"},
+                  pixelOpUnavailable,
+                  doLensBlur, /*selectionBounded=*/true});
   // `filter_inpaint` is the one row here NOT bounded through the shared
   // `pixelOpUnavailable()` bridge -- `inpaintUnavailable()` calls
   // `inpaintRefusal()` instead, because an absent selection is a hard refusal
@@ -1181,6 +1462,16 @@ void registerImageCommands(std::vector<CommandSpec>* out) {
   // bounded exception beside `crop_to_selection`.
   out->push_back({"filter_inpaint", "Inpaint", {"radius"}, inpaintUnavailable, doInpaint,
                   /*selectionBounded=*/true});
+  // Same shape and the same `selectionBounded`-without-the-bridge exception
+  // as `filter_inpaint` just above -- the hole is the selection, so
+  // `contentAwareFillUnavailable()` refuses `NoSelection` directly rather
+  // than through `pixelOpUnavailable()`. app/selftest/Command.cpp section H
+  // names this as the fourth such row.
+  out->push_back({"content_aware_fill",
+                  "Content-Aware Fill",
+                  {"patch_radius", "iterations", "pyramid_levels", "seed"},
+                  contentAwareFillUnavailable,
+                  doContentAwareFill, /*selectionBounded=*/true});
   out->push_back({"filter_remove_lighting_gradient",
                   "Remove Lighting Gradient",
                   {"sigma"},
@@ -1195,6 +1486,14 @@ void registerImageCommands(std::vector<CommandSpec>* out) {
                   {"dx_fraction", "dy_fraction", "edge"},
                   offsetUnavailable,
                   doOffset});
+  // NOT selectionBounded, for `filter_offset`'s own reason just above:
+  // `seamHealUnavailable()` refuses outright under any live selection, so an
+  // absent one is never the "whole canvas" reading that needed protecting.
+  out->push_back({"seam_heal",
+                  "Seam Heal",
+                  {"band_width", "patch_radius", "iterations", "pyramid_levels", "seed"},
+                  seamHealUnavailable,
+                  doSeamHeal});
 
   // ---- Image > Adjustments -----------------------------------------------
   out->push_back({"adjust_levels", "Levels", {"channels"}, pixelOpUnavailable, doLevels,
@@ -1239,6 +1538,12 @@ void registerImageCommands(std::vector<CommandSpec>* out) {
                   {"density", "color", "preserve_luminosity"},
                   pixelOpUnavailable,
                   doPhotoFilter, /*selectionBounded=*/true});
+  // `filter_` id, `adjust_` menu -- see doShadowsHighlights()'s own comment.
+  out->push_back({"filter_shadows_highlights",
+                  "Shadows/Highlights",
+                  {"radius", "shadows", "highlights", "tonal_width"},
+                  pixelOpUnavailable,
+                  doShadowsHighlights, /*selectionBounded=*/true});
   out->push_back({"adjust_posterize", "Posterize", {"levels"}, pixelOpUnavailable, doPosterize,
                   /*selectionBounded=*/true});
   out->push_back({"adjust_threshold", "Threshold", {"threshold", "amount"}, pixelOpUnavailable,
@@ -1301,6 +1606,21 @@ Command gaussianBlurCommand(float sigma) {
   return command("filter_gaussian_blur", std::move(p));
 }
 
+// app/FilterCommandsExtra.hpp's other two -- see that header for why they and
+// `lensCorrectCommand()` share one declaration site.
+Command highpassCommand(float sigma) {
+  JsonValue p = JsonValue::object();
+  p.set("sigma", JsonValue::number(sigma));
+  return command("filter_highpass", std::move(p));
+}
+
+Command localContrastCommand(const LocalContrastParams& lc) {
+  JsonValue p = JsonValue::object();
+  p.set("radius", JsonValue::number(lc.blur.sigma));
+  p.set("amount", JsonValue::number(lc.amount));
+  return command("filter_local_contrast", std::move(p));
+}
+
 Command sharpenCommand(float strength) {
   JsonValue p = JsonValue::object();
   p.set("strength", JsonValue::number(strength));
@@ -1351,11 +1671,51 @@ Command medianCommand(const MedianParams& m) {
   return command("filter_median", std::move(p));
 }
 
+// app/FilterCommandsFilters.hpp's two -- see that header for why they have a
+// declaration site of their own.
+Command dustScratchesCommand(const DustScratchesParams& d) {
+  JsonValue p = JsonValue::object();
+  p.set("radius", JsonValue::number(d.radius));
+  p.set("threshold", JsonValue::number(d.threshold));
+  return command("filter_dust_scratches", std::move(p));
+}
+
+Command shadowsHighlightsCommand(const ShadowsHighlightsParams& s) {
+  JsonValue p = JsonValue::object();
+  p.set("radius", JsonValue::number(s.blur.sigma));
+  p.set("shadows", JsonValue::number(s.shadows));
+  p.set("highlights", JsonValue::number(s.highlights));
+  p.set("tonal_width", JsonValue::number(s.tonalWidth));
+  return command("filter_shadows_highlights", std::move(p));
+}
+
 Command motionBlurCommand(const MotionBlurParams& m) {
   JsonValue p = JsonValue::object();
   p.set("radius", JsonValue::number(m.radius));
   p.set("angle_radians", JsonValue::number(m.angleRadians));
   return command("filter_motion_blur", std::move(p));
+}
+
+// app/BlurCommandsExtra.hpp's two -- see that header for why they are
+// declared apart from the family above.
+Command radialBlurCommand(const RadialBlurParams& p) {
+  JsonValue j = JsonValue::object();
+  j.set("method", JsonValue::string(radialBlurMethodName(p.method)));
+  j.set("center_x", JsonValue::number(p.centerX));
+  j.set("center_y", JsonValue::number(p.centerY));
+  j.set("amount", JsonValue::number(p.amount));
+  j.set("samples", JsonValue::number(p.samples));
+  return command("filter_radial_blur", std::move(j));
+}
+
+Command lensBlurCommand(const LensBlurParams& p) {
+  JsonValue j = JsonValue::object();
+  j.set("radius", JsonValue::number(p.radius));
+  j.set("blade_count", JsonValue::number(p.bladeCount));
+  j.set("blade_rotation_radians", JsonValue::number(p.bladeRotationRadians));
+  j.set("highlight_threshold", JsonValue::number(p.highlightThreshold));
+  j.set("highlight_boost", JsonValue::number(p.highlightBoost));
+  return command("filter_lens_blur", std::move(j));
 }
 
 Command levelsCommand(const std::array<LevelsParams, 3>& channels) {
@@ -1529,6 +1889,46 @@ Command inpaintCommand(int32_t radius) {
   JsonValue p = JsonValue::object();
   p.set("radius", JsonValue::number(radius));
   return command("filter_inpaint", std::move(p));
+}
+
+Command contentAwareFillCommand(const ContentAwareFillRequest& r) {
+  JsonValue p = JsonValue::object();
+  p.set("patch_radius", JsonValue::number(r.patchRadius));
+  p.set("iterations", JsonValue::number(r.iterations));
+  p.set("pyramid_levels", JsonValue::number(r.pyramidLevels));
+  p.set("seed", JsonValue::number(static_cast<double>(r.seed)));
+  return command("content_aware_fill", std::move(p));
+}
+
+Command seamHealCommand(const SeamHealRequest& r) {
+  JsonValue p = JsonValue::object();
+  p.set("band_width", JsonValue::number(r.bandWidth));
+  p.set("patch_radius", JsonValue::number(r.patchRadius));
+  p.set("iterations", JsonValue::number(r.iterations));
+  p.set("pyramid_levels", JsonValue::number(r.pyramidLevels));
+  p.set("seed", JsonValue::number(static_cast<double>(r.seed)));
+  return command("seam_heal", std::move(p));
+}
+
+namespace {
+// splitmix64's finalizer, this file's own copy -- ops/Filters.cpp's and
+// ops/PatchMatch.cpp's own precedent for keeping one rather than exporting a
+// shared header for four lines.
+uint64_t repairReseedSplitMix64(uint64_t z) noexcept {
+  z += 0x9e3779b97f4a7c15ULL;
+  z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+  return z ^ (z >> 31);
+}
+}  // namespace
+
+uint64_t nextRepairSeed(uint64_t seed) noexcept {
+  // 2^53 -- `readSeed()`'s own ceiling, restated here rather than shared,
+  // because the two live in different files for different reasons (one
+  // reads JSON, this one walks a dialog's own field) and a shared constant
+  // would be a coupling neither side asked for.
+  constexpr uint64_t kMaxRepairSeed = 9007199254740992ULL;
+  return repairReseedSplitMix64(seed) % (kMaxRepairSeed + 1);
 }
 
 Command removeLightingGradientCommand(float sigma) {

@@ -378,7 +378,7 @@ bool runPenDrawTest() {
       if (c.seedSelection)
         for (uint32_t i = 0; i < 3; ++i)
           ps.selection.components.push_back(ComponentRef{7, 0, i, AnchorPart::Point});
-      const uint64_t before = vectorContentHash(copy);
+      const uint64_t before = vectorContentHash(copy, {});
       const size_t compsBefore = ps.selection.components.size();
       const size_t shapesBefore = ps.selection.shapes.size();
       const PenPressResult r =
@@ -390,7 +390,7 @@ bool runPenDrawTest() {
       // restoring the forwarding stayed green. The Pen does not select
       // either.
       const bool inert = r == PenPressResult::Inert && ps.drag == PathDragKind::None &&
-                         vectorContentHash(copy) == before &&
+                         vectorContentHash(copy, {}) == before &&
                          ps.selection.components.size() == compsBefore &&
                          ps.selection.shapes.size() == shapesBefore;
       std::string label = "the Pen is INERT on ";

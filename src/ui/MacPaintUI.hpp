@@ -182,6 +182,21 @@ void setDocumentStatusLine(std::string status);
 // `setLayersPanelSelection()`'s comment exists to prevent.
 void setSplitArrangement(AtelierSplit mode);
 
+// View > Split View and View > Match Zoom, reachable from a
+// bound key exactly as the menu items reach them
+// (`ui::toggleSplitView()`/`g_split.matchZoom`, both ui/MacPaintUI.cpp) --
+// `keymaps/default.json` binds no chord to either action string today, so
+// these are reachable only from the menu until one is added, the same
+// "unbound rather than speculative" call `BrushSettings`'s own comment makes
+// in ui/MenuModel.cpp.
+void toggleSplitViewKey(AppState& st);
+void toggleMatchZoomKey(AppState& st);
+
+// `--split-demo`'s own route into Match Zoom, `setSplitArrangement()`'s
+// sibling and for the identical reason: a screenshot needs the state already
+// set before the first frame, and there is no click for a flag to replay.
+void setSplitMatchZoom(bool on);
+
 // Where all five of PRD E3's selection tools end: the shape just drawn,
 // combined with what was installed through the PRD E7 modifier the gesture
 // latched (`AppState::marqueeCombine`), installed once.
@@ -550,6 +565,18 @@ struct PixelCommandOutcome {
 PixelCommandOutcome runPixelCommand(OpenDocument& od, const Command& command,
                                     const char* nothingChangedText);
 
+// The live canvas GPU preview every Filter/Adjustments dialog above shows,
+// exposed for one living in its own translation unit (ui/FilterDialogsExtra
+// .cpp, PRD Q1/D22): `FilterPreviewOwner`/`setFilterPreview()` are file-scope
+// in ui/MacPaintUI.cpp and not in any header (ui/FillDialog.cpp's own comment
+// on `pixelOpFooter()` says why -- the same "small hooks only" boundary), so
+// these two are the whole of what crosses it. Both dialogs sharing one
+// `External` owner is safe: only one modal is ever open at a time.
+void setExternalFilterPreview(DocumentId id, size_t layerIndex, TileStore tiles);
+void clearExternalFilterPreview();
+// The document an External preview is showing on, or 0. For the self-test.
+DocumentId externalFilterPreviewDocument();
+
 // A layer gesture or a layer value setter, through the same door. Both report
 // the same three things, because `g_layers`' message band shows the same three
 // things for both.
@@ -585,18 +612,10 @@ LayerCommandOutcome runActiveLayerSetter(OpenDocument& od, const Command& comman
 // ---------------------------------------------------------------------------
 //
 // The ImGui popups around these (ui/MacPaintUI.cpp's drawSelectMenuDialogs())
-// cannot run headless -- there is no window, no frame, nothing for
-// `ImGui::BeginPopupModal()` to draw into. What CAN run headless, and what
-// app/selftest/SelectMenu.cpp actually needs proven, is the boundary between
-// "what the dialog holds" and "what the engine sees": that
-// `MenuAction::SelectGrow` reaches `growSelection()` and not
-// `shrinkSelection()`, that the radius on screen is the radius the engine
-// receives rather than a hardcoded default, and that colour/luminance range
-// decode and forward their sliders rather than falling back to
-// `SelectionRangeParams{}`'s defaults. These six functions ARE that boundary
-// -- every popup's confirm button calls exactly one of them and nothing else,
-// so a test that calls them the same way the button does is testing the real
-// wiring and not a re-implementation of it.
+// cannot run headless. Every popup's confirm button builds a `Command` with an
+// encoder (app/CommandsOpStack.hpp, or `selectRefineCommand()` below) and
+// commits it through `runSelectionCommand()` and nothing else, so a test that
+// does the same is testing the real wiring.
 
 // The enable predicate for Grow, Shrink and Feather: an ENGAGED selection.
 // All three take a `const Selection&` (core/SelectionRefine.hpp,
@@ -609,48 +628,19 @@ bool selectRefineEnabled(const OpenDocument& od) noexcept;
 // so unlike the three above they need NO selection already drawn.
 bool selectRangeEnabled(const OpenDocument& od) noexcept;
 
-// The enable predicate for `MenuAction::SelectUndoRefine`: the stack this
-// file's own `installRefinedSelection()` pushes to is non-empty.
+// The enable predicate for `MenuAction::SelectUndoRefine`: the stack the
+// refine commands push to is non-empty.
 bool selectUndoRefineEnabled(const OpenDocument& od) noexcept;
 
-// The dialog -> engine boundary for Grow, Shrink and Feather. `action` picks
-// the engine function -- `SelectGrow` to `growSelection()`, `SelectShrink` to
-// `shrinkSelection()`, `SelectFeather` to `featherSelection()` -- and
-// `radius` is passed through exactly as the dialog's slider holds it. Any
-// other `action` returns `current` unchanged; the three popups this backs
-// never pass one.
-Selection applySelectRefineAction(MenuAction action, const Selection& current, float radius);
+// The fourth UI -> command-layer boundary (docs/automation.md §2.3): a Select
+// menu refine or range dialog's commit, through `applyCommand()`. Returns
+// empty on success, or the refusal sentence for the dialog's red line.
+std::string runSelectionCommand(OpenDocument& od, const Command& command);
 
-// The dialog -> engine boundary for Colour Range. `swatchSrgb` is the
-// dialog's `ImGui::ColorEdit3` value -- display-encoded sRGB, matching
-// `foregroundLinearRgba()`'s own input above -- and is decoded to STRAIGHT
-// LINEAR here, the one boundary core/SelectionRefine.hpp asks for, rather
-// than at every call site. `tolerance`/`edgeBand` are the dialog's own
-// sliders, forwarded into a `SelectionRangeParams` rather than left at that
-// struct's defaults.
-Selection applySelectColourRangeAction(const std::array<float, 3>& swatchSrgb, float tolerance,
-                                       float edgeBand, const TileStore& source, int32_t width,
-                                       int32_t height);
-
-// The dialog -> engine boundary for Luminance Range. `low`/`high`/`edgeBand`
-// are the dialog's own sliders -- display-encoded Rec.709 luminance
-// (core/SelectionRefine.hpp), forwarded into a `SelectionLuminanceRange`
-// rather than left at that struct's defaults (which select nearly
-// everything: 0..1).
-Selection applySelectLuminanceRangeAction(float low, float high, float edgeBand,
-                                          const TileStore& source, int32_t width, int32_t height);
-
-// Where every one of the six functions above ends up: installs `result` as
-// `od.selection` (through `installSelection()`, so the revision bump and the
-// existing `lastDeselected` bookkeeping happen exactly once) and pushes what
-// it REPLACED onto `od.refineUndoStack` first. See that member's own comment
-// (app/DocumentLifecycle.hpp) for why this is a dedicated stack and not
-// `core::History`.
-//
-// Not `installSelection()` itself: that function is also what every
-// interactive marquee drag calls, once a frame, for as long as the drag
-// lasts -- and a marquee drag is not five hundred refine-undo entries.
-void installRefinedSelection(OpenDocument& od, std::optional<Selection> result);
+// Grow, Shrink and Feather share one dialog; `action` picks select_grow,
+// select_shrink or select_feather. Any other action encodes an unregistered
+// id, which `runSelectionCommand()` refuses by name.
+Command selectRefineCommand(MenuAction action, float radius);
 
 // `MenuAction::SelectUndoRefine`'s body. Pops the most recent entry off
 // `od.refineUndoStack` and restores exactly the selection it replaced
@@ -662,5 +652,31 @@ void installRefinedSelection(OpenDocument& od, std::optional<Selection> result);
 // but a queued action from before the last validation should still refuse
 // quietly rather than pop a stack that emptied out from under it.
 bool undoLastRefine(OpenDocument& od);
+
+// PRD E12's `MenuAction::ToggleQuickMask` body, and the `Q` keymap action's:
+// enters quick mask from the active selection (absent means an empty mask,
+// core::quickMaskFromSelection()'s own rule), or leaves it, converting the
+// painted overlay back into the active selection. Never touches
+// `core::History` in either direction.
+void toggleQuickMask(OpenDocument& od);
+
+// PRD E12's overlay tint, packed as straight-alpha RGBA16Float half floats --
+// red where the mask has no coverage, fading to transparent where it does.
+// Pure CPU, no GPU/ImGui type in its signature, so `app/selftest` can prove
+// the packing directly rather than only through a texture nobody but a real
+// GPU frame ever reads back. External linkage for that reason alone; the
+// GPU-side texture upload built on top of it (ui/MacPaintUI.cpp's
+// `QuickMaskOverlayTexture`) stays file-local like `FilterPreviewTexture`
+// beside it, since `--selftest` never opens a window to exercise either.
+std::vector<uint16_t> packQuickMaskOverlayHalf(const QuickMask& mask, int32_t width,
+                                               int32_t height);
+
+// PRD E13's single-channel view: one `AlphaChannel`'s coverage as a grayscale
+// image the size of the document -- R=G=B=coverage, alpha opaque, so it
+// REPLACES the canvas rather than tinting it the way the quick-mask overlay
+// above does. Pure CPU for the same reason as `packQuickMaskOverlayHalf()`:
+// `app/selftest` can prove the texel math without a window.
+std::vector<uint16_t> packChannelViewHalf(const AlphaChannel& channel, int32_t width,
+                                          int32_t height);
 
 }  // namespace np

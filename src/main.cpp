@@ -50,6 +50,7 @@
 #include "app/RegionTool.hpp"  // --region-demo
 #include "app/TilePreview.hpp"
 #include "app/ToolSwitch.hpp"
+#include "app/Version.hpp"
 #include "app/ZoomAndSize.hpp"
 #include "brush/Deposit.hpp"
 #include "color/Space.hpp"
@@ -362,7 +363,7 @@ void runUiLayerDemo(np::OpenDocument& od, bool clip) {
     const size_t i = np::layerIndexForPanelRow(row, count);
     std::printf("[ui-layer-demo]   %s %-24s %s\n", np::layerKindGlyph(od.document.layers[i].kind),
                 np::layerRowTitle(od.document.layers[i], i).c_str(),
-                np::layerRowSubLine(od.document.layers[i]).c_str());
+                np::layerRowSubLine(od.document, i).c_str());
   }
 }
 
@@ -1104,7 +1105,7 @@ void runUiMergeDemo(np::OpenDocument& od, std::string_view list) {
     const size_t i = np::layerIndexForPanelRow(row, count);
     std::printf("[ui-merge-demo]   %s %-24s %s\n", np::layerKindGlyph(od.document.layers[i].kind),
                 np::layerRowTitle(od.document.layers[i], i).c_str(),
-                np::layerRowSubLine(od.document.layers[i]).c_str());
+                np::layerRowSubLine(od.document, i).c_str());
   }
 }
 
@@ -1302,7 +1303,7 @@ void runCompsDemo(np::OpenDocument& od, size_t restoreIndex, bool dropALayer) {
   for (size_t i = 0; i < doc.layers.size(); ++i)
     std::printf("[comps-demo]   layer %zu %-24s %s\n", i,
                 np::layerRowTitle(doc.layers[i], i).c_str(),
-                np::layerRowSubLine(doc.layers[i]).c_str());
+                np::layerRowSubLine(doc, i).c_str());
 }
 
 // --split-demo [rows] (PLAN.md Phase 5 step 14): **open two documents and turn
@@ -1439,8 +1440,8 @@ void buildSplitDemo(np::AppState& st, np::AtelierSplit mode) {
 // pixels at 2x on this machine. Getting that backwards samples the wrong pixel
 // and is the likeliest way to write an assertion that passes on the wrong
 // picture. So the assertions that decide the result use **no geometry at
-// all**: they find every pixel matching each field colour and compare the two
-// bounding boxes.
+// all**: they find the largest connected region of each field colour and
+// compare the two bounding boxes.
 //
 //   * `columns-2`: every A pixel is left of every B pixel, and the two boxes
 //     overlap vertically. That is what "side by side, A on the left" means,
@@ -1553,24 +1554,61 @@ bool verifySplitDemoScreenshot(const std::string& path, np::AtelierSplit mode, f
     if (!condition) ok = false;
   };
 
+  // The active document is drawn more than once: its pane, the navigator
+  // thumbnail in that pane's corner, and the LAYERS row thumbnail out in the
+  // right dock. That last copy sits right of (and, stacked, below) the
+  // companion pane, so a box over every matching pixel fails the ordering on
+  // a correct picture. Each field is therefore placed by its largest
+  // 4-connected region -- the pane quad, which the corner notch leaves as one
+  // L-shaped region -- and the smaller copies are ignored.
+  const size_t pixelCount = static_cast<size_t>(img.width) * img.height;
+  std::vector<uint8_t> label(pixelCount, 0);  // 0 none, 1 field A, 2 field B
+  for (size_t i = 0; i < pixelCount; ++i) {
+    const float* px = &img.pixels[i * 4];
+    if (splitDemoMatches(px, kSplitFieldA, 2))
+      label[i] = 1;
+    else if (splitDemoMatches(px, kSplitFieldB, 2))
+      label[i] = 2;
+  }
   SplitDemoBox a, b;
-  for (uint32_t y = 0; y < img.height; ++y) {
-    for (uint32_t x = 0; x < img.width; ++x) {
-      const float* px = &img.pixels[(static_cast<size_t>(y) * img.width + x) * 4];
-      if (splitDemoMatches(px, kSplitFieldA, 2))
-        a.add(static_cast<float>(x), static_cast<float>(y));
-      else if (splitDemoMatches(px, kSplitFieldB, 2))
-        b.add(static_cast<float>(x), static_cast<float>(y));
+  size_t aTotal = 0, bTotal = 0;
+  std::vector<size_t> stack;
+  for (size_t seed = 0; seed < pixelCount; ++seed) {
+    const uint8_t which = label[seed];
+    if (which == 0) continue;
+    SplitDemoBox region;
+    label[seed] = 0;  // consumed, so no pixel is counted twice
+    stack.assign(1, seed);
+    while (!stack.empty()) {
+      const size_t i = stack.back();
+      stack.pop_back();
+      const uint32_t x = static_cast<uint32_t>(i % img.width);
+      const uint32_t y = static_cast<uint32_t>(i / img.width);
+      region.add(static_cast<float>(x), static_cast<float>(y));
+      const auto visit = [&](size_t n) {
+        if (label[n] == which) {
+          label[n] = 0;
+          stack.push_back(n);
+        }
+      };
+      if (x > 0) visit(i - 1);
+      if (x + 1 < img.width) visit(i + 1);
+      if (y > 0) visit(i - img.width);
+      if (y + 1 < img.height) visit(i + img.width);
     }
+    SplitDemoBox& best = which == 1 ? a : b;
+    (which == 1 ? aTotal : bTotal) += region.count;
+    if (region.count > best.count) best = region;
   }
 
-  std::printf("[split-demo] %u x %u framebuffer -- A #%02x%02x%02x, %zu px, box "
-              "(%.0f,%.0f)-(%.0f,%.0f); B #%02x%02x%02x, %zu px, box (%.0f,%.0f)-(%.0f,%.0f)\n",
+  std::printf("[split-demo] %u x %u framebuffer -- A #%02x%02x%02x, largest region %zu of %zu px, "
+              "box (%.0f,%.0f)-(%.0f,%.0f); B #%02x%02x%02x, largest region %zu of %zu px, box "
+              "(%.0f,%.0f)-(%.0f,%.0f)\n",
               img.width, img.height, splitDemoByte(kSplitFieldA[0]),
-              splitDemoByte(kSplitFieldA[1]), splitDemoByte(kSplitFieldA[2]), a.count, a.minX,
-              a.minY, a.maxX, a.maxY, splitDemoByte(kSplitFieldB[0]),
-              splitDemoByte(kSplitFieldB[1]), splitDemoByte(kSplitFieldB[2]), b.count, b.minX,
-              b.minY, b.maxX, b.maxY);
+              splitDemoByte(kSplitFieldA[1]), splitDemoByte(kSplitFieldA[2]), a.count, aTotal,
+              a.minX, a.minY, a.maxX, a.maxY, splitDemoByte(kSplitFieldB[0]),
+              splitDemoByte(kSplitFieldB[1]), splitDemoByte(kSplitFieldB[2]), b.count, bTotal,
+              b.minX, b.minY, b.maxX, b.maxY);
 
   // A pane that drew nothing and a pane that drew the *other* document are
   // indistinguishable from one colour's count, so both counts are required
@@ -1651,6 +1689,14 @@ bool verifySplitDemoScreenshot(const std::string& path, np::AtelierSplit mode, f
 }  // namespace
 
 int main(int argc, char** argv) {
+  // --version / -v : print `versionString()` and exit 0, before SDL, the GPU
+  // or a window -- the same posture as --abr-report and the other headless
+  // flags below, and the one flag that has to work even in a checkout that
+  // cannot make a window at all. `-v` is free: nothing in this build reads
+  // it already.
+  bool versionFlag = false;
+  // --help / -h : usage, printed before SDL for the identical reason.
+  bool helpFlag = false;
   // --selftest [out.png] runs the solver headless and checks that latent-space
   // pigment mixing actually produces green where blue crosses yellow.
   // [[maybe_unused]]: only --selftest reads these, and NP_SELFTEST=OFF compiles
@@ -1734,6 +1780,9 @@ int main(int argc, char** argv) {
   // `--transform-demo 1` alone (no pen demo) is the `transform_stack`
   // golden case.
   int transformDemoLayer = -1;
+  // `--transform-demo warp`: the literal token in the layer-index slot,
+  // checked before `std::atoi` so "warp" cannot silently parse as index 0.
+  bool transformDemoWarp = false;
   bool demoDocument = false;
   bool pigmentStrokeDemo = false;
   bool pigmentStrokeDemoMix = true;
@@ -1790,6 +1839,8 @@ int main(int argc, char** argv) {
   bool uiLayerDemoClip = true;
   bool splitDemo = false;
   np::AtelierSplit splitDemoMode = np::AtelierSplit::Columns;
+  // also exercise View > Match Zoom in the same screenshot.
+  bool splitDemoMatchZoom = false;
   const char* uiMergeDemo = nullptr;
   const char* uiMultiSelectDemo = nullptr;
   bool controlsAllOpen = false;
@@ -1815,6 +1866,12 @@ int main(int argc, char** argv) {
   // does with it. See the injection in the frame loop.
   ImGuiKey pressKey = ImGuiKey_None;
   int pressKeyFrame = 10;
+  // --click <x> <y> [frame]: one left click at window point (x, y), through
+  // ImGui's queue only (the canvas paint route reads st.pointerQueue and sees
+  // nothing). The pointer sits there from the first frame.
+  bool clickRequested = false;
+  float clickX = 0.0f, clickY = 0.0f;
+  int clickFrame = 15;
   bool advancedDynamics = false;
   // D4 (docs/reachability-audit.md): `naturalPaint foo.npaint` used to open
   // nothing, because this loop matched only `--flag` strings and fell
@@ -1916,7 +1973,11 @@ int main(int argc, char** argv) {
   std::vector<std::string> positionalPaths;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a(argv[i]);
-    if (a == "--selftest") {
+    if (a == "--version" || a == "-v") {
+      versionFlag = true;
+    } else if (a == "--help" || a == "-h") {
+      helpFlag = true;
+    } else if (a == "--selftest") {
       selfTest = true;
       if (i + 1 < argc && argv[i + 1][0] != '-') selfTestOut = argv[++i];
     } else if (a == "--selftest-only") {
@@ -2462,9 +2523,22 @@ int main(int argc, char** argv) {
       // ui/AtelierLayout's enumerator is called and the design's own two icon
       // names are, by that header's admission, an interpretation.
       splitDemo = true;
-      if (i + 1 < argc && std::string_view(argv[i + 1]) == "rows") {
-        splitDemoMode = np::AtelierSplit::Rows;
-        ++i;
+      // Two independent optional tokens, either order: `rows` picks the
+      // arrangement (see above), `match-zoom` also turns on View > Match
+      // Zoom before the first frame -- `setSplitMatchZoom()`
+      // is `setSplitArrangement()`'s own reason, restated: no click exists
+      // yet for `--screenshot` to have replayed.
+      for (int taken = 0; taken < 2 && i + 1 < argc; ++taken) {
+        const std::string_view next(argv[i + 1]);
+        if (next == "rows") {
+          splitDemoMode = np::AtelierSplit::Rows;
+          ++i;
+        } else if (next == "match-zoom") {
+          splitDemoMatchZoom = true;
+          ++i;
+        } else {
+          break;
+        }
       }
     } else if (a == "--ui-merge-demo") {
       // Phase 5 step 10 / PRD C10: press one merge button. See runUiMergeDemo().
@@ -2475,8 +2549,12 @@ int main(int argc, char** argv) {
       journalEnabled = false;
     } else if (a == "--transform-demo") {
       transformDemo = true;
-      if (i + 1 < argc && argv[i + 1][0] != '-')
+      if (i + 1 < argc && std::string(argv[i + 1]) == "warp") {
+        transformDemoWarp = true;
+        ++i;
+      } else if (i + 1 < argc && argv[i + 1][0] != '-') {
         transformDemoLayer = std::atoi(argv[++i]);
+      }
     } else if (a == "--ui-multiselect-demo") {
       // PLAN.md Phase 5 step 11 / PRD C12, C13, C15: press the multi-selection's
       // own set commands. See runUiMultiSelectDemo().
@@ -2585,6 +2663,15 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[press-key] needs a key name\n");
         return 2;
       }
+    } else if (a == "--click") {
+      if (i + 2 >= argc) {
+        std::fprintf(stderr, "[click] needs <x> <y> [frame]\n");
+        return 2;
+      }
+      clickRequested = true;
+      clickX = static_cast<float>(std::atof(argv[++i]));
+      clickY = static_cast<float>(std::atof(argv[++i]));
+      if (i + 1 < argc && argv[i + 1][0] != '-') clickFrame = std::atoi(argv[++i]);
     } else if (a == "--open-layer-properties") {
       // The LAYERS panel's own gear-button modal, same justification as
       // --open-export-states one dialog over: it too is opened by a click and
@@ -2633,6 +2720,35 @@ int main(int argc, char** argv) {
     // falls through here unchanged -- pre-existing behaviour this step does
     // not touch, and out of scope for D4, which is about a bare filename
     // opening nothing, not about diagnosing an unrecognised flag.
+  }
+
+  // Before everything else, including the NP_SELFTEST=OFF refusal below:
+  // both of these have to work in every build, not only one with the self-
+  // test suite compiled in.
+  if (versionFlag) {
+    std::printf("%s\n", np::versionString().c_str());
+    return 0;
+  }
+  if (helpFlag) {
+    // Deliberately not an exhaustive list of every flag this binary reads --
+    // most of the others (--abr-report, --psd-report, --dab-scan, the
+    // --*-demo family, ...) are developer instrumentation for a specific
+    // subsystem, documented beside the code that reads them, not part of
+    // the interface a user of the application needs.
+    std::printf(
+        "%s\n"
+        "Usage: naturalPaint [options] [file...]\n"
+        "\n"
+        "  --version, -v   print the version and exit\n"
+        "  --help, -h      print this message and exit\n"
+        "  --selftest      run the headless self-test suite and exit\n"
+        "  --batch <action.npaction> <output-dir> <file...>\n"
+        "                  run one recorded action over files, headless, and exit\n"
+        "  <file>...       open one or more documents, one tab each\n"
+        "\n"
+        "Run with no arguments to open an empty document.\n",
+        np::versionString().c_str());
+    return 0;
   }
 
 #if !NP_WITH_SELFTEST
@@ -3106,12 +3222,24 @@ int main(int argc, char** argv) {
     // runFiltersExtTest() for the shape of the argument. Also headless and
     // GPU-free.
     const bool filtersExtOk = !wanted("runFiltersExtTest") || np::runFiltersExtTest();
+    // docs/operations.md §2.2: Radial/Spin+Zoom blur and Lens blur --
+    // two more filters extending the same set, each with its own engine file
+    // (ops/RadialBlur.hpp, ops/LensBlur.hpp) rather than growing ops/Filters.
+    // See app/SelfTest.hpp's own comment on runBlurFiltersTest(). Also
+    // headless and GPU-free.
+    const bool blurFiltersOk = !wanted("runBlurFiltersTest") || np::runBlurFiltersTest();
     // PLAN.md "Phase 8 -- Repair it" (PRD D7, first half): ops/Inpaint's
     // diffusion fill and the Filter > Inpaint command. The one op here whose
     // selection is the HOLE rather than a bound on the result -- see
     // app/SelfTest.hpp's comment on runInpaintTest() for why that inversion is
     // asserted from both ends. Also headless and GPU-free.
     const bool inpaintOk = !wanted("runInpaintTest") || np::runInpaintTest();
+    // PRD D7's second half: ops/PatchMatch and Edit > Content-Aware Fill.
+    // Also headless and GPU-free.
+    const bool patchMatchOk = !wanted("runPatchMatchTest") || np::runPatchMatchTest();
+    // PRD D8's missing third piece: ops/SeamHeal and Filter > Seam Heal.
+    // Also headless and GPU-free.
+    const bool seamHealOk = !wanted("runSeamHealTest") || np::runSeamHealTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD E1, E2, M1): core/SelectionMask's
     // uint8 coverage store, its antialiased rectangle constructor, and the
     // coverage-weighted clear. Also headless and GPU-free -- pure CPU tile
@@ -3247,6 +3375,9 @@ int main(int argc, char** argv) {
     // both promoted into core/Path so Curve mode and the SMOOTH button share
     // one implementation. Headless and GPU-free; writes no files.
     const bool pathOpsOk = !wanted("runPathOpsTest") || np::runPathOpsTest();
+    // core/PathBoolean -- the region booleans behind the PATHS panel's
+    // UNITE/INTERSECT/SUBTRACT/EXCLUDE and PSD's Intersect.
+    const bool pathBooleanOk = !wanted("runPathBooleanTest") || np::runPathBooleanTest();
     // The PATHS panel (docs/path-editing-plan.md section 4): its registration
     // in three of the four tables a section must appear in, that every verb
     // button greys on its own `pathOpCanRun()` answer, that
@@ -3290,6 +3421,12 @@ int main(int argc, char** argv) {
     // core/DirtyTiles' pass 1 could not see one before this phase.
     // Headless and GPU-free; writes no files.
     const bool vectorLayerOk = !wanted("runVectorLayerTest") || np::runVectorLayerTest();
+    // docs/psd-vector-shapes.md S2: a gradient fill on a vector shape -- the
+    // document-level table, the raster that reads it, the hash that guards
+    // the raster against a ramp edit nobody would otherwise see, and both
+    // halves of the on-disk form. Headless and GPU-free; writes and removes
+    // real .npaint files.
+    const bool vectorGradientOk = !wanted("runVectorGradientTest") || np::runVectorGradientTest();
     // core/TextContent (PLAN.md phase 14): what a `LayerKind::Text` layer
     // holds -- makeTextContent(), textContentToShapes() (shaping a block
     // into per-glyph VectorShapes, translated by origin plus each glyph's
@@ -3851,6 +3988,12 @@ int main(int argc, char** argv) {
     // kind NAME, and the selection rows that cross the session/document line.
     // See app/SelfTest.hpp.
     const bool commandsOpStackOk = !wanted("runCommandsOpStackTest") || np::runCommandsOpStackTest();
+    // app/ChannelsPanel: the CHANNELS dock tab's pure row mapping. See
+    // app/SelfTest.hpp.
+    const bool channelsPanelOk = !wanted("runChannelsPanelTest") || np::runChannelsPanelTest();
+    // PRD E12's app-level half: toggleQuickMask() and brush/QuickMaskPaint's
+    // dab arithmetic. See app/SelfTest.hpp.
+    const bool quickMaskPaintOk = !wanted("runQuickMaskPaintTest") || np::runQuickMaskPaintTest();
     // app/CommandsImage: the thirty rows that change pixels or the document's
     // geometry, and the adapter layer between a JSON object and the appliers
     // they drive. See app/SelfTest.hpp for the four ways an adapter can be
@@ -4076,6 +4219,25 @@ int main(int argc, char** argv) {
     // this section's own doc comment states exactly what that leaves
     // unverified.
     const bool psdImportOk = !wanted("runPsdImportTest") || np::runPsdImportTest();
+    // io/PsdVectorPath: step 1 of docs/psd-vector-shapes.md -- decoding a
+    // `vsms`/`vmsk` path-record block into `core::Path` geometry, checked
+    // against known-answer fixtures dumped from real Photoshop files.
+    const bool psdVectorPathOk = !wanted("runPsdVectorPathTest") || np::runPsdVectorPathTest();
+    // io/PsdVectorCompose: step 2 of docs/psd-vector-shapes.md, folding a
+    // decoded shape layer's boolean path operations into one compound Path
+    // and fill rule -- refusing Intersect and mixed-Exclude layers by name
+    // rather than guessing.
+    const bool psdVectorComposeOk = !wanted("runPsdVectorComposeTest") || np::runPsdVectorComposeTest();
+    // io/PsdVectorStyle: step 3 -- the fill and stroke descriptors, and the
+    // first real Photoshop bytes this tree has fed to io/Descriptor.
+    const bool psdVectorStyleOk = !wanted("runPsdVectorStyleTest") || np::runPsdVectorStyleTest();
+    // docs/psd-vector-shapes.md S2's PSD half: `GdFl` in and `GdFl` out. Read
+    // app/SelfTest.hpp on what this section can and cannot prove -- no file on
+    // this machine carries a real `GdFl` to check against.
+    const bool psdVectorGradientOk = !wanted("runPsdVectorGradientTest") || np::runPsdVectorGradientTest();
+    // The three of them in order on one real layer -- the seam no per-module
+    // section can see.
+    const bool psdVectorChainOk = !wanted("runPsdVectorChainTest") || np::runPsdVectorChainTest();
     // app/FilterOps, ui/MenuModel's Filter and Image menus (docs/
     // reachability-audit.md C1): six of ops/Blur's, ops/Filters' and ops/
     // DocumentTransform's ~93 tested-but-unreachable entry points, wired to
@@ -4260,16 +4422,32 @@ int main(int argc, char** argv) {
     // reading. Headless and GPU-free (app/SelfTest.hpp's own comment on it).
     const bool strokeInputOk = !wanted("runStrokeInputTest") || np::runStrokeInputTest();
     const bool pointerQueueOk = !wanted("runPointerQueueTest") || np::runPointerQueueTest();
+    const bool appIconOk = !wanted("runAppIconTest") || np::runAppIconTest();
     // The stabiliser and entry taper/origin dab. Headless and GPU-free
     // (app/SelfTest.hpp's own comment on each).
     const bool stabiliserOk = !wanted("runStabiliserTest") || np::runStabiliserTest();
     const bool brushTaperOk = !wanted("runBrushTaperTest") || np::runBrushTaperTest();
     const bool pigmentBuildupOk =
         !wanted("runPigmentBuildupTest") || np::runPigmentBuildupTest();
-    const bool appIconOk = !wanted("runAppIconTest") || np::runAppIconTest();
     const bool airbrushBuildUpOk = !wanted("runAirbrushBuildUpTest") || np::runAirbrushBuildUpTest();
     const bool brushPanelsLiveOk = !wanted("runBrushPanelsLiveTest") || np::runBrushPanelsLiveTest();
     const bool patternLibraryOk = !wanted("runPatternLibraryTest") || np::runPatternLibraryTest();
+    // PRD M9: Paste Into and Paste as New Document. Headless and GPU-free.
+    const bool pasteCommandsOk = !wanted("runPasteCommandsTest") || np::runPasteCommandsTest();
+    // PRD D26: `fill` and `stroke`.
+    const bool commandsFillOk = !wanted("runCommandsFillTest") || np::runCommandsFillTest();
+    // PRD Q1 (P0): View > Zoom to Selection.
+    const bool zoomToSelectionOk = !wanted("runZoomToSelectionTest") || np::runZoomToSelectionTest();
+    // PRD D23: app/WarpMesh's bicubic lattice and app/TransformSession's Warp
+    // mode built on it. Headless and GPU-free.
+    const bool warpMeshOk = !wanted("runWarpMeshTest") || np::runWarpMeshTest();
+    const bool splitViewOk = !wanted("runSplitViewTest") || np::runSplitViewTest();
+    const bool radialBlurHandlesOk = !wanted("runRadialBlurHandlesTest") || np::runRadialBlurHandlesTest();
+    const bool radialBlurRetargetOk = !wanted("runRadialBlurRetargetTest") || np::runRadialBlurRetargetTest();
+    const bool dustScratchesOk = !wanted("runDustScratchesTest") || np::runDustScratchesTest();
+    const bool shadowsHighlightsOk = !wanted("runShadowsHighlightsTest") || np::runShadowsHighlightsTest();
+    const bool versionOk = !wanted("runVersionTest") || np::runVersionTest();
+    const bool flatsKeysOk = !wanted("runFlatsKeysTest") || np::runFlatsKeysTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4289,9 +4467,9 @@ int main(int argc, char** argv) {
                     documentTransformOk && transformSessionOk && moveToolOk && cropToolOk && maskTargetOk &&
                     framePacingOk &&
                     gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
-                    textShaperOk && vectorLayerOk && textContentOk &&
+                    textShaperOk && vectorLayerOk && vectorGradientOk && textContentOk &&
                     transformPreviewTextureOk &&
-                    transformCompositeSplitOk && packBitsOk && psdWriteOk && psdBlendKeysOk && psdExportOk && psdLayerSectionOk && psdLayerExtrasOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && inpaintOk && curveEditOk &&
+                    transformCompositeSplitOk && packBitsOk && psdWriteOk && psdBlendKeysOk && psdExportOk && psdLayerSectionOk && psdLayerExtrasOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && blurFiltersOk && inpaintOk && patchMatchOk && seamHealOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
                     multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk &&
                     userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
@@ -4304,6 +4482,7 @@ int main(int argc, char** argv) {
                     batchOk && batchDialogOk &&
                     actionsPanelOk &&
                     commandsOpStackOk &&
+                    channelsPanelOk && quickMaskPaintOk &&
                     commandOk && jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     commandsImageOk &&
                     commandsPatternsOk &&
@@ -4327,7 +4506,9 @@ int main(int argc, char** argv) {
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk && pigmentPanelOk &&
-                    openAnyFileOk && psdImportOk && filterMenuOk && adjustmentMenuOk && tileableOk &&
+                    openAnyFileOk && psdImportOk && psdVectorPathOk && psdVectorComposeOk &&
+                    psdVectorStyleOk && psdVectorGradientOk && psdVectorChainOk && filterMenuOk &&
+                    adjustmentMenuOk && tileableOk &&
                     selectMenuOk &&
                     chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk && tilePreviewOk &&
                     canvasDimensionsOk &&
@@ -4336,11 +4517,14 @@ int main(int argc, char** argv) {
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk && dialogModuleOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
-                    penToolOk && pathOpsOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
+                    penToolOk && pathOpsOk && pathBooleanOk && pathsPanelOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
                     nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
-                    stabiliserOk && brushTaperOk && pigmentBuildupOk && airbrushBuildUpOk && brushPanelsLiveOk && patternLibraryOk;
+                    stabiliserOk && brushTaperOk && pigmentBuildupOk && airbrushBuildUpOk && brushPanelsLiveOk && patternLibraryOk &&
+                    pasteCommandsOk && commandsFillOk && zoomToSelectionOk && warpMeshOk &&
+                    splitViewOk && radialBlurHandlesOk && radialBlurRetargetOk && dustScratchesOk && shadowsHighlightsOk && versionOk &&
+                    flatsKeysOk;
     if (!selfTestOnly.empty()) {
       std::printf("[selftest] --selftest-only \"%s\": %d section(s) run\n", selfTestOnly.c_str(),
                   selfTestSelected);
@@ -4990,6 +5174,10 @@ int main(int argc, char** argv) {
         np::setActiveLayer(*od, static_cast<size_t>(transformDemoLayer));
     }
     st.requestFreeTransform = true;
+    if (transformDemoWarp) {
+      st.requestWarp = true;
+      st.requestWarpDemoBend = true;
+    }
   }
 
   // After all of them, and the only fixture that is not meant to be combined
@@ -4998,7 +5186,10 @@ int main(int argc, char** argv) {
   // under that fixture's upper two layers. Said here rather than enforced --
   // the flags are a developer's tool and a refusal would be a rule to
   // remember where a sentence is enough.
-  if (splitDemo) buildSplitDemo(st, splitDemoMode);
+  if (splitDemo) {
+    buildSplitDemo(st, splitDemoMode);
+    if (splitDemoMatchZoom) np::setSplitMatchZoom(true);
+  }
 
   // D4 (docs/reachability-audit.md): `naturalPaint foo.npaint` on the command
   // line. After every `--*-demo` fixture rather than interleaved with them,
@@ -5043,6 +5234,14 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[open] ! %s\n", w.c_str());
       if (opened.ok) {
         st.documents.add(std::move(opened.document));
+        // Same rule as ui/MacPaintUI.cpp's `openFileIntoSession()`: a file's own
+        // guides seed the session only if it carried any. With several paths on
+        // one command line the last file with guides wins, which is the same
+        // last-writer-wins `st.guides` already has.
+        if (!opened.guides.empty()) {
+          st.guides = std::move(opened.guides);
+          std::fprintf(stderr, "[open] %zu guide(s) came from the file.\n", st.guides.size());
+        }
         std::string recentSaveError;
         st.recentDocuments.saveToFile(np::defaultRecentDocumentsPath(), &recentSaveError);
       }
@@ -5483,12 +5682,20 @@ int main(int argc, char** argv) {
         else if (action == "screenshot") st.requestScreenshot = true;
         // ADR-0009: the flatting keys, scoped to a Flats layer in the keymap
         // and consumed by ui/MacPaintUI where the cursor's texel is known.
-        else if (action == "flats_delete_fill") st.flatsAction = np::FlatsAction::DeleteFill;
-        else if (action == "flats_merge_pair") st.flatsAction = np::FlatsAction::MergePair;
-        else if (action == "flats_prev_gap") st.flatsAction = np::FlatsAction::PrevGap;
-        else if (action == "flats_next_gap") st.flatsAction = np::FlatsAction::NextGap;
-        else if (action == "flats_accept_gap") st.flatsAction = np::FlatsAction::AcceptGap;
-        else if (action == "flats_cluster_small") st.flatsAction = np::FlatsAction::ClusterSmall;
+        else if (const std::optional<np::FlatsAction> flatsKeyAction =
+                     action ? np::flatsActionForKeyAction(*action) : std::nullopt)
+          st.flatsAction = *flatsKeyAction;
+        // docs/shortcuts.md §1.1: Y/⇧K/⇧U/⇧B/⇧V pick a FLATS TOOLS palette
+        // cell instead of raising a one-shot `FlatsAction` -- see
+        // `app/ToolSwitch`'s `flatsToolForKeyAction()`/`toggleFlatsTool()`,
+        // the same mapping and the same toggle-on-reselect the palette cell
+        // itself uses, mirroring `toolFromSelectAction()`/`setActiveTool()`
+        // just above for the ordinary tool letters.
+        else if (const std::optional<np::FlatsTool> pickedFlatsTool =
+                     action ? np::flatsToolForKeyAction(*action) : std::nullopt;
+                 pickedFlatsTool.has_value()) {
+          np::toggleFlatsTool(st, *pickedFlatsTool);
+        }
         // PLAN.md Phase 2 step 11 ("View controls", PRD Q1-Q4). Fit/100%/
         // zoom-in/zoom-out are request flags because they need the canvas
         // window's actual on-screen size, which only exists inside
@@ -5503,11 +5710,9 @@ int main(int argc, char** argv) {
         // discrete key-down); MacPaintUI.cpp's canvas block reads that key's
         // live held-state directly instead. See that file's comment at its
         // `rotateHeld` local for the full reasoning. `⌘⌥0` "zoom to
-        // selection" (PRD Q1) is still absent, but the reason has changed
-        // and is restated rather than left standing untrue: selection state
-        // now EXISTS (core/SelectionMask; ⌘A/⌘D/⌘C/⌘X/⌘V are bound just
-        // below). What is missing is the view maths to frame an arbitrary
-        // rectangle, which belongs with the other view commands.
+        // selection" (PRD Q1) is now bound too, alongside fit_window/zoom_100
+        // a few lines below -- app/ZoomToSelection.hpp is the view maths this
+        // comment used to say was missing.
         // Cmd+T. Sets the same flag `MenuAction::FreeTransform` does, so the
         // chord and Edit > Free Transform are one path from here on --
         // ui/MacPaintUI.cpp's canvas block services it, because choosing
@@ -5542,6 +5747,7 @@ int main(int argc, char** argv) {
         else if (action == "adjust_auto_color")
           st.requestAdjustment = np::AdjustmentRequest::AutoColor;
         else if (action == "fit_window") st.requestFitWindow = true;
+        else if (action == "zoom_to_selection") st.requestZoomToSelection = true;
         else if (action == "zoom_100") st.requestZoom100 = true;
         else if (action == "zoom_in") st.requestZoomIn = true;
         else if (action == "zoom_out") st.requestZoomOut = true;
@@ -5584,10 +5790,15 @@ int main(int argc, char** argv) {
         else if (action == "deselect") st.requestDeselect = true;
         else if (action == "reselect") st.requestReselect = true;
         else if (action == "invert_selection") st.requestInvertSelection = true;
+        else if (action == "quick_mask") st.requestToggleQuickMask = true;
         else if (action == "copy") st.requestCopy = true;
         else if (action == "copy_merged") st.requestCopyMerged = true;
         else if (action == "cut") st.requestCut = true;
         else if (action == "paste") st.requestPaste = true;
+        // PRD M9: same request-flag route as Paste above, consumed alongside
+        // it in ui/MacPaintUI.cpp.
+        else if (action == "paste_into") st.requestPasteInto = true;
+        else if (action == "paste_as_new_document") st.requestPasteAsNewDocument = true;
         else if (action == "delete_selection") st.requestDeleteSelection = true;
         // D1 (reachability audit): ⌘Z/⇧⌘Z did not exist as keymap actions at
         // all -- there was no "undo"/"redo" name for `resolve()` to return,
@@ -5619,6 +5830,12 @@ int main(int argc, char** argv) {
         else if (action == "toggle_guides") st.showGuides = !st.showGuides;
         else if (action == "toggle_snapping") st.snappingEnabled = !st.snappingEnabled;
         else if (action == "toggle_grid") st.showGrid = !st.showGrid;
+        // View > Split View / Match Zoom's action strings, for
+        // a keymap that binds them -- `keymaps/default.json` ships neither
+        // bound (ui/MenuModel.cpp's own note on why), so this is reachable
+        // only from the View menu today.
+        else if (action == "split_view") np::toggleSplitViewKey(st);
+        else if (action == "match_zoom") np::toggleMatchZoomKey(st);
         // docs/shortcuts.md §1, "unmodified letters are tools" -- **one arm,
         // not twenty-one.**
         //
@@ -5789,6 +6006,15 @@ int main(int argc, char** argv) {
                           bands.canvas.y + bands.canvas.h * 0.5f);
     }
 
+    if (clickRequested) {
+      ImGuiIO& io = ImGui::GetIO();
+      io.AddMousePosEvent(clickX, clickY);
+      if (static_cast<int>(frameIndex) == clickFrame)
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+      else if (static_cast<int>(frameIndex) == clickFrame + 1)
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+    }
+
     // --- the screenshot path takes no mouse ---------------------------------
     //
     // **`--screenshot` photographs a real window, and a real window is under
@@ -5822,7 +6048,7 @@ int main(int argc, char** argv) {
     // its subject is a mark whose position is READ from the pointer, so
     // suppressing the pointer does not merely remove a hover tint from the
     // capture, it removes the feature.
-    if (screenshotPath != nullptr && !penDemo && !cloneDemo) {
+    if (screenshotPath != nullptr && !penDemo && !cloneDemo && !clickRequested) {
       ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
     }
 

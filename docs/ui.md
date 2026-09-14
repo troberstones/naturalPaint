@@ -666,7 +666,7 @@ scope**, which changes the PRD's non-goals.
 | added | disposition |
 |---|---|
 | CROP | PRD **D17**, phase 6. |
-| DODGE, BURN | PRD **D13**, phase 10 — as a brush painting an adjustment mask, not a pixel op. |
+| DODGE, BURN | PRD **D13**, phase 10 — a brush on the layer's own pixels (destructive by owner decision, 2026-09-12). |
 | GRAD | PRD **D24**, phase 6 — linear/radial/angular with an editor and presets. |
 | FILL | PRD **D25, D26**, phase 6 — the paint bucket with tolerance is distinct from Fill-with-colour. |
 | **PEN, CURVE, + PATHS tab** | New subsystem. Phase 13. Pen and Curve shipped 2026-09-03 (§4a); **the PATHS tab has not** — §5 still reserves it. |
@@ -1041,6 +1041,76 @@ Two constraints on any restyling this file's design language would drive:
 - **The error and warning rows in §1's table are the only red and amber a
   dialog may use** -- `dialogStatusLine()` / `dialogStatusColor()` are how a
   call site reaches them, and there are no literals left to copy from.
+- **A dialog may put handles on the canvas behind it.** Filter > Radial Blur
+  draws a centre disc and one amount handle (Spin: an arc showing the real
+  ±amount/2 sweep, 72 px out; Zoom: a segment showing 1 ∓ amount of that
+  radius) while it is open. The dialog stays modal, so ImGui reports no hover
+  for the canvas; the handles read the pointer themselves wherever no window is
+  under it, and the tools stay blocked. It opens in the work-area corner
+  farthest from the blur centre (`beginDialogAwayFrom()`) rather than centred,
+  so the sheet does not cover its own handles. Geometry and drag maths are
+  `app/RadialBlurHandles`, tested apart from the drawing. In Split View the
+  handles are on the focused pane, the only one showing the document being
+  blurred; clicking the other pane while the dialog is open focuses it, and the
+  blur follows: re-centred on that document with method, amount and samples
+  kept, its preview redrawn, and the dialog moved to the corner away from the
+  new centre (`placeDialogAgainThisFrame()`).
+
+## 5b. Split View and Match Zoom
+
+PRD A5's tabs-with-a-split shipped its layout and pane/companion state
+earlier (`ui/AtelierLayout.hpp`'s `atelierSplitPanes()`, `ui/AtelierChrome.hpp`'s
+`AtelierSplitState`/`atelierPaneDocuments()`, wired to the tab strip's two
+`columns-2`/`layout-grid` icons) with the companion pane deliberately a
+static, fitted-and-centred preview: `CanvasView` lived once on `AppState`,
+not per document, so the second pane had no zoom or pan of its own to show.
+No design document specified the rest, so the owner decided it here.
+
+**Two panes, each a different open document, each with its own zoom and
+pan.** Only the focused pane is an editor -- rulers, guides, the navigator,
+rotate and painting all stay exclusive to it, unchanged from the PRD A5
+chrome -- but the companion pane is no longer locked to "whole document,
+fitted". It carries its own `CanvasView` (`AtelierSplitState::companionView`),
+fit-and-centred the first time a document lands in the slot and preserved
+after that. Clicking the companion pane makes its document the session's
+active one (unchanged: "the focused pane always shows the active document")
+and **exchanges** the two `CanvasView`s, so a document keeps the zoom/pan it
+had as it moves between panes rather than the two panes trading views along
+with their documents. A first click on the companion pane only focuses it —
+there is no code path from that click to a painted pixel, because the
+companion window never installs a brush or tool handler at all.
+
+**View > Split View** (menu-only for now — no default chord; the tab strip's
+own two icons remain the pixel-precise route) toggles between `Single` and
+`Columns` (side by side), refusing with a status line under two open
+documents, the same "the way out is the way in" rule the tab strip's icons
+already use.
+
+**View > Match Zoom**, enabled only while a split is active, keeps the
+companion at the focused pane's zoom and at the same *normalised position*
+of its own document — the document-space point at the pane's own centre,
+expressed as a fraction of that document's own width/height, matched on
+both sides regardless of how large either document or pane is. Rotation and
+the two mirrors are **not** mirrored to the companion: its quad is always
+axis-aligned, so there is no second `ViewTransform` for a rotated point to
+travel through. `app/SplitView.hpp` owns the whole mapping in two pure
+functions: `splitPaneOrigin()` is the one placement formula both the
+focused pane's own canvas block and the companion pane's block call —
+centred when the document at this zoom fits inside its pane, offset by pan
+alone once it does not — and `matchZoomView()` solves that same formula for
+the destination pan given both panes' on-screen sizes and both documents'
+pixel sizes, so the pane-centre document fraction comes out equal on both
+sides whether either document fits its pane or overflows it. It does *not*
+collapse to "pan scaled by the document size ratio" in general — that
+shortcut is only exact when both documents happen to fit their panes at
+the shared zoom.
+
+The divider is fixed at 50%; a draggable one is a follow-up. See
+`app/selftest/SplitView.cpp` for the pure hit-test/mapping proofs and the
+state rules (refusal under two documents, the companion's view resetting
+when a different document takes the slot, focus swapping both the active
+document and the two views), and `--split-demo [rows] [match-zoom]` /
+`verifySplitDemoScreenshot()` in `src/main.cpp` for the photographable case.
 
 ## 6. Naming
 

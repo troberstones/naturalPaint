@@ -32,6 +32,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/GimpBrush.cpp
   app/selftest/Variance.cpp
   app/selftest/CommandsPatterns.cpp
+  app/selftest/CommandsFill.cpp
   app/selftest/CoverageBlend.cpp
   app/selftest/PaperTexture.cpp
   app/selftest/DabLibrary.cpp
@@ -52,6 +53,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/BucketRefusal.cpp
   app/selftest/CanvasDimensions.cpp
   app/selftest/Channels.cpp
+  app/selftest/ChannelsPanel.cpp
   app/selftest/CheckedAdd.cpp
   app/selftest/ChromeConsistency.cpp
   app/selftest/Clipboard.cpp
@@ -95,6 +97,9 @@ set(NP_SELFTEST_SOURCES
   app/selftest/FilterMenu.cpp
   app/selftest/Filters.cpp
   app/selftest/FiltersExt.cpp
+  app/selftest/BlurFilters.cpp
+  app/selftest/RadialBlurHandles.cpp
+  app/selftest/RadialBlurRetarget.cpp
   app/selftest/FloodFill.cpp
   app/selftest/FloodFillOptions.cpp
   app/selftest/Fonts.cpp
@@ -124,10 +129,13 @@ set(NP_SELFTEST_SOURCES
   app/selftest/BatchDialog.cpp
   app/selftest/ActionsPanel.cpp
   app/selftest/CommandsOpStack.cpp
+  app/selftest/QuickMaskPaint.cpp
   app/selftest/CommandsImage.cpp
   app/selftest/CommandCallsites.cpp
   app/selftest/Json.cpp
   app/selftest/Inpaint.cpp
+  app/selftest/PatchMatch.cpp
+  app/selftest/SeamHeal.cpp
   app/selftest/Keymap.cpp
   app/selftest/LayerComp.cpp
   app/selftest/LayerEditor.cpp
@@ -169,6 +177,11 @@ set(NP_SELFTEST_SOURCES
   app/selftest/PsdLayerSection.cpp
   app/selftest/PsdLayerExtras.cpp
   app/selftest/PsdImport.cpp
+  app/selftest/PsdVectorChain.cpp
+  app/selftest/PsdVectorCompose.cpp
+  app/selftest/PsdVectorPath.cpp
+  app/selftest/PsdVectorStyle.cpp
+  app/selftest/PsdVectorGradient.cpp
   app/selftest/QuitGuard.cpp
   app/selftest/RecoveryJournal.cpp
   app/selftest/ResamplePerf.cpp
@@ -221,13 +234,16 @@ set(NP_SELFTEST_SOURCES
   app/selftest/TransformPreviewTexture.cpp
   app/selftest/TransformSession.cpp
   app/selftest/TransformLayerSet.cpp
+  app/selftest/WarpMesh.cpp
   app/selftest/FramePacing.cpp
   app/selftest/GradientTool.cpp
   app/selftest/MaskTarget.cpp
   app/selftest/MoveTool.cpp
+  app/selftest/PasteCommands.cpp
   app/selftest/CropTool.cpp
   app/selftest/PathRaster.cpp
   app/selftest/SvgImport.cpp
+  app/selftest/PathBoolean.cpp
   app/selftest/PathOps.cpp
   app/selftest/PathsPanel.cpp
   app/selftest/PenTool.cpp
@@ -239,6 +255,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/SvgPath.cpp
   app/selftest/SvgStyle.cpp
   app/selftest/VectorLayer.cpp
+  app/selftest/VectorGradient.cpp
   app/selftest/TextContent.cpp
   app/selftest/UserBrushLibrary.cpp
   app/selftest/ViewTransform.cpp
@@ -262,6 +279,13 @@ set(NP_SELFTEST_SOURCES
   app/selftest/AirbrushBuildUp.cpp
   app/selftest/BrushPanelsLive.cpp
   app/selftest/PatternLibrary.cpp
+  # PRD Q1 zoom to selection.
+  app/selftest/ZoomToSelection.cpp
+  app/selftest/SplitView.cpp
+  app/selftest/DustScratches.cpp
+  app/selftest/ShadowsHighlights.cpp
+  app/selftest/Version.cpp
+  app/selftest/FlatsKeys.cpp
 )
 
 add_executable(naturalPaint
@@ -278,11 +302,13 @@ add_executable(naturalPaint
   app/BatchDialog.cpp
   app/Command.cpp
   app/CommandCoverage.cpp
+  app/CommandsFill.cpp
   app/CommandsImage.cpp
   app/CommandsLayers.cpp
   app/CommandsOpStack.cpp
   app/CommandsPatterns.cpp
   app/CommandsRegions.cpp
+  app/ChannelsPanel.cpp
   app/CompPanel.cpp
   app/PanelLayout.cpp
   app/ControlsLayout.cpp
@@ -309,7 +335,9 @@ add_executable(naturalPaint
   app/SelectionDrag.cpp
   app/LayerEditor.cpp
   app/TransformSession.cpp
+  app/WarpMesh.cpp
   app/MoveTool.cpp
+  app/PasteCommands.cpp
   app/ToolSwitch.cpp
   app/FramePacing.cpp
   app/ToolSurface.cpp
@@ -376,6 +404,7 @@ add_executable(naturalPaint
   brush/PencilDeposit.cpp
   brush/PigmentErase.cpp
   brush/PigmentSmudge.cpp
+  brush/QuickMaskPaint.cpp
   brush/RgbDeposit.cpp
   brush/RgbErase.cpp
   brush/Smudge.cpp
@@ -398,6 +427,7 @@ add_executable(naturalPaint
   core/Clipboard.cpp
   core/Composite.cpp
   core/DirtyTiles.cpp
+  core/Gradient.cpp
   core/Histogram.cpp
   core/History.cpp
   core/LayerCompOps.cpp
@@ -407,6 +437,7 @@ add_executable(naturalPaint
   core/Merge.cpp
   core/OpStack.cpp
   core/Path.cpp
+  core/PathBoolean.cpp
   core/PathFlatten.cpp
   core/PathRaster.cpp
   core/PathStroke.cpp
@@ -443,6 +474,7 @@ add_executable(naturalPaint
   io/ImageIO.cpp
   io/ActionFile.cpp
   io/GradientPresetFile.cpp
+  io/GradientSerial.cpp
   io/Json.cpp
   io/NpaintFile.cpp
   io/OpSerial.cpp
@@ -457,6 +489,10 @@ add_executable(naturalPaint
   io/ExportRegions.cpp
   io/PsPatterns.cpp
   io/PsdImport.cpp
+  io/PsdVectorCompose.cpp
+  io/PsdVectorPath.cpp
+  io/PsdVectorStyle.cpp
+  io/PsdVectorWrite.cpp
   io/SvgImport.cpp
   io/SvgPath.cpp
   io/SvgStyle.cpp
@@ -470,14 +506,19 @@ add_executable(naturalPaint
   ops/Feather.cpp
   ops/Filters.cpp
   ops/FloodFill.cpp
+  ops/Fill.cpp
   ops/Gradient.cpp
   ops/Inpaint.cpp
+  ops/PatchMatch.cpp
+  ops/SeamHeal.cpp
   ops/Lens.cpp
+  ops/LensBlur.cpp
   ops/MonoOps.cpp
   ops/Pattern.cpp
   ops/PointOpTiles.cpp
   ops/PointOps.cpp
   ops/Poisson.cpp
+  ops/RadialBlur.cpp
   ops/Resample.cpp
   ops/Roi.cpp
   ops/ToneOps.cpp
@@ -504,11 +545,23 @@ add_executable(naturalPaint
   ui/AtelierLayout.cpp
   ui/DockLayout.cpp
   ui/AtelierChrome.cpp
+  ui/FillDialog.cpp
   ui/MenuModel.cpp
   ui/NewDocumentDialog.cpp
   ui/ToolCursor.cpp
   ui/TransformCompositeSplit.cpp
   ui/TransformPreviewTexture.cpp
+  # PRD Q1 zoom to selection, Filter menu's
+  # Highpass/Local Contrast/Lens Correction.
+  app/ZoomToSelection.cpp
+  ui/FilterDialogsExtra.cpp
+  app/SplitView.cpp
+  app/RadialBlurHandles.cpp
+  ui/DustScratchesDialog.cpp
+  ui/ShadowsHighlightsDialog.cpp
+  ui/RepairDialogs.cpp
+  app/Version.cpp
+  ui/BlurDialogsExtra.cpp
 )
 
 # NP_SELFTEST's two halves: the 236 section TUs, and the guard main.cpp's
@@ -644,6 +697,26 @@ target_include_directories(naturalPaint PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/gen
 # For app/selftest/AppIcon.cpp's embedded-vs-committed comparison.
 target_compile_definitions(naturalPaint PRIVATE NP_APP_ICON_PNG="${NP_APP_ICON_PNG}")
 
+# ---- the version header (app/Version.cpp reads it) -------------------------
+# `naturalPaint --version`'s git hash has to come from the last BUILD, not the
+# last `cmake` configure -- see cmake/GenerateVersionHeader.cmake's own header
+# for why configure time is the wrong answer. `np_version_header` is a phony
+# ALL target with no OUTPUT, so Ninja reruns the (cheap, one or two `git`
+# calls) script every build; the script itself rewrites the header only when
+# its bytes change, so a build that does not move the hash never touches the
+# file's mtime and never forces a relink of anything that includes it.
+set(NP_VERSION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/app/VersionInfo.hpp")
+add_custom_target(np_version_header ALL
+  COMMAND ${CMAKE_COMMAND}
+    -DNP_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+    -DNP_VERSION=${PROJECT_VERSION}
+    -DNP_OUT_FILE=${NP_VERSION_HEADER}
+    -P ${CMAKE_SOURCE_DIR}/cmake/GenerateVersionHeader.cmake
+  BYPRODUCTS "${NP_VERSION_HEADER}"
+  COMMENT "naturalPaint: refreshing version header"
+  VERBATIM)
+add_dependencies(naturalPaint np_version_header)
+
 if(WIN32)
   set(NP_APP_ICON_ICO "${CMAKE_SOURCE_DIR}/icons/windows/naturalPaint.ico")
   configure_file("${CMAKE_SOURCE_DIR}/icons/windows/naturalPaint.rc.in"
@@ -661,9 +734,8 @@ if(APPLE AND NP_MACOS_APP_BUNDLE)
     MACOSX_BUNDLE_BUNDLE_NAME "naturalPaint"
     MACOSX_BUNDLE_ICON_FILE "naturalPaint.icns"
     MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.troberstones.naturalPaint"
-    # No project() VERSION yet; Launch Services treats an empty one as malformed.
-    MACOSX_BUNDLE_SHORT_VERSION_STRING "0.0"
-    MACOSX_BUNDLE_BUNDLE_VERSION "0")
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}")
   message(STATUS "naturalPaint: building naturalPaint.app (NP_MACOS_APP_BUNDLE=ON)")
 endif()
 

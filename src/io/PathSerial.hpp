@@ -36,7 +36,7 @@
 // ==========================================================================
 //
 // The version is read before a single byte is decoded, so a build meeting
-// `npvec2:` says so by name and refuses rather than misreading a payload whose
+// `npvec3:` says so by name and refuses rather than misreading a payload whose
 // framing changed. io/NpaintFile then leaves the attribute in
 // `NpaintCarry::layerAttributes` and writes it back verbatim, which is PRD
 // I10 -- an older build cannot destroy a newer document's geometry.
@@ -53,6 +53,27 @@
 // Records are still length-prefixed, because that localises a corruption to
 // one shape and makes the exact-length rule checkable per record rather than
 // only over the whole payload.
+//
+// ==========================================================================
+// Two live versions, and why the writer still emits the older one
+// ==========================================================================
+//
+// `npvec2:` adds `Paint`'s gradient fields -- a kind byte and a `uint32` index
+// into `core::Document::gradients` -- to each of a shape's two paints. That is
+// a framing change, hence the bump rather than a per-record flag.
+//
+// **Both versions are READ, and `npvec1:` is what gets WRITTEN whenever no
+// shape in the layer uses a gradient.** Not a compatibility shim: it is the
+// same property `np:comps`, `np:channels` and `np:regions` are each held to
+// one level up -- a document that does not use a feature must produce exactly
+// the bytes it produced before the feature existed. Writing v2 unconditionally
+// would rewrite the `np:vector` attribute of every vector layer in every
+// document on its next save, for no change in meaning, and would make every
+// such document unreadable by the build that wrote it. `--selftest` asserts
+// the byte-identity rather than assuming it.
+//
+// A reader refusing only `npvec3:` and beyond is the forward-compatibility
+// contract, unchanged.
 namespace np {
 
 // The version tag every value produced here begins with, including its colon.
@@ -60,11 +81,18 @@ namespace np {
 // the literal a second time -- io/OpSerial's and io/CompSerial's precedent.
 inline constexpr const char* kVectorShapeSerialPrefix = "npvec1:";
 
+// The version that additionally carries `Paint::kind` and `Paint::gradient`.
+// Written only when a shape actually uses a gradient -- see above.
+inline constexpr const char* kVectorShapeSerialPrefixV2 = "npvec2:";
+
 // `shapes` as an `np:vector` attribute value. Never fails and never returns an
 // empty string -- an empty list serialises to a well-formed zero-count
 // payload. io/NpaintFile still does not *write* the attribute for a layer with
 // no shapes, so a document without vector content produces exactly the bytes
 // it produced before this step existed.
+//
+// Emits `npvec1:` unless some paint's `kind` is not `Solid`, in which case
+// `npvec2:`. See the header's "Two live versions".
 std::string serializeVectorShapes(const std::vector<VectorShape>& shapes,
                                   uint64_t nextShapeId);
 

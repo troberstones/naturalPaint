@@ -562,9 +562,24 @@ AtelierPaneDocuments atelierPaneDocuments(DocumentSession& session,
   AtelierPaneDocuments out;
   if (state.focusedPane != 0 && state.focusedPane != 1) state.focusedPane = 0;
 
+  // whenever this function hands `state.companion` a document
+  // it was not already showing, the companion's OWN zoom/pan is stale -- it
+  // belonged to whatever used to be there, or to nothing. `companionView`'s
+  // own comment names the sentinel this resets it to; a focus swap
+  // (`focusSplitPane()` below) never calls this lambda, which is what keeps
+  // that path's view *exchange* instead of a reset.
+  const DocumentId previousCompanion = state.companion;
+  const auto setCompanion = [&](DocumentId id) {
+    if (id != previousCompanion) {
+      state.companionView = CanvasView{};
+      state.companionView.zoom = 0.0f;
+    }
+    state.companion = id;
+  };
+
   OpenDocument* active = session.active();
   if (active == nullptr) {
-    state.companion = 0;
+    setCompanion(0);
     state.focusedPane = 0;
     return out;  // one empty pane: the canvas still draws paper with no document
   }
@@ -574,7 +589,7 @@ AtelierPaneDocuments atelierPaneDocuments(DocumentSession& session,
     // Nothing to put in a second pane. The companion is dropped rather than
     // remembered: re-opening the split re-derives it from the tab order, which
     // is one rule instead of a remembered one that can go stale.
-    state.companion = 0;
+    setCompanion(0);
     state.focusedPane = 0;
     return out;
   }
@@ -585,17 +600,43 @@ AtelierPaneDocuments atelierPaneDocuments(DocumentSession& session,
     companion = session.at(activeIndex > 0 ? activeIndex - 1 : activeIndex + 1);
   }
   if (companion == nullptr || companion->id == active->id) {
-    state.companion = 0;
+    setCompanion(0);
     state.focusedPane = 0;
     return out;
   }
 
-  state.companion = companion->id;
+  setCompanion(companion->id);
   out.count = 2;
   out.focusedPane = state.focusedPane;
   out.pane[state.focusedPane] = active;
   out.pane[1 - state.focusedPane] = companion;
   return out;
+}
+
+std::string toggleSplitView(DocumentSession& session, AtelierSplitState& state) {
+  if (state.mode != AtelierSplit::Single) {
+    state.mode = AtelierSplit::Single;
+    return {};
+  }
+  if (session.count() < 2) return "Split View needs a second open document.";
+  state.mode = AtelierSplit::Columns;
+  return {};
+}
+
+void focusSplitPane(DocumentSession& session, AtelierSplitState& state, CanvasView& focusedView,
+                    int paneIndex, DocumentId incoming) {
+  const OpenDocument* wasActive = session.active();
+  if (wasActive != nullptr && wasActive->id == incoming) return;  // already focused
+  state.companion = wasActive != nullptr ? wasActive->id : 0;
+  state.focusedPane = paneIndex;
+  for (size_t i = 0; i < session.count(); ++i) {
+    const OpenDocument* d = session.at(i);
+    if (d != nullptr && d->id == incoming) {
+      session.setActive(i);
+      break;
+    }
+  }
+  std::swap(focusedView, state.companionView);
 }
 
 bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands,
@@ -940,12 +981,12 @@ void drawVectorFillStrokeControls(AppState& st, OpenDocument* pathOd, Layer* pat
                               ImGuiColorEditFlags_AlphaPreviewHalf)) {
       const std::array<float, 4> out = {srgbDecode(enc[0]), srgbDecode(enc[1]),
                                         srgbDecode(enc[2]), enc[3]};
-      editPathStyle("stroke colour", &gStrokeColor, [out](VectorStyle& vs) {
-        vs.stroke.rgba = out;
-        // Setting a colour means wanting to see it. Leaving `on` false would
-        // make the swatch a control with no visible effect.
-        vs.stroke.on = true;
-      });
+      // Setting a colour means wanting to see it: `setPaintSolidColor()` turns
+      // the paint on AND makes it solid, so the swatch is never a control with
+      // no visible effect -- app/VectorStyle.hpp says why the second half
+      // needed a function once `Paint` grew a kind.
+      editPathStyle("stroke colour", &gStrokeColor,
+                    [out](VectorStyle& vs) { setPaintSolidColor(vs.stroke, out); });
     }
   }
   ImGui::SetItemTooltip(
@@ -987,10 +1028,8 @@ void drawVectorFillStrokeControls(AppState& st, OpenDocument* pathOd, Layer* pat
                               ImGuiColorEditFlags_AlphaPreviewHalf)) {
       const std::array<float, 4> out = {srgbDecode(enc[0]), srgbDecode(enc[1]),
                                         srgbDecode(enc[2]), enc[3]};
-      editPathStyle("fill colour", &gFillColor, [out](VectorStyle& vs) {
-        vs.fill.rgba = out;
-        vs.fill.on = true;
-      });
+      editPathStyle("fill colour", &gFillColor,
+                    [out](VectorStyle& vs) { setPaintSolidColor(vs.fill, out); });
     }
   }
   ImGui::SetItemTooltip(
@@ -1039,6 +1078,46 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
   ImGui::Dummy(ImVec2(6.0f, h));
   ImGui::SameLine(0.0f, 8.0f);
   ImGui::TextUnformatted(toolName(st.brush.tool));
+
+  // --- Warp's grid-size choice and the Free Transform <-> Warp toggle ------
+  //
+  // The palette is pinned to `Tool::Move` while a transform is live, which
+  // has no options of its own -- drawn for both modes so the grid choice is
+  // settable before the user switches into Warp.
+  if (st.transform.active()) {
+    bandSeparator();
+    capsLabel("GRID");
+    ImGui::SameLine();
+    pushAtelierMono();
+    const bool warping = st.transform.mode() == TransformMode::Warp;
+    const int current = warping ? st.transform.warpMesh().n() : st.warpGridN;
+    for (int n = 3; n <= 5; ++n) {
+      if (n != 3) ImGui::SameLine(0.0f, 4.0f);
+      char label[8];
+      std::snprintf(label, sizeof(label), "%dx%d", n, n);
+      const bool selected = current == n;
+      if (selected)
+        ImGui::PushStyleColor(ImGuiCol_Button,
+                              ImGui::ColorConvertU32ToFloat4(atelierToken(kAccent)));
+      if (ImGui::SmallButton(label)) {
+        st.warpGridN = n;
+        if (warping) st.transform.setWarpMode(true, n);  // re-fits the live net in place
+      }
+      if (selected) ImGui::PopStyleColor();
+      ImGui::SetItemTooltip("%dx%d control cells for the next Warp -- PRD D23's own choice, "
+                            "3, 4 (the default) or 5.",
+                            n, n);
+    }
+    popAtelierMono();
+
+    bandSeparator();
+    // Same request `Edit > Warp` raises -- one code path, not a second bit.
+    if (ImGui::SmallButton(warping ? "Free Transform" : "Warp")) st.requestWarp = true;
+    ImGui::SetItemTooltip(warping
+                             ? "Back to the affine box (the bent net is discarded, not "
+                               "collapsed into an approximating matrix)."
+                             : "Bend this transform into a lattice instead of a box.");
+  }
 
   // --- the eyedropper's own two options (PRD Q10, P0) ---------------------
   //
@@ -2309,8 +2388,10 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
   // the gradient's early returns give: SIZE, HARD, LOAD and WET are read by no
   // code path a click on the wand or the bucket can reach, and a live control
   // over something the tool provably never reads is the same defect as a
-  // palette cell for a tool that does not exist.
-  if (flood == nullptr) {
+  // palette cell for a tool that does not exist. A live transform is skipped
+  // too: it locks the palette, so nothing can paint, and the Warp controls
+  // need the room or the modal notice runs off the window.
+  if (flood == nullptr && !st.transform.active()) {
     bandSeparator();
     capsLabel("SIZE");
     ImGui::SameLine();

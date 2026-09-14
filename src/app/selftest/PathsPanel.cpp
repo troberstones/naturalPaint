@@ -149,6 +149,8 @@ bool runPathsPanelTest() {
         PathOp::Reverse,      PathOp::Smooth,       PathOp::Corner,
         PathOp::Break,        PathOp::InsertAnchor, PathOp::DeleteAnchor,
         PathOp::MakeCompound, PathOp::ReleaseCompound,
+        PathOp::Unite,        PathOp::Intersect,    PathOp::Subtract,
+        PathOp::Exclude,
     };
     bool eachOnce = kPathPanelOps.size() == std::size(kEveryOp);
     for (const PathOp op : kEveryOp) {
@@ -178,6 +180,9 @@ bool runPathsPanelTest() {
                         {lineShape(1, {{0, 0}, {10, 0}, {20, 0}})},
                         componentSel({ref(1, 0, 0), ref(1, 0, 2)})});
     fixtures.push_back({"nothing selected", {lineShape(1, {{0, 0}, {10, 0}})}, PathSelection{}});
+    fixtures.push_back({"two whole shapes",
+                        {lineShape(1, {{0, 0}, {10, 0}, {10, 10}}), lineShape(2, {{5, 5}, {15, 5}, {15, 15}})},
+                        shapeSel({1, 2})});
 
     bool agrees = true;
     // **The guard against a fixture whose right and wrong answers coincide.**

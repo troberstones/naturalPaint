@@ -218,13 +218,24 @@ bool runMenuModelTest() {
   // (View > Show Frames and Slices, `AppState::showRegions`) -- counted the
   // same way, off `MenuAction`'s enumerators in the merged header (101
   // including `Count`), never by adding 2 to 98.
-  check(kMenuActionCount == 100,
-        "ids: exactly 100 actions -- the original 41-item extraction plus D1/D2's "
+  // 100 -> 108: PRD M9's `PasteInto` and `PasteAsNewDocument`, PRD D26's
+  // `Fill`, `Stroke` and `DefinePattern`, and PRD E11/E12's
+  // `SaveSelectionAsChannel`, `LoadChannelAsSelection` and `ToggleQuickMask`.
+  // 108 -> 113: PRD Q1's `ZoomToSelection`, PRD D22/reachability-audit C1's
+  // `Highpass`, `LocalContrast` and `LensCorrect`, and PRD D23's `Warp`.
+  // Counted off the enum: SplitView, MatchZoom, DustScratches,
+  // AdjustShadowsHighlights, ContentAwareFill, SeamHeal, RadialBlur, LensBlur.
+  check(kMenuActionCount == 121,
+        "ids: exactly 121 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
         "dialog, Brush Settings, the crop pair, Pigment, Batch, Inpaint, D8's "
-        "make-tileable pair, the 3x3 repeat preview and the region export/show "
-        "pair, so an item lost in a later edit fails here");
+        "make-tileable pair, the 3x3 repeat preview, the region export/show pair, "
+        "Paste Into / Paste as New Document, Fill/Stroke/Define Pattern, the "
+        "save/load channel and quick-mask trio, Zoom to Selection/Highpass/Local "
+        "Contrast/Lens Correction, Warp, Split View/Match Zoom, Dust & "
+        "Scratches/Shadows-Highlights, Content-Aware Fill/Seam Heal and Radial/Lens "
+        "Blur, so an item lost in a later edit fails here");
 
   {
     std::set<MenuAction> seen;
@@ -748,11 +759,20 @@ bool runMenuModelTest() {
     // Photoshop's own, each verified free in keymaps/default.json before being
     // taken. Ten of the nineteen items claim nothing, which is also
     // Photoshop's arrangement.
-    check(claimed == 33,
-          "keys: exactly 33 chords are claimed -- D1/D2's ten, the eleven that came "
-          "before them, Free Transform's Cmd+T, ResetView's Shift+Cmd+0 and "
-          "Adjustments' ten. Pinned, because claiming one more silently takes that "
-          "key away from SDL and from keymaps/default.json");
+    // 33 -> 34: PRD M9's Paste Into, Shift+Opt+Cmd+V -- verified free (Cmd+V
+    // is plain Paste's), checked free in keymaps/default.json before being
+    // claimed. Paste as New Document claims nothing, matching Photoshop.
+    // 34 -> 35: PRD Q1's Zoom to Selection,
+    // Cmd+Opt+0 -- checked free of both keymaps/default.json and every other
+    // claimed chord before being taken (neither had ever bound Cmd+Alt+0).
+    // Highpass/Local Contrast/Lens Correction claim nothing, matching
+    // Photoshop's own arrangement for its Filter menu.
+    check(claimed == 35,
+          "keys: exactly 35 chords are claimed -- D1/D2's ten, the eleven that came "
+          "before them, Free Transform's Cmd+T, ResetView's Shift+Cmd+0, "
+          "Adjustments' ten, Paste Into's Shift+Opt+Cmd+V and Zoom to Selection's "
+          "Cmd+Opt+0. Pinned, because claiming one more silently takes that key away "
+          "from SDL and from keymaps/default.json");
   }
 
   {

@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <iterator>
 
+#include "core/PathBoolean.hpp"
+
 namespace np {
 namespace {
 
@@ -247,6 +249,10 @@ const char* pathOpEditName(PathOp op) noexcept {
     case PathOp::DeleteAnchor: return "delete anchors";
     case PathOp::MakeCompound: return "make compound path";
     case PathOp::ReleaseCompound: return "release compound path";
+    case PathOp::Unite: return "unite paths";
+    case PathOp::Intersect: return "intersect paths";
+    case PathOp::Subtract: return "subtract paths";
+    case PathOp::Exclude: return "exclude paths";
   }
   return "path edit";
 }
@@ -330,6 +336,10 @@ PathOpRefusal pathOpCanRun(PathOp op, const std::vector<VectorShape>& shapes,
       return PathOpRefusal::None;
     }
 
+    case PathOp::Unite:
+    case PathOp::Intersect:
+    case PathOp::Subtract:
+    case PathOp::Exclude:
     case PathOp::MakeCompound: {
       if (selection.mode != PathSelectMode::Shape) return PathOpRefusal::WrongSelectMode;
       const std::vector<size_t> sel = selectedShapeIndices(shapes, selection);
@@ -636,6 +646,38 @@ PathOpResult runPathOp(PathOp op, std::vector<VectorShape>* shapes, uint64_t* ne
                            std::make_move_iterator(gathered.end()));
       for (size_t k = sel.size(); k-- > 1;)
         shapes->erase(shapes->begin() + static_cast<std::ptrdiff_t>(sel[k]));
+      out.changed = true;
+      return out;
+    }
+
+    case PathOp::Unite:
+    case PathOp::Intersect:
+    case PathOp::Subtract:
+    case PathOp::Exclude: {
+      const PathBooleanOp bop = op == PathOp::Unite       ? PathBooleanOp::Union
+                                : op == PathOp::Intersect ? PathBooleanOp::Intersect
+                                : op == PathOp::Subtract  ? PathBooleanOp::Difference
+                                                          : PathBooleanOp::Xor;
+      const std::vector<size_t> sel = selectedShapeIndices(*shapes, selection);
+      const size_t survivor = sel.front();
+      // A fold is exact for all four: the output is NonZero, so the next pass
+      // reads the accumulator under the rule it was written for.
+      Path acc = (*shapes)[survivor].path;
+      for (size_t k = 1; k < sel.size(); ++k) {
+        const VectorShape& donor = (*shapes)[sel[k]];
+        if (!styleSame((*shapes)[survivor], donor)) out.discardedShapeStyle = true;
+        acc = pathBoolean(bop, acc, donor.path);
+        out.erasedShapes.push_back(donor.id);
+      }
+      for (size_t k = sel.size(); k-- > 1;)
+        shapes->erase(shapes->begin() + static_cast<std::ptrdiff_t>(sel[k]));
+      if (acc.subpaths.empty()) {
+        out.erasedShapes.push_back((*shapes)[survivor].id);
+        shapes->erase(shapes->begin() + static_cast<std::ptrdiff_t>(survivor));
+      } else {
+        (*shapes)[survivor].path = std::move(acc);
+        (*shapes)[survivor].pivot.reset();  // it belonged to the old outline
+      }
       out.changed = true;
       return out;
     }

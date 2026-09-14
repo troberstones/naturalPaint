@@ -2,17 +2,23 @@
 
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cstring>
+
+#include "stb_image.h"  // stbi_zlib_decode_buffer(); paint/Palette.cpp compiles the bodies
 
 #include "color/Space.hpp"
 #include "core/Blend.hpp"
 #include "core/LayerOps.hpp"  // makeGroupLayer() -- the receiving model this
                                // module maps `lsct` onto, not reinvented here
 #include "core/Mask.hpp"
+#include "core/PathRaster.hpp"  // rasterizePath() -- S4's vector-mask-on-raster
 #include "core/Tile.hpp"
 #include "io/AbrBrushes.hpp"  // checkedAdd() -- shared overflow-safe addition
 #include "io/PsdBlendKeys.hpp"  // mapBlendKey() -- the blend-key table, shared with
                                // the PSD writer since PLAN.md phase 15
+#include "io/PsdVectorPath.hpp"   // shape geometry: decode, then compose
+#include "io/PsdVectorStyle.hpp"  // shape paint: the SoCo/vscg/vstk descriptors
 
 // io/PsdImport implementation. Every design decision is argued in
 // io/PsdImport.hpp; this file holds the mechanics.
@@ -288,6 +294,32 @@ struct ParsedLayer {
   int32_t maskTop = 0, maskLeft = 0, maskBottom = 0, maskRight = 0;
   uint8_t maskDefaultColor = 255;  // 255 = reveal outside the mask rect, 0 = hide
   uint8_t maskFlags = 0;           // bit 0 = relative to layer, bit 1 = disabled
+
+  // A shape layer's geometry and paint, copied out of the tagged blocks
+  // rather than pointed at: the spans they arrive in are into the caller's
+  // buffer, and these outlive this parse step. Small -- the largest in any
+  // sample file is a 1,360-byte `vmsk`.
+  //
+  // Empty means the block was absent, which is the common case: only a shape
+  // layer carries them, and most layers are not shapes.
+  std::vector<uint8_t> vectorPath;   // `vsms` or `vmsk`
+  std::vector<uint8_t> socoBlock;    // `SoCo`
+  std::vector<uint8_t> vscgBlock;    // `vscg`
+  std::vector<uint8_t> vstkBlock;    // `vstk`
+  // Standalone pattern/gradient fills -- sliced here, decoded by
+  // io/PsdVectorStyle.cpp (`PsdVectorStyleBlocks::ptfl`/`gdfl`). This module
+  // only carries the bytes across; see that header for why they have no
+  // receiving field yet.
+  std::vector<uint8_t> ptflBlock;    // `PtFl`
+  std::vector<uint8_t> gdflBlock;    // `GdFl`
+
+  // The sheet colour label ('lclr'): 0 = unlabelled (absent or index 0, the
+  // overwhelmingly common case), 1-7 index core/Layer.hpp's
+  // `kLayerColorLabelNames` in Photoshop's own menu order, and 8+ is a
+  // colour a newer Photoshop invented -- resolved to `Layer::colorLabel` (or
+  // warned by name and index) in importPsd(), not here, because that is
+  // where `result.warnings` lives.
+  uint16_t lclrIndex = 0;
 };
 
 // Photoshop's own thirteen Additional-Layer-Information keys that widen to
@@ -670,6 +702,42 @@ bool readLayerRecord(Cursor& c, ParsedLayer& layer, std::string& error) {
           layer.alphaLocked = (flags & 0x1u) != 0;
         }
       }
+    } else if (fourccEquals(key, "vsms") || fourccEquals(key, "vmsk")) {
+      // A shape layer's outline. `vsms` ("vector shape mask") and `vmsk`
+      // ("vector mask") carry byte-identical payloads; io/PsdVectorPath
+      // decodes either. Kept raw here -- decoding needs the document size,
+      // which this per-record parse does not have.
+      //
+      // A record may carry both (no sample file does); the first wins, since
+      // the second would be the same outline by a second name.
+      if (layer.vectorPath.empty())
+        layer.vectorPath.assign(blockData.begin(), blockData.end());
+    } else if (fourccEquals(key, "SoCo")) {
+      layer.socoBlock.assign(blockData.begin(), blockData.end());
+    } else if (fourccEquals(key, "vscg")) {
+      layer.vscgBlock.assign(blockData.begin(), blockData.end());
+    } else if (fourccEquals(key, "vstk")) {
+      layer.vstkBlock.assign(blockData.begin(), blockData.end());
+    } else if (fourccEquals(key, "PtFl")) {
+      // A standalone pattern fill -- no sample file carries one at the top
+      // level (every occurrence seen is `vscg`'s own embedded fill-type
+      // tag), so this is sliced defensively rather than against a measured
+      // case. Decoded by io/PsdVectorStyle.cpp, not here.
+      layer.ptflBlock.assign(blockData.begin(), blockData.end());
+    } else if (fourccEquals(key, "GdFl")) {
+      layer.gdflBlock.assign(blockData.begin(), blockData.end());
+    } else if (fourccEquals(key, "lclr")) {
+      // Sheet colour label: a fixed 8-byte block, a `uint16` index at
+      // offset 0 and six reserved zero bytes after it -- measured across
+      // five real files, always exactly this shape. Stored raw; importPsd()
+      // resolves the index against `kLayerColorLabelNames` because it is
+      // the one place with `result.warnings` in scope for an index this
+      // build does not recognise.
+      if (blockData.size() >= 2) {
+        Cursor lc(blockData);
+        uint16_t index = 0;
+        if (lc.u16(index)) layer.lclrIndex = index;
+      }
     } else if (fourccEquals(key, "lsct")) {
       // Section divider setting -- docs/psd-import-gaps.md section 3's wire
       // layout, verified against `Testforautoflats 2.psd` and `Peter_...
@@ -717,10 +785,63 @@ bool readLayerRecord(Cursor& c, ParsedLayer& layer, std::string& error) {
   return true;
 }
 
+// Inflates one channel's zlib stream into exactly `expected` bytes.
+//
+// The inflater is stb_image's, already compiled into this binary by
+// paint/Palette.cpp for PNG -- so ZIP costs this module no new dependency,
+// and the "no zlib in this tree" premise io/PsdImport.hpp's compression
+// section was written on has not been true since PNG decoding landed.
+//
+// A short stream is a failure, not a partial decode: the caller sizes its
+// sample buffer from the layer rect, and a channel that inflates to fewer
+// bytes than that rect claims is a disagreement about the geometry, not
+// about the pixels.
+bool inflateChannel(std::span<const uint8_t> body, size_t expected,
+                    std::vector<uint8_t>& rawSamples) {
+  // stb_image's zlib API is int-sized on both ends.
+  if (expected == 0 || expected > static_cast<size_t>(INT_MAX)) return false;
+  if (body.empty() || body.size() > static_cast<size_t>(INT_MAX)) return false;
+  rawSamples.assign(expected, 0);
+  const int written = stbi_zlib_decode_buffer(reinterpret_cast<char*>(rawSamples.data()),
+                                              static_cast<int>(expected),
+                                              reinterpret_cast<const char*>(body.data()),
+                                              static_cast<int>(body.size()));
+  return written >= 0 && static_cast<size_t>(written) == expected;
+}
+
+// Undoes ZIP-with-prediction's per-row delta encoding, in place.
+//
+// Each row is a running sum, restarted at every row, and it runs over
+// SAMPLES rather than bytes: a 16-bit channel accumulates big-endian
+// uint16s, not the two halves of each one separately. Verified against
+// psd-tools on all eight ZIP-with-prediction channels of a real 16-bit
+// Photoshop file (Apple's App Icon Template), byte for byte.
+//
+// Arithmetic wraps, deliberately -- the encoder took differences modulo the
+// sample width, so the decoder must add modulo it too.
+void undoPrediction(std::vector<uint8_t>& rawSamples, uint32_t width, uint32_t height,
+                    int bytesPerSample) {
+  if (width < 2) return;  // a one-sample row is its own value
+  for (uint32_t y = 0; y < height; ++y) {
+    uint8_t* row = rawSamples.data() + static_cast<size_t>(y) * width * bytesPerSample;
+    if (bytesPerSample == 1) {
+      for (uint32_t x = 1; x < width; ++x) row[x] = static_cast<uint8_t>(row[x] + row[x - 1]);
+    } else {
+      uint16_t running = static_cast<uint16_t>((row[0] << 8) | row[1]);
+      for (uint32_t x = 1; x < width; ++x) {
+        uint8_t* s = row + static_cast<size_t>(x) * 2;
+        running = static_cast<uint16_t>(running + ((s[0] << 8) | s[1]));
+        s[0] = static_cast<uint8_t>(running >> 8);
+        s[1] = static_cast<uint8_t>(running & 0xFF);
+      }
+    }
+  }
+}
+
 // Decodes one channel's own byte span (already sliced to exactly its
 // declared length by the caller) into `expected` raw samples (1 or 2 bytes
-// each, per `bytesPerSample`), honouring only the two compressions this
-// module reads.
+// each, per `bytesPerSample`), honouring every compression PSD defines for
+// layer channels.
 bool decodeChannelData(std::span<const uint8_t> channelSpan, uint32_t width, uint32_t height,
                        int bytesPerSample, std::vector<uint8_t>& rawSamples,
                        std::string& error) {
@@ -750,13 +871,17 @@ bool decodeChannelData(std::span<const uint8_t> channelSpan, uint32_t width, uin
     }
     return true;
   }
-  // ZIP (2) or ZIP-with-prediction (3): refused by name, for the whole
-  // file -- io/PsdImport.hpp's header states why (no zlib dependency in
-  // this tree) and why this is total rather than per-layer.
+  if (compression == 2 || compression == 3) {  // ZIP, ZIP with prediction
+    if (!inflateChannel(body, expected, rawSamples)) {
+      error = "channel data: ZIP stream did not inflate to the expected " +
+              std::to_string(expected) + " bytes";
+      return false;
+    }
+    if (compression == 3) undoPrediction(rawSamples, width, height, bytesPerSample);
+    return true;
+  }
   error = "channel data: compression mode " + std::to_string(compression) +
-          " (ZIP" + std::string(compression == 3 ? " with prediction" : "") +
-          ") is not supported -- this build has no zlib dependency, and a ZIP-compressed "
-          "PSD layer is refused rather than decoded into garbage or silently dropped";
+          " is not one of raw (0), RLE (1), ZIP (2) or ZIP with prediction (3)";
   return false;
 }
 
@@ -890,6 +1015,348 @@ const std::array<float, 256>& srgb8DecodeTable() {
     return t;
   }();
   return table;
+}
+
+// Decodes one shape layer's blocks into `layer.shapes`.
+//
+// The three io/PsdVector* modules in the order they were built: geometry out
+// of the `vsms`/`vmsk` record stream, that stream's boolean operations folded
+// into one compound path, then the paint out of the descriptors. Each has its
+// own `--selftest` section; app/selftest/PsdVectorChain.cpp runs the three on
+// one real layer's bytes against psd-tools' render of it.
+//
+// **Nothing here refuses the file.** A shape whose geometry will not decode,
+// or whose operations no single fill rule can express, is a warning naming
+// the layer -- the layer still imports, with whatever it did yield. A PSD is
+// not worth refusing over one unrepresentable shape, and the alternative to a
+// named warning is a silently missing shape.
+//
+// **Shape ids are assigned HERE, not at the app/OpenAnyFile.cpp call site the
+// way io/SvgImport's are.** That call site owns SVG's ids for a reason that
+// does not apply here -- io/SvgImport cannot know which layer its shapes will
+// land in, and one import can produce several. This module builds the Layer
+// itself, so it knows; and `importPsd()` has callers that are not
+// app/OpenAnyFile (--psd-report, the selftests), every one of which would
+// otherwise receive shapes that all answer to id 0.
+//
+// **`gradients` is the document's own table, and this is its only writer on
+// the import path.** io/PsdVectorStyle cannot append to it -- it has no
+// `Document` -- so it hands back a `PsdGradientFill` and this function turns
+// that into an entry plus the index that points at it. Keeping both here
+// means `Paint::gradient` is never briefly a placeholder.
+void appendPsdShape(const ParsedLayer& pl, int32_t docWidth, int32_t docHeight,
+                    GradientTable& gradients, Layer& layer,
+                    std::vector<std::string>& warnings) {
+  const std::string named = "layer '" + (pl.name.empty() ? std::string("(unnamed)") : pl.name) + "'";
+  if (docWidth <= 0 || docHeight <= 0) return;
+
+  PsdPathStream stream;
+  std::string error;
+  if (!decodePsdPathRecords(pl.vectorPath, static_cast<uint32_t>(docWidth),
+                            static_cast<uint32_t>(docHeight), stream, error)) {
+    warnings.push_back(named + ": its vector outline could not be read (" + error +
+                       "); the layer imports with no shape.");
+    return;
+  }
+  for (const std::string& w : stream.warnings) warnings.push_back(named + ": " + w);
+
+  const PsdComposedPath composed = composePsdSubPaths(stream);
+  if (!composed.ok) {
+    warnings.push_back(named + ": " + composed.refusal + "; the layer imports with no shape.");
+    return;
+  }
+  for (const std::string& w : composed.warnings) warnings.push_back(named + ": " + w);
+  if (pathIsEmpty(composed.path)) return;
+
+  PsdVectorStyleBlocks blocks;
+  blocks.soco = pl.socoBlock;
+  blocks.vscg = pl.vscgBlock;
+  blocks.vstk = pl.vstkBlock;
+  blocks.ptfl = pl.ptflBlock;
+  blocks.gdfl = pl.gdflBlock;
+  PsdVectorStyle style;
+  std::string styleError;
+  if (!decodePsdVectorStyle(blocks, style, styleError)) {
+    // The geometry survives a style this module cannot read: an outline with
+    // no paint is a real thing to import, and is what `Paint::on == false`
+    // means. Losing the shape too would be strictly worse.
+    warnings.push_back(named + ": its fill/stroke could not be read (" + styleError +
+                       "); the shape imports unpainted.");
+    style = PsdVectorStyle{};
+  }
+  for (const std::string& w : style.warnings) warnings.push_back(named + ": " + w);
+
+  VectorShape shape;
+  shape.path = composed.path;
+  shape.fill = style.fill;
+  shape.stroke = style.stroke;
+  shape.strokeStyle = style.strokeStyle;
+
+  // A gradient fill becomes a table entry plus an index. The placement is
+  // resolved here and not in the decoder because it needs the SHAPE's extent,
+  // which only exists once the path has been composed -- io/PsdVectorStyle.hpp
+  // states the formula and which parts of it are readings rather than
+  // measurements.
+  if (style.fillGradient.has_value()) {
+    GradientDef def;
+    def.name = style.fillGradient->name;
+    def.stops = std::move(style.fillGradient->stops);
+    def.geometry =
+        psdGradientGeometryFor(style.fillGradient->placement, pathTightBounds(composed.path));
+    shape.fill.on = true;
+    shape.fill.kind = PaintKind::Gradient;
+    shape.fill.gradient = static_cast<uint32_t>(gradients.size());
+    gradients.push_back(std::move(def));
+  }
+
+  shape.id = layer.nextShapeId++;
+  layer.shapes.push_back(std::move(shape));
+}
+
+// Resolves `pl.lclrIndex` onto `out.colorLabel`. A separate step from
+// reading the `lclr` block itself (readLayerRecord() above) because only
+// here, in importPsd()'s per-record loop, is `warnings` in scope -- and this
+// is shared between an ordinary layer and a group header, since Photoshop
+// writes the identical block on both (a group's divider and its header
+// record carry the same label; the divider is dropped before it ever
+// reaches a `Layer`, so the header's own copy is what survives).
+//
+// Index 0 (absent block or an explicit 0) is unlabelled, `Layer::colorLabel`
+// already defaults to `kNoLayerColorLabel`. 1-7 are Photoshop's own seven,
+// in its own menu order -- corroborated, not measured, by
+// `kLayerColorLabelNames` having independently chosen the same seven in the
+// same order. 8+ is a colour label a newer Photoshop invented: warned by
+// name and index, left unlabelled rather than guessed at.
+void applyLayerColorLabel(const ParsedLayer& pl, Layer& out, std::vector<std::string>& warnings) {
+  if (pl.lclrIndex == 0) return;
+  if (pl.lclrIndex <= 7) {
+    out.colorLabel = kLayerColorLabelNames[pl.lclrIndex - 1];
+    return;
+  }
+  warnings.push_back("layer '" + (pl.name.empty() ? std::string("(unnamed)") : pl.name) +
+                     "': PSD sheet colour label index " + std::to_string(pl.lclrIndex) +
+                     " is not one of Photoshop's seven (1-7); the layer imports unlabelled "
+                     "rather than guessing a name for it.");
+}
+
+// docs/psd-vector-shapes.md S4: a raster layer wearing a vector mask --
+// `vsms`/`vmsk` geometry, real pixels, and (unlike `appendPsdShape()`'s
+// case) NO fill block. The outline does not become this layer's content, the
+// way it does for a shape layer; it becomes what reveals or hides the
+// content that is already there, so it lands in `maskTiles`, not
+// `layer.shapes`.
+//
+// **Combining with a raster mask (channel -2) on the same layer: MULTIPLY.**
+// Photoshop composites a layer through the intersection of its raster and
+// vector masks; no sample file this module was checked against carries
+// both at once, so this is a documented design decision rather than a
+// measurement, and app/selftest/PsdImport.cpp's own S4 section asserts it
+// rather than leaving it to be discovered.
+//
+// **Nothing here refuses the file.** An outline this module cannot decode
+// or compose is a warning naming the layer, exactly `appendPsdShape()`'s own
+// discipline -- the layer still imports with its pixels, just without the
+// mask that would have shaped them.
+void appendPsdVectorMask(const ParsedLayer& pl, int32_t docWidth, int32_t docHeight,
+                        std::optional<MaskTileStore>& maskTiles,
+                        std::vector<std::string>& warnings) {
+  if (docWidth <= 0 || docHeight <= 0) return;
+  const uint32_t layerWidth = static_cast<uint32_t>(pl.right - pl.left);
+  const uint32_t layerHeight = static_cast<uint32_t>(pl.bottom - pl.top);
+  if (layerWidth == 0 || layerHeight == 0) return;
+  const std::string named = "layer '" + (pl.name.empty() ? std::string("(unnamed)") : pl.name) + "'";
+
+  PsdPathStream stream;
+  std::string error;
+  if (!decodePsdPathRecords(pl.vectorPath, static_cast<uint32_t>(docWidth),
+                            static_cast<uint32_t>(docHeight), stream, error)) {
+    warnings.push_back(named + ": its vector mask outline could not be read (" + error +
+                       "); the layer imports with no mask from it.");
+    return;
+  }
+  const PsdComposedPath composed = composePsdSubPaths(stream);
+  if (!composed.ok) {
+    warnings.push_back(named + ": vector mask " + composed.refusal +
+                       "; the layer imports with no mask from it.");
+    return;
+  }
+  for (const std::string& w : composed.warnings) warnings.push_back(named + ": vector mask: " + w);
+  if (pathIsEmpty(composed.path)) return;
+
+  // Hide this layer's own extent, then reveal the path -- the vector-mask
+  // analogue of `fillMaskHiddenAt()`'s "default colour 0" case above: a
+  // vector mask reveals only what its path covers and hides everything
+  // else, which is not what an unallocated (all-1.0, "reveal") tile means.
+  MaskTileStore vecMask;
+  fillMaskHiddenAt(layerWidth, layerHeight, pl.left, pl.top, vecMask);
+
+  PathRasterScratch scratch;
+  RasterClip clip = clipForPath(composed.path, docWidth, docHeight);
+  // Scoped to THIS layer's own rect, same reason `fillMaskHiddenAt()` is: a
+  // mask only ever multiplies this layer's own coverage, and there is no
+  // pixel of this layer's outside it for a mask sample to affect.
+  clip.x0 = std::max(clip.x0, pl.left);
+  clip.y0 = std::max(clip.y0, pl.top);
+  clip.x1 = std::min(clip.x1, pl.right);
+  clip.y1 = std::min(clip.y1, pl.bottom);
+  if (clip.x0 < clip.x1 && clip.y0 < clip.y1) {
+    rasterizePath(composed.path, 0.25f, clip, scratch,
+                 [&](int32_t y, int32_t x0, int32_t x1, const float* coverage) {
+                   for (int32_t x = x0; x < x1; ++x) {
+                     const PixelCoord doc{x, y};
+                     vecMask.getOrCreate(tileCoordAt(doc))
+                         .writeCoverage(tileLocalOffset(doc), coverage[x - x0]);
+                   }
+                 });
+  }
+
+  if (!maskTiles.has_value()) {
+    maskTiles = std::move(vecMask);
+    return;
+  }
+  // A raster mask is already engaged (channel -2 on this same layer):
+  // multiply the two, texel by texel, over this layer's own extent -- the
+  // only region either mask can hold content over.
+  for (uint32_t y = 0; y < layerHeight; ++y) {
+    for (uint32_t x = 0; x < layerWidth; ++x) {
+      const PixelCoord doc{pl.left + static_cast<int32_t>(x), pl.top + static_cast<int32_t>(y)};
+      const float rv = maskCoverage(maskTiles->find(tileCoordAt(doc)), tileLocalOffset(doc));
+      const float vv = maskCoverage(vecMask.find(tileCoordAt(doc)), tileLocalOffset(doc));
+      maskTiles->getOrCreate(tileCoordAt(doc)).writeCoverage(tileLocalOffset(doc), rv * vv);
+    }
+  }
+}
+
+// Resource 1032 ("Grid and guides"), an Image Resources block: a `uint32`
+// version (1 in every file measured), two `uint32` grid-cycle fields
+// (ignored -- see below), a `uint32` guide count, then that many (`uint32`
+// location, `uint8` direction) records.
+//
+// Location is in 32nds of a pixel, confirmed twice over: the grid cycles
+// read 576 in all five files this module was checked against and 576/32 =
+// 18px, Photoshop's own default grid, and every measured guide location
+// divides exactly by 32. The grid cycles themselves have no receiving field
+// here -- `AppState::gridSpacing` is a live user setting, not document
+// content -- and are read only to be stepped over.
+//
+// Direction: 0 = vertical, 1 = horizontal, per Adobe's published spec.
+// **This cannot be confirmed from the available files** -- the only one
+// with guides is square and carries the same seven positions on both axes,
+// so the numbers are symmetric and cannot disambiguate which byte value
+// means which orientation.
+//
+// All or nothing: a count this module cannot honour to the end is a warning
+// and no guides at all from this resource, never a partial list silently
+// missing its tail.
+void parseGuidesResource(std::span<const uint8_t> data, std::vector<PsdGuide>& guides,
+                         std::vector<std::string>& warnings) {
+  Cursor c(data);
+  uint32_t version = 0, hCycle = 0, vCycle = 0, count = 0;
+  if (!(c.u32(version) && c.u32(hCycle) && c.u32(vCycle) && c.u32(count))) {
+    warnings.push_back(
+        "PSD image resource 1032 (guides): truncated header; no guides imported.");
+    return;
+  }
+  std::vector<PsdGuide> parsed;
+  // A hint, not an allocation from the file's own number: `count` is an
+  // attacker-controlled uint32, and five bytes is the smallest a guide record
+  // can be, so the bytes left in this resource bound how many can exist. The
+  // loop below still stops on the first truncated record -- this only keeps a
+  // claim of four billion guides from asking for 32 GB before reading one.
+  // Same rule, same reason, as decodePsdPathRecords()' own reserve.
+  parsed.reserve(std::min<size_t>(count, c.remaining() / 5));
+  for (uint32_t i = 0; i < count; ++i) {
+    uint32_t location = 0;
+    uint8_t direction = 0;
+    if (!(c.u32(location) && c.u8(direction))) {
+      warnings.push_back("PSD image resource 1032 (guides): guide record " + std::to_string(i) +
+                         " of " + std::to_string(count) +
+                         " is truncated; no guides imported.");
+      return;
+    }
+    PsdGuide g;
+    g.vertical = (direction == 0);
+    // A guide may legitimately sit outside the canvas (Photoshop keeps one
+    // dragged past the edge) -- carried through unclamped, per PsdGuide's
+    // own header.
+    g.position = static_cast<float>(location) / 32.0f;
+    parsed.push_back(g);
+  }
+  guides = std::move(parsed);
+}
+
+// Walks the Image Resources section: `8BIM` + `uint16` id + a Pascal-string
+// name PADDED TO AN EVEN TOTAL LENGTH + a `uint32` data length + that many
+// bytes, ALSO padded to even. Pad-to-2, unlike the Additional Layer
+// Information walk's pad-to-4 in readLayerRecord() above -- getting it
+// backwards here desynchronises the rest of the section, not just one
+// resource.
+//
+// **Guides are decoration, so a malformed resource section must never fail
+// the import.** A resource this walk cannot parse stops the WALK -- nothing
+// after a desync point can be trusted to start at the right offset -- but
+// never the file: `guides` simply keeps whatever was already found (usually
+// nothing yet, since 1032 is rarely the first resource) and the caller reads
+// the layers exactly as if this section had been empty. Every read here is
+// bounds-checked against `data` alone, which is itself the section's own
+// declared length, sliced by the caller -- so a resource claiming to run
+// past that is a refusal of the WALK from that point on, never a read past
+// the section, and never past the file.
+void parseImageResources(std::span<const uint8_t> data, std::vector<PsdGuide>& guides,
+                         std::vector<std::string>& warnings) {
+  Cursor c(data);
+  while (c.remaining() >= 4) {
+    std::array<char, 4> sig{};
+    if (!c.fourcc(sig)) return;
+    if (!fourccEquals(sig, "8BIM")) {
+      warnings.push_back(
+          "PSD Image Resources section: a resource block's signature is not '8BIM' at byte " +
+          std::to_string(c.pos() - 4) + "; the rest of the section is skipped (no more guides "
+          "from it).");
+      return;
+    }
+    uint16_t id = 0;
+    uint8_t nameLen = 0;
+    if (!(c.u16(id) && c.u8(nameLen))) {
+      warnings.push_back("PSD Image Resources section: truncated resource header; the rest of "
+                         "the section is skipped.");
+      return;
+    }
+    std::span<const uint8_t> nameBytes;
+    if (!c.bytes(nameLen, nameBytes)) {
+      warnings.push_back("PSD Image Resources section: resource " + std::to_string(id) +
+                         "'s name runs past the section; the rest of the section is skipped.");
+      return;
+    }
+    const size_t nameConsumed = 1 + static_cast<size_t>(nameLen);
+    if (nameConsumed % 2 != 0 && !c.skip(1)) {
+      warnings.push_back("PSD Image Resources section: resource " + std::to_string(id) +
+                         "'s name padding runs past the section; the rest of the section is "
+                         "skipped.");
+      return;
+    }
+    uint32_t dataLen = 0;
+    if (!c.u32(dataLen)) {
+      warnings.push_back("PSD Image Resources section: truncated resource data length; the "
+                         "rest of the section is skipped.");
+      return;
+    }
+    std::span<const uint8_t> resourceData;
+    if (!c.bytes(dataLen, resourceData)) {
+      warnings.push_back("PSD Image Resources section: resource " + std::to_string(id) +
+                         " declares " + std::to_string(dataLen) +
+                         " bytes of data, past the section's own end; the rest of the section "
+                         "is skipped.");
+      return;
+    }
+    if (id == 1032) parseGuidesResource(resourceData, guides, warnings);
+    if (dataLen % 2 != 0 && !c.skip(1)) {
+      warnings.push_back("PSD Image Resources section: resource " + std::to_string(id) +
+                         "'s data padding runs past the section; the rest of the section is "
+                         "skipped.");
+      return;
+    }
+  }
 }
 
 }  // namespace
@@ -1044,10 +1511,19 @@ PsdImportResult importPsd(std::span<const uint8_t> bytes) {
   if (!c.u32(colorDataLen) || !c.skip(colorDataLen))
     return fail("PSD Color Mode Data section is truncated.");
 
-  // --- Image Resources Section (skipped) ---------------------------------
+  // --- Image Resources Section --------------------------------------------
+  //
+  // Walked for one resource, 1032 ("Grid and guides") -- parseImageResources()
+  // above. Everything else in the section is stepped over by its own
+  // declared length without being interpreted, the same "only ever needs to
+  // know how many bytes to skip" discipline the Additional Layer Information
+  // walk in readLayerRecord() already holds itself to.
   uint32_t imageResLen = 0;
-  if (!c.u32(imageResLen) || !c.skip(imageResLen))
+  if (!c.u32(imageResLen)) return fail("PSD Image Resources section length is truncated.");
+  std::span<const uint8_t> imageResSpan;
+  if (!c.bytes(imageResLen, imageResSpan))
     return fail("PSD Image Resources section is truncated.");
+  parseImageResources(imageResSpan, result.guides, result.warnings);
 
   // --- Layer and Mask Information Section --------------------------------
   uint32_t layerMaskInfoLen = 0;
@@ -1397,6 +1873,7 @@ PsdImportResult importPsd(std::span<const uint8_t> bytes) {
       // whatever Photoshop's own file says.
       group.opacity = static_cast<float>(pl.opacity) / 255.0f;
       group.visible = !pl.hidden;
+      applyLayerColorLabel(pl, group, result.warnings);
 
       // Only every DIRECT child -- an ordinary layer, or a nested group's
       // own single entry -- gets this frame's tag; anything already
@@ -1427,10 +1904,70 @@ PsdImportResult importPsd(std::span<const uint8_t> bytes) {
       continue;
     }
 
+    // A SHAPE layer -- a vector outline plus a fill block -- imports as
+    // `LayerKind::Vector` rather than as the raster it used to.
+    //
+    // **The fill block, not the raster, is what makes it a shape layer.**
+    // Whether Photoshop also stored a rasterised copy is the Maximize
+    // Compatibility setting, not a fact about the artwork: Apple's `App Icon
+    // Template.psd` writes its nine shape layers with 0x0 rects, and
+    // `testNonSquareWithShapesOffPage.psd` writes its three with full
+    // rasters. Keying off the raster would let a save checkbox decide whether
+    // the same layer arrived editable.
+    //
+    // What the fill block DOES separate out is a raster layer wearing a
+    // VECTOR MASK: outline, real pixels, and no fill. That layer still
+    // imports as RGB, exactly as before -- but its outline is no longer
+    // dropped: `appendPsdVectorMask()` below rasterises it into
+    // `Layer::mask` (docs/psd-vector-shapes.md S4).
+    //
+    // `PtFl`/`GdFl` count as a fill block too. `GdFl` now has a receiving
+    // field (docs/psd-vector-shapes.md S2); `PtFl` still does not -- and
+    // either way a shape whose fill is a pattern or a gradient is a SHAPE,
+    // not a raster layer with a vector mask. Leaving them out here would
+    // misroute exactly that layer into S4.
+    const bool hasFillBlock = !pl.socoBlock.empty() || !pl.vscgBlock.empty() ||
+                              !pl.ptflBlock.empty() || !pl.gdflBlock.empty();
+    const bool looksLikeShape = !pl.vectorPath.empty() && (hasFillBlock || pixels.empty());
+
     Layer layer;
-    layer.kind = LayerKind::RGB;
-    layer.rgbTiles.emplace();
-    writeLayerPixelsAt(pixels, layerWidth, layerHeight, pl.left, pl.top, layer);
+    bool importedAsShape = false;
+    if (looksLikeShape) {
+      Layer shape = makeVectorLayer(pl.name);
+      // Appends onto the document's table as a side effect -- see
+      // appendPsdShape()'s own comment. A shape that then turns out to be
+      // unpaintable leaves its entry behind, which costs a few dozen bytes and
+      // is exactly what core/Gradient.hpp's "entries are never removed" rule
+      // requires: erasing it would renumber every index after it.
+      appendPsdShape(pl, doc.width, doc.height, doc.gradients, shape, result.warnings);
+      // A fill this build cannot express -- a pattern, a noise or diamond
+      // gradient -- leaves the shape unpainted. When Photoshop cached a raster
+      // of it, that raster is the better import: it is what the artwork looks
+      // like, and an invisible shape is not. When there is no raster, the
+      // shape is all there is and goes in unpainted.
+      const bool paintable = !shape.shapes.empty() &&
+                             (shape.shapes.front().fill.on || shape.shapes.front().stroke.on);
+      if (!shape.shapes.empty() && (paintable || pixels.empty())) {
+        layer = std::move(shape);
+        importedAsShape = true;
+      } else if (!shape.shapes.empty()) {
+        result.warnings.push_back(
+            "layer '" + (pl.name.empty() ? std::string("(unnamed)") : pl.name) +
+            "': its shape has no fill or stroke this build can paint, so the layer imports as "
+            "the rasterised copy Photoshop stored beside it rather than as an invisible shape.");
+      }
+    }
+    if (!importedAsShape) {
+      layer.kind = LayerKind::RGB;
+      layer.rgbTiles.emplace();
+      writeLayerPixelsAt(pixels, layerWidth, layerHeight, pl.left, pl.top, layer);
+      // S4: an outline with no fill block, on a layer that just got real
+      // pixels written above, is a vector mask on a raster layer rather than
+      // a shape's own geometry -- `hasFillBlock` is exactly the discriminator
+      // `looksLikeShape` already uses above, read the other way round.
+      if (!hasFillBlock && !pl.vectorPath.empty())
+        appendPsdVectorMask(pl, doc.width, doc.height, maskTiles, result.warnings);
+    }
     // flags bit 1 (mask disabled) imports as no mask at all -- `maskTiles`
     // was never engaged for a disabled mask (guarded above), so this is
     // simply "move it across when there was one to move".
@@ -1439,6 +1976,7 @@ PsdImportResult importPsd(std::span<const uint8_t> bytes) {
     layer.name = pl.name;
     layer.opacity = static_cast<float>(pl.opacity) / 255.0f;
     layer.visible = !pl.hidden;
+    applyLayerColorLabel(pl, layer, result.warnings);
     // The bottom layer can never be clipped (core/Layer.hpp's own stated
     // invariant, enforced elsewhere by core::setLayerClipped() -- this
     // module builds `doc.layers` directly rather than through that

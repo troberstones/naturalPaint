@@ -6,8 +6,10 @@
 #include <string_view>
 #include <vector>
 
+#include "app/CanvasView.hpp"  // Guide, GuideOrientation
 #include "app/DocumentLifecycle.hpp"
 #include "io/FileKind.hpp"
+#include "io/PsdImport.hpp"  // PsdGuide
 
 // app/OpenAnyFile -- **one** entry point for "the user gave us a file; make it
 // a document", and the rule that decides what a *dropped* file becomes.
@@ -135,10 +137,63 @@ struct OpenAnyResult {
   // folder, an unreadable file).
   FileKind kind = FileKind::Unknown;
 
+  // Set only on a refusal, and only for a PSD: this file has real layer data
+  // that io/PsdImport declined, and calling again with
+  // `PsdLayerPolicy::Flattened` is a question worth putting to the user.
+  //
+  // A flag rather than a fallback, for the reason the flattened-PSD section
+  // below argues: opening the composite loses every layer in the file, and a
+  // module with no user in front of it must not make that trade on its own.
+  // It is also not a promise that the retry succeeds -- the file may carry no
+  // composite at all, and the fallback reader may decline it too.
+  bool flattenRetryAvailable = false;
+
   // The opened record, when `ok`. Move it into the session; it is not added to
   // one here, because this module has no session to add it to and the caller
   // may want to place it deliberately.
   OpenDocument document;
+
+  // The guides the file carried, already converted out of PSD's own units and
+  // direction byte. **Empty is the normal case** -- only a PSD can carry any at
+  // all, three of the five sample files store the resource with a count of
+  // zero, and no other format this function opens has the concept.
+  //
+  // Deliberately NOT inside `document`, and the reason is `OpenDocument`'s own
+  // selection argument (app/DocumentLifecycle.hpp): guides in this codebase are
+  // session state, not document data -- `AppState::guides` holds them,
+  // io/NpaintFile does not write them, and core/History does not snapshot them.
+  // Putting them in `Document` would make every undo restore a set of guides.
+  //
+  // A caller seeds the session from this only when it is non-empty. Opening a
+  // picture with no guides must not clear the ones a user placed by hand, and
+  // that asymmetry is a choice rather than an oversight -- see the assignment
+  // site in ui/MacPaintUI.cpp.
+  std::vector<Guide> guides;
+};
+
+// Converts io/PsdImport's guides to this application's.
+//
+// Exposed for `--selftest` (app/selftest/GuidesGridSnap.cpp) rather than for
+// reuse: both types are two fields, so the only thing that can be wrong here is
+// the axis, and an axis swap is invisible in a square document. The test feeds
+// the result to `resolveSnap()` and checks that a vertical guide snaps x.
+std::vector<Guide> guidesFromPsd(const std::vector<PsdGuide>& psdGuides);
+
+// What to do about a PSD's layers.
+//
+// `Layered` is the default and the only policy any caller should reach for
+// first: io/PsdImport reads the layers, and on a refusal the open fails with
+// `flattenRetryAvailable` set rather than quietly producing one flat layer.
+//
+// `Flattened` is that refusal's answer, and it exists so the flatten is
+// something a user chose after being told what it costs. It skips
+// io/PsdImport entirely and opens the composite Photoshop stored alongside
+// the layers -- a single-layer document, with every layer, mask, group and
+// blend mode in the file gone. A `noLayerData` PSD takes this path under
+// either policy, because for that file the composite IS the file.
+enum class PsdLayerPolicy {
+  Layered,
+  Flattened,
 };
 
 // Reads `path`, decides from its **bytes** whether it is one of this
@@ -175,7 +230,8 @@ struct OpenAnyResult {
 //
 // `recent`, when non-null, records `path` **on a `.npaint` open only** -- see
 // this header's recent-list section.
-OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* recent = nullptr);
+OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* recent = nullptr,
+                                    PsdLayerPolicy psdLayers = PsdLayerPolicy::Layered);
 
 // --- The command line -------------------------------------------------------
 

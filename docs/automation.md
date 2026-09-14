@@ -79,7 +79,7 @@ inline is a second encoder that will drift.
 
 ### 2.3 The UI goes through a boundary, never through the applier
 
-There are exactly three doors from `ui/MacPaintUI.cpp` into the command layer,
+There are exactly four doors from `ui/MacPaintUI.cpp` into the command layer,
 and they are at file scope — not in the anonymous namespace — precisely so
 `--selftest` can call the real ones rather than a copy:
 
@@ -91,13 +91,16 @@ and they are at file scope — not in the anonymous namespace — precisely so
   buttons.
 * `runActiveLayerSetter(od, command)` — the BLEND combo, the OPACITY meter,
   Layer Properties' controls.
+* `runSelectionCommand(od, command)` — the Select menu's Grow, Shrink,
+  Feather, Colour Range and Luminance Range dialogs, through
+  `selectionCommandFooter()`, which likewise takes only a `Command`.
 
-All three call `applyCommand()`, which is where the recorder's single tap sits
+All four call `applyCommand()`, which is where the recorder's single tap sits
 (`RecorderTap`, straddling the applier). Both refusal paths return in front of
 that tap, which is what makes "a refused command is not a step" a property of
 where the tap sits rather than of a flag someone remembers to check.
 
-If your feature fits none of the three, add a fourth boundary next to them —
+If your feature fits none of the four, add another boundary next to them —
 at file scope, with its own `--selftest` case in
 `app/selftest/CommandCallsites.cpp` §A. Do not call `applyCommand()` from
 inside a widget: an anonymous-namespace call site is one `--selftest` cannot
@@ -222,7 +225,7 @@ they are is the point of writing them down.
   command row — and no assertion anywhere mentions it. If your feature is
   reached from a panel rather than a menu, this section is the only thing
   standing between it and the same fate.
-* **`--selftest` proves the three boundaries reach `applyCommand()`. It cannot
+* **`--selftest` proves the four boundaries reach `applyCommand()`. It cannot
   prove a dialog calls a boundary.** `app/selftest/CommandCallsites.cpp` §A
   calls `runPixelCommand()` and checks a step was recorded; it has no way to
   assert that `drawGaussianBlurDialog()` is what called it. This is exactly the

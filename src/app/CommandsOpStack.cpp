@@ -140,14 +140,9 @@
 // the step: `"colour": [r, g, b]`, display-encoded sRGB, the same three
 // numbers the swatch showed.
 //
-// **The engine is called directly, not through ui/MacPaintUI.hpp's
-// `applySelectRefineAction()` family.** Those four functions are the *UI's*
-// dialog-to-engine boundary and app/ must not include ui/ -- §7 of the plan
-// again, the UI path calls the document path and never the reverse. That
-// leaves two boundaries doing the same decode until step 2 migrates the call
-// sites and deletes the UI half, so app/selftest/CommandsOpStack.cpp asserts
-// the two agree bit for bit rather than trusting a comment to keep them in
-// step.
+// **These rows are the only decoder.** The Select menu's dialogs encode with
+// the `select*Command()` functions below and commit through
+// `ui::runSelectionCommand()`; the UI's own appliers were deleted.
 //
 // **A refine pushes the selection it replaced onto `refineUndoStack`**, which
 // is what makes Select > Undo Refine keep working once step 2 routes the menu
@@ -782,19 +777,90 @@ CommandResult doLoadChannelAsSelection(OpenDocument& doc, const JsonValue& param
   return selectionChanged("load channel as selection: \"" + name + "\"");
 }
 
+// --- rename and delete (PRD E13's CHANNELS panel) -------------------------
+//
+// By NAME, never index (docs/automation.md §3.2): `Document::channels` has no
+// stable index the way a layer at least keeps `Layer::id` for, and a channel
+// is document data crossing into an action file the same way a layer is.
+
+std::string readNewChannelName(const JsonValue& params, const char* commandId, std::string* out) {
+  const JsonValue* name = params.find("new_name");
+  if (name == nullptr || !name->isString() || name->asString().empty())
+    return std::string("refused: ") + commandId + " needs a \"new_name\".";
+  *out = name->asString();
+  return {};
+}
+
+std::string renameChannelUnavailable(const OpenDocument& doc, const JsonValue& params) {
+  std::string name;
+  std::string why = readChannelName(params, "rename_channel", &name);
+  if (!why.empty()) return why;
+  std::string newName;
+  why = readNewChannelName(params, "rename_channel", &newName);
+  if (!why.empty()) return why;
+  if (findChannel(doc.document, name) == nullptr)
+    return "refused: this document has no channel named \"" + name + "\".";
+  // Identity is refused rather than run silently -- docs/automation.md §3's
+  // "a silent no-op is the failure this feature exists to have" -- and a
+  // collision is refused rather than uniquified, unlike Save: renaming names
+  // an EXISTING channel by its current identity, so "already taken" cannot
+  // be resolved by minting a second name the way a fresh save can.
+  if (newName == name)
+    return "refused: \"" + newName + "\" is already this channel's name.";
+  if (findChannel(doc.document, newName) != nullptr)
+    return "refused: this document already has a channel named \"" + newName + "\".";
+  return {};
+}
+
+CommandResult doRenameChannel(OpenDocument& doc, const JsonValue& params) {
+  std::string name;
+  std::string why = readChannelName(params, "rename_channel", &name);
+  if (!why.empty()) return commandRefused(why);
+  std::string newName;
+  why = readNewChannelName(params, "rename_channel", &newName);
+  if (!why.empty()) return commandRefused(why);
+  AlphaChannel* channel = findChannelForWrite(doc.document, name);
+  if (channel == nullptr)
+    return commandRefused("refused: this document has no channel named \"" + name + "\".");
+  channel->name = newName;
+  doc.recordEdit("rename channel", EditKind::Structural);
+  CommandResult r;
+  r.ok = true;
+  r.status = "rename channel: \"" + name + "\" -> \"" + newName + "\"";
+  return r;
+}
+
+std::string deleteChannelUnavailable(const OpenDocument& doc, const JsonValue& params) {
+  std::string name;
+  const std::string why = readChannelName(params, "delete_channel", &name);
+  if (!why.empty()) return why;
+  if (findChannel(doc.document, name) == nullptr)
+    return "refused: this document has no channel named \"" + name + "\".";
+  return {};
+}
+
+CommandResult doDeleteChannel(OpenDocument& doc, const JsonValue& params) {
+  std::string name;
+  const std::string why = readChannelName(params, "delete_channel", &name);
+  if (!why.empty()) return commandRefused(why);
+  std::vector<AlphaChannel>& channels = doc.document.channels;
+  const auto it = std::find_if(channels.begin(), channels.end(),
+                               [&](const AlphaChannel& c) { return c.name == name; });
+  if (it == channels.end())
+    return commandRefused("refused: this document has no channel named \"" + name + "\".");
+  channels.erase(it);
+  doc.recordEdit("delete channel", EditKind::Structural);
+  CommandResult r;
+  r.ok = true;
+  r.status = "delete channel: \"" + name + "\"";
+  return r;
+}
+
 // --- the five refine adapters (§4) ---------------------------------------
 
-// The app-side twin of `ui::installRefinedSelection()`: push what is being
-// replaced onto the refine-undo stack, then install. Duplicated rather than
-// shared for the reason `installSelectionForCommand()` above is duplicated --
-// the UI's copy has internal linkage in ui/MacPaintUI.cpp and app/ must not
-// include ui/ -- and it exists at all so that step 2's call-site migration,
-// which is meant to change no behaviour, does not quietly delete Select >
-// Undo Refine.
-//
-// Pushed BEFORE the install moves `doc.selection` out from under this read,
-// which is the ordering that makes "one entry per refine" true rather than
-// aspirational; the UI copy states the same thing at its own push.
+// Push what is being replaced onto the refine-undo stack, then install, so
+// Select > Undo Refine can pop it. Pushed BEFORE the install moves
+// `doc.selection` out from under this read: one entry per refine.
 void installRefinedSelectionForCommand(OpenDocument& doc, std::optional<Selection> refined) {
   doc.refineUndoStack.push_back(doc.selection);
   installSelectionForCommand(doc, std::move(refined));
@@ -893,7 +959,7 @@ std::string rangeSourceUnavailable(const OpenDocument& doc, const char* commandI
 }
 
 // The swatch, carried by value. Three display-encoded sRGB numbers -- what
-// `ImGui::ColorEdit3` holds and what `applySelectColourRangeAction()` takes --
+// `ImGui::ColorEdit3` holds --
 // and **required**, because every candidate default is somebody's session
 // state rather than the engine's: the dialog's own 0.5 grey, or `AppState`'s
 // foreground. §4 is about exactly this key.
@@ -938,9 +1004,8 @@ CommandResult doSelectColourRange(OpenDocument& doc, const JsonValue& params) {
   // exactly as the magic wand does, which is what a reader of the file would
   // assume.
   range.tolerance = floatOr(params, "tolerance", range.tolerance);
-  // Clamped here as well as inside the engine, for the reason
-  // `applySelectColourRangeAction()` gives: a caller inspecting the params it
-  // is about to pass should see the value that will actually be used.
+  // Clamped here as well as inside the engine, so the params passed are the
+  // values actually used.
   range.edgeBand = std::min(floatOr(params, "edge_band", range.edgeBand), range.tolerance);
 
   // sRGB -> STRAIGHT LINEAR. `selectColourRange()` names that convention on
@@ -990,6 +1055,51 @@ CommandResult doSelectLuminanceRange(OpenDocument& doc, const JsonValue& params)
 
 }  // namespace
 
+// --- the channel encoders, beside the readers above (docs/automation.md §2.2)
+// ---------------------------------------------------------------------------
+//
+// External linkage and declared in app/CommandsOpStack.hpp, unlike the
+// appliers above: the UI builds a `Command` from a typed name/pair, not from a
+// `JsonValue` literal, and app/CommandsImage.hpp argues why that has to live
+// beside the reader rather than at the dialog's own call site.
+
+Command saveSelectionAsChannelCommand(std::string name) {
+  JsonValue p = JsonValue::object();
+  p.set("channel", JsonValue::string(std::move(name)));
+  Command c;
+  c.id = "save_selection_as_channel";
+  c.params = std::move(p);
+  return c;
+}
+
+Command loadChannelAsSelectionCommand(std::string name) {
+  JsonValue p = JsonValue::object();
+  p.set("channel", JsonValue::string(std::move(name)));
+  Command c;
+  c.id = "load_channel_as_selection";
+  c.params = std::move(p);
+  return c;
+}
+
+Command renameChannelCommand(std::string name, std::string newName) {
+  JsonValue p = JsonValue::object();
+  p.set("channel", JsonValue::string(std::move(name)));
+  p.set("new_name", JsonValue::string(std::move(newName)));
+  Command c;
+  c.id = "rename_channel";
+  c.params = std::move(p);
+  return c;
+}
+
+Command deleteChannelCommand(std::string name) {
+  JsonValue p = JsonValue::object();
+  p.set("channel", JsonValue::string(std::move(name)));
+  Command c;
+  c.id = "delete_channel";
+  c.params = std::move(p);
+  return c;
+}
+
 void registerOpStackCommands(std::vector<CommandSpec>* out) {
   out->push_back(
       {"add_layer_op", "Add Layer Op", {"layer", "op"}, layerTargetUnavailable, doAddLayerOp});
@@ -1012,6 +1122,10 @@ void registerOpStackCommands(std::vector<CommandSpec>* out) {
                   saveSelectionUnavailable, doSaveSelectionAsChannel});
   out->push_back({"load_channel_as_selection", "Load Channel as Selection", {"channel"},
                   loadChannelUnavailable, doLoadChannelAsSelection});
+  out->push_back({"rename_channel", "Rename Channel", {"channel", "new_name"},
+                  renameChannelUnavailable, doRenameChannel});
+  out->push_back({"delete_channel", "Delete Channel", {"channel"}, deleteChannelUnavailable,
+                  doDeleteChannel});
 
   // PRD E4/E8/E9's five refines (§4). Menu order, which is the order the
   // ACTIONS panel lists them in.
@@ -1030,6 +1144,37 @@ void registerOpStackCommands(std::vector<CommandSpec>* out) {
                   {"low", "high", "edge_band"},
                   luminanceRangeUnavailable,
                   doSelectLuminanceRange});
+}
+
+namespace {
+Command radiusCommand(const char* id, float radius) {
+  JsonValue p = JsonValue::object();
+  p.set("radius", JsonValue::number(radius));
+  return Command{id, std::move(p)};
+}
+}  // namespace
+
+Command selectGrowCommand(float radius) { return radiusCommand("select_grow", radius); }
+Command selectShrinkCommand(float radius) { return radiusCommand("select_shrink", radius); }
+Command selectFeatherCommand(float radius) { return radiusCommand("select_feather", radius); }
+
+Command selectColourRangeCommand(const std::array<float, 3>& swatchSrgb, float tolerance,
+                                 float edgeBand) {
+  JsonValue colour = JsonValue::array();
+  for (float c : swatchSrgb) colour.push(JsonValue::number(c));
+  JsonValue p = JsonValue::object();
+  p.set("colour", std::move(colour));
+  p.set("tolerance", JsonValue::number(tolerance));
+  p.set("edge_band", JsonValue::number(edgeBand));
+  return Command{"select_colour_range", std::move(p)};
+}
+
+Command selectLuminanceRangeCommand(float low, float high, float edgeBand) {
+  JsonValue p = JsonValue::object();
+  p.set("low", JsonValue::number(low));
+  p.set("high", JsonValue::number(high));
+  p.set("edge_band", JsonValue::number(edgeBand));
+  return Command{"select_luminance_range", std::move(p)};
 }
 
 }  // namespace np

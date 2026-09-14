@@ -1,5 +1,7 @@
 #include "app/selftest/Support.hpp"
 
+#include "app/OpenAnyFile.hpp"  // guidesFromPsd(), PsdGuide
+
 namespace np {
 
 // PLAN.md Phase 2 step 12 ("Rulers, guides, grid and snapping", PRD Q5-Q7).
@@ -148,6 +150,53 @@ bool runGuidesGridSnapTest() {
                                        canvasW, canvasH, 0.0f);
       check(!r.snappedX && !r.snappedY, "resolveSnap: a non-positive threshold snaps nothing");
     }
+  }
+
+  // --- guidesFromPsd(): a PSD's guides become this application's ----------
+  //
+  // The only thing that can be wrong in a two-field conversion is the axis,
+  // and an axis swap is invisible in a square document -- which is exactly the
+  // shape of the one file available with guides in it (1024x1024, the same
+  // seven positions on both axes). So the axis is asserted through
+  // `resolveSnap()`, where a swap changes the answer: a vertical guide pulls x
+  // and nothing else.
+  {
+    const std::vector<Guide> converted = guidesFromPsd({
+        PsdGuide{true, 100.0f},    // vertical: a vertical line at x = 100
+        PsdGuide{false, 250.0f},   // horizontal: a horizontal line at y = 250
+        PsdGuide{true, 900.0f},    // past the right edge of the canvas below
+    });
+
+    check(converted.size() == 3, "guidesFromPsd: converts every guide, dropping none");
+    check(converted.size() == 3 && converted[0].orientation == GuideOrientation::Vertical &&
+              converted[1].orientation == GuideOrientation::Horizontal &&
+              converted[2].orientation == GuideOrientation::Vertical,
+          "guidesFromPsd: PsdGuide::vertical means GuideOrientation::Vertical, in file order");
+    check(converted.size() == 3 && nearf(converted[0].position, 100.0f, 1e-6f) &&
+              nearf(converted[1].position, 250.0f, 1e-6f) &&
+              nearf(converted[2].position, 900.0f, 1e-6f),
+          "guidesFromPsd: positions pass through, including one outside the canvas");
+
+    // Grid lines at 0 and 1000 only, and the canvas edges are 0/800 and 0/600,
+    // so nothing but a guide is within the threshold of either probe.
+    const float canvasW = 800.0f, canvasH = 600.0f, spacing = 1000.0f, threshold = 8.0f;
+    const int subdivisions = 1;
+
+    const SnapResult nearVertical =
+        resolveSnap(Vec2{104.0f, 300.0f}, converted, spacing, subdivisions, canvasW, canvasH,
+                    threshold);
+    check(nearVertical.snappedX && !nearVertical.snappedY &&
+              nearf(nearVertical.point.x, 100.0f, 1e-3f),
+          "guidesFromPsd: a converted vertical guide snaps x to 100 and leaves y alone");
+
+    const SnapResult nearHorizontal =
+        resolveSnap(Vec2{300.0f, 254.0f}, converted, spacing, subdivisions, canvasW, canvasH,
+                    threshold);
+    check(nearHorizontal.snappedY && !nearHorizontal.snappedX &&
+              nearf(nearHorizontal.point.y, 250.0f, 1e-3f),
+          "guidesFromPsd: a converted horizontal guide snaps y to 250 and leaves x alone");
+
+    check(guidesFromPsd({}).empty(), "guidesFromPsd: no guides in, none out");
   }
 
   std::printf("[selftest] guides/grid/snap %s\n", ok ? "PASS" : "FAIL");

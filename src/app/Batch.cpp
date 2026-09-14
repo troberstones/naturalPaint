@@ -138,6 +138,34 @@ constexpr PixelUnitParam kPixelUnitParams[] = {
     {"move_region", "x"},         {"move_region", "y"},
     {"resize_region", "x"},          {"resize_region", "y"},
     {"resize_region", "rect_width"}, {"resize_region", "rect_height"},
+    // `filter_highpass`'s `sigma` and
+    // `filter_local_contrast`'s `radius` reuse names already in this table
+    // (`filter_gaussian_blur`'s sigma, `filter_unsharp_mask`'s radius) for the
+    // identical reason -- both are a Gaussian blur's own sigma, in document
+    // texels.
+    {"filter_highpass", "sigma"},
+    {"filter_local_contrast", "radius"},
+    // PRD D11/D12: `filter_dust_scratches`'s `radius` is
+    // the median window's own half-width (ops/Filters.hpp §11, texels);
+    // `filter_shadows_highlights`'s `radius` is its guide blur's sigma
+    // (§12), the identical quantity `filter_local_contrast`'s own row above
+    // names. Neither command's `threshold`/`shadows`/`highlights`/
+    // `tonal_width` is here -- all four are shaper-domain magnitudes, the
+    // same value-space classification `select_colour_range`'s `tolerance`
+    // gets above.
+    {"filter_dust_scratches", "radius"},
+    {"filter_shadows_highlights", "radius"},
+    // PatchMatch and seam heal: `patch_radius`/`band_width` are window sizes in
+    // document texels; `iterations`, `pyramid_levels` and `seed` are counts.
+    {"content_aware_fill", "patch_radius"},
+    {"seam_heal", "band_width"},
+    {"seam_heal", "patch_radius"},
+    // Radial blur's centre is an absolute document position, like
+    // `fill_with_pattern`'s origin; lens `radius` is a length. Angles,
+    // thresholds, gains, sweeps and tap counts mean the same at any size.
+    {"filter_radial_blur", "center_x"},
+    {"filter_radial_blur", "center_y"},
+    {"filter_lens_blur", "radius"},
 };
 
 // "filter_gaussian_blur's sigma" for every pixel-unit parameter `action`

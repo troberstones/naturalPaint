@@ -3,14 +3,17 @@
 #include <functional>
 
 #include "app/AdjustmentOps.hpp"
+#include "app/BlurCommandsExtra.hpp"
 #include "app/Command.hpp"
 #include "app/CommandsImage.hpp"
 #include "app/CommandsLayers.hpp"
+#include "app/CommandsOpStack.hpp"
 #include "app/CommandsRegions.hpp"
 #include "app/CropTool.hpp"
 #include "app/FilterOps.hpp"
 #include "app/Recorder.hpp"
 #include "core/LayerOps.hpp"
+#include "core/SelectionMask.hpp"
 #include "ui/MacPaintUI.hpp"
 
 namespace np {
@@ -100,6 +103,26 @@ MotionBlurParams motionFixture() {
   MotionBlurParams p;
   p.radius = 5;
   p.angleRadians = 0.7f;
+  return p;
+}
+
+RadialBlurParams radialBlurFixture() {
+  RadialBlurParams p;
+  p.method = RadialBlurMethod::Spin;
+  p.centerX = 20.0f;
+  p.centerY = 40.0f;
+  p.amount = 15.0f;
+  p.samples = 4;
+  return p;
+}
+
+LensBlurParams lensBlurFixture() {
+  LensBlurParams p;
+  p.bladeCount = 6;
+  p.bladeRotationRadians = 0.3f;
+  p.radius = 5;
+  p.highlightThreshold = 0.5f;
+  p.highlightBoost = 1.2f;
   return p;
 }
 
@@ -211,6 +234,10 @@ std::vector<RerouteCase> rerouteCases() {
       [](OpenDocument& d) { applyMedian(d, MedianParams{2}); });
   add("filter_motion_blur", motionBlurCommand(motionFixture()),
       [](OpenDocument& d) { applyMotionBlur(d, motionFixture()); });
+  add("filter_radial_blur", radialBlurCommand(radialBlurFixture()),
+      [](OpenDocument& d) { applyRadialBlur(d, radialBlurFixture()); });
+  add("filter_lens_blur", lensBlurCommand(lensBlurFixture()),
+      [](OpenDocument& d) { applyLensBlur(d, lensBlurFixture()); });
 
   add("adjust_levels", levelsCommand(levelsFixture()),
       [](OpenDocument& d) { applyLevelsAdjustment(d, levelsFixture()); });
@@ -286,8 +313,7 @@ std::vector<RerouteCase> rerouteCases() {
 //    (section D), including the one case step 2 knowingly changed.
 //
 // Headless, GPU-free and filesystem-free. It calls into ui/MacPaintUI.cpp, but
-// only its three non-ImGui boundary functions -- the same arrangement
-// `applySelectRefineAction()` and its five siblings are already tested under.
+// only its four non-ImGui boundary functions.
 bool runCommandCallsitesTest() {
   bool ok = true;
   auto check = [&](bool cond, const char* what) {
@@ -360,6 +386,44 @@ bool runCommandCallsitesTest() {
           "setter: and the recorder wrote that layer's name into the step");
   }
   {
+    // The selection family: what the Select menu's five refine/range dialogs
+    // commit through selectionCommandFooter(), with the same encoders.
+    OpenDocument od = makeCallsiteDocument();
+    od.selection = selectRectangle(8.0f, 8.0f, 40.0f, 40.0f);
+    session.arm(od);
+    const std::string shrunk =
+        runSelectionCommand(od, selectRefineCommand(MenuAction::SelectShrink, 3.5f));
+    const std::string ranged =
+        runSelectionCommand(od, selectColourRangeCommand({0.5f, 0.25f, 0.75f}, 0.25f, 0.0625f));
+    const std::string banded =
+        runSelectionCommand(od, selectLuminanceRangeCommand(0.25f, 0.75f, 0.125f));
+    const std::string zeroRadius =
+        runSelectionCommand(od, selectRefineCommand(MenuAction::SelectGrow, 0.0f));
+    const std::string unmapped =
+        runSelectionCommand(od, selectRefineCommand(MenuAction::SelectAll, 4.0f));
+    const std::vector<Command> steps = session.steps();
+    session.stop();
+    check(shrunk.empty() && ranged.empty() && banded.empty(),
+          "select: runSelectionCommand() ran the three dialog commits");
+    check(steps.size() == 3 && steps[0].id == "select_shrink" &&
+              steps[0].params.numberOr("radius", -1.0) == 3.5,
+          "select: the Shrink commit recorded select_shrink with its radius");
+    const JsonValue* colour = steps.size() == 3 ? steps[1].params.find("colour") : nullptr;
+    check(steps.size() == 3 && steps[1].id == "select_colour_range" && colour != nullptr &&
+              colour->isArray() && colour->size() == 3 && colour->at(1).asNumber() == 0.25 &&
+              steps[1].params.numberOr("tolerance", -1.0) == 0.25 &&
+              steps[1].params.numberOr("edge_band", -1.0) == 0.0625,
+          "select: the Colour Range commit recorded its swatch, tolerance and band");
+    check(steps.size() == 3 && steps[2].id == "select_luminance_range" &&
+              steps[2].params.numberOr("low", -1.0) == 0.25 &&
+              steps[2].params.numberOr("high", -1.0) == 0.75 &&
+              steps[2].params.numberOr("edge_band", -1.0) == 0.125,
+          "select: the Luminance Range commit recorded its band");
+    check(!zeroRadius.empty() && !unmapped.empty() && steps.size() == 3,
+          "select: a refused commit returns its reason and is not a step");
+    check(od.refineUndoStack.size() == 3, "select: each committed refine left Undo Refine an entry");
+  }
+  {
     // A refusal is not a step, on the UI path as much as on the direct one --
     // the property that stops a recording from containing a click that did
     // nothing.
@@ -382,7 +446,7 @@ bool runCommandCallsitesTest() {
   std::printf("  -- B. the reroute changed no pixels --\n");
   {
     const std::vector<RerouteCase> cases = rerouteCases();
-    check(cases.size() == 26, "cases: all twenty-six pixel commands the UI issues are covered");
+    check(cases.size() == 28, "cases: all twenty-eight pixel commands the UI issues are covered");
     size_t matched = 0;
     size_t moved = 0;
     std::string firstBad;
@@ -494,7 +558,12 @@ bool runCommandCallsitesTest() {
                                     deleteRegionCommand("x"),
                                     renameRegionCommand("x", "y"),
                                     moveRegionCommand("x", 1, 2),
-                                    resizeRegionCommand("x", 1, 2, 3, 4)};
+                                    resizeRegionCommand("x", 1, 2, 3, 4),
+                                    selectGrowCommand(1.0f),
+                                    selectShrinkCommand(1.0f),
+                                    selectFeatherCommand(1.0f),
+                                    selectColourRangeCommand({0.5f, 0.5f, 0.5f}, 0.1f, 0.05f),
+                                    selectLuminanceRangeCommand(0.1f, 0.9f, 0.05f)};
     bool everyIdKnown = true;
     bool everyKeyAdvertised = true;
     std::string firstBad;
@@ -515,7 +584,7 @@ bool runCommandCallsitesTest() {
       }
     }
     if (!firstBad.empty()) std::printf("     first problem: %s\n", firstBad.c_str());
-    check(encoded.size() == 42, "encoders: every encoder this build publishes is exercised");
+    check(encoded.size() == 47, "encoders: every encoder this build publishes is exercised");
     check(everyIdKnown, "encoders: every id an encoder writes resolves to a registered row");
     check(everyKeyAdvertised, "encoders: and every key it writes is one that row advertises");
   }

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "app/DocumentLifecycle.hpp"
+#include "app/WarpMesh.hpp"
 #include "core/Clipboard.hpp"
 #include "core/Document.hpp"
 #include "core/Layer.hpp"
@@ -382,6 +383,27 @@ namespace np {
 //     geometry (a pure function of `sourceBounds()`/`pending()`) is exact
 //     either way -- what is missing is only the live paint inside it.
 // ==========================================================================
+// (9) WARP: A SECOND SHAPE FOR THE SAME SESSION (PRD D23)
+// ==========================================================================
+//
+// A Free Transform <-> Warp TOGGLE on the same live session, not a second
+// session type -- `beginLayer()`/`beginSelectionPixels()` are unchanged.
+// `setWarpMode(true, gridN)` bakes the current affine `pending()` into a
+// flat `WarpMesh` (so mid-drag switching keeps the work); switching back
+// discards the net and restores `pending_` as it stood, rather than
+// approximating the bend as one matrix. A grid-size change while already
+// warping goes through `WarpMesh::refit()`.
+//
+// `LayerSet` is refused in Warp mode (no per-member preview story, same gap
+// as the affine case in section 8). `Layer` warps `rgbTiles` only -- Pigment
+// and masked layers refused by name (app/WarpMesh.hpp: needs the affine
+// path's dual-image/hide-space bridge re-run through a non-linear map,
+// unbuilt). `SelectionPixels` warps the covered pixels the same way the
+// affine path does, and moves `od.selection` too via `warpSelectionCoverage()`
+// -- and, like every other transform, leaves the selection out of Undo
+// (app/DocumentLifecycle.hpp on `selection`).
+enum class TransformMode { Affine, Warp };
+
 enum class TransformTarget { Layer, SelectionPixels, LayerSet };
 
 // One of the eight box handles, the rotation affordance, or a drag on the
@@ -551,6 +573,44 @@ class TransformSession {
 
   bool dragging() const noexcept { return drag_.active; }
 
+  // True when this session lifts a COPY of its target instead of moving the
+  // original -- PRD M9's Option-drag duplicate. Set only at `beginLayer()`/
+  // `beginSelectionPixels()` and read by `commit()` and by the UI's preview
+  // (it must not hide the source, since nothing is being removed from it).
+  bool duplicating() const noexcept { return duplicate_; }
+
+  // --- Section 9: Warp -----------------------------------------------------
+
+  TransformMode mode() const noexcept { return mode_; }
+  const WarpMesh& warpMesh() const noexcept { return warp_; }
+
+  // Switches this session between Free Transform and Warp -- section 9. A
+  // no-op while no session is active. `gridN` is read only when entering
+  // Warp (or changing grid size while already in it); ignored when leaving.
+  void setWarpMode(bool warpOn, int gridN = 4) noexcept;
+
+  bool warpDragging() const noexcept { return warpDrag_.active; }
+
+  // Nearest control point to `cursor` within `radius`, or an invalid ref
+  // outside Warp mode or with no session active -- `app/WarpMesh.hpp`'s
+  // `hitTestWarpControl()`, supplied this session's own net.
+  WarpControlRef warpHitTest(Point2 cursor, float radius) const noexcept;
+
+  // Latches `ref` and a snapshot of the whole net as this drag's baseline --
+  // mirroring `beginDrag()`'s own baseline-plus-live-cursor discipline
+  // (section 6) so a multi-frame drag recomputes fresh each frame rather
+  // than accumulating a delta onto a delta.
+  void warpBeginDrag(WarpControlRef ref, Point2 startCursor) noexcept;
+  void warpUpdateDrag(Point2 curCursor) noexcept;
+  void warpEndDrag() noexcept;
+
+  // `*out` = `od.document` with the warp target's pixels already replaced by
+  // what `commit()` would write -- no mutation, no history entry. The live
+  // preview composites this instead of the real document. False for any of
+  // `commit()`'s own refusals; the caller then falls back to the unwarped
+  // document.
+  bool previewWarpDocument(const OpenDocument& od, ResampleKernel kernel, Document* out) const;
+
   // Begins a transform of `doc.layers[layerIndex]`'s own pixels (and, at
   // commit, its mask). Refuses a locked layer or an out-of-range index by
   // name, and refuses a layer with no content to transform -- either no
@@ -587,8 +647,14 @@ class TransformSession {
   // closes and why a bare index could not close it. Nothing else about the
   // document is touched, no edit is recorded, and a layer that already carries
   // an id keeps it.
+  // `duplicate` is PRD M9's Option-drag: `commit()` then duplicates the layer
+  // (or, for `beginSelectionPixels()` below, copies rather than cuts the
+  // selected pixels) instead of moving the original in place, and the UI must
+  // not hide the source from the composite while dragging -- `duplicating()`
+  // above is what it checks.
   TransformBeginResult beginLayer(OpenDocument& od, size_t layerIndex,
-                                  const Mat3& initialPending = mat3Identity());
+                                  const Mat3& initialPending = mat3Identity(),
+                                  bool duplicate = false);
 
   // Begins a transform of the pixels `selection` covers on
   // `doc.layers[layerIndex]`. Refuses a locked layer, an out-of-range index,
@@ -597,10 +663,11 @@ class TransformSession {
   // `ops::selectionContentRegion(selection)`. A copy of `selection` is kept
   // for `commit()`, so a change to `doc`'s live selection after `begin`
   // (which nothing in a headless session should cause mid-drag) does not
-  // retarget an in-progress transform.
+  // retarget an in-progress transform. `duplicate` -- see `beginLayer()`'s own
+  // comment just above.
   // Takes the `OpenDocument` for the same reason `beginLayer()` above does.
   TransformBeginResult beginSelectionPixels(OpenDocument& od, const Selection& selection,
-                                            size_t layerIndex);
+                                            size_t layerIndex, bool duplicate = false);
 
   // Begins a transform of every member of `sel` together, as one set (PRD
   // C12; this header's section 8). Refuses, by name, before touching `od`:
@@ -713,6 +780,7 @@ class TransformSession {
   DocumentRegion sourceBounds_;
   Mat3 pending_ = mat3Identity();
   Selection selectionSnapshot_;  // only meaningful for SelectionPixels
+  bool duplicate_ = false;       // PRD M9's Option-drag; see `duplicating()` above
 
   struct DragState {
     bool active = false;
@@ -721,6 +789,20 @@ class TransformSession {
     Mat3 base;
   };
   DragState drag_;
+
+  // Section 9. `mode_` and `warp_` are reset to their defaults by every
+  // `*this = TransformSession{}` a `begin*()`/`cancel()` already performs, so
+  // a fresh session always starts in `TransformMode::Affine` with no net.
+  TransformMode mode_ = TransformMode::Affine;
+  WarpMesh warp_;
+
+  struct WarpDragState {
+    bool active = false;
+    WarpControlRef ref;
+    Point2 start{};
+    WarpMesh base;
+  };
+  WarpDragState warpDrag_;
 };
 
 }  // namespace np

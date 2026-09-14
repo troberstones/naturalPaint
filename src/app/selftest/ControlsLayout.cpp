@@ -53,15 +53,15 @@ bool runControlsLayoutTest() {
               positionIn(kOldOrder, ControlsSection::History) + 1, kOldOrder.size(),
               positionIn(newOrder, ControlsSection::History) + 1, newOrder.size());
 
-  check(sections.size() == 19, "every section has exactly one spec (19)");
-  // +10: six from the dockable-panel revamp, two from the flats panels, then
+  check(sections.size() == 20, "every section has exactly one spec (20)");
+  // +11: six from the dockable-panel revamp, two from the flats panels, then
   // PATHS and ACTIONS -- one from each of the two branches merged here, both
-  // of which independently made it +9.
-  check(newOrder.size() == kOldOrder.size() + 10,
+  // of which independently made it +9 -- plus CHANNELS (PRD E11/E13).
+  check(newOrder.size() == kOldOrder.size() + 11,
         "the same sections plus COMPS, COLOR, BRUSH LIBRARY, HISTOGRAM, TOOLS and OPTIONS from "
         "the dockable-panel revamp, FLATS TOOLS and SEGMENTATION from the flats panels "
-        "(ADR-0009), PATHS (docs/path-editing-plan.md section 4) and ACTIONS "
-        "(docs/automation-plan.md step 7), reordered; none was "
+        "(ADR-0009), PATHS (docs/path-editing-plan.md section 4), ACTIONS "
+        "(docs/automation-plan.md step 7) and CHANNELS (PRD E11/E13), reordered; none was "
         "dropped");
   {
     // Every enumerator appears exactly once. Written against the list of
@@ -78,7 +78,7 @@ bool runControlsLayoutTest() {
     const ControlsSection kAll[] = {
         ControlsSection::Tools,      ControlsSection::Options,
         ControlsSection::Color,      ControlsSection::Layers,     ControlsSection::History,
-        ControlsSection::Comps,      ControlsSection::Actions,
+        ControlsSection::Comps,      ControlsSection::Channels,   ControlsSection::Actions,
         ControlsSection::FlatsSegmentation,
         ControlsSection::Grade,      ControlsSection::Histogram,
         ControlsSection::BrushLibrary,
@@ -92,7 +92,7 @@ bool runControlsLayoutTest() {
     // entries, while the count kept one branch's 18. The list and the number
     // disagreed, and the build stopped -- which is the entire reason the
     // number is asserted next to the list rather than trusted to match it.
-    static_assert(sizeof(kAll) / sizeof(kAll[0]) == 19,
+    static_assert(sizeof(kAll) / sizeof(kAll[0]) == 20,
                   "kAll must list every ControlsSection enumerator");
     bool eachOnce = true;
     for (const ControlsSection s : kAll) {
@@ -218,9 +218,9 @@ bool runControlsLayoutTest() {
       if (spec.defaultOpen != shouldBeOpen) exact = false;
       if (spec.defaultOpen) ++open;
     }
-    check(exact && open == 6,
+    check(exact && open == 7,
           "exactly TOOLS, OPTIONS, COLOR and the document sections start open "
-          "(TOOLS, OPTIONS, COLOR, LAYERS, HISTORY, COMPS)");
+          "(TOOLS, OPTIONS, COLOR, LAYERS, HISTORY, COMPS, CHANNELS)");
   }
 
   // --- Part B: the label column -------------------------------------------

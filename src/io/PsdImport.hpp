@@ -113,20 +113,28 @@
 // else in the file is trusted, so a PSB is refused **by name, immediately**
 // -- "this build reads PSD (version 1) only" -- never partially parsed.
 //
-// **Compression.** Raw (0) and RLE/PackBits (1) are read. **ZIP (2) and
-// ZIP-with-prediction (3) are refused by name, for the whole file, rather
-// than attempted.** This project has no zlib dependency anywhere in its
-// tree (`grep -r zlib` finds nothing), and the brief for this module says
-// explicitly to keep it dependency-free -- vendoring zlib (or a from-scratch
-// DEFLATE decoder, a much larger and much easier to get subtly wrong
-// undertaking than PackBits) to read a compression mode most real-world PSD
-// exporters do not even default to was judged not worth the weight for a
-// first landing. Refused **for the whole file**, not silently skipped for
-// just the ZIP-compressed layer: a document that opened missing one layer
-// with no indication would look like it worked, and this codebase's
-// existing refusal discipline (io/Descriptor.hpp: "a refusal is total";
-// io/NpaintFile: "no half-built document") is followed here rather than
-// invented fresh.
+// **Compression.** All four layer-channel compressions are read: raw (0),
+// RLE/PackBits (1), ZIP (2) and ZIP-with-prediction (3).
+//
+// ZIP was refused by name until the premise behind that refusal was
+// re-checked and found false. The argument had been "this project has no
+// zlib dependency anywhere in its tree", and vendoring one to read a mode
+// most exporters do not default to was not worth the weight. But
+// paint/Palette.cpp compiles stb_image with PNG support, PNG *is* DEFLATE,
+// and so `stbi_zlib_decode_buffer()` has been linked into this binary all
+// along. The cost was an include, not a dependency.
+//
+// The mode is also not as rare as that first landing assumed. Photoshop
+// writes ZIP-with-prediction for **16-bit** layer data as a matter of
+// course, so every 16-bit layered PSD hit the refusal -- which is how this
+// was found: Apple's 16-bit "App Icon Template.psd" refused to open at all,
+// on one mask channel.
+//
+// Prediction is undone over samples, not bytes -- see `undoPrediction()` in
+// the .cpp, verified against psd-tools on that file's eight predicted
+// channels. 32-bit's prediction is a different (byte-planar) scheme and is
+// not implemented; it cannot be reached, because 32-bit depth is refused at
+// the file header.
 //
 // **Colour mode.** RGB (mode 3) only. Bitmap, Grayscale, Indexed, CMYK,
 // Multichannel, Duotone and Lab are refused by name, naming the mode
@@ -336,6 +344,22 @@
 // way it already closed the stacking-order and flags-inversion ones above.
 namespace np {
 
+// One guide from the file's Image Resources (resource 1032).
+//
+// `vertical` is the guide's OWN orientation, which is what both Photoshop's
+// direction byte and `app::GuideOrientation` name: a vertical guide is a
+// vertical line at a fixed x. `position` is in document pixels -- the file
+// stores 32nds of a pixel, and this is already divided.
+//
+// A separate struct rather than `app::Guide` because `io/` does not depend on
+// `app/`; app/OpenAnyFile converts. A guide may legitimately sit outside the
+// canvas (Photoshop keeps one dragged past the edge), so a position is carried
+// through rather than clamped or dropped.
+struct PsdGuide {
+  bool vertical = false;
+  float position = 0.0f;
+};
+
 // One PSD import's outcome.
 struct PsdImportResult {
   bool ok = false;
@@ -372,6 +396,17 @@ struct PsdImportResult {
   // per-file surprise, so it lives in this header's comment rather than in
   // every result's `warnings`).
   std::vector<std::string> warnings;
+
+  // The file's guides, in file order (which is the order the user created
+  // them, not sorted). Valid only when `ok`. Empty is the common case and not
+  // a failure: three of the five sample files carry resource 1032 with a count
+  // of zero, and two carry no resource section worth speaking of at all.
+  //
+  // These are NOT part of `document`, because this codebase's guides are
+  // session state (`app::AppState::guides`) rather than document content --
+  // app/OpenAnyFile carries them across. That placement is a statement about
+  // where guides live today, not a claim that it is where they belong.
+  std::vector<PsdGuide> guides;
 };
 
 // Parses `bytes` as a PSD file and builds a layered `Document` from its

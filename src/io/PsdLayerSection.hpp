@@ -148,6 +148,46 @@
 // the shaper log domain, and a `curv` block would be read by Photoshop as a
 // plain tone curve and be silently, confidently wrong. An Adjustment layer
 // exports as pixels or as a warning, never as translated parameters.
+//
+// --- Vector layers: geometry AND a raster, which is not belt and braces ---
+//
+// docs/psd-vector-shapes.md's S1 is closed here. A `LayerKind::Vector` layer
+// used to be the one kind that produced a record with nothing in it at all --
+// the composite came from `flattenDocumentToLinear()`, which materialises
+// vector layers, while the record came from the raw `Layer`, which has no
+// tiles by design (core/VectorRaster.hpp section 1). Open the file anywhere
+// and the picture was right; open its layers and the artwork was gone.
+//
+// Such a layer now writes **both** halves, which is what Photoshop itself does
+// with Maximize Compatibility on -- verified on real files rather than taken
+// from the documentation, since `testNonSquareWithShapesOffPage.psd`'s shape
+// layers carry real rasters while `App Icon Template.psd`'s are 0x0:
+//
+//   * a genuine `vsms` + `SoCo` shape layer (io/PsdVectorWrite, which inverts
+//     io/PsdVectorPath's decoder and io/PsdVectorStyle's `readClrColor()`), so
+//     a reader that understands shapes gets editable geometry back; and
+//   * ordinary channel data, rasterised through the same
+//     `rasterizeVectorLayer()` the compositor reaches through
+//     `MaterializedDocument`, so a reader that does not gets correct pixels.
+//
+// Neither half silently loses artwork, and because the raster and the merged
+// composite come from one rasteriser they cannot disagree about the picture.
+//
+// What a shape layer written here still loses is per-shape rather than
+// per-kind, so it is warned about with numbers rather than by one sentence:
+// shapes past the first (PSD's shape layer is exactly one path), a stroke or a
+// clip (both need a `vstk` descriptor this build does not write), and a fill
+// colour's alpha (PSD's shape colour has no alpha field). io/PsdVectorWrite.hpp
+// adds the one loss that is invisible from here -- a NonZero compound's hole
+// comes back labelled Union rather than Subtract, which draws identically.
+//
+// --- `lclr`: the sheet colour, and the label that is refused ---------------
+//
+// `Layer::colorLabel` writes an `lclr` block through io/PsdLayerExtras. An
+// empty label writes no block, which is the format's own "no label"; a label
+// outside `kLayerColorLabelNames` writes no block either and warns naming it,
+// the same rule `psdBlendKeyFor()` already follows for a blend mode PSD has no
+// key for.
 
 namespace np {
 
@@ -233,10 +273,13 @@ const char* psdBlendKeyFor(BlendMode mode, bool& exactMatch);
 // other kind produces a record, and every kind that loses something on the
 // way produces a warning naming the layer and what was lost (PRD I11):
 // Pigment its latents, Adjustment its op stack, Strokes its dab records,
-// Text its editability, Flats its fill table, Vector its geometry. A kind
-// with no `rgbTiles` to rasterise from produces an EMPTY record and says so
-// -- this build has no per-layer pigment resolve or vector rasteriser to
-// call here, and "exported empty, here is why" is the honest form of that.
+// Text its editability, Flats its fill table. A kind with no `rgbTiles` to
+// rasterise from produces an EMPTY record and says so -- this build has no
+// per-layer pigment resolve to call here, and "exported empty, here is why"
+// is the honest form of that.
+//
+// **Vector is no longer one of them**: it rasterises here and writes its
+// geometry as well, per this header's own section above.
 bool buildPsdLayerRecord(const Layer& layer, const Document& doc, PsdLayerRecord& out,
                          std::vector<std::string>& warnings);
 

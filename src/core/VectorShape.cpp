@@ -58,20 +58,60 @@ void hashPath(uint64_t& h, const Path& path) noexcept {
   }
 }
 
-void hashPaint(uint64_t& h, const Paint& p) noexcept {
+// The gradient a paint references, hashed IN PLACE of the index rather than
+// beside it. The index is a position in a table that travels with the
+// document, so hashing the number would make two documents whose tables differ
+// hash the same -- and hashing the number as WELL would make a document
+// re-rasterise when an unrelated gradient was inserted before this one, which
+// is correct but wasteful. An out-of-range index hashes as the "no gradient"
+// marker, which is what it paints as.
+void hashGradient(uint64_t& h, const GradientDef& g) noexcept {
+  hashU64(h, static_cast<uint64_t>(g.geometry.kind));
+  hashU64(h, static_cast<uint64_t>(g.geometry.spread));
+  hashF32(h, g.geometry.x0);
+  hashF32(h, g.geometry.y0);
+  hashF32(h, g.geometry.x1);
+  hashF32(h, g.geometry.y1);
+  hashU64(h, g.stops.colorStops.size());
+  for (const ColorStop& c : g.stops.colorStops) {
+    hashF32(h, c.position);
+    for (float v : c.color) hashF32(h, v);
+    hashF32(h, c.midpoint);
+  }
+  hashU64(h, g.stops.opacityStops.size());
+  for (const OpacityStop& o : g.stops.opacityStops) {
+    hashF32(h, o.position);
+    hashF32(h, o.opacity);
+    hashF32(h, o.midpoint);
+  }
+  // The name changes no pixel, and is hashed for `Anchor::smooth`'s reason:
+  // this is a hash of the CONTENT, not of a renderer-visible subset somebody
+  // has to keep in step.
+  hashBytes(h, g.name.data(), g.name.size());
+}
+
+void hashPaint(uint64_t& h, const Paint& p, const GradientTable& gradients) noexcept {
   hashU64(h, p.on ? 1u : 0u);
   for (float c : p.rgba) hashF32(h, c);
+  hashU64(h, static_cast<uint64_t>(p.kind));
+  if (p.kind == PaintKind::Gradient && p.gradient < gradients.size()) {
+    hashU64(h, 1u);
+    hashGradient(h, gradients[p.gradient]);
+  } else {
+    hashU64(h, 0u);
+  }
 }
 
 }  // namespace
 
-uint64_t vectorContentHash(const std::vector<VectorShape>& shapes) noexcept {
+uint64_t vectorContentHash(const std::vector<VectorShape>& shapes,
+                           const GradientTable& gradients) noexcept {
   uint64_t h = kFnvOffset;
   hashU64(h, shapes.size());
   for (const VectorShape& s : shapes) {
     hashPath(h, s.path);
-    hashPaint(h, s.fill);
-    hashPaint(h, s.stroke);
+    hashPaint(h, s.fill, gradients);
+    hashPaint(h, s.stroke, gradients);
     // Stroke style, exhaustively -- a dash offset change is a visible change.
     hashF32(h, s.strokeStyle.width);
     hashU64(h, static_cast<uint64_t>(s.strokeStyle.cap));

@@ -2,6 +2,7 @@
 
 #include <set>
 
+#include "flats/FlatsLayer.hpp"
 #include "ui/AtelierTheme.hpp"
 
 namespace np {
@@ -292,25 +293,94 @@ bool runLayerPanel2aTest() {
   }
 
   // **The fill count.** The design's `FLATS - 153 FILLS - NORMAL`, and
-  // docs/ui.md §3.2's "suffixed with the fill count". A Flats layer HAS fills
-  // since the autoFlats port -- this comment used to say it had none, quoting
-  // a pre-port line that has since been corrected at its source -- but the row
-  // still cannot carry the count, and the reason is now a REACH problem rather
-  // than an absence: `layerRowSubLine()` takes a `const Layer&` and nothing
-  // else, while the count lives in an evaluation keyed on content hash x
-  // beneath signature (flats/FlatsLayer) that the panel would have to fetch.
-  // There is also still no Fills panel. So the assertion below is unchanged
-  // and still right; only its justification moved. See
-  // docs/spec-vs-implementation.md section 1 and section 6 (2026-09-09).
+  // docs/ui.md §3.2's "suffixed with the fill count". This used to be a
+  // pinned absence: `layerRowSubLine(const Layer&)` cannot reach the count at
+  // all, since it lives in an evaluation keyed on content hash x source
+  // signature (flats/FlatsLayer), not on the `Layer` alone. The reach problem
+  // is closed by a second, document-aware overload
+  // (`layerRowSubLine(const Document&, size_t)`), so this is now a positive
+  // assertion of what that overload shows, not a note about what it cannot.
+  //
+  // The plain-`Layer` overload above is UNCHANGED -- it still cannot reach a
+  // Document, so it still never shows a count -- and that is checked first,
+  // since the document-aware overload has to fall back to identical output
+  // whenever there is nothing cached to add.
   {
     Layer flats;
     flats.kind = LayerKind::Flats;
     const std::string line = layerRowSubLine(flats);
     check(line == std::string("FLATS") + kSep + "NORMAL" + kSep + "100%" &&
               !contains(line, "FILL"),
-          "flats: the row carries NO fill count -- the fills exist since the autoFlats port, "
-          "but layerRowSubLine() sees only the Layer and the count lives in a cached "
-          "evaluation it cannot reach");
+          "flats (Layer only): the row still carries NO fill count -- this overload has no "
+          "Document to peek an evaluation through, so its output is exactly what it always was");
+  }
+  {
+    // No cached evaluation: built fresh, never handed to flatsEvaluateLayer().
+    // The row must show no count -- not "0 FILLS", which would claim a fact
+    // ("this layer currently has no fills") an uncomputed evaluation cannot
+    // support -- and peeking it must still find nothing afterwards, proving
+    // the row draw itself is not what created an entry.
+    Document doc = Document::createBlank(8, 8, WorkingSpace{});
+    addLayer(doc, 1, makeFlatsLayer("Flats"));
+    check(flatsPeekEvaluation(doc, 1) == nullptr, "flats fixture: no cached evaluation to start with");
+    const std::string uncached = layerRowSubLine(doc, 1);
+    check(uncached == std::string("FLATS") + kSep + "NORMAL" + kSep + "100%" &&
+              !contains(uncached, "FILL"),
+          "flats (Document, no cache): the row shows NO fill count -- not 0 FILLS -- when "
+          "nothing is cached yet");
+    check(flatsPeekEvaluation(doc, 1) == nullptr,
+          "flats (Document, no cache): peeking right after the row draw STILL finds nothing -- "
+          "drawing the row did not trigger an evaluation");
+  }
+  {
+    // A cached evaluation with more than one fill: the same white-background,
+    // two-box fixture flats/FlatsSource.cpp's cache-key test uses, which
+    // evaluates to exactly two live (non-background, non-deleted) fills.
+    Document doc = Document::createBlank(48, 32, WorkingSpace{});
+    for (int y = 0; y < 32; ++y)
+      for (int x = 0; x < 48; ++x) {
+        const PixelCoord at{x, y};
+        doc.layers[0].rgbTiles->getOrCreate(tileCoordAt(at)).writePixel(tileLocalOffset(at),
+                                                                        {1.f, 1.f, 1.f, 1.f});
+      }
+    auto paintBlack = [&](int x, int y) {
+      const PixelCoord at{x, y};
+      doc.layers[0].rgbTiles->getOrCreate(tileCoordAt(at)).writePixel(tileLocalOffset(at),
+                                                                      {0.f, 0.f, 0.f, 1.f});
+    };
+    auto box = [&](int x0, int y0, int x1, int y1) {
+      for (int x = x0; x <= x1; ++x) { paintBlack(x, y0); paintBlack(x, y1); }
+      for (int y = y0; y <= y1; ++y) { paintBlack(x0, y); paintBlack(x1, y); }
+    };
+    box(4, 4, 18, 27);
+    box(26, 4, 42, 27);
+    addLayer(doc, 1, makeFlatsLayer("Flats"));
+
+    const std::shared_ptr<const FlatEvaluation> eval = flatsEvaluateLayer(doc, 1);
+    size_t liveFills = 0;
+    if (eval)
+      for (const int r : eval->roots()) {
+        const FlatFill& f = eval->fills[static_cast<size_t>(r)];
+        if (!f.isBg && !f.deleted) ++liveFills;
+      }
+    check(eval != nullptr && liveFills > 1,
+          "flats fixture: the evaluation has more than one live fill");
+
+    const std::string cached = layerRowSubLine(doc, 1);
+    check(cached == std::string("FLATS") + kSep + std::to_string(liveFills) + " FILLS" + kSep +
+                        "NORMAL" + kSep + "100%",
+          "flats (Document, cached): the row is suffixed with the fill count, equal to the "
+          "cached evaluation's own live-fill count, right after the kind");
+  }
+  {
+    // Non-Flats rows are unchanged: the document-aware overload agrees with
+    // the plain one, character for character, on every kind that is not
+    // Flats -- there is nothing for it to peek through for them.
+    Document doc = Document::createBlank(8, 8, WorkingSpace{});
+    addLayer(doc, 1, makeRgbLayer("art"));
+    check(layerRowSubLine(doc, 0) == layerRowSubLine(doc.layers[0]) &&
+              layerRowSubLine(doc, 1) == layerRowSubLine(doc.layers[1]),
+          "non-Flats rows: the document-aware overload matches the plain one exactly");
   }
 
   std::printf("  -- G. the link badge takes the trailing slot, and only that --\n");

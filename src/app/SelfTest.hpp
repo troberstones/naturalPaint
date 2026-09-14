@@ -1007,6 +1007,11 @@ bool runFiltersTest();
 // on both axes at once. Also headless and GPU-free.
 bool runFiltersExtTest();
 
+// docs/operations.md §2.2: Radial/Spin+Zoom blur (ops/RadialBlur.hpp)
+// and Lens blur (ops/LensBlur.hpp), and their app/FilterOps.hpp/Command
+// wiring. Also headless and GPU-free.
+bool runBlurFiltersTest();
+
 // ops/Inpaint and Filter > Inpaint (PLAN.md "Phase 8 -- Repair it"; PRD D7's
 // first half, the diffusion one). Headless and GPU-free.
 //
@@ -1027,6 +1032,22 @@ bool runFiltersExtTest();
 // exactly that constant to the f16 store's own floor, and a horizontal ramp
 // filling as a monotone ramp rather than as a puddle of its rim's mean.
 bool runInpaintTest();
+
+// ops/PatchMatch and Edit > Content-Aware Fill (PRD D7's second half).
+// Headless and GPU-free. Same hole-not-bound inversion Inpaint's own section
+// asserts, plus what is specific to a search rather than a solve: same seed
+// twice is bit-identical, a different seed can differ, no accepted match's
+// source patch overlaps the hole (checked from outside the engine via its
+// own NNF instrumentation), and a periodic texture's fill continues the
+// period.
+bool runPatchMatchTest();
+
+// ops/SeamHeal and Filter > Seam Heal (PRD D8's missing third piece).
+// Headless and GPU-free. Both offsets are pure addressing changes, so the
+// property asserted is exactness outside the two bands, not merely
+// plausibility inside them.
+bool runSeamHealTest();
+
 // ---------------------------------------------------------------------------
 // PRD D8 / PLAN.md phase 9 ("Tile it"): the two make-tileable pixel ops
 // ---------------------------------------------------------------------------
@@ -1420,6 +1441,12 @@ bool runTransformSessionTest();
 // revision bump, no history entry), and that a locked layer, an empty layer
 // and a Pigment-plus-selection target each refuse by name while a Pigment
 // layer with no selection does not. Headless and GPU-free.
+//
+// Also PRD M9's Option-drag duplicate: `beginMove(..., true)` opens the same
+// `TransformSession` with `duplicating()` set, read once at drag start and
+// never again. Proves the source stays bit-identical through begin, update
+// and commit, the copy lands displaced by exactly the drag's offset, and
+// duplicate + move is ONE history entry.
 bool runMoveToolTest();
 
 // app/CropTool: `Tool::Crop` in both modes, and the two Image-menu items that
@@ -1616,6 +1643,12 @@ bool runPsdLayerSectionTest();
 // hand-written fixture and says so in its own assertion text: every group in
 // every real Photoshop file this project has examined is depth 0.
 bool runPsdLayerExtrasTest();
+
+// io/PsdVectorPath -- decodePsdPathRecords(): the `vsms`/`vmsk` path-record
+// stream (docs/psd-vector-shapes.md step 1) into `core::Path` geometry.
+// Known-answer fixtures are real record blocks dumped from two Photoshop
+// files, cross-checked against psd-tools' own reading. Headless, GPU-free.
+bool runPsdVectorPathTest();
 bool runTransformCompositeSplitTest();
 bool runTransformPreviewTextureTest();
 
@@ -3938,6 +3971,17 @@ bool runActionsPanelTest();
 //
 // Headless, GPU-free, filesystem-free.
 bool runCommandsOpStackTest();
+// app/ChannelsPanel (PRD E13): the CHANNELS dock tab's row mapping --
+// model-order rows keyed by `Document::channels`' own index, and the
+// name-or-placeholder text a row reads. Headless, GPU-free.
+bool runChannelsPanelTest();
+// PRD E12, the app-level half of quick mask: `toggleQuickMask()`
+// (ui/MacPaintUI.hpp) and brush/QuickMaskPaint's dab arithmetic. The engine
+// underneath (core::QuickMask, quickMaskFromSelection/selectionFromQuickMask/
+// paintQuickMask) is already proven by runChannelsTest(); this is the wiring
+// on top of it and the brush/eraser arithmetic a real stroke feeds it.
+// Headless, GPU-free.
+bool runQuickMaskPaintTest();
 // app/CommandsImage -- the command rows for everything that changes pixels or
 // the document's own geometry (docs/automation-plan.md step 1): the Filter
 // menu's seven, Image > Adjustments' nineteen including its four auto solvers,
@@ -5417,6 +5461,56 @@ bool runOpenAnyFileTest();
 // file, never read from a checked-in binary.
 bool runPsdImportTest();
 
+// io/PsdVectorCompose -- step 2 of docs/psd-vector-shapes.md: folds a
+// decoded PSD path stream's per-subpath boolean operations (Union, Subtract,
+// Exclude, Intersect, merge-with-previous) into the single compound `Path`
+// and single `FillRule` this codebase can actually draw, refusing by name
+// (Intersect; Exclude mixed with the others) rather than guessing. Headless,
+// GPU-free; every fixture is hand-built `PsdPathStream` data, not read from
+// a decoder.
+bool runPsdVectorComposeTest();
+
+// io/PsdVectorStyle -- step 3 of docs/psd-vector-shapes.md: the fill and
+// stroke descriptors of a PSD shape layer, and the FIRST real Photoshop bytes
+// this tree has handed to io/Descriptor. Every fixture is a hex dump of an
+// actual `SoCo`/`vscg`/`vstk` payload, checked against psd-tools' independent
+// reading of the same bytes -- including the layer whose colour is readable
+// and whose `fillEnabled` is false, which must import as no fill at all.
+// Headless, GPU-free.
+bool runPsdVectorStyleTest();
+
+// docs/psd-vector-shapes.md S2's PSD half: `GdFl` decoded into a `GradientDef`
+// and written back out.
+//
+// **It cannot prove agreement with Photoshop and says so.** No `.psd` on this
+// machine contains a `GdFl` block at all, so the fixture is this tree's own
+// encoder's output rather than real bytes -- the opposite of
+// runPsdVectorStyleTest(), every one of whose fixtures is a hex dump from a
+// real file. Two things are done about that: the encoded descriptor's whole
+// TREE is asserted against a literal with every Adobe key name spelled out, so
+// a typo is a visible diff rather than a symmetric mistake; and the round trip
+// runs through the DECODER rather than through the encoder's own field list,
+// so a one-sided error -- a unit read as a fraction, a `Lctn` scaled by 100
+// instead of 4096, the y-down negation applied on one side only -- fails even
+// though a shared misunderstanding would not.
+//
+// Also proves: a mid-grey stop goes out sRGB-ENCODED (the blind spot a
+// black-and-white fixture cannot see, since srgbEncode fixes 0 and 1); a
+// 30-degree ramp on a 100x50 shape returns to its own two points; Radial and
+// Reflected keep their centre at p0 rather than at the midpoint;
+// `reverseGradientStops()` mirrors the ramp, moves each midpoint back one stop
+// AND flips it, and is its own inverse; and that a diamond gradient, a noise
+// gradient, an empty `Clrs` list and `fillEnabled = false` each leave the fill
+// OFF with a named warning rather than painting something nobody authored.
+// See app/selftest/PsdVectorGradient.cpp.
+bool runPsdVectorGradientTest();
+
+// The three PSD vector modules run IN ORDER on one real layer's own bytes.
+// Each has its own section proving its own function; none of them can see a
+// seam between the three. Expected values are psd-tools' render of that
+// layer, so a bug shared by our decoder and our composer cannot pass it.
+bool runPsdVectorChainTest();
+
 // **The Filter and Image menus, and app/FilterOps -- the bridge that makes
 // docs/reachability-audit.md's C1 stop being true for six of the ~93 entries
 // it names.** `runBlurTest()` and `runFiltersTest()` already prove the
@@ -6185,6 +6279,11 @@ bool runSvgImportTest();
 // `AppState`. See app/selftest/PathOps.cpp.
 bool runPathOpsTest();
 
+// core/PathBoolean -- union/intersect/difference/xor over two filled regions,
+// against hand-computed areas and intersection points, with rasterised
+// coverage as a second oracle that does not share the area function.
+bool runPathBooleanTest();
+
 // The PATHS panel (docs/path-editing-plan.md section 4) -- `app/PathsPanel`
 // plus the two `PathEditState` transitions the panel needs and the canvas did
 // not.
@@ -6306,6 +6405,32 @@ bool runTextToolTest();
 // all; and stroke bounds outset by half the width, or by miterLimit times it
 // for a miter join. See app/selftest/VectorLayer.cpp.
 bool runVectorLayerTest();
+
+// docs/psd-vector-shapes.md S2 -- a gradient fill on a vector shape, from the
+// document-level table down to both halves of the on-disk form.
+//
+// The load-bearing sections are the three whose failure is SILENT. (1) A
+// gradient's appearance lives in `Document::gradients`, which a shape only
+// POINTS at, so `vectorContentHash()` over the shapes alone cannot see a ramp
+// edit: the stops change, the hash does not, and the cached raster comes
+// back -- an edit that never appears. Asserted at the hash, through
+// `MaterializedDocument`, and through `documentDirtyTiles()`. (2) A
+// `Paint::gradient` past the end of the table must paint NOTHING; the shape
+// under test carries an opaque RED `rgba` and the table a visible ramp, so a
+// fallback to either would show rather than pass. (3) `np:vector` stays at
+// `npvec1:` unless a gradient is present, asserted by the exact 20-hex-digit
+// length difference rather than by eye, so the version bump cannot quietly
+// rewrite every existing document's geometry attribute.
+//
+// Also proves: the vector path and ops/Gradient's `renderGradient()` produce
+// BIT-IDENTICAL texels over the same span (one evaluator, two loops); a
+// gradient STROKE, not only a fill; the no-colour-stops / no-opacity-stops
+// asymmetry through the vector path; io/GradientSerial's round trip including
+// midpoints and opacity stops, its hostile-count and trailing-byte refusals,
+// and its whole-table refusal of an unknown kind byte; and that a document
+// with no gradients writes no `np:gradients` attribute at all, checked against
+// the file's own bytes. See app/selftest/VectorGradient.cpp.
+bool runVectorGradientTest();
 
 // text/Shaper: PRD K2's platform-independent shaping interface, and its
 // CoreText implementation. Point and paragraph text (K3), the y-up-to-y-down
@@ -6644,5 +6769,83 @@ bool runBrushPanelsLiveTest();
 // reads back as the heights written, picking puts it on the panel, and a saved
 // preset gets its paper back. Real files in a temporary folder; no GPU.
 bool runPatternLibraryTest();
+
+// app/PasteCommands (PRD M9): Paste Into and Paste as New Document. (The
+// third build, the Move tool's Option-drag duplicate, is proven by
+// `runMoveToolTest()` instead, beside the rest of that tool's decisions.)
+//
+// Paste Into: the new layer's mask equals the selection's own coverage
+// wherever either the selection or the pasted content touches a tile, the
+// pasted pixels land centred on the selection's bounds (whole pixels, PRD
+// D15's exact path), and it refuses by name without an engaged, non-empty
+// selection or with an empty clipboard.
+//
+// Paste as New Document: `buildDocumentFromClipboard()` (the pure half) gives
+// a document sized exactly to the clipboard's own content bounds holding
+// that content as its one layer, content shifted to the origin; the whole
+// command prefers the internal clipboard and falls back to the OS pasteboard
+// image only when it is empty (PRD M8's "internal never round-trips the
+// pasteboard" applied to the one case ordinary Paste never had to answer).
+// Headless and GPU-free.
+bool runPasteCommandsTest();
+
+// PRD D26: `fill` and `stroke`, through `ops/Fill`'s one
+// engine -- inside/outside a selection and its antialiased edge, no-selection
+// whole-layer fill, blend and opacity arithmetic, a gradient's endpoint
+// colours and angle, a pattern's tiling origin, stroke width and
+// Inside/Center/Outside on a known rectangle, the refusals, and a recorded
+// `fill` replaying to the same texels as the direct call. See
+// app/selftest/CommandsFill.cpp.
+bool runCommandsFillTest();
+
+// PRD Q1 (P0): View > Zoom to Selection.
+// `fitZoomToSelection()` (app/ZoomToSelection.hpp) -- the largest zoom that
+// fits the selection's bounds with the tighter axis deciding, the selection's
+// own centre landing exactly on the viewport's centre (round-tripped through
+// the real `ViewTransform`, not this function's own arithmetic), a rotated
+// view still honoured rather than assumed away, and the existing zoom limits
+// clamping both ends on selections chosen to force each (a 1-texel selection
+// past `kViewZoomMax`, the whole canvas into a much smaller viewport past
+// `kViewZoomMin`). Headless and GPU-free. See app/selftest/ZoomToSelection.cpp.
+bool runZoomToSelectionTest();
+
+// PRD D23: `app/WarpMesh` (the N x N bicubic Bezier lattice) and
+// `app/TransformSession`'s Warp mode built on it -- flat() reproducing a
+// rectangle exactly, anchor-drags carrying their tangent handles, the
+// chord-error tessellation bound on a strongly bent net, a corner drag
+// landing its texel where evaluate() predicts, an interior texel matching
+// evaluate() within the resample kernel's own tolerance, a SelectionPixels
+// warp leaving every texel outside the moved box bit-identical, cancel
+// leaving the document untouched, one undo restoring it, and an affine
+// net's grid-size re-fit being exact. Headless and GPU-free -- nothing here
+// touches ui/. See app/selftest/WarpMesh.cpp.
+bool runWarpMeshTest();
+
+// View > Split View and Match Zoom: pane placement and the match-zoom solve
+// (checked by inverting the placement, with documents that fit, overflow, or
+// one of each), the pane hit-test, the toggle's refusal, the companion view's
+// reset and focus swap. Headless.
+bool runSplitViewTest();
+
+// app/RadialBlurHandles: the Radial Blur dialog's on-canvas handles.
+bool runRadialBlurHandlesTest();
+
+// Radial Blur in Split View: headless ImGui frames drive the real dialog,
+// handles and other-pane click; the blur, preview and dialog follow focus.
+bool runRadialBlurRetargetTest();
+
+// Filter > Dust & Scratches (PRD D11): median gated by a threshold. Headless.
+bool runDustScratchesTest();
+
+// Image > Adjustments > Shadows/Highlights (PRD D12): a tone push driven by a
+// blurred luminance guide, so it is spatial rather than a point curve. Headless.
+bool runShadowsHighlightsTest();
+
+// `naturalPaint --version`: versionString()'s shape. Headless.
+bool runVersionTest();
+
+// docs/shortcuts.md §1.1's six Flats keys: Flats-scoped resolution, the same
+// toggle as the palette cells, and accept-all through the per-gap path. Headless.
+bool runFlatsKeysTest();
 
 }  // namespace np

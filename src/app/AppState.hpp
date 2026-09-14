@@ -603,6 +603,10 @@ enum class AdjustmentRequest {
   AutoContrast,
   AutoColor,
   Equalize,
+
+  // PRD D12: ops/Filters.hpp §12. Photoshop's own
+  // placement (Image > Adjustments), not Filter -- ui/ShadowsHighlightsDialog.hpp.
+  ShadowsHighlights,
 };
 
 // Which tool the user was in before this one, and whether the Hand is being
@@ -694,7 +698,10 @@ inline const char* bucketFillLabel(BucketFill mode) noexcept {
 
 // The flatting key actions, raised by the keymap while a Flats layer is
 // active (scoped bindings) and consumed by ui/MacPaintUI's canvas block.
-enum class FlatsAction { None, DeleteFill, MergePair, PrevGap, NextGap, AcceptGap, ClusterSmall };
+enum class FlatsAction {
+  None, DeleteFill, MergePair, PrevGap, NextGap, AcceptGap, ClusterSmall,
+  AcceptAllGaps,  // ⇧Enter (Flats): every pending gap, one undo step
+};
 
 // The flatting TOOLS: a sticky mode, picked in the FLATS TOOLS palette and
 // held until something else is picked -- the way a brush stays picked.
@@ -1348,10 +1355,18 @@ struct AppState {
   bool requestDeselect = false;
   bool requestReselect = false;
   bool requestInvertSelection = false;
+  // PRD E12: the `Q` keymap action and `MenuAction::ToggleQuickMask` share
+  // this one flag, exactly as the rows above already share theirs between a
+  // key and a menu item.
+  bool requestToggleQuickMask = false;
   bool requestCopy = false;
   bool requestCopyMerged = false;
   bool requestCut = false;
   bool requestPaste = false;
+  // PRD M9: session state for the same reason `requestPaste` is -- a native
+  // menu callback has no safe way to reach `st.documents` either.
+  bool requestPasteInto = false;
+  bool requestPasteAsNewDocument = false;
   bool requestDeleteSelection = false;
 
   // Image > Crop to Selection and Image > Trim to Content
@@ -1495,6 +1510,14 @@ struct AppState {
   // pen-up -- see MacPaintUI.cpp.
   StrokePath strokePath;
   std::vector<Vec2> pendingDabs;
+
+  // PRD E12's own arc-length emitter, kept separate from `strokePath` above
+  // rather than shared: pen-up there flushes into `applyDabsToOilSegment()`
+  // (ui/MacPaintUI.cpp), which a quick-mask stroke must never reach, and a
+  // shared `bool strokeActive` would make that call fire for one anyway.
+  StrokePath quickMaskStrokePath;
+  bool quickMaskStrokeActive = false;
+
   // The most recent dab position, carried across render frames. Oil's
   // contact/velocity/transfer pipeline still runs inside PaintSim::frame()
   // (see PaintSim.hpp's depositDab() comment) and needs a genuine segment --
@@ -1658,6 +1681,11 @@ struct AppState {
   bool requestZoom100 = false;
   bool requestZoomIn = false;
   bool requestZoomOut = false;
+  // PRD Q1 (P0): View > Zoom to Selection. Same
+  // request-then-consume shape as the four above, and consumed at the exact
+  // same point in ui/MacPaintUI.cpp's canvas block -- app/ZoomToSelection.hpp
+  // does the actual fit arithmetic.
+  bool requestZoomToSelection = false;
 
   // **Free Transform** (Cmd+T / Edit > Free Transform), and the session it
   // starts. A request rather than a direct call for the same reason the view
@@ -1672,6 +1700,18 @@ struct AppState {
   // without reaching for the menu -- see app/OpenAnyFile.hpp's
   // `DropOutcome::transformableLayer`.
   bool requestFreeTransform = false;
+
+  // **Warp** (Edit > Warp, PRD D23): a Free Transform <-> Warp toggle,
+  // serviced beside `requestFreeTransform` since a native menu callback has
+  // no live document to decide on. `warpGridN` is the options row's 3/4/5
+  // choice, a plain field since it means nothing without the toggle.
+  bool requestWarp = false;
+  int warpGridN = 4;
+
+  // `--transform-demo warp` only: bends one control point after `requestWarp`
+  // above switches a fresh session into Warp, so `--screenshot` shows a
+  // visibly bent net rather than a flat grid indistinguishable from a box.
+  bool requestWarpDemoBend = false;
 
   // **Image > Adjustments** (app/AdjustmentOps.hpp): which adjustment the next
   // frame should service, and `None` the rest of the time. Serviced and
@@ -1741,11 +1781,22 @@ struct AppState {
   // are conceptually document content (they'd be saved with the file), but
   // this codebase has no document-save path at all yet, and the interactive
   // canvas (this struct, MacPaintUI.cpp) has no core::Document/layer-stack
-  // awareness -- it only knows sim::PaintSim's single dense texture. That
-  // bridge is a real, separately-tracked, deliberately deferred gap; true
-  // guide persistence waits for both a save path and a live-canvas-to-
-  // Document bridge to exist. Until then, guides live here and vanish with
-  // the session, like zoom/pan/mirror/rotation already do.
+  // awareness -- it only knows sim::PaintSim's single dense texture. Until
+  // then, guides live here and vanish with the session, like zoom/pan/mirror/
+  // rotation already do.
+  //
+  // **This comment used to say "this codebase has no document-save path at all
+  // yet", and that stopped being true**: io/NpaintFile's `saveNpaint()` takes a
+  // `Document`. So the remaining obstacle is only the second one -- a guide on
+  // `Document` would be inside every `core::History` snapshot, making each undo
+  // restore a set of guides and each guide drag an undoable edit, which is the
+  // objection app/DocumentLifecycle.hpp already records for the active
+  // selection. That is the decision to make, not a missing mechanism.
+  //
+  // **Seeded on open when a file carries guides**: a PSD stores them in its
+  // image resources, io/PsdImport reads them, and `openFileIntoSession()`
+  // assigns them here. One session-wide list, so the last file with guides
+  // wins -- and a file with none leaves a hand-placed set alone.
   std::vector<Guide> guides;
 
   // PLAN.md Phase 3 step 6 ("Apply pass -- shaper -> 3-D LUT fetch ->

@@ -7,9 +7,13 @@
 #include <string_view>
 #include <vector>
 
-#include "core/Document.hpp"
-#include "core/Layer.hpp"
 #include "core/Pigment.hpp"
+
+namespace np {
+// Used only by const-reference in declarations below; the definition lives
+// in core/Document.hpp, which callers already include to construct one.
+struct Document;
+}  // namespace np
 
 // core/Blend (PLAN.md "Phase 5 -- Stack it", step 2: "the linear-safe set
 // (over, plus, multiply, screen, min, max) and `Mix`, the KM latent lerp.

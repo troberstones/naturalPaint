@@ -15,6 +15,7 @@
 #include "core/Layer.hpp"
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
+#include "core/VectorShape.hpp"
 #include "io/PsdImport.hpp"
 
 namespace np {
@@ -130,11 +131,11 @@ int runPsdReport(const char* path) {
   const Document& doc = r.document;
   std::printf("\ndocument %dx%d, %zu layers\n\n", doc.width, doc.height, doc.layers.size());
 
-  std::printf("%-4s %-34s %-10s %6s %4s %4s %5s  %-22s %s\n", "#", "name", "blend", "opac", "vis",
-              "clip", "tiles", "pixel extent (l,t,r,b)", "coverage");
-  std::printf("%-4s %-34s %-10s %6s %4s %4s %5s  %-22s %s\n", "----",
+  std::printf("%-4s %-34s %-10s %6s %4s %4s %-6s %5s  %-22s %s\n", "#", "name", "blend", "opac",
+              "vis", "clip", "label", "tiles", "pixel extent (l,t,r,b)", "coverage");
+  std::printf("%-4s %-34s %-10s %6s %4s %4s %-6s %5s  %-22s %s\n", "----",
               "----------------------------------", "----------", "------", "---", "----",
-              "-----", "----------------------", "--------");
+              "------", "-----", "----------------------", "--------");
 
   // Folded rather than listed: a real document repeats the same handful of
   // blend keys across dozens of layers, and "45 x norm" is the finding where
@@ -152,9 +153,76 @@ int runPsdReport(const char* path) {
 
     PixelExtent e;
     if (l.rgbTiles.has_value()) e = measure(*l.rgbTiles);
-    if (!e.any) ++empty;
+
+    // A Vector layer's content is its shapes; it has no tiles at all, and
+    // measuring only tiles would report every imported shape layer as EMPTY
+    // -- the exact opposite of the truth, and the reason this branch exists
+    // rather than the column simply being blank for it.
+    const bool isVector = l.kind == LayerKind::Vector;
+    if (!e.any && !isVector) ++empty;
+
+    // `--` for unlabelled ('lclr' absent or index 0), which is the
+    // overwhelmingly common case -- an empty column would be easy to misread
+    // as a missing measurement rather than "no colour".
+    const char* label = l.colorLabel.empty() ? "--" : l.colorLabel.c_str();
 
     char extent[48];
+    char coverage[128];
+    if (isVector) {
+      // The DRAWN extent, so this column is comparable with the raster rows
+      // above it and with an external renderer. Deliberately not
+      // `vectorShapesBounds()`, which outsets by the worst case a mitre join
+      // could reach -- Photoshop writes miterLimit 100, so that is half the
+      // stroke width times 100, and every shape here would report 50 px of
+      // margin no join in it actually uses.
+      PathBounds b;
+      for (const VectorShape& sh : l.shapes) {
+        const PathBounds t = pathTightBounds(sh.path);
+        if (!t.valid) continue;
+        b = b.valid ? PathBounds{true, std::min(b.minX, t.minX), std::min(b.minY, t.minY),
+                                 std::max(b.maxX, t.maxX), std::max(b.maxY, t.maxY)}
+                    : t;
+      }
+      if (b.valid) {
+        std::snprintf(extent, sizeof(extent), "(%.0f,%.0f,%.0f,%.0f)",
+                      static_cast<double>(b.minX), static_cast<double>(b.minY),
+                      static_cast<double>(b.maxX), static_cast<double>(b.maxY));
+      } else {
+        std::snprintf(extent, sizeof(extent), "-- NO SHAPES --");
+      }
+      size_t filled = 0, stroked = 0;
+      for (const VectorShape& sh : l.shapes) {
+        if (sh.fill.on) ++filled;
+        if (sh.stroke.on) ++stroked;
+      }
+      // A GRADIENT fill's `rgba` is meaningless (core/VectorShape.hpp), so
+      // printing it would report a black fill where the truth is a ramp --
+      // the same shape of lie as reporting a Vector layer as EMPTY, which is
+      // why this whole branch exists.
+      const Paint firstFill = l.shapes.empty() ? Paint{} : l.shapes.front().fill;
+      if (firstFill.kind == PaintKind::Gradient) {
+        const size_t stops = firstFill.gradient < doc.gradients.size()
+                                 ? doc.gradients[firstFill.gradient].stops.colorStops.size()
+                                 : 0;
+        std::snprintf(coverage, sizeof(coverage),
+                      "%zu shape(s), %zu filled, %zu stroked, first fill GRADIENT #%u (%zu "
+                      "colour stop(s))",
+                      l.shapes.size(), filled, stroked, firstFill.gradient, stops);
+      } else {
+        const std::array<float, 4>& c = firstFill.rgba;
+        std::snprintf(coverage, sizeof(coverage),
+                      "%zu shape(s), %zu filled, %zu stroked, first fill linear rgba "
+                      "%.5f %.5f %.5f %.5f",
+                      l.shapes.size(), filled, stroked, static_cast<double>(c[0]),
+                      static_cast<double>(c[1]), static_cast<double>(c[2]),
+                      static_cast<double>(c[3]));
+      }
+      std::printf("%-4zu %-34.34s %-10.10s %6.3f %4s %4s %-6s %5s  %-22s %s\n", i, l.name.c_str(),
+                  l.blend.c_str(), static_cast<double>(l.opacity), l.visible ? "Y" : "n",
+                  l.clipped ? "Y" : "n", label, "vec", extent, coverage);
+      continue;
+    }
+
     if (e.any) {
       std::snprintf(extent, sizeof(extent), "(%d,%d,%d,%d)", e.minX, e.minY, e.maxX + 1,
                     e.maxY + 1);
@@ -162,7 +230,6 @@ int runPsdReport(const char* path) {
       std::snprintf(extent, sizeof(extent), "-- EMPTY --");
     }
 
-    char coverage[128];
     if (e.nonZeroAlpha == 0) {
       std::snprintf(coverage, sizeof(coverage), "no alpha > 0");
     } else {
@@ -171,9 +238,9 @@ int runPsdReport(const char* path) {
                     e.opaque, e.meanR, e.meanG, e.meanB, e.meanA);
     }
 
-    std::printf("%-4zu %-34.34s %-10.10s %6.3f %4s %4s %5zu  %-22s %s\n", i, l.name.c_str(),
+    std::printf("%-4zu %-34.34s %-10.10s %6.3f %4s %4s %-6s %5zu  %-22s %s\n", i, l.name.c_str(),
                 l.blend.c_str(), static_cast<double>(l.opacity), l.visible ? "Y" : "n",
-                l.clipped ? "Y" : "n", e.tiles, extent, coverage);
+                l.clipped ? "Y" : "n", label, e.tiles, extent, coverage);
   }
 
   std::printf("\n-- blend keys as imported --\n");
@@ -181,6 +248,16 @@ int runPsdReport(const char* path) {
     std::printf("  %-20s %zu layer(s)\n", name.c_str(), n);
   std::printf("  hidden: %zu   clipped: %zu   with no pixels at all: %zu   of %zu\n", hidden,
               clipped, empty, doc.layers.size());
+
+  // Guides (Image Resources 1032), in FILE order -- the order the user
+  // created them, not sorted. Empty is the common case, not a failure: see
+  // io/PsdImport.hpp's own header on `PsdImportResult::guides`.
+  std::printf("\n-- guides: %zu --\n", r.guides.size());
+  for (size_t i = 0; i < r.guides.size(); ++i) {
+    const PsdGuide& g = r.guides[i];
+    std::printf("  %-4zu %-10s %.1f px\n", i, g.vertical ? "vertical" : "horizontal",
+               static_cast<double>(g.position));
+  }
 
   // The warnings are per-layer and, like the blend keys, repetitive by nature
   // -- one Photoshop document tends to reach for the same unmapped mode many

@@ -33,11 +33,13 @@ namespace np {
 // **Written out rather than derived from the enum**, for `app/selftest/
 // ControlsLayout.cpp`'s stated reason: a list derived from the thing it
 // checks agrees with a bug instead of catching it.
-inline constexpr std::array<PathOp, 11> kPathPanelOps = {
+inline constexpr std::array<PathOp, 15> kPathPanelOps = {
     PathOp::Close,        PathOp::Open,         PathOp::Join,
     PathOp::Reverse,      PathOp::MakeCompound, PathOp::ReleaseCompound,
     PathOp::Smooth,       PathOp::Corner,       PathOp::Break,
     PathOp::InsertAnchor, PathOp::DeleteAnchor,
+    PathOp::Unite,        PathOp::Intersect,    PathOp::Subtract,
+    PathOp::Exclude,
 };
 
 // One frame's answer to "what does this selection permit?", one entry per

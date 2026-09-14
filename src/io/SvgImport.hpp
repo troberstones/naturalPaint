@@ -87,18 +87,33 @@
 // every translation unit for a field nothing can populate yet would be the
 // wrong trade.
 //
-// That table does not exist. Building it is not a contained change: it
-// needs a new document-level type threaded through `core::Layer` (or
-// `core::Document`), a version bump in io/PathSerial for the shapes that
-// reference it, and a decision about a table entry's lifetime when every
-// shape referencing it is deleted -- none of which is this track's file
-// list (`core/VectorShape.hpp`, `core/LayerOps.hpp` and io/PathSerial are
-// explicitly not in it). Half-building it -- adding a `GradientPaint`
-// struct here with nowhere real to put the table, or reusing `Paint::rgba`
-// to store an average colour -- would produce a shape that opens without
-// error and renders wrong, which is exactly the failure mode this
-// project's refusal discipline (io/PsdImport.hpp, io/Descriptor.hpp) exists
-// to avoid.
+// **That table now exists** (docs/psd-vector-shapes.md S2, built for the PSD
+// importer): `core::Document::gradients` is a `GradientTable` of
+// `GradientDef`s -- a `GradientGeometry` in document texel coordinates, a
+// `GradientStops`, and a name -- and `Paint::kind`/`Paint::gradient` point
+// into it. `io/PathSerial` carries the two paint fields at `npvec2:` and
+// io/GradientSerial carries the table as `np:gradients`. A table entry's
+// lifetime is settled: entries are never erased, because an index is a
+// POSITION and erasing one would renumber every index after it
+// (core/Gradient.hpp).
+//
+// **So what is left for THIS file is the SVG half only**, and it is a real
+// piece of work rather than a wiring-up: resolving each `<linearGradient>` /
+// `<radialGradient>` into that document space is the part below that has not
+// been written, and it is where the accumulated transform at the REFERENCING
+// shape composes with the gradient element's own `gradientTransform`,
+// `gradientUnits="objectBoundingBox"` has to be resolved against each
+// referencing shape's bounds (so two shapes sharing one `url(#id)` may need
+// two table entries after all), and `spreadMethod` maps onto
+// `GradientSpread`. `<pattern>` is still unrepresentable: `PaintKind` has no
+// `Pattern` member, deliberately, since nothing could populate or paint one.
+//
+// Until that is written, the behaviour below is unchanged. Half-building it --
+// reusing `Paint::rgba` to store an average colour, or pointing at a table
+// entry whose geometry was resolved in the wrong space -- would produce a
+// shape that opens without error and renders wrong, which is exactly the
+// failure mode this project's refusal discipline (io/PsdImport.hpp,
+// io/Descriptor.hpp) exists to avoid.
 //
 // **`<use>` is modelled as if its target were reparented directly under the
 // `<use>` element itself**, rather than the spec's own "invisible shadow
@@ -119,14 +134,14 @@
 // (`fill="url(#g) red"`) when the author supplied one, else to no paint at
 // all -- never to a guessed flat colour this importer invented.
 //
-// What the table would need, for whoever builds it: one `GradientStops`
-// (already exactly the right shape) plus a `GradientGeometry` per gradient
-// element resolved into the SAME flattened document space every shape's
-// `path` is in (a `<linearGradient>`'s own `gradientTransform` composes
-// with whatever accumulated transform was in effect at the *referencing*
-// shape, exactly like this file's `<clipPath>` handling below), keyed by
-// the element's `id` so multiple shapes can share one table entry the way
-// they share one `url(#id)`.
+// What a `GradientDef` needs, for whoever writes the SVG half: its
+// `GradientStops` (already exactly the right shape) and a `GradientGeometry`
+// resolved into the SAME flattened document space every shape's `path` is in
+// -- a `<linearGradient>`'s own `gradientTransform` composes with whatever
+// accumulated transform was in effect at the *referencing* shape, exactly
+// like this file's `<clipPath>` handling below. `GradientDef::name` is where
+// the element's `id` goes, so several shapes sharing one `url(#id)` can share
+// one table entry the way they share the reference.
 //
 // ==========================================================================
 // 4. clipPath: a single child maps directly, several are UNIONED

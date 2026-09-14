@@ -399,6 +399,17 @@ void drawAtelierRules(const AtelierBands& bands);
 //
 // So the state is small: the arrangement, the companion's id, and which of the
 // two panes currently holds the active document.
+//
+// Split view adds the two fields below. `AppState::view` stays the
+// FOCUSED pane's view (unchanged meaning, unchanged type: the ~116 readers
+// across `ui/MacPaintUI.cpp` that read `st.view` for "the" canvas need no
+// change, since the focused pane is by construction the active document).
+// The companion needed a second one, and it lives here beside `companion`
+// itself rather than on `OpenDocument` -- giving every document its own
+// `CanvasView` is the bigger, session-wide change this track does not own;
+// this build only ever shows two documents at once, so one extra
+// `CanvasView` for whichever one is not focused is the whole of what a
+// second pane needs.
 struct AtelierSplitState {
   AtelierSplit mode = AtelierSplit::Single;
   // The document in the unfocused pane. 0 when there is none, which is every
@@ -407,6 +418,20 @@ struct AtelierSplitState {
   // 0 or 1, indexing `AtelierPanes::pane`. Which one holds the active
   // document.
   int focusedPane = 0;
+  // The companion pane's own zoom/pan. `zoom <= 0` is a sentinel, not a
+  // degenerate value someone set on purpose: it means "no fit computed for
+  // the document in this slot yet", and `ui/MacPaintUI.cpp`'s companion-pane
+  // block fits-and-centres it the first time it draws that document.
+  // `atelierPaneDocuments()` sets the sentinel whenever it assigns a
+  // genuinely different document to `companion`; a focus swap (clicking the
+  // companion pane) does not go through that path and instead exchanges this
+  // with `AppState::view` directly, so the view a document had keeps
+  // following it between the two panes.
+  CanvasView companionView{};
+  // View > Match Zoom (enabled only in split view): keeps the companion's
+  // zoom equal to the focused pane's and its pan the same NORMALISED point
+  // of its own document -- see app/SplitView.hpp's `matchZoomView()`.
+  bool matchZoom = false;
 };
 
 // What each pane shows, after `state` has been normalised against the session.
@@ -435,6 +460,23 @@ struct AtelierPaneDocuments {
 // split gets it back when a second document exists again, rather than having
 // to ask twice.
 AtelierPaneDocuments atelierPaneDocuments(DocumentSession& session, AtelierSplitState& state);
+
+// View > Split View. Turns the split off if it is already on (either
+// arrangement) -- the same "the way out is the way in" rule the tab strip's
+// own two icons use. Turning it on needs a second open document; with fewer,
+// `state` is left unchanged and the returned string is the refusal to put on
+// the status line. Empty string means it took effect.
+std::string toggleSplitView(DocumentSession& session, AtelierSplitState& state);
+
+// A click on the companion pane. Makes `incoming` the session's active
+// document, records the document it displaced as the new companion, sets
+// which pane is now focused, and -- the reason this is not just three field
+// writes at the call site -- swaps `focusedView` (`AppState::view`) with
+// `state.companionView` so each document keeps the zoom/pan it had rather
+// than the two panes silently trading views along with their documents. A
+// no-op if `incoming` is already the active document.
+void focusSplitPane(DocumentSession& session, AtelierSplitState& state, CanvasView& focusedView,
+                    int paneIndex, DocumentId incoming);
 
 // docs/ui.md section 2's tab strip: the open documents as tabs (PRD **A5**),
 // and at its right edge the two split icons that section 5 asks for.

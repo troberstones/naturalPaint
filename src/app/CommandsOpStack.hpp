@@ -1,7 +1,9 @@
 #pragma once
 
+#include <array>
 #include <string>
 
+#include "app/Command.hpp"
 #include "core/OpStack.hpp"
 #include "io/Json.hpp"
 
@@ -35,5 +37,27 @@ JsonValue opToJson(const Op& op, std::string* errorOut);
 // The inverse. False, with `*errorOut` naming what it could not read, for an
 // unknown kind id or a class this build cannot evaluate.
 bool opFromJson(const JsonValue& value, Op* out, std::string* errorOut);
+
+// Encoders for the five Select-menu refines, beside their readers so a key
+// added to one is visible from the other. The colour is display-encoded sRGB,
+// as the Colour Range swatch holds it.
+Command selectGrowCommand(float radius);
+Command selectShrinkCommand(float radius);
+Command selectFeatherCommand(float radius);
+Command selectColourRangeCommand(const std::array<float, 3>& swatchSrgb, float tolerance,
+                                 float edgeBand);
+Command selectLuminanceRangeCommand(float low, float high, float edgeBand);
+
+// --- the channel commands' encoders (PRD E11, E13; docs/automation.md §2.2)
+// ---------------------------------------------------------------------------
+//
+// Beside the readers in app/CommandsOpStack.cpp. `ui/MacPaintUI.cpp`'s two
+// Select menu dialogs and its CHANNELS panel build a `Command` through these
+// rather than a `JsonValue{}` literal, so a key renamed on one side is a key
+// visibly not renamed on the other.
+Command saveSelectionAsChannelCommand(std::string name);
+Command loadChannelAsSelectionCommand(std::string name);
+Command renameChannelCommand(std::string name, std::string newName);
+Command deleteChannelCommand(std::string name);
 
 }  // namespace np

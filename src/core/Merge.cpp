@@ -997,7 +997,7 @@ LayerOpResult rasteriseLayer(Document& doc, size_t index, std::vector<std::strin
     const size_t geometryCount = shapes.size();
     Layer raster = layer;
     raster.kind = LayerKind::RGB;
-    raster.rgbTiles = rasterizeVectorLayer(shapes, doc.width, doc.height);
+    raster.rgbTiles = rasterizeVectorLayer(shapes, doc.gradients, doc.width, doc.height);
     raster.shapes.clear();
     raster.nextShapeId = 1;
     raster.text = TextContent{};

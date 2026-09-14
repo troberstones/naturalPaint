@@ -19,6 +19,7 @@ namespace {
 constexpr ControlsSection kAllSections[] = {
     ControlsSection::Tools,        ControlsSection::Options,   ControlsSection::Color,
     ControlsSection::Layers,       ControlsSection::History,   ControlsSection::Comps,
+    ControlsSection::Channels,
     ControlsSection::Actions,
     ControlsSection::FlatsSegmentation,
     ControlsSection::Grade,        ControlsSection::Histogram, ControlsSection::BrushLibrary,
@@ -436,15 +437,16 @@ bool runPanelLayoutTest() {
     check(exactlyOnceEach(layout),
           "panel layout: a version 1 file parses to a complete, valid layout");
     const std::vector<ControlsSection> right = layout.sectionsIn(PanelPlacement::Right);
-    // **Seven, not the six the file names**, and the extra one is the point of
-    // the repair rule rather than a wrinkle in it: SEGMENTATION did not exist
-    // when a version 1 file was written, so it is appended at its own default
-    // placement, which is this dock. The three positional checks still pin the
-    // file's own order, because an appended section goes to the END -- what a
-    // user arranged in the previous build is not reshuffled by a section they
-    // have never seen. (FLATS TOOLS is appended too, but to the flyout rail,
-    // so it does not appear here.)
-    check(right.size() == 7 && right[0] == ControlsSection::Grade &&
+    // **Eight, not the six the file names**, and the extra two are the point
+    // of the repair rule rather than a wrinkle in it: SEGMENTATION and
+    // CHANNELS (PRD E13) did not exist when a version 1 file was written, so
+    // each is appended at its own default placement, which for both is this
+    // dock. The three positional checks still pin the file's own order,
+    // because an appended section goes to the END -- what a user arranged in
+    // the previous build is not reshuffled by a section they have never seen.
+    // (FLATS TOOLS is appended too, but to the flyout rail, so it does not
+    // appear here.)
+    check(right.size() == 8 && right[0] == ControlsSection::Grade &&
               right[1] == ControlsSection::Layers && right[2] == ControlsSection::Color,
           "panel layout: **version 1's `section <key> 1` lands in the right dock, in order** -- "
           "a user's arrangement from the previous build survives the revamp");
@@ -502,7 +504,7 @@ bool runPanelLayoutTest() {
         "naturalPaint-panel-layout 2\n"
         "panel layers right 1.000 0\n");
     check(exactlyOnceEach(missing),
-          "panel layout: a file naming one section still yields all eighteen");
+          "panel layout: a file naming one section still yields all twenty");
     check(missing.placementOf(ControlsSection::Tools) == PanelPlacement::Left &&
               missing.placementOf(ControlsSection::Options) == PanelPlacement::Top,
           "panel layout: **an appended section arrives at its default placement**, not swept "
@@ -597,6 +599,42 @@ bool runPanelLayoutTest() {
               e2.effectiveDockExtents().left == 0.0f && e2.dockExtents().left > 0.0f,
           "panel layout: **an emptied dock reports zero extent while remembering its own** -- "
           "so moving its last panel out costs no pixels and moving one back costs no setup");
+
+    // Flyout heights: the same floor / zero / refusal shape as a dock extent.
+    PanelLayout f;
+    check(f.flyoutHeightOf(ControlsSection::Paths) == 0.0f,
+          "panel layout: a flyout never resized reports zero, meaning the UI's default height");
+    f.setFlyoutHeight(ControlsSection::Paths, 10.0f);
+    check(f.flyoutHeightOf(ControlsSection::Paths) == kFlyoutMinHeight,
+          "panel layout: a flyout dragged shorter than its floor stops at the floor");
+    f.setFlyoutHeight(ControlsSection::Paths, 510.0f);
+    f.setFlyoutHeight(ControlsSection::Paths, -1.0f);
+    f.setFlyoutHeight(ControlsSection::Paths, std::nanf(""));
+    check(f.flyoutHeightOf(ControlsSection::Paths) == 510.0f,
+          "panel layout: a negative or NaN flyout height is refused, not stored");
+    f.setPlacement(ControlsSection::Paths, PanelPlacement::Right);
+    f.setPlacement(ControlsSection::Paths, PanelPlacement::Flyout);
+    check(f.flyoutHeightOf(ControlsSection::Paths) == 510.0f,
+          "panel layout: a flyout docked and flown out again keeps the height it was given");
+    f.setFlyoutHeight(ControlsSection::Paths, 0.0f);
+    check(f.flyoutHeightOf(ControlsSection::Paths) == 0.0f,
+          "panel layout: zero puts a flyout back on the default height");
+
+    PanelLayout g;
+    g.parse("naturalPaint-panel-layout 3\n"
+            "flyout paths 333\n"      // before its panel's line, and applied anyway
+            "flyout paths 444\n"      // duplicate: first wins
+            "flyout nosuchpanel 200\n"
+            "flyout actions -4\n"     // refused
+            "flyout history 12 7\n"   // malformed
+            "flyout layers 5\n"       // clamped to the floor
+            "panel paths flyout 1.000 0 0 1\n");
+    check(exactlyOnceEach(g) && g.flyoutHeightOf(ControlsSection::Paths) == 333.0f &&
+              g.flyoutHeightOf(ControlsSection::Actions) == 0.0f &&
+              g.flyoutHeightOf(ControlsSection::History) == 0.0f &&
+              g.flyoutHeightOf(ControlsSection::Layers) == kFlyoutMinHeight,
+          "panel layout: `flyout` lines parse by the repair rules -- first wins, unknown key and "
+          "bad height skipped, a height below the floor clamped, order-independent");
   }
 
   // ==========================================================================
@@ -621,6 +659,7 @@ bool runPanelLayoutTest() {
     out.setCollapsed(ControlsSection::Comps, true);
     out.setDockExtent(PanelPlacement::Right, 400.0f);
     out.setDockExtent(PanelPlacement::Bottom, 160.0f);
+    out.setFlyoutHeight(ControlsSection::History, 300.5f);
     {
       std::string err;
       check(out.saveToFile(path, &err) && err.empty(),
@@ -631,7 +670,9 @@ bool runPanelLayoutTest() {
           "panel layout: the file is written in the version 3 grammar");
     check(contains(bytes.c_str(), "panel layers bottom") &&
               contains(bytes.c_str(), "panel history flyout") &&
-              contains(bytes.c_str(), "dock bottom 160.000"),
+              contains(bytes.c_str(), "dock bottom 160.000") &&
+              contains(bytes.c_str(), "flyout history 300.500") &&
+              !contains(bytes.c_str(), "flyout paths"),
           "panel layout: and the bytes really say what the layout says");
     check(!fs::exists(path + ".tmp", ec),
           "panel layout: the save left no .tmp file beside the real one");
@@ -650,6 +691,7 @@ bool runPanelLayoutTest() {
       if (a.section != b.section || a.placement != b.placement || a.collapsed != b.collapsed)
         identical = false;
       if (std::fabs(a.weight - b.weight) > 1e-3f) identical = false;
+      if (std::fabs(a.flyoutHeight - b.flyoutHeight) > 1e-3f) identical = false;
     }
     check(identical,
           "panel layout: **every panel comes back with the same placement, order, weight and "
