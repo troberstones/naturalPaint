@@ -55,6 +55,39 @@ LayerBounds boundsFromTextContent(const TextContent& text) {
   return b;
 }
 
+// A Vector layer's box comes from its shapes, strokes included.
+LayerBounds boundsFromVectorShapes(const std::vector<VectorShape>& shapes) {
+  LayerBounds b;
+  const PathBounds pb = vectorShapesBounds(shapes);
+  if (!pb.valid) return b;
+  b.empty = false;
+  b.minX = static_cast<int32_t>(std::floor(pb.minX));
+  b.minY = static_cast<int32_t>(std::floor(pb.minY));
+  b.maxX = static_cast<int32_t>(std::ceil(pb.maxX));
+  b.maxY = static_cast<int32_t>(std::ceil(pb.maxY));
+  return b;
+}
+
+// Text and Vector hold geometry rather than pixels, so they have the only kinds
+// admitted without tiles.
+bool isGeometryOnlyKind(LayerKind kind) noexcept {
+  return kind == LayerKind::Text || kind == LayerKind::Vector;
+}
+
+LayerBounds sessionBoundsFor(const Layer& layer) {
+  if (layer.kind == LayerKind::Text) return boundsFromTextContent(layer.text);
+  if (layer.kind == LayerKind::Vector) return boundsFromVectorShapes(layer.shapes);
+  return layerContentBounds(layer);
+}
+
+LayerTransformResult transformForSession(Document& doc, size_t index, const Mat3& m,
+                                         const DocumentTransformParams& params) {
+  const LayerKind kind = index < doc.layers.size() ? doc.layers[index].kind : LayerKind::RGB;
+  if (kind == LayerKind::Text) return transformTextLayer(doc, index, m);
+  if (kind == LayerKind::Vector) return transformVectorLayer(doc, index, m, params);
+  return transformLayer(doc, index, m, params);
+}
+
 }  // namespace
 
 namespace {
@@ -108,7 +141,7 @@ std::string layerLabel(const Document& doc, size_t index) {
 }
 
 // One member's admission to a `TransformTarget::LayerSet` session -- header
-// section 8: exactly `beginLayer()`'s own predicate (locked; Text is
+// section 8: exactly `beginLayer()`'s own predicate (locked; Text and Vector are
 // geometry-only and always admitted; every other kind needs RGB or Pigment
 // tiles; the bounds must be non-empty), duplicated here rather than factored
 // out of `beginLayer()` so that function's code is untouched by this feature
@@ -133,8 +166,8 @@ MemberAdmission admitLayerSetMember(const Document& doc, size_t index) {
     a.error = "transform refused: " + layerLabel(doc, index) + " is locked. Unlock it first.";
     return a;
   }
-  const bool geometryOnlyText = layer.kind == LayerKind::Text;
-  if (!geometryOnlyText && !layer.rgbTiles.has_value() && !layer.pigmentTiles.has_value()) {
+  if (!isGeometryOnlyKind(layer.kind) && !layer.rgbTiles.has_value() &&
+      !layer.pigmentTiles.has_value()) {
     // Covers Group and Adjustment with no special case for either -- section
     // 8's stated decision: a Group is refused exactly as an Adjustment layer
     // is, because neither holds a pixel for a matrix to resample.
@@ -142,7 +175,7 @@ MemberAdmission admitLayerSetMember(const Document& doc, size_t index) {
              layerKindName(layer.kind) + " layer, which holds no pixels to transform.";
     return a;
   }
-  a.bounds = geometryOnlyText ? boundsFromTextContent(layer.text) : layerContentBounds(layer);
+  a.bounds = sessionBoundsFor(layer);
   if (a.bounds.empty) {
     a.error = "transform refused: " + layerLabel(doc, index) + " has no content -- nothing to "
              "transform.";
@@ -497,32 +530,20 @@ TransformBeginResult TransformSession::beginLayer(OpenDocument& od, size_t layer
              " is locked. Unlock it first.";
     return r;
   }
-  // A Text layer is the one kind with no pixels that a transform still means
-  // something for: `TextContent::origin` is its geometry, and `ops/
-  // DocumentTransform`'s `transformLayer()` moves that point (and refuses a
-  // scale or rotation by name, since a `TextContent` has nowhere to put one).
-  // Without this exemption the refusal below fired first and the Move tool
-  // did nothing at all on a caption -- both the drag and the arrow-key nudge,
-  // since `nudgeMove()` comes through here too.
-  //
-  // The same gap is still open for `LayerKind::Vector`, which also holds no
-  // tiles: its geometry is `layer.shapes`, every anchor of which would have
-  // to be mapped. That is a bigger change than this one and nobody has asked
-  // for it, so it is named here rather than half-done.
-  const bool geometryOnlyText = layer.kind == LayerKind::Text;
-  if (!geometryOnlyText && !layer.rgbTiles.has_value() && !layer.pigmentTiles.has_value()) {
+  // Text and Vector layers hold geometry, not pixels: `transformTextLayer()`
+  // composes the block's matrix and `transformVectorLayer()` maps every anchor.
+  // Without this exemption the Move tool, Cmd+T and `nudgeMove()` all refused them.
+  if (!isGeometryOnlyKind(layer.kind) && !layer.rgbTiles.has_value() &&
+      !layer.pigmentTiles.has_value()) {
     r.error = "transform refused: " + layerLabel(doc, layerIndex) + " is a " +
              layerKindName(layer.kind) + " layer, which holds no pixels to transform.";
     return r;
   }
-  // `layerContentBounds()` scans tile stores and finds nothing on a Text
-  // layer, so its bounds come from the shaped block instead. Deliberately not
-  // widened inside `layerContentBounds()` itself: that function is read by
-  // thumbnails, fitting and several layer ops, and quietly giving Text layers
-  // bounds everywhere is a change with a much larger blast radius than the
-  // one thing needed here.
-  const LayerBounds bounds =
-      geometryOnlyText ? boundsFromTextContent(layer.text) : layerContentBounds(layer);
+  // `layerContentBounds()` scans tile stores and finds nothing on these kinds,
+  // so their bounds come from the geometry. Not widened inside
+  // `layerContentBounds()` itself: thumbnails, fitting and several layer ops
+  // read it, and that is a much larger blast radius.
+  const LayerBounds bounds = sessionBoundsFor(layer);
   if (bounds.empty) {
     r.error = "transform refused: " + layerLabel(doc, layerIndex) +
              " has no content -- nothing to transform.";
@@ -750,6 +771,12 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
                   " is locked. Unlock it first.";
       return out;
     }
+    if (layer.kind == LayerKind::Vector) {
+      out.error = "warp commit refused: " + layerLabel(od.document, layerIndex_) +
+                  " is a Vector layer, and its shapes can only follow an affine transform. Use "
+                  "Free Transform, or rasterize the layer first to warp it.";
+      return out;
+    }
     if (layer.kind == LayerKind::Pigment || !layer.rgbTiles.has_value()) {
       out.error = "warp commit refused: " + layerLabel(od.document, layerIndex_) +
                   " -- warping a Pigment layer needs the identical mass-weighted, lobe-free-"
@@ -859,10 +886,7 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
     // than something a partial loop could half-apply before discovering it.
     Document scratch = od.document;
     for (const size_t index : layerIndices_) {
-      const bool textLayer =
-          index < scratch.layers.size() && scratch.layers[index].kind == LayerKind::Text;
-      const LayerTransformResult r = textLayer ? transformTextLayer(scratch, index, pending_)
-                                               : transformLayer(scratch, index, pending_, params);
+      const LayerTransformResult r = transformForSession(scratch, index, pending_, params);
       if (!r.ok) {
         out.error = "transform commit refused: " + layerLabel(od.document, index) +
                    " -- " + r.error;
@@ -892,10 +916,7 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
         return out;
       }
       const size_t newIndex = dup.index;
-      const bool textLayer = od.document.layers[newIndex].kind == LayerKind::Text;
-      const LayerTransformResult r = textLayer
-                                         ? transformTextLayer(od.document, newIndex, pending_)
-                                         : transformLayer(od.document, newIndex, pending_, params);
+      const LayerTransformResult r = transformForSession(od.document, newIndex, pending_, params);
       if (!r.ok) {
         removeLayer(od.document, newIndex);
         out.error = r.error;
@@ -912,18 +933,9 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
       return out;
     }
 
-    // A Text layer's geometry is `TextContent::origin`, not a tile store, so
-    // it takes the one path that moves a point instead of resampling pixels.
-    // `transformLayer()` would walk it, find no stores and report success
-    // having moved nothing -- which is the right answer for the whole-document
-    // crop/resize that also calls it, and the wrong one here.
-    // ops/DocumentTransform.hpp's `transformTextLayer()` says why those two
-    // callers are kept apart.
-    const bool textLayer = layerIndex_ < od.document.layers.size() &&
-                           od.document.layers[layerIndex_].kind == LayerKind::Text;
-    const LayerTransformResult r =
-        textLayer ? transformTextLayer(od.document, layerIndex_, pending_)
-                  : transformLayer(od.document, layerIndex_, pending_, params);
+    // Text and Vector take their geometry paths: `transformLayer()` would find
+    // no stores on them and report success having moved nothing.
+    const LayerTransformResult r = transformForSession(od.document, layerIndex_, pending_, params);
     if (!r.ok) {
       out.error = r.error;
       return out;

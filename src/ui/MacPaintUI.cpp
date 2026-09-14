@@ -23851,7 +23851,7 @@ void beginTransformPreview(AppState& st, GpuContext& gpu) {
   const size_t li = st.transform.layerIndex();
   if (od == nullptr || li >= od->document.layers.size()) return;
   g_transformPreview.upload(gpu, od->document.layers[li], st.transform.selectionSnapshot(),
-                            st.transform.sourceBounds());
+                            st.transform.sourceBounds(), od->document.gradients);
 }
 
 std::optional<SDL_SystemCursor> canvasCursorRequest() { return g_canvasCursor; }

@@ -53,6 +53,7 @@ bool runTransformPreviewTextureTest() {
     od.recordEdit("fill fixture", EditKind::Content);
     return od;
   };
+  const GradientTable kNoGradients;
   auto texelAt = [](const std::vector<uint16_t>& half, uint32_t w, int32_t x, int32_t y) {
     const size_t i = (static_cast<size_t>(y) * w + static_cast<size_t>(x)) * 4u;
     return std::array<uint16_t, 4>{half[i], half[i + 1], half[i + 2], half[i + 3]};
@@ -66,7 +67,7 @@ bool runTransformPreviewTextureTest() {
     OpenDocument od = makeDoc();
     const DocumentRegion whole{0, 0, 20u, 10u};
     const std::vector<uint16_t> half =
-        transformPreviewStraightHalf(od.document.layers[0], nullptr, whole);
+        transformPreviewStraightHalf(od.document.layers[0], nullptr, whole, kNoGradients);
     check(half.size() == 20u * 10u * 4u,
           "null selection: output is exactly width*height*4 half words");
     check(texelAt(half, 20u, 0, 0) == halfOf(1.0f, 0.0f, 0.0f, 1.0f),
@@ -92,7 +93,7 @@ bool runTransformPreviewTextureTest() {
     // one this section is really about.
     const DocumentRegion redBlock{0, 0, 10u, 10u};
     const std::vector<uint16_t> half =
-        transformPreviewStraightHalf(od.document.layers[0], &interior, redBlock);
+        transformPreviewStraightHalf(od.document.layers[0], &interior, redBlock, kNoGradients);
     check(half.size() == 10u * 10u * 4u, "selection crop: sized to sourceBounds, not the selection");
     check(texelAt(half, 10u, 4, 4) == halfOf(1.0f, 0.0f, 0.0f, 1.0f),
           "selection crop: a texel INSIDE the selection is the real colour, full alpha");
@@ -116,7 +117,7 @@ bool runTransformPreviewTextureTest() {
     od.recordEdit("fill fixture", EditKind::Content);
     const DocumentRegion whole{0, 0, 4u, 4u};
     const std::vector<uint16_t> half =
-        transformPreviewStraightHalf(od.document.layers[0], nullptr, whole);
+        transformPreviewStraightHalf(od.document.layers[0], nullptr, whole, kNoGradients);
     check(texelAt(half, 4u, 1, 1) == halfOf(0.5f, 0.0f, 0.0f, 0.5f),
           "SABOTAGE: a premultiplied (0.25,0,0,0.5) texel unpremultiplies to (0.5,0,0,0.5) -- "
           "proof this file un-premultiplies rather than passing the store's own premultiplied "
@@ -132,7 +133,7 @@ bool runTransformPreviewTextureTest() {
     pigment.pigmentTiles->getOrCreate(TileCoord{0, 0})
         .writeTexel(PixelCoord{2, 2}, PigmentTexel{Latent{{0.2f, 0.2f, 0.2f}, {}}, 1.0f});
     const DocumentRegion whole{0, 0, 10u, 10u};
-    const std::vector<uint16_t> half = transformPreviewStraightHalf(pigment, nullptr, whole);
+    const std::vector<uint16_t> half = transformPreviewStraightHalf(pigment, nullptr, whole, kNoGradients);
     check(half.empty(),
           "a Pigment layer's preview is empty -- this file's own header names why (no "
           "latentToRgb() projection here) rather than returning a blank or wrong quad");
@@ -143,7 +144,7 @@ bool runTransformPreviewTextureTest() {
     OpenDocument od = makeDoc();
     const DocumentRegion empty{0, 0, 0u, 0u};
     const std::vector<uint16_t> half =
-        transformPreviewStraightHalf(od.document.layers[0], nullptr, empty);
+        transformPreviewStraightHalf(od.document.layers[0], nullptr, empty, kNoGradients);
     check(half.empty(), "an empty sourceBounds produces an empty preview, not a 0x0 texture");
   }
 
@@ -182,7 +183,7 @@ bool runTransformPreviewTextureTest() {
 
     const auto t0 = std::chrono::steady_clock::now();
     const std::vector<uint16_t> half =
-        transformPreviewStraightHalf(big.document.layers[0], nullptr, whole);
+        transformPreviewStraightHalf(big.document.layers[0], nullptr, whole, kNoGradients);
     const double ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     check(half.size() == 2048u * 2048u * 4u, "cost: the 2048x2048 fixture packs to the full size");
@@ -222,7 +223,7 @@ bool runTransformPreviewTextureTest() {
         imageFromTileStore(*od.document.layers[0].rgbTiles, 0, 0, 20u, 10u);
 
     const Selection interior = selectRectangle(2.0f, 2.0f, 8.0f, 8.0f);
-    (void)transformPreviewStraightHalf(od.document.layers[0], &interior, whole);
+    (void)transformPreviewStraightHalf(od.document.layers[0], &interior, whole, kNoGradients);
 
     const TransformImage after =
         imageFromTileStore(*od.document.layers[0].rgbTiles, 0, 0, 20u, 10u);
@@ -251,7 +252,7 @@ bool runTransformPreviewTextureTest() {
     text.text = makeTextContent("Handgloves", PathPoint{4.0f, 30.0f});
 
     const DocumentRegion bounds{0, 0, 200u, 60u};
-    const std::vector<uint16_t> half = transformPreviewStraightHalf(text, nullptr, bounds);
+    const std::vector<uint16_t> half = transformPreviewStraightHalf(text, nullptr, bounds, kNoGradients);
     check(half.size() == 200u * 60u * 4u,
           "text: REQUIRED -- a Text layer packs a full-sized preview. Empty here is the bug "
           "itself: it is what made a dragged caption invisible for the whole drag");
@@ -274,7 +275,7 @@ bool runTransformPreviewTextureTest() {
     // instead of the document's, which would clip the glyphs to the wrong
     // rectangle and slide the preview against the box during the drag.
     const DocumentRegion faraway{400, 400, 20u, 20u};
-    const std::vector<uint16_t> off = transformPreviewStraightHalf(text, nullptr, faraway);
+    const std::vector<uint16_t> off = transformPreviewStraightHalf(text, nullptr, faraway, kNoGradients);
     bool inkFarAway = false;
     for (size_t i = 3; i < off.size(); i += 4)
       if (halfToFloat(off[i]) > 0.5f) {
@@ -285,15 +286,29 @@ bool runTransformPreviewTextureTest() {
           "text: a crop far from the block comes back with no ink -- the glyphs are placed in "
           "DOCUMENT space, not redrawn at the crop's own origin");
 
-    // A Vector layer is deliberately NOT previewed, because
-    // `transformLayer()` still moves nothing for one: a preview that slid and
-    // then snapped back on mouse-up would be a worse lie than the empty box.
+    // A Vector layer previews its shapes now that its commit moves them.
     Layer vec;
     vec.kind = LayerKind::Vector;
     vec.name = "shapes";
-    check(transformPreviewStraightHalf(vec, nullptr, bounds).empty(),
-          "vector: still previews nothing, deliberately -- its commit is still a no-op, and a "
-          "preview promises what the commit will do");
+    VectorShape box;
+    SubPath sub;
+    sub.closed = true;
+    for (const PathPoint& q : {PathPoint{10, 10}, PathPoint{30, 10}, PathPoint{30, 30},
+                               PathPoint{10, 30}}) {
+      Anchor a;
+      a.pt = a.in = a.out = q;
+      sub.anchors.push_back(a);
+    }
+    box.path.subpaths.push_back(sub);
+    box.fill.on = true;
+    box.fill.rgba = {0.0f, 1.0f, 0.0f, 1.0f};
+    vec.shapes.push_back(box);
+    const DocumentRegion vecBounds{0, 0, 40u, 40u};
+    const std::vector<uint16_t> vhalf =
+        transformPreviewStraightHalf(vec, nullptr, vecBounds, kNoGradients);
+    check(vhalf.size() == 40u * 40u * 4u && texelAt(vhalf, 40u, 20, 20) == halfOf(0.0f, 1.0f, 0.0f, 1.0f) &&
+              texelAt(vhalf, 40u, 35, 35)[3] == floatToHalf(0.0f),
+          "vector: the shapes are previewed in place -- green inside, clear outside");
   }
 
   return ok;

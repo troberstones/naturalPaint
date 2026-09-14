@@ -298,8 +298,7 @@ bool runTransformLayerSetTest() {
   //    (brief: "Text via transformTextLayer"). `boundsFromTextContent()` is
   //    what admits it -- a Text layer holds neither `rgbTiles` nor
   //    `pigmentTiles`, and would be refused as "holds no pixels" like Group
-  //    and Adjustment if section 8's `geometryOnlyText` exemption did not
-  //    exist.
+  //    and Adjustment if `isGeometryOnlyKind()`'s exemption did not exist.
   // ==========================================================================
   {
     OpenDocument od = makeTwoRgbDoc();

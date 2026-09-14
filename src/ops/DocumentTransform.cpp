@@ -729,6 +729,193 @@ LayerTransformResult transformTextLayer(Document& doc, size_t index, const Mat3&
   return r;
 }
 
+bool mat3IsAffine(const Mat3& m) noexcept {
+  return std::fabs(m.m[6]) <= 1e-7f && std::fabs(m.m[7]) <= 1e-7f &&
+         std::fabs(m.m[8] - 1.0f) <= 1e-6f;
+}
+
+namespace {
+
+// The affine part only: `mat3MapPoint()` would divide by a w that is 1 here.
+PathPoint mapAffine(const Mat3& t, PathPoint p) noexcept {
+  const float* m = t.m.data();
+  return PathPoint{m[0] * p.x + m[1] * p.y + m[2], m[3] * p.x + m[4] * p.y + m[5]};
+}
+
+void mapPathAffine(Path& path, const Mat3& t) noexcept {
+  for (SubPath& sub : path.subpaths)
+    for (Anchor& a : sub.anchors) {
+      a.pt = mapAffine(t, a.pt);
+      a.in = mapAffine(t, a.in);
+      a.out = mapAffine(t, a.out);
+    }
+}
+
+float linearScaleFactor(const Mat3& t) noexcept {
+  return std::sqrt(std::fabs(t.m[0] * t.m[4] - t.m[1] * t.m[3]));
+}
+
+}  // namespace
+
+void transformVectorShapes(std::vector<VectorShape>& shapes, const Mat3& dstFromSrc) {
+  const float s = linearScaleFactor(dstFromSrc);
+  for (VectorShape& shape : shapes) {
+    mapPathAffine(shape.path, dstFromSrc);
+    if (shape.clip.has_value()) mapPathAffine(*shape.clip, dstFromSrc);
+    if (shape.pivot.has_value()) shape.pivot = mapAffine(dstFromSrc, *shape.pivot);
+    shape.strokeStyle.width *= s;
+    for (float& d : shape.strokeStyle.dashes) d *= s;
+    shape.strokeStyle.dashOffset *= s;
+  }
+}
+
+GradientGeometry transformGradientGeometry(const GradientGeometry& g, const Mat3& dstFromSrc) {
+  const float* m = dstFromSrc.m.data();
+  const auto linear = [m](float x, float y) { return PathPoint{m[0] * x + m[1] * y, m[3] * x + m[4] * y}; };
+  GradientGeometry out = g;
+  const PathPoint p0 = mapAffine(dstFromSrc, PathPoint{g.x0, g.y0});
+  out.x0 = p0.x;
+  out.y0 = p0.y;
+  const float dx = g.x1 - g.x0, dy = g.y1 - g.y0;
+  const float len2 = dx * dx + dy * dy;
+  if (!(len2 > 0.0f)) {
+    const PathPoint p1 = mapAffine(dstFromSrc, PathPoint{g.x1, g.y1});
+    out.x1 = p1.x;
+    out.y1 = p1.y;
+    return out;
+  }
+  if (g.kind == GradientKind::Linear) {
+    // Isolines are perpendicular to d. They map to lines along L*perp(d); the new
+    // axis is normal to those, and the t = 1 line still passes through A*p1.
+    const PathPoint iso = linear(-dy, dx);
+    PathPoint n{iso.y, -iso.x};
+    const PathPoint ld = linear(dx, dy);
+    if (n.x * ld.x + n.y * ld.y < 0.0f) n = PathPoint{-n.x, -n.y};
+    const float n2 = n.x * n.x + n.y * n.y;
+    if (n2 > 0.0f) {
+      const float k = (ld.x * n.x + ld.y * n.y) / n2;
+      out.x1 = p0.x + k * n.x;
+      out.y1 = p0.y + k * n.y;
+      return out;
+    }
+  }
+  // Radial and Angular: a circle has nowhere to put an ellipse, so the radius
+  // scales by sqrt(|det|) along the mapped direction.
+  const PathPoint v = linear(dx, dy);
+  const float vl = std::sqrt(v.x * v.x + v.y * v.y);
+  const float r = std::sqrt(len2) * linearScaleFactor(dstFromSrc);
+  if (vl > 0.0f) {
+    out.x1 = p0.x + v.x / vl * r;
+    out.y1 = p0.y + v.y / vl * r;
+  } else {
+    out.x1 = p0.x;
+    out.y1 = p0.y;
+  }
+  return out;
+}
+
+namespace {
+
+enum class GradientPolicy { CopyOnWrite, LeaveTable };
+
+bool paintUsesGradient(const Paint& p, uint32_t index) noexcept {
+  return p.kind == PaintKind::Gradient && p.gradient == index;
+}
+
+// Maps each gradient `layer`'s shapes reference, in place when no other layer
+// references it and as an appended copy when one does.
+void remapLayerGradients(Document& doc, size_t layerIndex, const Mat3& dstFromSrc) {
+  std::unordered_map<uint32_t, uint32_t> remap;
+  const auto referencedElsewhere = [&](uint32_t g) {
+    for (size_t i = 0; i < doc.layers.size(); ++i) {
+      if (i == layerIndex) continue;
+      const Layer& other = doc.layers[i];
+      for (const VectorShape& s : other.shapes)
+        if (paintUsesGradient(s.fill, g) || paintUsesGradient(s.stroke, g)) return true;
+      if (paintUsesGradient(other.text.fill, g) || paintUsesGradient(other.text.stroke, g))
+        return true;
+    }
+    return false;
+  };
+  const auto visit = [&](Paint& p) {
+    if (p.kind != PaintKind::Gradient || p.gradient >= doc.gradients.size()) return;
+    auto it = remap.find(p.gradient);
+    if (it == remap.end()) {
+      const uint32_t src = p.gradient;
+      uint32_t dst = src;
+      if (referencedElsewhere(src)) {
+        dst = static_cast<uint32_t>(doc.gradients.size());
+        doc.gradients.push_back(doc.gradients[src]);
+      }
+      doc.gradients[dst].geometry = transformGradientGeometry(doc.gradients[src].geometry, dstFromSrc);
+      it = remap.emplace(src, dst).first;
+    }
+    p.gradient = it->second;
+  };
+  for (VectorShape& s : doc.layers[layerIndex].shapes) {
+    visit(s.fill);
+    visit(s.stroke);
+  }
+}
+
+LayerTransformResult transformVectorLayerImpl(Document& doc, size_t index, const Mat3& dstFromSrc,
+                                              const DocumentTransformParams& params,
+                                              GradientPolicy policy) {
+  LayerTransformResult r;
+  if (index >= doc.layers.size()) {
+    r.error = "transform vector refused: index " + std::to_string(index) + " is out of range.";
+    return r;
+  }
+  if (doc.layers[index].kind != LayerKind::Vector) {
+    r.error = "transform vector refused: " + layerLabelFor(doc, index) + " is a " +
+              layerKindName(doc.layers[index].kind) + " layer, not a Vector layer.";
+    return r;
+  }
+  if (!mat3IsAffine(dstFromSrc)) {
+    r.error = "transform refused: " + layerLabelFor(doc, index) +
+              " is a Vector layer, and its shapes can only follow an affine transform (move, "
+              "scale, rotate, skew, flip) -- not perspective or warp. Rasterize it first. Nothing "
+              "was changed.";
+    return r;
+  }
+  // transformLayer() owns the locked and non-invertible refusals, and moves the
+  // mask; it commits nothing on refusal, so the shapes are mapped only after it.
+  LayerTransformResult masked = transformLayer(doc, index, dstFromSrc, params);
+  if (!masked.ok) return masked;
+
+  transformVectorShapes(doc.layers[index].shapes, dstFromSrc);
+  if (policy == GradientPolicy::CopyOnWrite) remapLayerGradients(doc, index, dstFromSrc);
+
+  r = masked;
+  const std::array<float, 9>& t = dstFromSrc.m;
+  const bool translationOnly = t[0] == 1.0f && t[1] == 0.0f && t[3] == 0.0f && t[4] == 1.0f;
+  r.editLabel = translationOnly ? "move shapes" : "transform shapes";
+  r.exact = ExactRemap::None;
+  return r;
+}
+
+// Every kind through its own entry point, for the document-level walks: the lock
+// is the caller's to lift, and gradients are mapped once for the whole table.
+LayerTransformResult transformAnyLayerForDocument(Document& doc, size_t index,
+                                                  const Mat3& dstFromSrc,
+                                                  const DocumentTransformParams& params) {
+  const LayerKind kind = doc.layers[index].kind;
+  if (kind == LayerKind::Vector)
+    return transformVectorLayerImpl(doc, index, dstFromSrc, params, GradientPolicy::LeaveTable);
+  LayerTransformResult r = transformLayer(doc, index, dstFromSrc, params);
+  if (!r.ok || kind != LayerKind::Text) return r;
+  const LayerTransformResult tr = transformTextLayer(doc, index, dstFromSrc);
+  if (!tr.ok) return tr;
+  return r;
+}
+
+}  // namespace
+
+LayerTransformResult transformVectorLayer(Document& doc, size_t index, const Mat3& dstFromSrc,
+                                          const DocumentTransformParams& params) {
+  return transformVectorLayerImpl(doc, index, dstFromSrc, params, GradientPolicy::CopyOnWrite);
+}
+
 LayerTransformResult transformLayer(Document& doc, size_t index, const Mat3& dstFromSrc,
                                     const DocumentTransformParams& params) {
   LayerTransformResult r;
@@ -963,11 +1150,23 @@ DocumentTransformResult cropDocument(Document& doc, int32_t x, int32_t y, uint32
   // The crop origin becomes the new (0,0), so every store moves by -origin.
   // This is the line §1 is about: there is no offset field to update, the tile
   // keys ARE the offset, and `translatedTileStore()` moves raw half words.
-  for (Layer& layer : doc.layers) {
+  const Mat3 shift = transformTranslate(static_cast<float>(-x), static_cast<float>(-y));
+  for (size_t i = 0; i < doc.layers.size(); ++i) {
+    Layer& layer = doc.layers[i];
     if (layer.locked) ++r.lockedLayersMoved;
     translateLayerStores(layer, -x, -y);
+    if (layer.kind == LayerKind::Vector) transformVectorShapes(layer.shapes, shift);
+    if (layer.kind == LayerKind::Text) {
+      // A pure translate keeps an unrotated block in its `origin` form.
+      const bool wasLocked = layer.locked;
+      layer.locked = false;
+      (void)transformTextLayer(doc, i, shift);  // a translate is never refused
+      doc.layers[i].locked = wasLocked;
+    }
     ++r.layersTouched;
   }
+  if (x != 0 || y != 0)
+    for (GradientDef& g : doc.gradients) g.geometry = transformGradientGeometry(g.geometry, shift);
   if (selection != nullptr) {
     *selection = translatedSelection(*selection, -x, -y);
     r.selectionMoved = true;
@@ -1110,6 +1309,20 @@ DocumentTransformResult transformDocument(Document& doc, const Mat3& dstFromSrc,
         "changed.",
         doc);
 
+  // Refused before any layer moves: a perspective crop cannot carry Bezier
+  // geometry or a text matrix, and failing halfway would leave the document torn.
+  if (!mat3IsAffine(dstFromSrc)) {
+    for (size_t i = 0; i < doc.layers.size(); ++i) {
+      const Layer& layer = doc.layers[i];
+      if (layer.kind == LayerKind::Text || (layer.kind == LayerKind::Vector && !layer.shapes.empty()))
+        return failDocument("document transform refused: " + layerLabelFor(doc, i) + " is a " +
+                                layerKindName(layer.kind) +
+                                " layer, and it can only follow an affine transform, not a "
+                                "perspective one. Rasterize it first. Nothing was changed.",
+                            doc);
+    }
+  }
+
   DocumentTransformResult r;
   r.previousWidth = doc.width;
   r.previousHeight = doc.height;
@@ -1131,7 +1344,7 @@ DocumentTransformResult transformDocument(Document& doc, const Mat3& dstFromSrc,
       layer.locked = false;
       ++r.lockedLayersMoved;
     }
-    const LayerTransformResult lr = transformLayer(doc, i, dstFromSrc, params);
+    const LayerTransformResult lr = transformAnyLayerForDocument(doc, i, dstFromSrc, params);
     doc.layers[i].locked = wasLocked;
     if (!lr.ok) {
       // Partial: some layers have moved. Say so rather than claiming nothing
@@ -1145,6 +1358,8 @@ DocumentTransformResult transformDocument(Document& doc, const Mat3& dstFromSrc,
     r.reconstructionPasses = std::max(r.reconstructionPasses, lr.reconstructionPasses);
     ++r.layersTouched;
   }
+  // Every shape moved, so every gradient moves once, whoever references it.
+  for (GradientDef& g : doc.gradients) g.geometry = transformGradientGeometry(g.geometry, dstFromSrc);
 
   if (selection != nullptr) {
     const DocumentRegion src = selectionContentRegion(*selection);

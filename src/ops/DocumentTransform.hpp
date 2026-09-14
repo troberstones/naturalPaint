@@ -325,10 +325,12 @@
 //   - **Boundary coverage antialiasing.** Inherited verbatim from
 //     ops/Transform.hpp §5: a full-bleed layer rotated 30 degrees gets a hard
 //     rectangle edge. Not approximated here either.
-//   - **Media/Strokes/Text/Flats layers.** They hold no pixels, so a transform
+//   - **Media/Strokes/Flats layers.** They hold no pixels, so a transform
 //     is a no-op on them, and this file says so rather than refusing -- a
-//     document-level crop that failed because the stack contained a Text
-//     placeholder would be refusing on a technicality.
+//     document-level crop that failed because the stack contained one would
+//     be refusing on a technicality. Text and Vector layers DO follow a
+//     document transform: `transformTextLayer()` and `transformVectorLayer()`.
+//     A perspective crop of a document holding either is refused up front.
 namespace np {
 
 // --------------------------------------------------------------------------
@@ -617,11 +619,30 @@ struct LayerTransformResult {
 // a click back into a byte offset, so storing one would make the layer
 // permanently unclickable as well as invisible.
 //
-// Note what this does NOT reach: resizing the whole image still does not
-// rescale its captions. That is a gap in `transformDocument()`, which walks
-// layers through `transformLayer()` rather than through this function --
-// named here because this is where a reader will wonder about it.
+// `transformDocument()` and `cropDocument()` reach this too, with the lock
+// lifted, so Image Size scales captions and Canvas Size keeps them in origin form.
 LayerTransformResult transformTextLayer(Document& doc, size_t index, const Mat3& dstFromSrc);
+
+// True when `m` has no perspective row. A Bezier's control points map exactly
+// only under an affine map.
+bool mat3IsAffine(const Mat3& m) noexcept;
+
+// Maps every shape's anchors, handles, clip and pivot through an affine
+// `dstFromSrc`, and scales stroke width and dashes by sqrt(|det|). Does not touch
+// gradient geometry, which lives in the document's table.
+void transformVectorShapes(std::vector<VectorShape>& shapes, const Mat3& dstFromSrc);
+
+// A gradient's two points under an affine map. Exact for Linear under any
+// affine; Radial/Angular keep a circle, so exact only for a similarity.
+GradientGeometry transformGradientGeometry(const GradientGeometry& g, const Mat3& dstFromSrc);
+
+// Transform a Vector layer: its shapes, the gradients they reference, and its
+// mask, all by one affine matrix. Refuses locked, non-invertible and non-affine
+// (perspective) matrices by name, leaving the layer untouched. A gradient that
+// another layer also references is copied before it is mapped, so that layer
+// does not move with this one.
+LayerTransformResult transformVectorLayer(Document& doc, size_t index, const Mat3& dstFromSrc,
+                                          const DocumentTransformParams& params);
 
 LayerTransformResult transformLayer(Document& doc, size_t index, const Mat3& dstFromSrc,
                                     const DocumentTransformParams& params);

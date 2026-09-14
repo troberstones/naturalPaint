@@ -14,7 +14,8 @@
 namespace np {
 
 std::vector<uint16_t> transformPreviewStraightHalf(const Layer& layer, const Selection* selection,
-                                                    const DocumentRegion& sourceBounds) {
+                                                    const DocumentRegion& sourceBounds,
+                                                    const GradientTable& gradients) {
   if (sourceBounds.empty()) return {};
 
   // Non-destructive by construction, not by convention: `copyThroughSelection()`
@@ -40,14 +41,9 @@ std::vector<uint16_t> transformPreviewStraightHalf(const Layer& layer, const Sel
   // clips to the width/height it is given, so passing the crop's own size
   // would clip the glyphs to the crop's ORIGIN rather than to its rectangle.
   //
-  // **Text only, deliberately, though `layerRastersToTiles()` also names
-  // Vector and Flats.** A preview is a promise about what the commit will do,
-  // and `transformLayer()` still moves nothing for a Vector layer
-  // (ops/DocumentTransform.hpp says so by name). Previewing those would show
-  // the shapes sliding under the cursor and then snapping back on mouse-up,
-  // which is a worse lie than the empty box they show today. When Vector
-  // gains its own `transformVectorLayer()`, this predicate is where it joins.
-  if (layer.kind == LayerKind::Text) {
+  // Text and Vector, whose commits move them (`transformTextLayer()`,
+  // `transformVectorLayer()`). Not Flats: its commit still moves nothing.
+  if (layer.kind == LayerKind::Text || layer.kind == LayerKind::Vector) {
     const int32_t docW = sourceBounds.x + static_cast<int32_t>(sourceBounds.width);
     const int32_t docH = sourceBounds.y + static_cast<int32_t>(sourceBounds.height);
     // An EMPTY gradient table, and that is a statement rather than a
@@ -58,9 +54,12 @@ std::vector<uint16_t> transformPreviewStraightHalf(const Layer& layer, const Sel
     // and the signature has to grow a table -- which is why the empty one is
     // spelled here with a reason instead of defaulted in the callee.
     static const GradientTable kNoGradients;
-    const TileStore tiles = rasterizeVectorLayer(textContentToShapes(layer.text, nullptr),
-                                                 kNoGradients, docW < 0 ? 0 : docW,
-                                                 docH < 0 ? 0 : docH);
+    const bool isText = layer.kind == LayerKind::Text;
+    const TileStore tiles =
+        isText ? rasterizeVectorLayer(textContentToShapes(layer.text, nullptr), kNoGradients,
+                                      docW < 0 ? 0 : docW, docH < 0 ? 0 : docH)
+               : rasterizeVectorLayer(layer.shapes, gradients, docW < 0 ? 0 : docW,
+                                      docH < 0 ? 0 : docH);
     const TransformImage timg = imageFromTileStore(tiles, sourceBounds.x, sourceBounds.y,
                                                    sourceBounds.width, sourceBounds.height);
     if (!timg.valid()) return {};
@@ -102,9 +101,11 @@ std::vector<uint16_t> transformPreviewStraightHalf(const Layer& layer, const Sel
 
 bool TransformPreviewTexture::upload(GpuContext& gpu, const Layer& layer,
                                      const Selection* selection,
-                                     const DocumentRegion& sourceBounds) {
+                                     const DocumentRegion& sourceBounds,
+                                     const GradientTable& gradients) {
   reset();
-  const std::vector<uint16_t> half = transformPreviewStraightHalf(layer, selection, sourceBounds);
+  const std::vector<uint16_t> half =
+      transformPreviewStraightHalf(layer, selection, sourceBounds, gradients);
   if (half.empty()) return false;
 
   WGPUTextureDescriptor td = {};

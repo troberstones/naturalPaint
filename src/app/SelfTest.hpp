@@ -6810,6 +6810,10 @@ bool runRadialBlurHandlesTest();
 // handles and other-pane click; the blur, preview and dialog follow focus.
 bool runRadialBlurRetargetTest();
 
+// Vector and Text layers under Move, Free Transform, nudge, Image Size, Canvas
+// Size and crop; non-affine refusals. Headless.
+bool runVectorTransformTest();
+
 // Filter > Dust & Scratches (PRD D11): median gated by a threshold. Headless.
 bool runDustScratchesTest();
 

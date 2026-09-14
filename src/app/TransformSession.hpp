@@ -290,8 +290,8 @@ namespace np {
 // **Admission is per-member, and it is `beginLayer()`'s OWN predicate,
 // applied to every member rather than re-decided for the set.** A member is
 // admitted exactly when a lone `beginLayer()` on it would have succeeded:
-// not locked, and either `LayerKind::Text` (geometry-only, moved by
-// `transformTextLayer()`) or holding RGB or Pigment tiles with non-empty
+// not locked, and either `LayerKind::Text` or `LayerKind::Vector` (geometry-only,
+// moved by `transformTextLayer()` / `transformVectorLayer()`) or holding RGB or Pigment tiles with non-empty
 // content. Two kinds fall out of that rule with no special case at all, and
 // this is this step's answer to the brief's own question:
 //
