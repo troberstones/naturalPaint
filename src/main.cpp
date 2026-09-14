@@ -2747,9 +2747,20 @@ int main(int argc, char** argv) {
   // Before everything else, including the NP_SELFTEST=OFF refusal below:
   // both of these have to work in every build, not only one with the self-
   // test suite compiled in.
+  //
+  // `std::exit`, not `return`, from here down through the --selftest chain:
+  // verified on iOS Simulator that SDL_uikitappdelegate's postFinishLaunch
+  // calls this function's body but its own comment says it deliberately
+  // never calls exit() on the value main() returns ("We don't actually exit
+  // to support applications that do setup ... and then allow the Cocoa
+  // event loop to run") -- so a plain `return` here leaves the process
+  // sitting in UIApplicationMain forever with its stdout still in the libc
+  // buffer, unflushed, and `simctl launch` never sees the process end.
+  // exit() flushes and closes the C streams and, unlike falling out of
+  // main(), actually terminates the process on every platform.
   if (versionFlag) {
     std::printf("%s\n", np::versionString().c_str());
-    return 0;
+    std::exit(0);
   }
   if (helpFlag) {
     // Deliberately not an exhaustive list of every flag this binary reads --
@@ -2770,7 +2781,7 @@ int main(int argc, char** argv) {
         "\n"
         "Run with no arguments to open an empty document.\n",
         np::versionString().c_str());
-    return 0;
+    std::exit(0);
   }
 
 #if !NP_WITH_SELFTEST
@@ -2783,7 +2794,7 @@ int main(int argc, char** argv) {
                  "naturalPaint: built without the self-test suite "
                  "(-DNP_SELFTEST=OFF), so --selftest, --diag and --mode-test "
                  "are unavailable. Reconfigure with -DNP_SELFTEST=ON.\n");
-    return 2;
+    std::exit(2);
   }
 #endif
 
@@ -2948,27 +2959,27 @@ int main(int argc, char** argv) {
 // argument parsing, before SDL.
   if (modeTest) {
     np::PaintSim* s = np::ensurePaintSim(sim, gpu, kCanvasW, kCanvasH, lut);
-    if (!s) return 1;
+    if (!s) std::exit(1);
     np::runModeTest(gpu, *s, lut, "mode");
     s->shutdown(); gpu.shutdown();
     SDL_DestroyWindow(window); SDL_Quit();
-    return 0;
+    std::exit(0);
   }
 
   if (diagSeconds > 0.0f) {
     np::PaintSim* s = np::ensurePaintSim(sim, gpu, kCanvasW, kCanvasH, lut);
-    if (!s) return 1;
+    if (!s) std::exit(1);
     np::runDiagnostic(gpu, *s, lut, diagSeconds, "np");
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
     SDL_Quit();
-    return 0;
+    std::exit(0);
   }
 
   if (selfTest) {
     np::PaintSim* s = np::ensurePaintSim(sim, gpu, kCanvasW, kCanvasH, lut);
-    if (!s) return 1;
+    if (!s) std::exit(1);
     // 1.4 / ADR-0001 bullets 2 and 3: right after init(), still in the
     // default Watercolour mode, confirms the ink lattice / oil brush grid
     // are genuinely absent -- then cycles setMode() through all three media
@@ -4562,7 +4573,7 @@ int main(int argc, char** argv) {
     gpu.shutdown();
     SDL_DestroyWindow(window);
     SDL_Quit();
-    return ok ? 0 : 1;
+    std::exit(ok ? 0 : 1);
   }
 #endif  // NP_WITH_SELFTEST
 
