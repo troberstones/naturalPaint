@@ -117,7 +117,7 @@ struct AbrSampledTip {
 // exposing it costs nothing extra.
 struct AbrPatternSample {
   std::string id;
-  std::string name;  // the record's own name, for a future picker's label
+  std::string name;  // the record's own name
   std::shared_ptr<const PaperField> field;
 };
 

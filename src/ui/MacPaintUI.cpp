@@ -9,6 +9,7 @@
 #include "app/StrokeSession.hpp"
 #include "ui/AtelierChrome.hpp"
 #include "ui/DabPicker.hpp"
+#include "ui/PatternPicker.hpp"
 #include "ui/DynamicsMatrixPanel.hpp"
 #include "ui/FileDialog.hpp"
 #include "ui/Dialog.hpp"
@@ -5096,6 +5097,8 @@ void ensureDabLibraryScanned(AppState& st) {
   std::vector<std::string> notes;
   resolveDabIds(st.brush.brushLibrary, st.dabLibrary, &notes);
   if (!notes.empty() && g_brushLibraryStatus.empty()) g_brushLibraryStatus = notes.front();
+  // The same for papers: a saved preset stores a pattern id, not the paper.
+  ensurePatternLibraryScanned(st);
 
   // `--brush-dab-demo <id>`: the same two assignments the picker's own
   // selection makes, and deliberately the same two -- a demo path that set the

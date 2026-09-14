@@ -64,21 +64,9 @@ struct DabRef {
 // puts in `Idnt` -- verified against real packs, so the join needs nothing
 // invented in between.
 //
-// **No file-path field, and that is a decision, not an omission.** A `.abr`'s
-// `patt` block is now extracted to `patterns-imported/<id>.png`
-// (app/DabLibrary's `extractAbrPatterns()`, `patternsImportedRootPath()`) the
-// same way `DabRef` extracts sampled tips to `dabs-imported/`, and `id` here
-// is ALREADY the bare uuid that names that file -- it is the record's own id,
-// carried through unprefixed (unlike `DabRef::id`, which needs a `abr:`/
-// `file:`/`gbr:`/`gih:` tag because ONE folder mixes four kinds of source; a
-// pattern has exactly one). A future picker resolves it with nothing more
-// than `patternsImportedRootPath() + "/" + id + ".png"`, so adding a second
-// field to hold that same string here would be one more thing that could
-// disagree with the id it is derived from, for no new information. What is
-// deliberately NOT here is a `PatternLibrary` class that scans, indexes and
-// resolves that path the way `DabLibrary` does for dabs -- the picker that
-// would need it does not exist yet, and building the index ahead of its only
-// caller is exactly the machinery this comment is explaining why to skip.
+// **No file-path field.** `id` already names the file: an extracted paper is
+// `patterns-imported/<id>.png`, a user's own is `file:<relpath>` under
+// `patterns/` (app/PatternLibrary), so a path here could only disagree with it.
 struct PatternRef {
   std::string id;
   std::string name;  // carried so a missing pattern can be named, not just missed

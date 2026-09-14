@@ -689,6 +689,19 @@ BrushLibraryLoadResult BrushLibraryStore::readInto(RememberedLibrary& entry, Bru
     for (const std::string& note : extractNotes) entry.notes.push_back(note);
   }
 
+  // The papers too, beside the tips and for the same reason: a preset saved from
+  // this pack stores its pattern's id, and `patterns-imported/<id>.png` is where
+  // app/PatternLibrary finds the paper after the pack is gone.
+  if (!imported.patternSamples.empty()) {
+    std::vector<std::pair<std::string, PaperField>> patterns;
+    patterns.reserve(imported.patternSamples.size());
+    for (const AbrPatternSample& sample : imported.patternSamples)
+      if (sample.field != nullptr) patterns.emplace_back(sample.id, *sample.field);
+    std::vector<std::string> extractNotes;
+    extractAbrPatterns(patternsImportedRootPath(), patterns, &extractNotes);
+    for (const std::string& note : extractNotes) entry.notes.push_back(note);
+  }
+
   entry.rows.clear();
   for (const BrushPreset& p : imported.presets) {
     BrushPreset added = p;

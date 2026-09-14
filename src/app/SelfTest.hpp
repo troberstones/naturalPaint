@@ -6640,4 +6640,9 @@ bool runAirbrushBuildUpTest();
 // its panel by the importer, the pickers and a reloaded preset alike.
 bool runBrushPanelsLiveTest();
 
+// app/PatternLibrary: the Texture picker's papers. A scan decodes nothing, a paper
+// reads back as the heights written, picking puts it on the panel, and a saved
+// preset gets its paper back. Real files in a temporary folder; no GPU.
+bool runPatternLibraryTest();
+
 }  // namespace np

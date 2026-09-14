@@ -12,6 +12,7 @@
 #include "brush/Library.hpp"
 #include "brush/NativeBrush.hpp"
 #include "app/DabLibrary.hpp"
+#include "app/PatternLibrary.hpp"
 #include "app/BrushLibraryFile.hpp"
 #include "app/CloseDecision.hpp"
 #include "app/CropTool.hpp"
@@ -1942,6 +1943,13 @@ struct AppState {
   // sampled-tip brush still has its tip after a relaunch.
   DabLibrary dabLibrary;
   bool dabLibraryScanned = false;
+
+  // The papers a Texture panel can use (app/PatternLibrary), and the brush
+  // library's size at the last scan: an import extracts papers, so a grown
+  // library is the cue to look again (ui/PatternPicker).
+  PatternLibrary patternLibrary;
+  bool patternLibraryScanned = false;
+  size_t patternScanPresetCount = 0;
 
   // `--brush-dab-demo <id>`: the dab to put on the brush before the first
   // frame, so `--screenshot` can photograph the BRUSH EDITOR painting with a

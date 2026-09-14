@@ -4269,6 +4269,7 @@ int main(int argc, char** argv) {
     const bool appIconOk = !wanted("runAppIconTest") || np::runAppIconTest();
     const bool airbrushBuildUpOk = !wanted("runAirbrushBuildUpTest") || np::runAirbrushBuildUpTest();
     const bool brushPanelsLiveOk = !wanted("runBrushPanelsLiveTest") || np::runBrushPanelsLiveTest();
+    const bool patternLibraryOk = !wanted("runPatternLibraryTest") || np::runPatternLibraryTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4339,7 +4340,7 @@ int main(int argc, char** argv) {
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
                     nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
-                    stabiliserOk && brushTaperOk && pigmentBuildupOk && airbrushBuildUpOk && brushPanelsLiveOk;
+                    stabiliserOk && brushTaperOk && pigmentBuildupOk && airbrushBuildUpOk && brushPanelsLiveOk && patternLibraryOk;
     if (!selfTestOnly.empty()) {
       std::printf("[selftest] --selftest-only \"%s\": %d section(s) run\n", selfTestOnly.c_str(),
                   selfTestSelected);

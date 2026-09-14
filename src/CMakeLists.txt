@@ -261,12 +261,14 @@ set(NP_SELFTEST_SOURCES
   app/selftest/AppIcon.cpp
   app/selftest/AirbrushBuildUp.cpp
   app/selftest/BrushPanelsLive.cpp
+  app/selftest/PatternLibrary.cpp
 )
 
 add_executable(naturalPaint
   main.cpp
   app/BrushLibraryFile.cpp
   app/DabLibrary.cpp
+  app/PatternLibrary.cpp
   app/AbrReport.cpp
   app/BrushSheet.cpp
   app/BrushRowIcon.cpp
@@ -493,6 +495,7 @@ add_executable(naturalPaint
   ui/AtelierTheme.cpp
   ui/CanvasQuad.cpp
   ui/DabPicker.cpp
+  ui/PatternPicker.cpp
   ui/BrushSettingsWindow.cpp
   ui/BrushPanelLayout.cpp
   ui/StabiliserPanel.cpp

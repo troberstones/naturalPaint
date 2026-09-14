@@ -18,6 +18,7 @@
 #include "ui/AtelierTheme.hpp"
 #include "ui/BrushPanelLayout.hpp"
 #include "ui/LabelledControl.hpp"
+#include "ui/PatternPicker.hpp"
 #include "ui/StabiliserPanel.hpp"
 #include "ui/TaperPanel.hpp"
 
@@ -29,6 +30,7 @@ using K = BrushRowKind;
 constexpr float kListWidth = 184.0f;
 constexpr float kGutter = 14.0f;  // the not-painted ring sits in it, left of its row
 constexpr float kTipGridHeight = 206.0f;
+constexpr float kPatternGridHeight = 150.0f;
 
 // Every leaf of one BrushModel by the path the tables use, from the same walk
 // that saves and loads the model.
@@ -299,22 +301,27 @@ bool drawTipPickerRow(Page& pg, const BrushRowSpec& row) {
   return changed;
 }
 
-void drawPatternRow(Page& pg, const BrushRowSpec& row) {
+bool drawPatternRow(Page& pg, const BrushRowSpec& row) {
   const PatternRef& pattern = pg.st.brush.model.texture.pattern;
   char id[96];
   pageLabel(row.label, id, sizeof(id));
   if (pattern.empty()) {
-    ImGui::TextDisabled("None");
-    return;
-  }
-  const std::string& name = pattern.name.empty() ? pattern.id : pattern.name;
-  if (pattern.field != nullptr) {
-    ImGui::Text("%s  %d x %d", name.c_str(), pattern.field->width, pattern.field->height);
+    ImGui::TextDisabled("None: the brush uses its Paper Grain");
   } else {
-    ImGui::TextDisabled("%s  (not loaded)", name.c_str());
-    itemTooltip("This paper is read from the .abr the brush came from and is not saved with\n"
-                "your own brushes yet. Load that library to paint with it.");
+    const std::string& name = pattern.name.empty() ? pattern.id : pattern.name;
+    if (pattern.field != nullptr) {
+      ImGui::Text("%s  %d x %d", name.c_str(), pattern.field->width, pattern.field->height);
+    } else {
+      ImGui::TextDisabled("%s  (not found)", name.c_str());
+      itemTooltip("This paper is in neither pattern folder. Load the .abr it came from, or\n"
+                  "pick another below.");
+    }
   }
+  bool changed = false;
+  if (ImGui::BeginChild("patterns", ImVec2(0.0f, kPatternGridHeight), ImGuiChildFlags_None))
+    changed = drawBrushPatternPicker(pg.st, pg.gpu);
+  ImGui::EndChild();
+  return changed;
 }
 
 // Returns true when the row wrote to the model.
@@ -355,7 +362,7 @@ bool drawRow(Page& pg, const BrushRowSpec& row) {
     case K::Jitter: changed = drawJitterRow(pg, row); break;
     case K::Blend: changed = drawBlendRow(pg, row); break;
     case K::TipPicker: changed = drawTipPickerRow(pg, row); break;
-    case K::Pattern: drawPatternRow(pg, row); break;
+    case K::Pattern: changed = drawPatternRow(pg, row); break;
     case K::ToolBlend: changed = drawToolBlendRow(pg, row); break;
   }
   ImGui::EndDisabled();
