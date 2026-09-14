@@ -14,9 +14,11 @@
 // builds keep the ImGui menu bar they have always had, and they keep it
 // without the four call sites in ui/MacPaintUI.cpp and src/main.cpp having to
 // know that.
+#include "core/Platform.hpp"
+
 namespace np {
 
-#if defined(__APPLE__)
+#if NP_PLATFORM_MACOS
 
 // Take over `[NSApp mainMenu]`, once, after `SDL_Init(SDL_INIT_VIDEO)`.
 //

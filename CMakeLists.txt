@@ -23,6 +23,55 @@ if(APPLE)
   enable_language(OBJCXX)
 endif()
 
+# NP_PLATFORM_IOS / NP_PLATFORM_MACOS -- `__APPLE__` is true on iOS too, so the
+# ~30 existing `#if defined(__APPLE__)` guards across src/ (dispatch_apply,
+# mach task_info, CoreText, Metal surface creation, the `$HOME/Library/...`
+# paths) stay `__APPLE__` on purpose: the iOS spike's own survey
+# (docs/ios-spike-plan.md) checked each one and found them genuinely portable
+# to iOS unchanged. Only the handful that are AppKit-specific (the native menu
+# bar and trackpad `.mm` files) need a guard that means "macOS, not just
+# Apple" -- that is what these two are for. Set once here, at the top level,
+# so both this file and src/CMakeLists.txt see the same answer.
+set(NP_PLATFORM_IOS OFF)
+set(NP_PLATFORM_MACOS OFF)
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  set(NP_PLATFORM_IOS ON)
+elseif(APPLE)
+  set(NP_PLATFORM_MACOS ON)
+endif()
+
+# NP_IOS_OIIO_PREFIX -- where to find the vcpkg-built static OpenImageIO
+# chain for an iOS configure (docs/ios-spike-plan.md Phase 1). This is
+# deliberately a cache var the caller sets, not a path baked in here: the
+# vcpkg install this points at (`~/vcpkg/installed/arm64-ios-simulator` or
+# `arm64-ios` for a device build) lives outside this repo and is
+# machine-specific until a real toolchain-file setup replaces it. Example:
+#   cmake -S . -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS \
+#     -DCMAKE_OSX_SYSROOT=iphonesimulator \
+#     -DNP_IOS_OIIO_PREFIX=$HOME/vcpkg/installed/arm64-ios-simulator
+if(NP_PLATFORM_IOS AND DEFINED NP_IOS_OIIO_PREFIX)
+  list(APPEND CMAKE_PREFIX_PATH "${NP_IOS_OIIO_PREFIX}")
+  # CMake's iOS cross-compiling support (Modules/Platform/iOS.cmake) sets
+  # CMAKE_FIND_ROOT_PATH to the SDK sysroot and defaults every
+  # CMAKE_FIND_ROOT_PATH_MODE_* to ONLY -- meaning find_package()/
+  # find_library()/find_path() all ignore CMAKE_PREFIX_PATH entirely and
+  # look only inside the SDK. That is exactly why the vcpkg-built
+  # OpenImageIO chain above is otherwise invisible: OpenImageIOConfig.cmake
+  # itself is found once CMAKE_FIND_ROOT_PATH_MODE_PACKAGE is loosened, but
+  # its own `find_dependency(PNG)` (FindPNG.cmake, not a config package)
+  # then fails the same way one level down, for libpng16.a specifically.
+  #
+  # Appending the vcpkg prefix to CMAKE_FIND_ROOT_PATH, rather than flipping
+  # the _MODE_* variables to BOTH, is the narrower fix: it adds exactly this
+  # one prefix to the search, rather than opening every find_package/
+  # find_library/find_path call in the whole build to the entire host
+  # filesystem -- which is the actual protection CMAKE_FIND_ROOT_PATH_MODE
+  # ONLY exists to provide for a cross-compile (it is what stops this
+  # target from silently linking an arm64-osx .a instead of an
+  # arm64-ios-simulator one).
+  list(APPEND CMAKE_FIND_ROOT_PATH "${NP_IOS_OIIO_PREFIX}")
+endif()
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
 endif()

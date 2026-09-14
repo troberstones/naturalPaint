@@ -1,5 +1,6 @@
 #include "ui/FileDialog.hpp"
 
+#include "core/Platform.hpp"
 #include "io/Capabilities.hpp"
 #include "io/NpaintFile.hpp"  // kNpaintExtension
 
@@ -141,6 +142,24 @@ void SDLCALL onDialogFinished(void* userdata, const char* const* filelist, int /
 bool showDialog(FileDialogPurpose purpose, const std::string& defaultDirectory,
                 const std::vector<FileDialogFilterRow>& rows) {
   if (!g_mailbox.beginRequest(purpose)) return false;
+
+#if NP_PLATFORM_IOS
+  // SDL's `src/dialog/` has cocoa/android/unix/windows/haiku backends and no
+  // UIKit one (docs/ios-spike-plan.md's own survey), so
+  // SDL_ShowFileDialogWithProperties() below has nothing to call into on
+  // this platform. Spiked as a stub rather than a real
+  // UIDocumentPickerViewController backend (port work, not spike work):
+  // report the same "could not be shown" outcome the g_activeProps==0
+  // branch further down already uses for a genuine SDL failure, so every
+  // existing caller's error handling covers this for free. The mailbox still
+  // has to end with an outcome, same reasoning as that branch -- otherwise
+  // it stays pending forever and every later Open/Save is refused for the
+  // rest of the session.
+  FileDialogOutcome unsupported;
+  unsupported.error = "No file panel is available on this platform.";
+  g_mailbox.post(std::move(unsupported));
+  return true;
+#endif
 
   if (g_activeProps != 0) {
     SDL_DestroyProperties(g_activeProps);

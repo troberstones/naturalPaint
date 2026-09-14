@@ -5,6 +5,10 @@
 //   Sochorova & Jamriska 2021  Mixbox latent-space pigment mixing
 //
 #include <SDL3/SDL.h>
+// iOS's real entry point is `SDL_UIKitRunApp`, which this header wires
+// `main()` to behind the scenes (see its own `#ifdef __IPHONEOS__`); a no-op
+// include on every other platform this project builds for.
+#include <SDL3/SDL_main.h>
 
 #include <algorithm>
 #include <chrono>
@@ -5369,6 +5373,12 @@ int main(int argc, char** argv) {
   // representative (ImGui lays out docked panels on frame 1).
   uint64_t frameIndex = 0;
 
+  // iOS terminates a process that touches the GPU while backgrounded (the
+  // spike's own "what blocks it" table). Set from SDL_EVENT_WILL_ENTER_
+  // BACKGROUND / DID_ENTER_FOREGROUND below; every platform that never sends
+  // those events leaves this permanently false, so this is a no-op off iOS.
+  bool appBackgrounded = false;
+
   // --frame-trace's marker-circle state: when the last mouse-button-down
   // landed and where, so the circle can keep drawing at that screen position
   // for a couple of seconds even across however many frames a stall spans.
@@ -5505,6 +5515,14 @@ int main(int argc, char** argv) {
       if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
           e.window.windowID == SDL_GetWindowID(window))
         st.requestQuit = true;
+      // iOS only (see appBackgrounded's own comment): stop touching the GPU
+      // the moment the OS says a suspend is coming, resume once it says the
+      // app is live again. `WILL_ENTER_BACKGROUND` rather than
+      // `DID_ENTER_BACKGROUND` because the latter can arrive after the
+      // process is already suspended, too late to skip a frame already in
+      // flight.
+      if (e.type == SDL_EVENT_WILL_ENTER_BACKGROUND) appBackgrounded = true;
+      if (e.type == SDL_EVENT_DID_ENTER_FOREGROUND) appBackgrounded = false;
       // --- a drop ---------------------------------------------------------
       //
       // The window filter accepts `windowID == 0` as well as ours: SDL's
@@ -5928,6 +5946,13 @@ int main(int argc, char** argv) {
         if (!step.status.empty()) std::fprintf(stderr, "[quit] %s\n", step.status.c_str());
       }
     }
+
+    // See appBackgrounded's own comment: iOS can kill a process that submits
+    // GPU work while suspended, so nothing past this point -- gpu.tick(),
+    // ImGui's per-frame setup, the simulation step, the render pass, the
+    // present -- runs at all until DID_ENTER_FOREGROUND. The event poll above
+    // still ran this iteration, so the transition itself is never missed.
+    if (appBackgrounded) continue;
 
     const auto now = std::chrono::steady_clock::now();
     st.frameMs = std::chrono::duration<float, std::milli>(now - prev).count();
