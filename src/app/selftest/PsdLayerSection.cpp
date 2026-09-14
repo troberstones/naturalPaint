@@ -518,6 +518,42 @@ bool runPsdLayerSectionTest() {
     check(!groupWarned, "groups: a carried group no longer warns that it was dropped");
   }
 
+  // Mask warnings name only a mask the export really drops: a layer's mask
+  // is written, a group record has nowhere to put one.
+  {
+    auto maskWarned = [](const RoundTrip& rt, const char* layerName) {
+      for (const std::string& warning : rt.warnings)
+        if (warning.find(layerName) != std::string::npos &&
+            warning.find("mask") != std::string::npos)
+          return true;
+      return false;
+    };
+    Document doc;
+    doc.width = 32;
+    doc.height = 32;
+    Layer member = makeRasterLayer("Masked member");
+    fillRect(member, 0, 0, 32, 32, 0.3f, 0.3f, 0.3f, 1.0f);
+    member.mask.emplace();
+    member.mask->getOrCreate(TileCoord{0, 0}).writeCoverage(PixelCoord{4, 4}, 0.0f);
+    member.parent = "G2";
+    Layer group;
+    group.kind = LayerKind::Group;
+    group.name = "Masked folder";
+    group.groupTag = "G2";
+    group.mask.emplace();
+    group.mask->getOrCreate(TileCoord{0, 0}).writeCoverage(PixelCoord{8, 8}, 0.0f);
+    doc.layers.push_back(std::move(member));
+    doc.layers.push_back(std::move(group));
+
+    const RoundTrip rt = roundTrip(doc);
+    check(rt.ok && rt.document.layers.size() == 2 && rt.document.layers[0].mask.has_value(),
+          "mask warnings: setup -- the member's mask round-trips");
+    check(rt.ok && !maskWarned(rt, "Masked member"),
+          "mask warnings: a written layer mask does not warn that it was dropped");
+    check(rt.ok && maskWarned(rt, "Masked folder"),
+          "mask warnings: a group's mask, which its record cannot hold, does warn");
+  }
+
   // --- G. A mask survives, and the rect it is sized by ---------------------
   //
   // **Added at gather**, because the mask wiring had no assertion at this

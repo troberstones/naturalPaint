@@ -463,9 +463,12 @@ bool runMaskControlsTest() {
               strokeRouteFor(Tool::CloneStamp, &l, LayerEditTarget::Mask) ==
                   StrokeRoute::MaskClone,
           "F route: Smudge -> mask-smudge, Clone Stamp -> mask-clone");
-    check(strokeRouteFor(Tool::Heal, &l, LayerEditTarget::Mask) == StrokeRoute::None &&
-              strokeRouteFor(Tool::Water, &l, LayerEditTarget::Mask) == StrokeRoute::None,
-          "F route: Heal and Water still refuse a mask");
+    check(strokeRouteFor(Tool::Heal, &l, LayerEditTarget::Mask) == StrokeRoute::MaskHeal &&
+              strokeRouteWritesMask(StrokeRoute::MaskHeal) &&
+              std::strcmp(strokeRouteName(StrokeRoute::MaskHeal), "mask-heal") == 0,
+          "F route: Heal -> mask-heal, a mask route with a name");
+    check(strokeRouteFor(Tool::Water, &l, LayerEditTarget::Mask) == StrokeRoute::None,
+          "F route: Water still refuses a mask");
     check(std::strcmp(strokeRouteName(StrokeRoute::MaskTonal), "mask-tonal") == 0 &&
               std::strcmp(strokeRouteName(StrokeRoute::MaskSmudge), "mask-smudge") == 0 &&
               std::strcmp(strokeRouteName(StrokeRoute::MaskClone), "mask-clone") == 0 &&
@@ -606,17 +609,94 @@ bool runMaskControlsTest() {
           "F Clone Stamp: off the stroke and the source itself are unchanged");
     check(contentUntouched(od), "F Clone Stamp: the layer's own pixels are untouched");
   }
-  {
-    OpenDocument od = freshMask("heal");
-    AppState::CloneSourceState clone;
-    clone.haveAnchor = true;
-    clone.haveOffset = true;
-    clone.offset = Vec2{-10.0f, 0.0f};
+  auto healAt = [&](OpenDocument& od, Vec2 c, float radius, std::string* why) {
+    return strokeMask(od, Tool::Heal, tipOf(radius, 1.0f), c, c, nullptr, why);
+  };
+  {  // Heal: a speck inside the dab, and one inside its rectangle but outside it
+    OpenDocument od = freshMask("heal speck");
+    maskRect(*od.document.layers[0].mask, 0, 0, 255, 255, 0.6f);
+    maskRect(*od.document.layers[0].mask, 126, 126, 129, 129, 0.0f);
+    maskRect(*od.document.layers[0].mask, 114, 114, 114, 114, 0.0f);
+    od.recordEdit("fixture", EditKind::Content);
+    const size_t entries = od.history.entries().size();
+    const float farBefore = maskAt(*od.document.layers[0].mask, 20, 20);  // 0.6 as stored
     std::string why;
-    check(!strokeMask(od, Tool::Heal, tipOf(8.0f, 1.0f), Vec2{150.0f, 150.0f},
-                      Vec2{160.0f, 150.0f}, &clone, &why) &&
-              contains(why, "mask"),
-          "F Heal: still refuses a mask target, and names the target");
+    const bool began = healAt(od, Vec2{128.0f, 128.0f}, 16.0f, &why);
+    const MaskTileStore& m = *od.document.layers[0].mask;
+    std::printf("  [mask heal] speck %.4f, outside-dab corner %.4f\n",
+                static_cast<double>(maskAt(m, 127, 127)), static_cast<double>(maskAt(m, 114, 114)));
+    check(began && std::fabs(maskAt(m, 127, 127) - 0.6f) < 0.01f,
+          "F Heal: a speck inside the dab is filled from its surroundings");
+    check(maskAt(m, 114, 114) == 0.0f && maskAt(m, 20, 20) == farBefore,
+          "F Heal: coverage outside the dab is unchanged, even inside its rectangle");
+    check(began && why.empty(), "F Heal: needs no clone source on a mask");
+    check(od.history.entries().size() == entries + 1 &&
+              contains(od.history.entries().back().label, "mask") && contentUntouched(od),
+          "F Heal: one history entry naming the mask; layer pixels untouched");
+    // Guarded: a heal that recorded nothing would undo past the mask itself.
+    const Document* undone =
+        od.history.entries().size() == entries + 1 ? od.history.undo() : nullptr;
+    if (undone != nullptr) od.document = *undone;
+    check(undone != nullptr && od.document.layers[0].mask.has_value() &&
+              maskAt(*od.document.layers[0].mask, 127, 127) == 0.0f,
+          "F Heal: undo puts the speck back");
+  }
+  {  // Heal: a linear gradient across the dab is harmonic, so it survives
+    OpenDocument od = freshMask("heal gradient");
+    MaskTileStore& m = *od.document.layers[0].mask;
+    for (int32_t y = 0; y < kH; ++y)
+      for (int32_t x = 0; x < kW; ++x) {
+        const PixelCoord at{x, y};
+        m.getOrCreate(tileCoordAt(at)).writeCoverage(tileLocalOffset(at),
+                                                     static_cast<float>(x) / 255.0f);
+      }
+    const MaskTileStore before = m;
+    std::string why;
+    const bool began = healAt(od, Vec2{128.0f, 128.0f}, 20.0f, &why);
+    float worst = 0.0f;
+    for (int32_t y = 106; y <= 150; ++y)
+      for (int32_t x = 106; x <= 150; ++x)
+        worst = std::max(worst, std::fabs(maskAt(*od.document.layers[0].mask, x, y) -
+                                          maskAt(before, x, y)));
+    std::printf("  [mask heal] gradient worst deviation %.6f\n", static_cast<double>(worst));
+    check(began && worst < 0.005f, "F Heal: a linear gradient across the dab is preserved");
+  }
+  {  // Heal: the soft tip blends the fill over the original, one dab
+    MaskTileStore store;
+    maskRect(store, 0, 0, 255, 255, 0.6f);
+    maskRect(store, 118, 118, 138, 138, 0.0f);
+    MaskHealStroke h;
+    h.begin(1.0f);
+    h.healDab(store, tipOf(20.0f, 0.0f), Vec2{128.5f, 128.5f}, kW, kH, nullptr, nullptr);
+    h.end();
+    const float centreV = maskAt(store, 128, 128);
+    const float edgeV = maskAt(store, 137, 128);
+    std::printf("  [mask heal] soft tip: centre %.4f, 9 px out %.4f\n",
+                static_cast<double>(centreV), static_cast<double>(edgeV));
+    check(centreV > 0.55f, "F Heal: at the soft tip's centre the fill replaces the hole");
+    check(edgeV > 0.02f && edgeV < 0.55f,
+          "F Heal: toward the soft edge the fill is blended over the original");
+  }
+  {  // Heal: disabled and absent masks behave as for the other mask tools
+    OpenDocument od = freshMask("heal disabled");
+    maskRect(*od.document.layers[0].mask, 0, 0, 255, 255, 0.6f);
+    maskRect(*od.document.layers[0].mask, 126, 126, 129, 129, 0.0f);
+    od.document.layers[0].maskEnabled = false;
+    std::string why;
+    const bool began = healAt(od, Vec2{128.0f, 128.0f}, 16.0f, &why);
+    check(began && std::fabs(maskAt(*od.document.layers[0].mask, 127, 127) - 0.6f) < 0.01f &&
+              !od.document.layers[0].maskEnabled && contentUntouched(od),
+          "F Heal on a disabled mask: heals its texels and leaves it disabled");
+
+    OpenDocument absent = makeBlankOpenDocument(kW, kH, WorkingSpace{}, "heal no mask");
+    const Layer& al = absent.document.layers[0];
+    check(strokeRouteFor(Tool::Heal, &al, resolveLayerEditTarget(true, &al)) ==
+              strokeRouteFor(Tool::Heal, &al),
+          "F Heal with no mask: resolves to the content route");
+    std::string refusal;
+    check(!healAt(absent, Vec2{128.0f, 128.0f}, 16.0f, &refusal) && !refusal.empty() &&
+              !absent.document.layers[0].mask.has_value(),
+          "F Heal with no mask: takes the pixel heal's source refusal, creates no mask");
   }
 
   std::printf("[selftest] mask controls %s\n", ok ? "PASS" : "FAIL");

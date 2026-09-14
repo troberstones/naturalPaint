@@ -88,4 +88,26 @@ class MaskCloneStroke {
   StrokeAlphaStore applied_;
 };
 
+// Heal on a mask: a membrane fill. The dab's bounding rectangle plus a
+// one-texel rim is taken from the live mask, the rim is held fixed and the
+// interior solved to Laplace's equation (ops/Poisson's `harmonicFill()`), so
+// specks and holes vanish and a gradient across the dab survives. Each texel
+// then lerps toward the fill under the soft tip and the per-stroke opacity
+// ceiling, as Clone Stamp does. No source is needed.
+class MaskHealStroke {
+ public:
+  void begin(float opacity) noexcept;
+  void end() noexcept;
+  bool active() const noexcept { return active_; }
+
+  DepositCount healDab(MaskTileStore& store, const BrushTip& tip, Vec2 centre, int32_t canvasW,
+                       int32_t canvasH, const Selection* selection,
+                       std::vector<TileCoord>* touchedOut);
+
+ private:
+  float opacity_ = 1.0f;
+  bool active_ = false;
+  StrokeAlphaStore applied_;
+};
+
 }  // namespace np

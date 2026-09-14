@@ -838,6 +838,7 @@ enum class StrokeRoute {
   MaskTonal,   // Dodge raises coverage, Burn lowers it
   MaskSmudge,  // smears coverage along the stroke
   MaskClone,   // copies coverage from the clone offset within the same mask
+  MaskHeal,    // membrane-fills coverage across the dab from its rim
 };
 
 // Which of a layer's two writable stores a stroke is aimed at.
@@ -952,7 +953,8 @@ LayerEditTarget resolveLayerEditTarget(bool maskRequested, const Layer* layer) n
 // The routes whose destination is `Layer::mask` rather than a content store.
 inline bool strokeRouteWritesMask(StrokeRoute route) noexcept {
   return route == StrokeRoute::MaskPaint || route == StrokeRoute::MaskTonal ||
-         route == StrokeRoute::MaskSmudge || route == StrokeRoute::MaskClone;
+         route == StrokeRoute::MaskSmudge || route == StrokeRoute::MaskClone ||
+         route == StrokeRoute::MaskHeal;
 }
 
 inline bool strokeRouteWritesLayer(StrokeRoute route) noexcept {
@@ -963,7 +965,7 @@ inline bool strokeRouteWritesLayer(StrokeRoute route) noexcept {
          route == StrokeRoute::Smudge || route == StrokeRoute::PigmentSmudge ||
          route == StrokeRoute::MaskPaint || route == StrokeRoute::MaskTonal ||
          route == StrokeRoute::MaskSmudge || route == StrokeRoute::MaskClone ||
-         route == StrokeRoute::StrokesErase || route == StrokeRoute::StrokesRecord;
+         route == StrokeRoute::MaskHeal || route == StrokeRoute::StrokesErase || route == StrokeRoute::StrokesRecord;
 }
 
 // Reachability audit B2: `BrushState::native.wetness` (the WET slider, drawn in both
@@ -2077,6 +2079,7 @@ class StrokeSession {
   MaskTonalStroke maskTonal_;
   MaskSmudgeStroke maskSmudge_;
   MaskCloneStroke maskClone_;
+  MaskHealStroke maskHeal_;
 
   // --- the recording route's own latched state (§1d) ------------------------
   //

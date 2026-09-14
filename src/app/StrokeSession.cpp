@@ -300,6 +300,7 @@ const char* strokeRouteName(StrokeRoute route) noexcept {
     case StrokeRoute::MaskTonal: return "mask-tonal";
     case StrokeRoute::MaskSmudge: return "mask-smudge";
     case StrokeRoute::MaskClone: return "mask-clone";
+    case StrokeRoute::MaskHeal: return "mask-heal";
     // Named for what it writes, like every other row: "Eraser -> strokes-erase"
     // is the one thing a user needs when an eraser drag makes whole marks
     // disappear at once instead of thinning them (PRD F11, and that is the
@@ -757,12 +758,12 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target, LayerEditTarget editT
     case Tool::CloneStamp:
       return StrokeRoute::MaskClone;
 
-    // Still refused. Heal's Poisson solve (ops/Poisson) is four channels of
-    // premultiplied colour; a harmonic correction of one coverage is well
-    // defined but is not what a user would call healing, so it waits for a
-    // ruling. Water and the non-painting tools have no destination on a
-    // content store either.
+    // Heal smooths coverage: a membrane fill from the dab's rim, no source.
     case Tool::Heal:
+      return StrokeRoute::MaskHeal;
+
+    // Still refused: Water and the non-painting tools have no destination on a
+    // content store either.
     case Tool::Water:
     case Tool::Move:
     case Tool::Marquee:
@@ -1732,6 +1733,10 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
     maskSmudge_.begin(tip.smudgeStrength);
   else
     maskSmudge_.end();
+  if (route_ == StrokeRoute::MaskHeal)
+    maskHeal_.begin(resolvedOpacity);
+  else
+    maskHeal_.end();
   if (route_ == StrokeRoute::MaskClone)
     maskClone_.begin(*layer.mask, clone != nullptr ? clone->offset : Vec2{0.0f, 0.0f},
                      resolvedOpacity);
@@ -2168,6 +2173,9 @@ void StrokeSession::depositPending() {
           : route_ == StrokeRoute::MaskSmudge
               ? maskSmudge_.smudgeDab(*layer.mask, dabTip, centre, doc.width, doc.height,
                                       selection, &frameTiles_)
+          : route_ == StrokeRoute::MaskHeal
+              ? maskHeal_.healDab(*layer.mask, dabTip, centre, doc.width, doc.height, selection,
+                                  &frameTiles_)
           : route_ == StrokeRoute::MaskClone
               ? maskClone_.cloneDab(*layer.mask, dabTip, centre, doc.width, doc.height, selection,
                                     &frameTiles_)
@@ -2299,6 +2307,7 @@ const std::vector<TileCoord>& StrokeSession::end() {
   maskTonal_.end();
   maskSmudge_.end();
   maskClone_.end();
+  maskHeal_.end();
 
   // Exactly one entry, and only for a stroke that put something down --
   // header §2.

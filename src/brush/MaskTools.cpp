@@ -5,6 +5,7 @@
 
 #include "brush/Grain.hpp"
 #include "brush/MaskPaint.hpp"
+#include "ops/Poisson.hpp"
 
 namespace np {
 namespace {
@@ -272,6 +273,90 @@ DepositCount MaskCloneStroke::cloneDab(MaskTileStore& store, const BrushTip& tip
           const float applied = appliedRead != nullptr ? appliedRead->at(local) : 0.0f;
           const MaskPaintStep step = paintMaskTexel(maskCoverage(dstRead, local), applied,
                                                     tip.flow * w, opacity_ * sel, src);
+          if (!step.changed) continue;
+          if (dst == nullptr) {
+            dst = &store.getOrCreate(coord);
+            dstRead = dst;
+            ++count.tiles;
+            if (touchedOut != nullptr) touchedOut->push_back(coord);
+          }
+          if (appliedWrite == nullptr) {
+            appliedWrite = &applied_.getOrCreate(coord);
+            appliedRead = appliedWrite;
+          }
+          appliedWrite->set(local, step.strokeApplied);
+          dst->writeCoverage(local, step.coverage);
+          ++count.texels;
+        }
+      }
+    }
+  }
+  return count;
+}
+
+void MaskHealStroke::begin(float opacity) noexcept {
+  opacity_ = std::clamp(opacity, 0.0f, 1.0f);
+  applied_ = StrokeAlphaStore{};
+  active_ = true;
+}
+
+void MaskHealStroke::end() noexcept {
+  applied_ = StrokeAlphaStore{};
+  active_ = false;
+}
+
+DepositCount MaskHealStroke::healDab(MaskTileStore& store, const BrushTip& tip, Vec2 centre,
+                                     int32_t canvasW, int32_t canvasH,
+                                     const Selection* selection,
+                                     std::vector<TileCoord>* touchedOut) {
+  DepositCount count;
+  if (!(tip.flow > 0.0f) || !(opacity_ > 0.0f)) return count;
+  DabTiles d;
+  if (!dabTiles(tip, centre, canvasW, canvasH, d)) return count;
+
+  // The patch: the dab's bounds and a one-texel rim, clamped to the canvas.
+  // Read from the live store so each dab heals what the previous one left.
+  const int32_t px0 = std::max<int32_t>(0, d.b.x0 - 1);
+  const int32_t py0 = std::max<int32_t>(0, d.b.y0 - 1);
+  const int32_t px1 = std::min<int32_t>(canvasW - 1, d.b.x1 + 1);
+  const int32_t py1 = std::min<int32_t>(canvasH - 1, d.b.y1 + 1);
+  const int32_t pw = px1 - px0 + 1;
+  const int32_t ph = py1 - py0 + 1;
+  std::vector<float> fill(static_cast<size_t>(pw) * static_cast<size_t>(ph));
+  for (int32_t y = py0; y <= py1; ++y)
+    for (int32_t x = px0; x <= px1; ++x) {
+      const PixelCoord p{x, y};
+      fill[static_cast<size_t>(y - py0) * static_cast<size_t>(pw) + static_cast<size_t>(x - px0)] =
+          maskCoverage(store.find(tileCoordAt(p)), tileLocalOffset(p));
+    }
+  harmonicFill(fill, pw, ph);
+
+  for (int32_t ty = d.first.y; ty <= d.last.y; ++ty) {
+    for (int32_t tx = d.first.x; tx <= d.last.x; ++tx) {
+      const TileCoord coord{tx, ty};
+      const SelectionTile* cover = nullptr;
+      if (selection != nullptr) {
+        cover = selection->tiles.find(coord);
+        if (cover == nullptr) continue;
+      }
+      const PixelCoord org = tileOrigin(coord);
+      const MaskTile* dstRead = store.find(coord);
+      const StrokeAlphaTile* appliedRead = applied_.find(coord);
+      MaskTile* dst = nullptr;
+      StrokeAlphaTile* appliedWrite = nullptr;
+      for (int32_t y = std::max(d.b.y0, org.y); y <= std::min(d.b.y1, org.y + kTileSize - 1); ++y) {
+        for (int32_t x = std::max(d.b.x0, org.x); x <= std::min(d.b.x1, org.x + kTileSize - 1);
+             ++x) {
+          const PixelCoord local = tileLocalOffset(PixelCoord{x, y});
+          const float w = dabWeightAt(tip, centre, x, y, cover, selection, local);
+          if (!(w > 0.0f)) continue;
+          const float sel = selectionAt(cover, selection, local);
+          const float target = maskCoverageClamp(
+              fill[static_cast<size_t>(y - py0) * static_cast<size_t>(pw) +
+                   static_cast<size_t>(x - px0)]);
+          const float applied = appliedRead != nullptr ? appliedRead->at(local) : 0.0f;
+          const MaskPaintStep step = paintMaskTexel(maskCoverage(dstRead, local), applied,
+                                                    tip.flow * w, opacity_ * sel, target);
           if (!step.changed) continue;
           if (dst == nullptr) {
             dst = &store.getOrCreate(coord);
