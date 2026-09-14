@@ -7,7 +7,7 @@
 # handful of known, scripted UI states via its existing --demo-document /
 # --ui-layer-demo / --pigment-stroke-demo / --marquee-demo / --flyout-demo /
 # --gradient-demo / --clone-demo / --smudge-demo / --mask-demo / --no-document
-# / --overrange-demo / --brush-stroke-demo
+# / --overrange-demo / --brush-stroke-demo / --brush-settings-demo
 # CLI flags, crops each capture down
 # to one small region, and compares it against a reference image committed
 # under tests/golden/ with src/tools/GoldenTool.cpp.
@@ -1047,8 +1047,33 @@ measure_only=("${@:3}")
 #     Blessed at exact (0, 0), measured: 8 launches, 7 comparisons against the
 #     first, 0 mismatched px of 1 978 368 at max channel diff 0 every time.
 #
-view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout color_overrange fg_well_overrange gradient_overrange export_as export_as_blocked export_states crop_options crop_options_perspective crop_drag crop_perspective crop_refused layer_thumbs mask_target mask_content vector_shape vector_components vector_marquee text_options text_options_paragraph text_point text_paragraph text_frame tools_lower munsell_page grade_kinds pen_options pen_options_component vector_thumb pen_drawing flats_tools flats_segmentation bucket_options_flats tools_flats_active flats_edits paths_panel paths_panel_component actions_panel actions_panel_recording batch_dialog batch_dialog_report tile_preview text_rotated text_newline text_point_break tools_transform text_empty_gizmo options_transform flyout_transform layers_transform gradient_editor region_frame region_slice options_region brush_strokes)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo" "--demo-document --overrange-demo" "--demo-document --overrange-demo" "--demo-document --gradient-demo --overrange-demo" "--demo-document --open-export-as" "--no-document --open-export-as" "--demo-document --open-export-states ." "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo bowtie" "--demo-document" "--demo-document --mask-demo" "--demo-document --mask-demo content" "--demo-document --vector-demo" "--demo-document --vector-demo components" "--demo-document --vector-demo marquee" "--demo-document --text-demo" "--demo-document --text-demo paragraph" "--demo-document --text-demo" "--demo-document --text-demo paragraph" "--demo-document --text-demo frame" "--demo-document" "--demo-document --munsell-demo" "--demo-document --grade-kinds-demo" "--demo-document --vector-demo" "--demo-document --vector-demo components" "--demo-document --vector-demo" "--demo-document --vector-demo pendraw" "--demo-document --flats-demo" "--demo-document --flats-demo" "--demo-document --wand-demo flats" "--demo-document --flats-demo" "--demo-document --flats-demo edits" "--demo-document --vector-demo" "--demo-document --vector-demo anchorpair" "--demo-document --actions-demo" "--demo-document --actions-demo recording" "--demo-document --open-batch" "--demo-document --open-batch report" "--demo-document --tile-demo" "--demo-document --text-demo rotated" "--demo-document --text-demo newline" "--demo-document --text-demo pointbreak" "--demo-document --transform-demo" "--demo-document --text-demo emptyframe --transform-demo" "--demo-document --transform-demo" "--demo-document --transform-demo --flyout-demo" "--demo-document --transform-demo" "--demo-document --gradient-demo --open-gradient-editor" "--demo-document --region-demo" "--demo-document --region-demo slice" "--demo-document --region-demo" "--brush-stroke-demo")
+#   brush_settings, brush_settings_texture -- ui/BrushSettingsWindow under
+#     `--brush-settings-demo [panel]`, on its default page (Brush Tip Shape)
+#     and on Texture. Both crops are the whole window from its title bar to
+#     the bottom of the pinned preview stroke: the panel list with its
+#     switches and the markers on the panels this build does not paint, the
+#     page, and the preview. `brush_settings` pins the tip grid and the tip
+#     sliders; `brush_settings_texture` pins the pattern grid's None cell,
+#     the off note that says picking a pattern turns Texture on, and the
+#     Pattern row staying live while the rest of the page is greyed.
+#
+#     The dab and pattern folders both resolve under $NP_DAB_DIR, so both
+#     grids show their empty-folder state on every machine. The readout
+#     under the preview ("1:3  77 dabs") is left out: the next text line is
+#     the status bar, whose memory figure moves run to run.
+#
+#     Blessed at exact (0, 0) from this script's own captures, measured: 8
+#     launches per page under exactly the environment `run_view_launch()`
+#     sets, each diffed against the committed reference, 0 mismatched px at
+#     max channel diff 0 every time; `check` PASS twice. The first references
+#     were cut from launches that set every override here except
+#     NP_STROKE_PREFERENCES and NP_EXPORT_PRESETS, and differed from this
+#     script's captures by 56 and 150 px at max channel diff 71 on the edges
+#     of text -- stable in both environments, but not the same picture. A
+#     reference for a view that shows the window must come from this script.
+#
+view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout color_overrange fg_well_overrange gradient_overrange export_as export_as_blocked export_states crop_options crop_options_perspective crop_drag crop_perspective crop_refused layer_thumbs mask_target mask_content vector_shape vector_components vector_marquee text_options text_options_paragraph text_point text_paragraph text_frame tools_lower munsell_page grade_kinds pen_options pen_options_component vector_thumb pen_drawing flats_tools flats_segmentation bucket_options_flats tools_flats_active flats_edits paths_panel paths_panel_component actions_panel actions_panel_recording batch_dialog batch_dialog_report tile_preview text_rotated text_newline text_point_break tools_transform text_empty_gizmo options_transform flyout_transform layers_transform gradient_editor region_frame region_slice options_region brush_strokes brush_settings brush_settings_texture)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo" "--demo-document --overrange-demo" "--demo-document --overrange-demo" "--demo-document --gradient-demo --overrange-demo" "--demo-document --open-export-as" "--no-document --open-export-as" "--demo-document --open-export-states ." "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo bowtie" "--demo-document" "--demo-document --mask-demo" "--demo-document --mask-demo content" "--demo-document --vector-demo" "--demo-document --vector-demo components" "--demo-document --vector-demo marquee" "--demo-document --text-demo" "--demo-document --text-demo paragraph" "--demo-document --text-demo" "--demo-document --text-demo paragraph" "--demo-document --text-demo frame" "--demo-document" "--demo-document --munsell-demo" "--demo-document --grade-kinds-demo" "--demo-document --vector-demo" "--demo-document --vector-demo components" "--demo-document --vector-demo" "--demo-document --vector-demo pendraw" "--demo-document --flats-demo" "--demo-document --flats-demo" "--demo-document --wand-demo flats" "--demo-document --flats-demo" "--demo-document --flats-demo edits" "--demo-document --vector-demo" "--demo-document --vector-demo anchorpair" "--demo-document --actions-demo" "--demo-document --actions-demo recording" "--demo-document --open-batch" "--demo-document --open-batch report" "--demo-document --tile-demo" "--demo-document --text-demo rotated" "--demo-document --text-demo newline" "--demo-document --text-demo pointbreak" "--demo-document --transform-demo" "--demo-document --text-demo emptyframe --transform-demo" "--demo-document --transform-demo" "--demo-document --transform-demo --flyout-demo" "--demo-document --transform-demo" "--demo-document --gradient-demo --open-gradient-editor" "--demo-document --region-demo" "--demo-document --region-demo slice" "--demo-document --region-demo" "--brush-stroke-demo" "--brush-settings-demo" "--brush-settings-demo Texture")
 #
 #   pen_options / pen_options_component -- the Pen's and Curve's MODE segment
 #     and its SELECTED readout, one crop in two states, exactly as the
@@ -1561,11 +1586,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 #   animated once the ant clock is pinned, and it would stop holding the
 #   moment a suggestion, a lasso in progress or a box-select drag entered the
 #   crop.
-view_crop_x=(0 1916 920 0 0 0 900 1000 1830 1900 1900 40 480 40 480 480 390 390 40 40 40 0 0 0 1920 0 40 612 612 612 40 40 350 320 40 1916 1916 1916 340 340 340 0 0 440 440 440 0 1920 1920 0 0 1946 340 1200 1916 40 0 200 1192 1192 1912 1912 556 548 340 440 440 440 0 440 0 0 1900 640 300 300 40 109)
-view_crop_y=(5 927 965 148 664 0 628 1000 158 166 1462 76 560 76 560 560 370 370 76 76 76 148 0 664 235 1370 76 232 232 136 76 76 350 420 76 940 940 940 180 180 180 76 76 540 540 540 930 235 176 76 76 950 180 200 565 76 230 300 188 188 176 176 164 40 175 540 540 540 148 540 95 664 660 302 300 300 76 173)
-view_crop_w=(1400 640 384 100 400 2560 700 900 100 660 660 1460 1100 1460 1100 1100 1110 1110 1400 1400 2240 100 900 400 600 90 1460 1336 1336 1336 1000 1000 1060 1220 2400 640 640 640 1500 1500 1500 1500 1500 1240 1240 1240 110 632 640 1500 1500 590 1500 630 620 1800 100 900 644 644 648 648 1444 1460 1250 1240 1240 1240 100 1140 1400 400 660 1280 1500 1500 1060 1472)
-view_crop_h=(166 190 192 402 350 77 500 400 500 64 64 76 800 76 800 800 550 550 76 76 76 1240 77 350 280 120 76 1116 1116 1308 76 76 830 830 76 240 240 240 1150 1150 1150 100 100 740 740 740 300 290 800 100 100 290 1150 820 600 76 680 1160 840 840 580 580 1240 1540 1345 740 740 740 402 600 56 350 300 974 1040 1040 76 1344)
-view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
+view_crop_x=(0 1916 920 0 0 0 900 1000 1830 1900 1900 40 480 40 480 480 390 390 40 40 40 0 0 0 1920 0 40 612 612 612 40 40 350 320 40 1916 1916 1916 340 340 340 0 0 440 440 440 0 1920 1920 0 0 1946 340 1200 1916 40 0 200 1192 1192 1912 1912 556 548 340 440 440 440 0 440 0 0 1900 640 300 300 40 109 130 130)
+view_crop_y=(5 927 965 148 664 0 628 1000 158 166 1462 76 560 76 560 560 370 370 76 76 76 148 0 664 235 1370 76 232 232 136 76 76 350 420 76 940 940 940 180 180 180 76 76 540 540 540 930 235 176 76 76 950 180 200 565 76 230 300 188 188 176 176 164 40 175 540 540 540 148 540 95 664 660 302 300 300 76 173 126 126)
+view_crop_w=(1400 640 384 100 400 2560 700 900 100 660 660 1460 1100 1460 1100 1100 1110 1110 1400 1400 2240 100 900 400 600 90 1460 1336 1336 1336 1000 1000 1060 1220 2400 640 640 640 1500 1500 1500 1500 1500 1240 1240 1240 110 632 640 1500 1500 590 1500 630 620 1800 100 900 644 644 648 648 1444 1460 1250 1240 1240 1240 100 1140 1400 400 660 1280 1500 1500 1060 1472 1228 1228)
+view_crop_h=(166 190 192 402 350 77 500 400 500 64 64 76 800 76 800 800 550 550 76 76 76 1240 77 350 280 120 76 1116 1116 1308 76 76 830 830 76 240 240 240 1150 1150 1150 100 100 740 740 740 300 290 800 100 100 290 1150 820 600 76 680 1160 840 840 580 580 1240 1540 1345 740 740 740 402 600 56 350 300 974 1040 1040 76 1344 1374 1374)
+view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -1701,7 +1726,7 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 9
 # the options band only, so it contains no canvas, no marching ants and no
 # rounded button geometry -- two combos, three sliders and a line of text, all
 # of which land on the same pixels every launch.
-view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 48 24 48 0 0 0 0 24 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 48 24 48 0 0 0 0 24 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
 # **Twenty-one views were re-blessed when the FLATS TOOLS palette gained its
 # nine Lucide icons, and none of it was a content change.** Adding glyphs to
 # the merge repacks the font atlas, which moves where each glyph's bitmap
@@ -1768,7 +1793,7 @@ view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 
 # note in cmd_measure on what that mode is for. The five `crop_*` views are 0
 # here because their magnitude threshold is 0 too -- see the paragraph above
 # `view_threshold` for the measurement.
-view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 16 96 160 0 0 0 0 8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 16 96 160 0 0 0 0 8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
 # --- launch sharing --------------------------------------------------------
 #
 # A view is a launch plus a crop, and the two are not one-to-one: 53 views
