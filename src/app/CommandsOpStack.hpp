@@ -5,6 +5,7 @@
 
 #include "app/Command.hpp"
 #include "core/OpStack.hpp"
+#include "core/SelectionMask.hpp"
 #include "io/Json.hpp"
 
 // app/CommandsOpStack -- the op codec, published for the one caller outside
@@ -47,6 +48,13 @@ Command selectFeatherCommand(float radius);
 Command selectColourRangeCommand(const std::array<float, 3>& swatchSrgb, float tolerance,
                                  float edgeBand);
 Command selectLuminanceRangeCommand(float low, float high, float edgeBand);
+
+// The selection one of those five commands would install, computed from a
+// const document. The command's applier and the Select dialogs' live preview
+// both call this, so what the dialog shows is what Apply commits. Empty on
+// success, or the command's own refusal sentence.
+std::string computeSelectionCommand(const OpenDocument& doc, const Command& command,
+                                    Selection* out);
 
 // --- the channel commands' encoders (PRD E11, E13; docs/automation.md §2.2)
 // ---------------------------------------------------------------------------

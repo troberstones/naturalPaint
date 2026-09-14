@@ -12585,6 +12585,56 @@ bool g_selectLuminanceRangeRequested = false;
 bool g_saveSelectionAsChannelRequested = false;
 bool g_loadChannelAsSelectionRequested = false;
 
+// The candidate selection an open Select dialog shows as marching ants
+// (docs/testing-issues.md T15). The document's own selection is untouched until
+// the dialog commits; owner-keyed because all five dialogs draw every frame.
+struct SelectionDialogPreview {
+  const char* owner = nullptr;  // the popup id that owns the preview, or null
+  bool showing = false;         // false while the current parameters are refused
+  DocumentId documentId = 0;
+  Selection selection;
+  std::string key;              // the inputs `selection` was computed from
+  uint64_t revision = 0;        // the boundary cache's key; never reused
+  SelectionBoundaryCache boundary;
+};
+SelectionDialogPreview g_selectionPreview;
+uint64_t g_selectionPreviewComputations = 0;
+
+void clearSelectionPreview(const char* owner) {
+  if (g_selectionPreview.owner != owner) return;
+  g_selectionPreview.owner = nullptr;
+  g_selectionPreview.showing = false;
+  g_selectionPreview.selection = Selection{};
+  g_selectionPreview.key.clear();
+}
+
+// Recomputes only once an edit has settled: the inputs moved since the last
+// computation and no control is mid-drag or mid-typing. Colour Range on a
+// large layer costs a full pass, so a per-tick recompute would stall the drag.
+void updateSelectionPreview(const char* owner, const OpenDocument* od, const Command& command) {
+  if (od == nullptr) {
+    clearSelectionPreview(owner);
+    return;
+  }
+  if (ImGui::IsAnyItemActive()) return;
+  std::string key = std::to_string(od->id) + '/' + std::to_string(od->revision) + '/' +
+                    std::to_string(od->selectionRevision) + '/' + command.id +
+                    command.params.write(0);
+  if (g_selectionPreview.owner == owner && g_selectionPreview.key == key) return;
+  g_selectionPreview.owner = owner;
+  g_selectionPreview.key = std::move(key);
+  g_selectionPreview.documentId = od->id;
+  g_selectionPreview.revision = ++g_selectionPreviewComputations;
+  Selection candidate;
+  g_selectionPreview.showing = computeSelectionCommand(*od, command, &candidate).empty();
+  g_selectionPreview.selection = std::move(candidate);
+}
+
+const Selection* selectionPreviewFor(DocumentId id) {
+  const SelectionDialogPreview& p = g_selectionPreview;
+  return p.owner != nullptr && p.showing && p.documentId == id ? &p.selection : nullptr;
+}
+
 // The shape Grow, Shrink and Feather share: a title, a one-line explanation
 // of what THIS op's radius means (grow/shrink move an edge; feather softens
 // one -- different enough to be worth saying, per core/SelectionRefine.hpp
@@ -12640,7 +12690,10 @@ void drawRefineRadiusDialog(AppState& st, RefineRadiusDialog& dlg, bool* request
     *requested = false;
     ImGui::OpenPopup(dlg.popupId);
   }
-  if (!beginDialog(dlg.popupId)) return;
+  if (!beginDialog(dlg.popupId)) {
+    clearSelectionPreview(dlg.popupId);
+    return;
+  }
 
   dialogText("%s", dlg.explanation);
   ImGui::Spacing();
@@ -12658,8 +12711,9 @@ void drawRefineRadiusDialog(AppState& st, RefineRadiusDialog& dlg, bool* request
   if (od == nullptr) dialogHint("No document is open.");
   else if (!usable) dialogHint("Nothing is selected, so there is no edge to move.");
 
-  selectionCommandFooter(od, usable, dlg.verb, dlg.status,
-                         selectRefineCommand(dlg.action, dlg.radius));
+  const Command command = selectRefineCommand(dlg.action, dlg.radius);
+  updateSelectionPreview(dlg.popupId, od, command);
+  selectionCommandFooter(od, usable, dlg.verb, dlg.status, command);
   endDialog();
 }
 
@@ -12685,7 +12739,10 @@ void drawSelectColourRangeDialog(AppState& st) {
     g_selectColourRangeRequested = false;
     ImGui::OpenPopup("Colour Range");
   }
-  if (!beginDialog("Colour Range")) return;
+  if (!beginDialog("Colour Range")) {
+    clearSelectionPreview("Colour Range");
+    return;
+  }
 
   dialogText("Selects every pixel on the active layer close to this colour, whether or not it "
              "touches the others. The magic wand selects only what is connected.");
@@ -12702,24 +12759,30 @@ void drawSelectColourRangeDialog(AppState& st) {
   const bool usable = od != nullptr && selectRangeEnabled(*od);
   if (!usable) dialogHint("The active layer has no colour pixels to sample.");
 
-  selectionCommandFooter(
-      od, usable, "Select", status,
-      selectColourRangeCommand({swatchSrgb[0], swatchSrgb[1], swatchSrgb[2]}, tolerance, edgeBand));
+  const Command command =
+      selectColourRangeCommand({swatchSrgb[0], swatchSrgb[1], swatchSrgb[2]}, tolerance, edgeBand);
+  updateSelectionPreview("Colour Range", od, command);
+  selectionCommandFooter(od, usable, "Select", status, command);
   endDialog();
 }
 
 // Luminance Range (PRD E9): a band rather than a tolerance around a sample.
+LuminanceRangeDialogValues g_luminanceRangeValues{0.0f, 1.0f, kFloodDefaultEdgeBand};
+
 void drawSelectLuminanceRangeDialog(AppState& st) {
-  static float low = 0.0f;
-  static float high = 1.0f;
-  static float edgeBand = kFloodDefaultEdgeBand;
+  float& low = g_luminanceRangeValues.low;
+  float& high = g_luminanceRangeValues.high;
+  float& edgeBand = g_luminanceRangeValues.edgeBand;
   static std::string status;
 
   if (g_selectLuminanceRangeRequested) {
     g_selectLuminanceRangeRequested = false;
     ImGui::OpenPopup("Luminance Range");
   }
-  if (!beginDialog("Luminance Range")) return;
+  if (!beginDialog("Luminance Range")) {
+    clearSelectionPreview("Luminance Range");
+    return;
+  }
 
   dialogText("Selects every pixel on the active layer whose brightness falls in this band. "
              "0.75 to 1.0 is the brightest quarter, as it looks on screen.");
@@ -12739,8 +12802,9 @@ void drawSelectLuminanceRangeDialog(AppState& st) {
   const bool usable = od != nullptr && selectRangeEnabled(*od);
   if (!usable) dialogHint("The active layer has no colour pixels to sample.");
 
-  selectionCommandFooter(od, usable, "Select", status,
-                         selectLuminanceRangeCommand(low, high, edgeBand));
+  const Command command = selectLuminanceRangeCommand(low, high, edgeBand);
+  updateSelectionPreview("Luminance Range", od, command);
+  selectionCommandFooter(od, usable, "Select", status, command);
   endDialog();
 }
 
@@ -12976,13 +13040,49 @@ bool keyboardBelongsToTyping(const AppState& st) {
 // living in its own translation unit (ui/FilterDialogsExtra.cpp)
 // needs a pair of externally-linked functions to reach them
 // through -- see ui/MacPaintUI.hpp's own comment on why `External` exists.
+// Which External dialog holds the preview: empty for the unnamed door. The
+// unnamed clear runs every frame those dialogs are closed, so it must not
+// wipe a preview a named dialog set.
+std::string g_externalPreviewOwner;
+
 void setExternalFilterPreview(DocumentId id, size_t layerIndex, TileStore tiles) {
+  g_externalPreviewOwner.clear();
   setFilterPreview(FilterPreviewOwner::External, id, layerIndex, std::move(tiles));
 }
-void clearExternalFilterPreview() { clearFilterPreview(FilterPreviewOwner::External); }
+void clearExternalFilterPreview() {
+  if (g_externalPreviewOwner.empty()) clearFilterPreview(FilterPreviewOwner::External);
+}
+void setExternalFilterPreview(DocumentId id, size_t layerIndex, TileStore tiles,
+                              const char* owner) {
+  setFilterPreview(FilterPreviewOwner::External, id, layerIndex, std::move(tiles));
+  g_externalPreviewOwner = owner;
+}
+void clearExternalFilterPreview(const char* owner) {
+  if (g_filterPreview.owner != FilterPreviewOwner::External || g_externalPreviewOwner != owner)
+    return;
+  g_externalPreviewOwner.clear();
+  clearFilterPreview(FilterPreviewOwner::External);
+}
 DocumentId externalFilterPreviewDocument() {
   return g_filterPreview.owner == FilterPreviewOwner::External ? g_filterPreview.documentId : 0;
 }
+const TileStore* externalFilterPreviewTiles() {
+  return g_filterPreview.owner == FilterPreviewOwner::External ? &g_filterPreview.tiles : nullptr;
+}
+
+void requestSelectMenuDialog(MenuAction action) {
+  switch (action) {
+    case MenuAction::SelectGrow: g_selectGrowRequested = true; break;
+    case MenuAction::SelectShrink: g_selectShrinkRequested = true; break;
+    case MenuAction::SelectFeather: g_selectFeatherRequested = true; break;
+    case MenuAction::SelectColourRange: g_selectColourRangeRequested = true; break;
+    case MenuAction::SelectLuminanceRange: g_selectLuminanceRangeRequested = true; break;
+    default: break;
+  }
+}
+void drawSelectMenuModals(AppState& st) { drawSelectMenuDialogs(st); }
+const Selection* selectionDialogPreview(DocumentId id) { return selectionPreviewFor(id); }
+LuminanceRangeDialogValues& luminanceRangeDialogValues() { return g_luminanceRangeValues; }
 
 // Declared in ui/MacPaintUI.hpp. **Moved out of the anonymous namespace**
 // 2026-09-10 for the reason `toolMenuFamily()` just below was put here:
@@ -21718,13 +21818,21 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // the existing ants for the duration of the drag is half of what made
     // "shift just draws another rectangle" look true.
     if (OpenDocument* selOd = st.documents.active(); selOd != nullptr) {
-      // Revision-keyed, so this costs a hash-free key compare on every frame
-      // the selection has not changed. core/SelectionBoundary.hpp has the
-      // measurement that makes the cache necessary rather than tidy.
-      drawMarchingAnts(dl, xform,
-                       st.selectionBoundary.boundaryFor(
-                           selOd->selection.has_value() ? &*selOd->selection : nullptr,
-                           selOd->id, selOd->selectionRevision));
+      if (const Selection* candidate = selectionPreviewFor(selOd->id)) {
+        // An open Select dialog's candidate stands in for the committed
+        // outline until Apply or Cancel.
+        drawMarchingAnts(dl, xform,
+                         g_selectionPreview.boundary.boundaryFor(candidate, selOd->id,
+                                                                 g_selectionPreview.revision));
+      } else {
+        // Revision-keyed, so this costs a hash-free key compare on every frame
+        // the selection has not changed. core/SelectionBoundary.hpp has the
+        // measurement that makes the cache necessary rather than tidy.
+        drawMarchingAnts(dl, xform,
+                         st.selectionBoundary.boundaryFor(
+                             selOd->selection.has_value() ? &*selOd->selection : nullptr,
+                             selOd->id, selOd->selectionRevision));
+      }
     }
 
     // --- Free Transform's gizmo ------------------------------------------

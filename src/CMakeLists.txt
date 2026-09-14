@@ -100,6 +100,8 @@ set(NP_SELFTEST_SOURCES
   app/selftest/BlurFilters.cpp
   app/selftest/RadialBlurHandles.cpp
   app/selftest/RadialBlurRetarget.cpp
+  app/selftest/SelectDialogPreview.cpp
+  app/selftest/FillStrokePreview.cpp
   app/selftest/FloodFill.cpp
   app/selftest/FloodFillOptions.cpp
   app/selftest/Fonts.cpp

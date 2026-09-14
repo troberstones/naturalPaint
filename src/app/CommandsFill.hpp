@@ -3,6 +3,7 @@
 #include <string>
 
 #include "app/Command.hpp"
+#include "core/TileStore.hpp"
 #include "ops/Fill.hpp"
 
 // app/CommandsFill -- the command rows for PRD D26 (fill and stroke a
@@ -60,6 +61,13 @@ void registerFillCommands(std::vector<CommandSpec>* out);
 
 Command fillCommand(const FillParams& p);
 Command strokeCommand(const StrokeParams& p);
+
+// What `fill` or `stroke` would leave on the active layer, computed from a
+// const document by the code the command itself runs -- the Fill and Stroke
+// dialogs' live preview. Empty on success, with `*changedOut` texels changed
+// and, when any did, `*layerOut` the whole composed layer; else the refusal.
+std::string previewFillCommand(const OpenDocument& doc, const Command& command, TileStore* layerOut,
+                               size_t* changedOut);
 
 // `define_pattern`'s encoder -- see this header's own note above for why it
 // lives here. Beside `app/CommandsPatterns.cpp`'s `doDefinePattern()`, which
