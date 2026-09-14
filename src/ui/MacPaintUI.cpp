@@ -5869,7 +5869,8 @@ void drawBrushPaintGroup(AppState& st) {
     // saying it does nothing.
     const bool honoured = erasing || toning || route == StrokeRoute::RgbDeposit ||
                           route == StrokeRoute::CloneStamp || route == StrokeRoute::Heal ||
-                          route == StrokeRoute::MaskPaint || route == StrokeRoute::MaskClone;
+                          route == StrokeRoute::MaskPaint || route == StrokeRoute::MaskClone ||
+                          route == StrokeRoute::MaskHeal;
     ImGui::BeginDisabled(!honoured);
     ctlSlider("Opacity", &st.brush.opacity, 0.0f, 1.0f);
     ImGui::EndDisabled();

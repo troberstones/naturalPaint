@@ -204,7 +204,7 @@ bool runMaskTargetTest() {
       const Tool tool = static_cast<Tool>(i);
       if (tool == Tool::Brush || tool == Tool::DryBrush || tool == Tool::Pencil ||
           tool == Tool::Eraser || tool == Tool::Dodge || tool == Tool::Burn ||
-          tool == Tool::Smudge || tool == Tool::CloneStamp)
+          tool == Tool::Smudge || tool == Tool::CloneStamp || tool == Tool::Heal)
         continue;
       if (strokeRouteFor(tool, &masked, LayerEditTarget::Mask) != StrokeRoute::None)
         othersRefuse = false;

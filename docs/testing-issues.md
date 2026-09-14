@@ -1099,8 +1099,8 @@ use the Photoshop command that shows the mask (⌥-click).
 
 **Built: all three gestures.** Gesture 1 (paint into the mask) and the two
 thumbnails landed first; Shift-click, ⌥-click and the other tools on a mask
-followed, and "Gestures 2 and 3, and the other tools" below records them. Heal
-on a mask is the one tool still refused.
+followed, and "Gestures 2 and 3, and the other tools" below records them,
+Heal on a mask included.
 
 ### What was wrong with this entry's own analysis
 
@@ -1172,9 +1172,11 @@ Covered by `app/selftest/MaskTarget.cpp` and by three golden views
   hard-edged coverage, Eraser always reveals, Dodge raises and Burn lowers
   coverage (the tonal gamma applied to coverage, so 0 and 1 are fixed points),
   Smudge smears coverage, and Clone Stamp copies coverage from the clone offset
-  within the same mask (`brush/MaskTools`). **Heal still refuses by name**: a
-  harmonic correction of one scalar coverage is well defined, but whether that
-  is what a user means by healing a mask needs a ruling.
+  within the same mask. **Heal smooths coverage**: the dab's rectangle and a
+  one-texel rim are membrane-filled with `ops/Poisson`'s `harmonicFill()` (rim
+  fixed, interior harmonic), then blended over the original under the soft tip,
+  so specks vanish and gradients survive; it needs no clone source
+  (`brush/MaskTools`, route `mask-heal`).
 
 Covered by `app/selftest/MaskControls.cpp`. `--mask-demo off` and
 `--mask-demo view` reach the two new states for golden views.
