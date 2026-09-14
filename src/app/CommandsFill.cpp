@@ -324,44 +324,58 @@ CommandResult doFill(OpenDocument& doc, const JsonValue& params) {
   return fromFilterResult(applyPixelFilter(doc, fillTiles, p, "fill"), doc, "fill");
 }
 
-CommandResult doStroke(OpenDocument& doc, const JsonValue& params) {
-  StrokeParams sp;
+// A selection whose coverage is the layer's own alpha. Stroked with nothing
+// selected, as Photoshop does: grow/shrink put the traced edge where alpha
+// crosses 50% (core/SelectionRefine.hpp's coverage/distance identity), so an
+// antialiased edge stays sub-texel. Alpha under 1/510 quantises to unselected.
+Selection layerContentSelection(const TileStore& tiles) {
+  Selection sel;
+  for (const auto& [coord, tile] : tiles) {
+    SelectionTile coverage{};
+    for (int32_t y = 0; y < kTileSize; ++y)
+      for (int32_t x = 0; x < kTileSize; ++x)
+        coverage.writeCoverage(PixelCoord{x, y}, tile.readPixel(PixelCoord{x, y})[3]);
+    if (!coverage.selectsNothing()) sel.tiles.getOrCreate(coord) = coverage;
+  }
+  return sel;
+}
+
+std::string readStrokeParams(const JsonValue& params, StrokeParams* sp) {
   const char* kId = "stroke";
-  std::string why = readFillSourceParams(params, kId, &sp.fill);
-  if (why.empty()) why = readNumber(params, kId, "width", kRequired, &sp.width);
-  if (!why.empty()) return commandRefused(why);
-  if (!(sp.width > 0.0f))
-    return commandRefused(
-        refuseValue(kId, "width", "greater than zero; a zero-width stroke is the identity, "
-                                  "which in a batch is a file written unmodified and reported "
-                                  "as a success"));
-  why = readEnumByName(params, kId, "location", strokeLocationFromName, &sp.location);
-  if (!why.empty()) return commandRefused(why);
+  std::string why = readFillSourceParams(params, kId, &sp->fill);
+  if (why.empty()) why = readNumber(params, kId, "width", kRequired, &sp->width);
+  if (!why.empty()) return why;
+  if (!(sp->width > 0.0f))
+    return refuseValue(kId, "width", "greater than zero; a zero-width stroke is the identity, "
+                                     "which in a batch is a file written unmodified and reported "
+                                     "as a success");
+  return readEnumByName(params, kId, "location", strokeLocationFromName, &sp->location);
+}
 
-  // **The one case this track leaves out** (reach-fill.md's own permission):
-  // Photoshop strokes the edge of the layer's non-transparent pixels when
-  // nothing is selected. Building that edge -- from a layer's own alpha,
-  // rather than from `core/SelectionRefine.hpp`'s grow/shrink, which only
-  // ever moves a SELECTION's boundary -- is a second antialiased-edge
-  // machinery this track did not build. Refused by name rather than silently
-  // stroking nothing or the whole canvas.
-  if (!doc.selection.has_value())
-    return commandRefused(
-        "refused: stroke needs an active selection in this build. Tracing the edge of a "
-        "layer's own non-transparent pixels with nothing selected (Photoshop's own behaviour) "
-        "is not implemented; select the area to stroke first.");
-
-  Layer* target = activeLayerOf(doc);
+// Everything `stroke` decides, from a const document: the command and the
+// Stroke dialog's preview both call this. `*composedOut` is the whole layer
+// as the stroke would leave it.
+std::string computeStroke(const OpenDocument& doc, const StrokeParams& sp, TileStore* composedOut,
+                          size_t* changedOut) {
+  const Layer* target = activeLayerOf(doc);
   const PixelOpRefusal refusal = pixelOpRefusalFor(target);
-  if (refusal != PixelOpRefusal::None)
-    return commandRefused(pixelOpRefusalMessage(refusal, target, "stroke"));
+  if (refusal != PixelOpRefusal::None) return pixelOpRefusalMessage(refusal, target, "stroke");
+
+  const TileStore original = *target->rgbTiles;
+  Selection contentEdge;
+  if (!doc.selection.has_value()) {
+    contentEdge = layerContentSelection(original);
+    if (selectionSelectsNothing(contentEdge))
+      return "refused: stroke has no edge to trace. Nothing is selected, and the layer \"" +
+             target->name + "\" has no non-transparent pixels to stroke around.";
+  }
+  const Selection& sel = doc.selection.has_value() ? *doc.selection : contentEdge;
 
   // The band `ops/Fill.hpp`'s header describes: `Inside` and `Outside` put
   // the whole width to one side of the selection's own edge; `Center` splits
   // it, `width / 2` to each side, which is exactly `grow` and `shrink` by
   // half the width -- `core/SelectionRefine.hpp`'s own single-sign `grow`
   // covers all three by the sign and magnitude of its argument alone.
-  const Selection& sel = *doc.selection;
   Selection band;
   switch (sp.location) {
     case StrokeLocation::Inside:
@@ -376,19 +390,26 @@ CommandResult doStroke(OpenDocument& doc, const JsonValue& params) {
       break;
   }
 
-  const TileStore original = *target->rgbTiles;
   const PixelRect canvasRect{0, 0, doc.document.width, doc.document.height};
   TileStore filtered;
-  // `fillParamsValid()` already ran inside `readFillSourceParams()`'s callers
-  // for `fill`; stroke re-derives the identical params struct, so this can
-  // only fail if `readFillSourceParams()` above let something invalid
-  // through -- named rather than silently swallowed, so that bug would be
-  // visible rather than reported as a 0-texel success.
+  // `readStrokeParams()` already validated these; a failure here is that
+  // reader's bug, named rather than reported as a 0-texel success.
   if (!fillTiles(original, canvasRect, sp.fill, &filtered))
-    return commandRefused("refused: stroke's fill parameters did not validate.");
+    return "refused: stroke's fill parameters did not validate.";
 
-  TileStore composed = original;
-  const size_t changed = compositeFilterResult(original, filtered, canvasRect, &band, composed);
+  *composedOut = original;
+  *changedOut = compositeFilterResult(original, filtered, canvasRect, &band, *composedOut);
+  return {};
+}
+
+CommandResult doStroke(OpenDocument& doc, const JsonValue& params) {
+  StrokeParams sp;
+  std::string why = readStrokeParams(params, &sp);
+  if (!why.empty()) return commandRefused(why);
+  TileStore composed;
+  size_t changed = 0;
+  why = computeStroke(doc, sp, &composed, &changed);
+  if (!why.empty()) return commandRefused(why);
 
   CommandResult r;
   r.ok = true;
@@ -398,7 +419,7 @@ CommandResult doStroke(OpenDocument& doc, const JsonValue& params) {
     r.status = "stroke: 0 texels changed";
     return r;
   }
-  *target->rgbTiles = std::move(composed);
+  *activeLayerOf(doc)->rgbTiles = std::move(composed);
   doc.recordEdit("stroke", EditKind::Content);
   r.status = "stroke: " + std::to_string(changed) + " texels changed";
   return r;
@@ -418,13 +439,12 @@ void registerFillCommands(std::vector<CommandSpec>* out) {
   std::vector<std::string> strokeParamNames = fillParamNames;
   strokeParamNames.push_back("width");
   strokeParamNames.push_back("location");
-  // `selectionBounded = true` even though an absent selection is a hard
-  // refusal here rather than "the whole canvas": `app/Command.hpp`'s own
-  // comment on `filter_inpaint` is the identical argument -- the recorder's
+  // `selectionBounded = true` even though an absent selection means "trace
+  // the layer's content edge" rather than "the whole canvas": `app/Command.hpp`'s
+  // own comment on `filter_inpaint` is the identical argument -- the recorder's
   // channel-match rule (app/Recorder.hpp §4) is the protection a live,
-  // unsaved marquee needs regardless of which of the two an absent selection
-  // would mean, because replaying without it gives a DIFFERENT outcome
-  // (here, a refusal instead of the stroke that ran) than the one recorded.
+  // unsaved marquee needs, because replaying without it strokes a DIFFERENT
+  // edge (the layer's, not the marquee's) than the one recorded.
   out->push_back({"stroke", "Stroke", strokeParamNames, pixelOpUnavailable, doStroke,
                   /*selectionBounded=*/true});
 }
@@ -496,6 +516,29 @@ void writeFillSourceParams(JsonValue& p, const FillParams& f) {
 }
 
 }  // namespace
+
+std::string previewFillCommand(const OpenDocument& doc, const Command& command, TileStore* layerOut,
+                               size_t* changedOut) {
+  *changedOut = 0;
+  if (command.id == "fill") {
+    FillParams p;
+    const std::string why = readFillSourceParams(command.params, "fill", &p);
+    if (!why.empty()) return why;
+    // `doFill()` reaches the same function through `applyPixelFilter()`.
+    const FilterOpResult r = computePixelFilter(doc, fillTiles, p, layerOut);
+    if (r.refusal != PixelOpRefusal::None)
+      return pixelOpRefusalMessage(r.refusal, activeLayerOf(doc), "fill");
+    *changedOut = r.texelsChanged;
+    return {};
+  }
+  if (command.id == "stroke") {
+    StrokeParams sp;
+    const std::string why = readStrokeParams(command.params, &sp);
+    if (!why.empty()) return why;
+    return computeStroke(doc, sp, layerOut, changedOut);
+  }
+  return "refused: \"" + command.id + "\" is neither fill nor stroke.";
+}
 
 Command fillCommand(const FillParams& f) {
   JsonValue p = JsonValue::object();

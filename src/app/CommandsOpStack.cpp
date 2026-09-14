@@ -917,32 +917,56 @@ std::string featherUnavailable(const OpenDocument& doc, const JsonValue& params)
   return refineRadiusUnavailable(doc, params, "select_feather");
 }
 
-CommandResult doSelectGrow(OpenDocument& doc, const JsonValue& params) {
-  const std::string why = refineRadiusUnavailable(doc, params, "select_grow");
-  if (!why.empty()) return commandRefused(why);
+// The five compute* functions below are the whole of what each refine or range
+// command decides. They read a const document, so the Select dialogs' preview
+// and the command's commit are one computation (`computeSelectionCommand()`).
+template <typename Refine>
+std::string computeRadiusRefine(const OpenDocument& doc, const JsonValue& params,
+                                const char* commandId, Refine refine, Selection* out) {
+  const std::string why = refineRadiusUnavailable(doc, params, commandId);
+  if (!why.empty()) return why;
   float radius = 0.0f;
-  readRadius(params, "select_grow", &radius);
-  installRefinedSelectionForCommand(doc, growSelection(*doc.selection, radius));
-  return selectionChanged("select grow: the edge moved out by " + std::to_string(radius) + " px");
+  readRadius(params, commandId, &radius);
+  *out = refine(*doc.selection, radius);
+  return {};
+}
+
+std::string computeSelectGrow(const OpenDocument& doc, const JsonValue& params, Selection* out) {
+  return computeRadiusRefine(doc, params, "select_grow", growSelection, out);
+}
+std::string computeSelectShrink(const OpenDocument& doc, const JsonValue& params, Selection* out) {
+  return computeRadiusRefine(doc, params, "select_shrink", shrinkSelection, out);
+}
+std::string computeSelectFeather(const OpenDocument& doc, const JsonValue& params,
+                                 Selection* out) {
+  return computeRadiusRefine(doc, params, "select_feather", featherSelection, out);
+}
+
+CommandResult doSelectGrow(OpenDocument& doc, const JsonValue& params) {
+  Selection refined;
+  const std::string why = computeSelectGrow(doc, params, &refined);
+  if (!why.empty()) return commandRefused(why);
+  installRefinedSelectionForCommand(doc, std::move(refined));
+  return selectionChanged("select grow: the edge moved out by " +
+                          std::to_string(floatOr(params, "radius", 0.0f)) + " px");
 }
 
 CommandResult doSelectShrink(OpenDocument& doc, const JsonValue& params) {
-  const std::string why = refineRadiusUnavailable(doc, params, "select_shrink");
+  Selection refined;
+  const std::string why = computeSelectShrink(doc, params, &refined);
   if (!why.empty()) return commandRefused(why);
-  float radius = 0.0f;
-  readRadius(params, "select_shrink", &radius);
-  installRefinedSelectionForCommand(doc, shrinkSelection(*doc.selection, radius));
-  return selectionChanged("select shrink: the edge moved in by " + std::to_string(radius) + " px");
+  installRefinedSelectionForCommand(doc, std::move(refined));
+  return selectionChanged("select shrink: the edge moved in by " +
+                          std::to_string(floatOr(params, "radius", 0.0f)) + " px");
 }
 
 CommandResult doSelectFeather(OpenDocument& doc, const JsonValue& params) {
-  const std::string why = refineRadiusUnavailable(doc, params, "select_feather");
+  Selection refined;
+  const std::string why = computeSelectFeather(doc, params, &refined);
   if (!why.empty()) return commandRefused(why);
-  float radius = 0.0f;
-  readRadius(params, "select_feather", &radius);
-  installRefinedSelectionForCommand(doc, featherSelection(*doc.selection, radius));
-  return selectionChanged("select feather: the edge was softened over " + std::to_string(radius) +
-                          " px");
+  installRefinedSelectionForCommand(doc, std::move(refined));
+  return selectionChanged("select feather: the edge was softened over " +
+                          std::to_string(floatOr(params, "radius", 0.0f)) + " px");
 }
 
 // The RGB source the two range rows sample. Same predicate as
@@ -990,9 +1014,10 @@ std::string colourRangeUnavailable(const OpenDocument& doc, const JsonValue& par
   return rangeSourceUnavailable(doc, "select_colour_range");
 }
 
-CommandResult doSelectColourRange(OpenDocument& doc, const JsonValue& params) {
+std::string computeSelectColourRange(const OpenDocument& doc, const JsonValue& params,
+                                    Selection* out) {
   const std::string why = colourRangeUnavailable(doc, params);
-  if (!why.empty()) return commandRefused(why);
+  if (!why.empty()) return why;
   std::array<float, 3> swatch{};
   readColour(params, &swatch);
 
@@ -1015,9 +1040,16 @@ CommandResult doSelectColourRange(OpenDocument& doc, const JsonValue& params) {
   const std::array<float, 4> linear = {srgbDecode(swatch[0]), srgbDecode(swatch[1]),
                                        srgbDecode(swatch[2]), 1.0f};
   const Layer* target = activeLayerOf(doc);
-  installRefinedSelectionForCommand(
-      doc, selectColourRange(*target->rgbTiles, linear, doc.document.width, doc.document.height,
-                             range));
+  *out = selectColourRange(*target->rgbTiles, linear, doc.document.width, doc.document.height,
+                           range);
+  return {};
+}
+
+CommandResult doSelectColourRange(OpenDocument& doc, const JsonValue& params) {
+  Selection refined;
+  const std::string why = computeSelectColourRange(doc, params, &refined);
+  if (!why.empty()) return commandRefused(why);
+  installRefinedSelectionForCommand(doc, std::move(refined));
   return selectionChanged("select colour range: done");
 }
 
@@ -1029,24 +1061,30 @@ std::string luminanceRangeUnavailable(const OpenDocument& doc, const JsonValue& 
   return rangeSourceUnavailable(doc, "select_luminance_range");
 }
 
-CommandResult doSelectLuminanceRange(OpenDocument& doc, const JsonValue& params) {
+std::string computeSelectLuminanceRange(const OpenDocument& doc, const JsonValue& params,
+                                       Selection* out) {
   const std::string why = luminanceRangeUnavailable(doc, params);
-  if (!why.empty()) return commandRefused(why);
-
+  if (!why.empty()) return why;
   SelectionLuminanceRange band;
   band.low = floatOr(params, "low", band.low);
   band.high = floatOr(params, "high", band.high);
   band.edgeBand = floatOr(params, "edge_band", band.edgeBand);
-
   const Layer* target = activeLayerOf(doc);
-  installRefinedSelectionForCommand(
-      doc, selectLuminanceRange(*target->rgbTiles, doc.document.width, doc.document.height, band));
+  *out = selectLuminanceRange(*target->rgbTiles, doc.document.width, doc.document.height, band);
+  return {};
+}
+
+CommandResult doSelectLuminanceRange(OpenDocument& doc, const JsonValue& params) {
+  Selection refined;
+  const std::string why = computeSelectLuminanceRange(doc, params, &refined);
+  if (!why.empty()) return commandRefused(why);
+  installRefinedSelectionForCommand(doc, std::move(refined));
   CommandResult r = selectionChanged("select luminance range: done");
   // core/SelectionRefine.hpp: "low > high selects nothing (an empty band is
   // empty, not inverted)". The dialog says so in yellow beside the sliders; in
   // an action there is nobody to say it to, so it is a warning on the result
   // rather than a step that quietly selected nothing.
-  if (band.low > band.high)
+  if (floatOr(params, "low", 0.0f) > floatOr(params, "high", 1.0f))
     r.warnings.push_back(
         "select_luminance_range's \"low\" is above its \"high\", so this selected nothing rather "
         "than everything outside the band.");
@@ -1054,6 +1092,18 @@ CommandResult doSelectLuminanceRange(OpenDocument& doc, const JsonValue& params)
 }
 
 }  // namespace
+
+std::string computeSelectionCommand(const OpenDocument& doc, const Command& command,
+                                    Selection* out) {
+  if (command.id == "select_grow") return computeSelectGrow(doc, command.params, out);
+  if (command.id == "select_shrink") return computeSelectShrink(doc, command.params, out);
+  if (command.id == "select_feather") return computeSelectFeather(doc, command.params, out);
+  if (command.id == "select_colour_range")
+    return computeSelectColourRange(doc, command.params, out);
+  if (command.id == "select_luminance_range")
+    return computeSelectLuminanceRange(doc, command.params, out);
+  return "refused: \"" + command.id + "\" is not one of the five Select menu refines.";
+}
 
 // --- the channel encoders, beside the readers above (docs/automation.md §2.2)
 // ---------------------------------------------------------------------------

@@ -4416,6 +4416,8 @@ int main(int argc, char** argv) {
     const bool radialBlurHandlesOk = np::runRadialBlurHandlesTest();
     const bool radialBlurRetargetOk = np::runRadialBlurRetargetTest();
     const bool vectorTransformOk = np::runVectorTransformTest();
+    const bool selectDialogPreviewOk = np::runSelectDialogPreviewTest();
+    const bool fillStrokePreviewOk = np::runFillStrokePreviewTest();
     const bool dustScratchesOk = np::runDustScratchesTest();
     const bool shadowsHighlightsOk = np::runShadowsHighlightsTest();
     const bool versionOk = np::runVersionTest();
@@ -4494,7 +4496,8 @@ int main(int argc, char** argv) {
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
                     nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
                     pasteCommandsOk && commandsFillOk && zoomToSelectionOk && warpMeshOk &&
-                    splitViewOk && radialBlurHandlesOk && radialBlurRetargetOk && vectorTransformOk && dustScratchesOk && shadowsHighlightsOk && versionOk &&
+                    splitViewOk && radialBlurHandlesOk && radialBlurRetargetOk && vectorTransformOk &&
+                    selectDialogPreviewOk && fillStrokePreviewOk && dustScratchesOk && shadowsHighlightsOk && versionOk &&
                     flatsKeysOk;
     s->shutdown();
     gpu.shutdown();

@@ -6814,6 +6814,14 @@ bool runRadialBlurRetargetTest();
 // Size and crop; non-affine refusals. Headless.
 bool runVectorTransformTest();
 
+// The Grow/Shrink/Feather, Colour Range and Luminance Range dialogs preview
+// their candidate selection; Cancel keeps the selection, Apply commits it.
+bool runSelectDialogPreviewTest();
+
+// Stroke with nothing selected traces the layer's content edge; the Fill and
+// Stroke dialogs preview what Apply commits, and Cancel clears it.
+bool runFillStrokePreviewTest();
+
 // Filter > Dust & Scratches (PRD D11): median gated by a threshold. Headless.
 bool runDustScratchesTest();
 

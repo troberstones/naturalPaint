@@ -1029,7 +1029,7 @@ move, coverage-weighted edges included.
 
 ---
 
-## T15 — Filters have no preview · PARTLY CLOSED (4 of 9 dialogs; the cost does not fit)
+## T15 — Filters have no preview · PARTLY CLOSED (7 of 9 dialogs; the cost does not fit)
 
 **Reported.** Add a preview mode to the filters, and a cancel.
 
@@ -1075,6 +1075,32 @@ untouched and behave exactly as before: Image Size and Canvas Size are
 document geometry through `ops/DocumentTransform`; Refine Radius, Colour Range
 and Luminance Range produce a *selection*, where a live preview means animating
 marching ants, not a pixel overlay.
+
+**Built 2026-09-13 — the three selection dialogs, plus Fill and Stroke.**
+Refine Radius (Grow, Shrink, Feather), Colour Range and Luminance Range now
+draw the *candidate* selection's marching ants in place of the committed
+outline while open; `od->selection` does not move until Apply, and any close
+drops the candidate. One computation: `computeSelectionCommand()`
+(app/CommandsOpStack) takes a `const OpenDocument&`, and both the dialog's
+preview and the `select_*` applier call it, so Apply commits exactly what was
+shown, through `runSelectionCommand()` and the recorder. No tint: the ants are
+the whole preview. Edit > Fill and Edit > Stroke preview on the canvas through
+`previewFillCommand()` (app/CommandsFill), which parses the same `Command` the
+Apply button commits and runs `computePixelFilter()` / `computeStroke()`, the
+functions the appliers run. Every one of these recomputes when an edit has
+*settled* (the encoded command changed and no control is mid-drag or
+mid-typing), not per tick.
+
+Fill and Stroke use a **named** External preview
+(`setExternalFilterPreview(..., owner)`). The unnamed door is not safe for a
+dialog drawn after the others: Radial Blur, Lens Blur, Highpass and the rest
+call `clearExternalFilterPreview()` on every frame they are closed, and they
+draw before Fill and Stroke, so an unnamed preview would be wiped the frame
+after it was set. By reading, the same hazard applies among those unnamed
+dialogs themselves: any but the last one drawn loses its preview after one
+frame. Not verified and not fixed here. `app/selftest/SelectDialogPreview.cpp`
+and `app/selftest/FillStrokePreview.cpp` drive the real dialogs headlessly.
+Still unconverted: Image Size and Canvas Size.
 
 **Still open, and this entry stays open for it — the cost does not fit.**
 Measured: 1024² blur 266.5 ms + recomposite 23.6 ms = 290.0 ms (1450% of F3);

@@ -574,8 +574,16 @@ PixelCommandOutcome runPixelCommand(OpenDocument& od, const Command& command,
 // `External` owner is safe: only one modal is ever open at a time.
 void setExternalFilterPreview(DocumentId id, size_t layerIndex, TileStore tiles);
 void clearExternalFilterPreview();
+// The same door with a name. Only the named clear removes a named preview, so a
+// dialog drawn after the unnamed ones (Fill, Stroke) is not wiped by their
+// every-frame clear while they are closed.
+void setExternalFilterPreview(DocumentId id, size_t layerIndex, TileStore tiles,
+                              const char* owner);
+void clearExternalFilterPreview(const char* owner);
 // The document an External preview is showing on, or 0. For the self-test.
 DocumentId externalFilterPreviewDocument();
+// The External preview's layer content, or null. For the self-test.
+const TileStore* externalFilterPreviewTiles();
 
 // A layer gesture or a layer value setter, through the same door. Both report
 // the same three things, because `g_layers`' message band shows the same three
@@ -636,6 +644,20 @@ bool selectUndoRefineEnabled(const OpenDocument& od) noexcept;
 // menu refine or range dialog's commit, through `applyCommand()`. Returns
 // empty on success, or the refusal sentence for the dialog's red line.
 std::string runSelectionCommand(OpenDocument& od, const Command& command);
+
+// The five Select dialogs, for --selftest's headless frames: the menu's
+// deferred open, the per-frame draw, and the candidate selection an open
+// dialog previews on `id` (null when none is showing).
+void requestSelectMenuDialog(MenuAction action);
+void drawSelectMenuModals(AppState& st);
+const Selection* selectionDialogPreview(DocumentId id);
+// Luminance Range's controls, so a test can make an edit between frames.
+struct LuminanceRangeDialogValues {
+  float low;
+  float high;
+  float edgeBand;
+};
+LuminanceRangeDialogValues& luminanceRangeDialogValues();
 
 // Grow, Shrink and Feather share one dialog; `action` picks select_grow,
 // select_shrink or select_feather. Any other action encodes an unregistered

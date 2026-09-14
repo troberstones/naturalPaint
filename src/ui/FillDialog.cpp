@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "app/AppState.hpp"
 #include "app/CommandsFill.hpp"
+#include "app/FilterOps.hpp"
 #include "core/Blend.hpp"
 #include "core/SelectionMask.hpp"
 #include "ops/Fill.hpp"
@@ -69,6 +71,35 @@ void fillDialogFooter(OpenDocument* od, std::string& status, const Command& comm
     default:
       break;
   }
+}
+
+// The canvas preview, recomputed once an edit has settled: the inputs moved
+// and no control is mid-drag or mid-typing. A full-layer fill or stroke costs
+// hundreds of milliseconds at the default document size, so not per tick.
+// Named on the External door so the unnamed dialogs' every-frame clear, drawn
+// before these, leaves it alone.
+void updateFillPreview(const char* owner, const OpenDocument* od, const Command& command,
+                       bool enabled, std::string& key) {
+  if (od == nullptr || !enabled) {
+    clearExternalFilterPreview(owner);
+    key.clear();
+    return;
+  }
+  if (ImGui::IsAnyItemActive()) return;
+  std::string next = std::to_string(od->id) + '/' + std::to_string(od->revision) + '/' +
+                     std::to_string(od->selectionRevision) + '/' +
+                     std::to_string(od->activeLayer) + '/' + command.params.write(0);
+  if (next == key) return;
+  key = std::move(next);
+  TileStore tiles;
+  size_t changed = 0;
+  if (previewFillCommand(*od, command, &tiles, &changed).empty() && changed > 0) {
+    if (const std::optional<size_t> idx = activeLayerIndex(*od)) {
+      setExternalFilterPreview(od->id, *idx, std::move(tiles), owner);
+      return;
+    }
+  }
+  clearExternalFilterPreview(owner);
 }
 
 // ==========================================================================
@@ -219,6 +250,7 @@ void requestFillDialog() { g_fillRequested = true; }
 void drawFillDialog(AppState& st) {
   static FillSourceUi ui;
   static std::string status;
+  static std::string previewKey;
 
   if (g_fillRequested) {
     g_fillRequested = false;
@@ -226,6 +258,8 @@ void drawFillDialog(AppState& st) {
     ImGui::OpenPopup("Fill");
   }
   if (!beginDialog("Fill")) {
+    clearExternalFilterPreview("Fill");
+    previewKey.clear();
     return;
   }
 
@@ -234,12 +268,13 @@ void drawFillDialog(AppState& st) {
 
   FillParams p;
   const std::string resolveError = resolveFillParams(ui, st, od, &p);
+  const Command command = fillCommand(p);
+  updateFillPreview("Fill", od, command, resolveError.empty(), previewKey);
   if (!resolveError.empty()) {
     dialogHint("%s", resolveError.c_str());
-    fillDialogFooter(od, status, fillCommand(p), "", /*commitEnabled=*/false);
+    fillDialogFooter(od, status, command, "", /*commitEnabled=*/false);
   } else {
-    fillDialogFooter(od, status, fillCommand(p),
-                     "Nothing changed (opacity 0, or no selected texels).");
+    fillDialogFooter(od, status, command, "Nothing changed (opacity 0, or no selected texels).");
   }
   endDialog();
 }
@@ -251,6 +286,7 @@ void drawStrokeDialog(AppState& st) {
   static float width = 4.0f;
   static int locationIdx = 1;  // Inside, Center, Outside
   static std::string status;
+  static std::string previewKey;
 
   if (g_strokeRequested) {
     g_strokeRequested = false;
@@ -258,6 +294,8 @@ void drawStrokeDialog(AppState& st) {
     ImGui::OpenPopup("Stroke");
   }
   if (!beginDialog("Stroke")) {
+    clearExternalFilterPreview("Stroke");
+    previewKey.clear();
     return;
   }
 
@@ -272,10 +310,9 @@ void drawStrokeDialog(AppState& st) {
   std::string resolveError = resolveFillParams(ui, st, od, &p);
   if (resolveError.empty() && !(width > 0.0f))
     resolveError = "Width must be greater than zero; a zero-width stroke draws nothing.";
-  if (resolveError.empty() && (od == nullptr || !od->selection.has_value()))
-    resolveError =
-        "Stroke needs an active selection in this build -- tracing a layer's own edge with "
-        "nothing selected is not implemented.";
+  if (od != nullptr && !od->selection.has_value())
+    dialogHint("Nothing is selected, so this strokes the edge of the layer's non-transparent "
+               "pixels.");
 
   StrokeParams sp;
   sp.fill = p;
@@ -284,11 +321,13 @@ void drawStrokeDialog(AppState& st) {
                : locationIdx == 2 ? StrokeLocation::Outside
                                   : StrokeLocation::Center;
 
+  const Command command = strokeCommand(sp);
+  updateFillPreview("Stroke", od, command, resolveError.empty(), previewKey);
   if (!resolveError.empty()) {
     dialogHint("%s", resolveError.c_str());
-    fillDialogFooter(od, status, strokeCommand(sp), "", /*commitEnabled=*/false);
+    fillDialogFooter(od, status, command, "", /*commitEnabled=*/false);
   } else {
-    fillDialogFooter(od, status, strokeCommand(sp),
+    fillDialogFooter(od, status, command,
                      "Nothing changed (opacity 0, or the band covered no texels).");
   }
   endDialog();

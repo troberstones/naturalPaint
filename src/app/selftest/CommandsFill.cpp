@@ -332,8 +332,8 @@ bool runCommandsFillTest() {
         FillParams{FillSource::Color, kRed, nullptr, 0, 0, {}, {}, BlendMode::Normal, 1.0f}, 4.0f,
         StrokeLocation::Center});
     r = applyCommand(od2, strokeNoSel);
-    check(!r.ok && contains(r.status, "selection"),
-          "refusal: stroke with no active selection is refused");
+    check(!r.ok && contains(r.status, od2.document.layers[0].name.c_str()),
+          "refusal: stroke, nothing selected, empty layer: named");
 
     od2.selection = selectRectangle(10.0f, 10.0f, 20.0f, 20.0f);
     Command strokeZero = strokeCommand(StrokeParams{
