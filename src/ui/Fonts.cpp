@@ -220,7 +220,18 @@ FontLoadResult installUiFonts(float sizePx) {
   std::string textTried;
   g_fonts.text =
       loadFirst(kTextCandidates, std::size(kTextCandidates), sizePx, &result.textPath, &textTried);
-  if (g_fonts.text == nullptr) g_fonts.text = atlas->AddFontDefault();
+  if (g_fonts.text == nullptr) {
+    // An explicit SizePixels, not the two-arg default: `AddFontDefault()`
+    // with no config leaves ImFontFlags_ImplicitRefSize set, which later
+    // conflicts with installToolIconFont()'s explicit-size Lucide merge onto
+    // this same font (imgui_draw.cpp's AddFont() asserts on that mismatch).
+    // Every kTextCandidates entry is a macOS/Linux system path, so this
+    // fallback is the only one ever taken on iOS -- an untested device with
+    // no candidate font, not a below-the-fold rarity.
+    ImFontConfig defaultConfig;
+    defaultConfig.SizePixels = sizePx;
+    g_fonts.text = atlas->AddFontDefault(&defaultConfig);
+  }
 
   const std::vector<uint32_t>& required = requiredUiCodepoints();
   if (required.empty()) {
