@@ -47,18 +47,19 @@ void filterExtraFooter(OpenDocument* od, std::string& status, const Command& com
 }
 
 template <typename PreviewFn, typename Params>
-void updateExternalPreview(OpenDocument* od, PreviewFn previewFn, const Params& params) {
+void updateExternalPreview(OpenDocument* od, PreviewFn previewFn, const Params& params,
+                           const char* owner) {
   if (od != nullptr) {
     TileStore tiles;
     const FilterOpResult r = previewFn(*od, params, &tiles);
     if (r.refusal == PixelOpRefusal::None && r.texelsChanged > 0) {
       if (const std::optional<size_t> idx = activeLayerIndex(*od)) {
-        setExternalFilterPreview(od->id, *idx, std::move(tiles));
+        setExternalFilterPreview(od->id, *idx, std::move(tiles), owner);
         return;
       }
     }
   }
-  clearExternalFilterPreview();
+  clearExternalFilterPreview(owner);
 }
 
 // A visible-but-restrained starting point on open, `drawLocalContrastDialog`'s
@@ -83,7 +84,7 @@ void drawShadowsHighlightsDialog(AppState& st) {
 
   if (!beginDialog("Shadows/Highlights")) {
     wasOpen = false;
-    clearExternalFilterPreview();
+    clearExternalFilterPreview("Shadows/Highlights");
     return;
   }
 
@@ -98,7 +99,7 @@ void drawShadowsHighlightsDialog(AppState& st) {
       "one is treated differently. Both 0 leaves the image unchanged. The preview updates when "
       "you release a slider.");
 
-  if (edited.settled || !wasOpen) updateExternalPreview(od, previewShadowsHighlights, params);
+  if (edited.settled || !wasOpen) updateExternalPreview(od, previewShadowsHighlights, params, "Shadows/Highlights");
   wasOpen = true;
 
   filterExtraFooter(

@@ -52,18 +52,19 @@ void filterExtraFooter(OpenDocument* od, std::string& status, const Command& com
 // exports for it -- ui/FilterDialogsExtra.cpp's own `updateExternalPreview()`,
 // restated.
 template <typename PreviewFn, typename Params>
-void updateExternalPreview(OpenDocument* od, PreviewFn previewFn, const Params& params) {
+void updateExternalPreview(OpenDocument* od, PreviewFn previewFn, const Params& params,
+                           const char* owner) {
   if (od != nullptr) {
     TileStore tiles;
     const FilterOpResult r = previewFn(*od, params, &tiles);
     if (r.refusal == PixelOpRefusal::None && r.texelsChanged > 0) {
       if (const std::optional<size_t> idx = activeLayerIndex(*od)) {
-        setExternalFilterPreview(od->id, *idx, std::move(tiles));
+        setExternalFilterPreview(od->id, *idx, std::move(tiles), owner);
         return;
       }
     }
   }
-  clearExternalFilterPreview();
+  clearExternalFilterPreview(owner);
 }
 
 }  // namespace
@@ -83,7 +84,7 @@ void drawDustScratchesDialog(AppState& st) {
   }
   if (!beginDialog("Dust & Scratches")) {
     wasOpen = false;
-    clearExternalFilterPreview();
+    clearExternalFilterPreview("Dust & Scratches");
     return;
   }
 
@@ -97,7 +98,7 @@ void drawDustScratchesDialog(AppState& st) {
 
   const DustScratchesParams params{radius, threshold};
 
-  if (edited.settled || !wasOpen) updateExternalPreview(od, previewDustScratches, params);
+  if (edited.settled || !wasOpen) updateExternalPreview(od, previewDustScratches, params, "Dust & Scratches");
   wasOpen = true;
 
   filterExtraFooter(od, status, dustScratchesCommand(params),

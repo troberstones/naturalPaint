@@ -104,6 +104,7 @@ bool runRadialBlurRetargetTest() {
     io.AddMouseButtonEvent(ImGuiMouseButton_Left, down);
     ImGui::NewFrame();
     drawRadialBlurDialog(st);
+    drawLensBlurDialog(st);  // drawn next in production, and closed
     if (otherModalRequested) {
       otherModalRequested = false;
       ImGui::OpenPopup(kOtherModal);

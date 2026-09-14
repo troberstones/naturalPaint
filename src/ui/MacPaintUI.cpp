@@ -13040,18 +13040,10 @@ bool keyboardBelongsToTyping(const AppState& st) {
 // living in its own translation unit (ui/FilterDialogsExtra.cpp)
 // needs a pair of externally-linked functions to reach them
 // through -- see ui/MacPaintUI.hpp's own comment on why `External` exists.
-// Which External dialog holds the preview: empty for the unnamed door. The
-// unnamed clear runs every frame those dialogs are closed, so it must not
-// wipe a preview a named dialog set.
+// Which External dialog holds the preview. Closed dialogs clear every frame,
+// so a clear only removes the preview its own dialog set.
 std::string g_externalPreviewOwner;
 
-void setExternalFilterPreview(DocumentId id, size_t layerIndex, TileStore tiles) {
-  g_externalPreviewOwner.clear();
-  setFilterPreview(FilterPreviewOwner::External, id, layerIndex, std::move(tiles));
-}
-void clearExternalFilterPreview() {
-  if (g_externalPreviewOwner.empty()) clearFilterPreview(FilterPreviewOwner::External);
-}
 void setExternalFilterPreview(DocumentId id, size_t layerIndex, TileStore tiles,
                               const char* owner) {
   setFilterPreview(FilterPreviewOwner::External, id, layerIndex, std::move(tiles));

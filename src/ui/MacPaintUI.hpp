@@ -570,13 +570,9 @@ PixelCommandOutcome runPixelCommand(OpenDocument& od, const Command& command,
 // .cpp, PRD Q1/D22): `FilterPreviewOwner`/`setFilterPreview()` are file-scope
 // in ui/MacPaintUI.cpp and not in any header (ui/FillDialog.cpp's own comment
 // on `pixelOpFooter()` says why -- the same "small hooks only" boundary), so
-// these two are the whole of what crosses it. Both dialogs sharing one
-// `External` owner is safe: only one modal is ever open at a time.
-void setExternalFilterPreview(DocumentId id, size_t layerIndex, TileStore tiles);
-void clearExternalFilterPreview();
-// The same door with a name. Only the named clear removes a named preview, so a
-// dialog drawn after the unnamed ones (Fill, Stroke) is not wiped by their
-// every-frame clear while they are closed.
+// these two are the whole of what crosses it. Every dialog names itself as the
+// owner: each closed dialog clears on every frame, so an unnamed clear would
+// wipe whichever dialog is open and only the last one drawn kept its preview.
 void setExternalFilterPreview(DocumentId id, size_t layerIndex, TileStore tiles,
                               const char* owner);
 void clearExternalFilterPreview(const char* owner);

@@ -66,18 +66,19 @@ void filterExtraFooter(OpenDocument* od, std::string& status, const Command& com
 // (private) `updateFilterPreview()`: refusal and "nothing changed" both clear
 // rather than show a preview identical to the live document.
 template <typename PreviewFn, typename Params>
-void updateExternalPreview(OpenDocument* od, PreviewFn previewFn, const Params& params) {
+void updateExternalPreview(OpenDocument* od, PreviewFn previewFn, const Params& params,
+                           const char* owner) {
   if (od != nullptr) {
     TileStore tiles;
     const FilterOpResult r = previewFn(*od, params, &tiles);
     if (r.refusal == PixelOpRefusal::None && r.texelsChanged > 0) {
       if (const std::optional<size_t> idx = activeLayerIndex(*od)) {
-        setExternalFilterPreview(od->id, *idx, std::move(tiles));
+        setExternalFilterPreview(od->id, *idx, std::move(tiles), owner);
         return;
       }
     }
   }
-  clearExternalFilterPreview();
+  clearExternalFilterPreview(owner);
 }
 
 // ops/Filters.hpp §6: "a sigma of a few texels sharpens, a sigma of a few
@@ -112,7 +113,7 @@ void drawHighpassDialog(AppState& st) {
   }
   if (!beginDialog("Highpass")) {
     wasOpen = false;
-    clearExternalFilterPreview();
+    clearExternalFilterPreview("Highpass");
     return;
   }
 
@@ -120,7 +121,7 @@ void drawHighpassDialog(AppState& st) {
   const DialogEdit edited = dialogSlider("Radius", &sigma, 0.0f, 250.0f, "%.1f", "px");
   dialogHint("0 leaves the image unchanged. The preview updates when you release the slider.");
 
-  if (edited.settled || !wasOpen) updateExternalPreview(od, previewHighpass, sigma);
+  if (edited.settled || !wasOpen) updateExternalPreview(od, previewHighpass, sigma, "Highpass");
   wasOpen = true;
 
   filterExtraFooter(od, status, highpassCommand(sigma),
@@ -142,7 +143,7 @@ void drawLocalContrastDialog(AppState& st) {
   }
   if (!beginDialog("Local Contrast")) {
     wasOpen = false;
-    clearExternalFilterPreview();
+    clearExternalFilterPreview("Local Contrast");
     return;
   }
 
@@ -156,7 +157,7 @@ void drawLocalContrastDialog(AppState& st) {
       "0 leaves the image unchanged. Negative flattens; positive adds clarity. The preview "
       "updates when you release a slider.");
 
-  if (edited.settled || !wasOpen) updateExternalPreview(od, previewLocalContrast, params);
+  if (edited.settled || !wasOpen) updateExternalPreview(od, previewLocalContrast, params, "Local Contrast");
   wasOpen = true;
 
   filterExtraFooter(od, status, localContrastCommand(params),
@@ -178,7 +179,7 @@ void drawLensCorrectDialog(AppState& st) {
   }
   if (!beginDialog("Lens Correction")) {
     wasOpen = false;
-    clearExternalFilterPreview();
+    clearExternalFilterPreview("Lens Correction");
     return;
   }
 
@@ -195,7 +196,7 @@ void drawLensCorrectDialog(AppState& st) {
       "All zero leaves the image unchanged. Positive K1 corrects barrel distortion. The preview "
       "updates when you release a slider.");
 
-  if (edited.settled || !wasOpen) updateExternalPreview(od, previewLensCorrect, params);
+  if (edited.settled || !wasOpen) updateExternalPreview(od, previewLensCorrect, params, "Lens Correction");
   wasOpen = true;
 
   filterExtraFooter(od, status, lensCorrectCommand(params),

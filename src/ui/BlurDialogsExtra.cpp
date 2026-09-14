@@ -62,18 +62,19 @@ void filterExtraFooter(OpenDocument* od, std::string& status, const Command& com
 }
 
 template <typename PreviewFn, typename Params>
-void updateExternalPreview(OpenDocument* od, PreviewFn previewFn, const Params& params) {
+void updateExternalPreview(OpenDocument* od, PreviewFn previewFn, const Params& params,
+                           const char* owner) {
   if (od != nullptr) {
     TileStore tiles;
     const FilterOpResult r = previewFn(*od, params, &tiles);
     if (r.refusal == PixelOpRefusal::None && r.texelsChanged > 0) {
       if (const std::optional<size_t> idx = activeLayerIndex(*od)) {
-        setExternalFilterPreview(od->id, *idx, std::move(tiles));
+        setExternalFilterPreview(od->id, *idx, std::move(tiles), owner);
         return;
       }
     }
   }
-  clearExternalFilterPreview();
+  clearExternalFilterPreview(owner);
 }
 
 // `defaultBlurCenter()` is app/FilterOps.hpp's own answer to "what does this
@@ -113,7 +114,7 @@ void drawRadialBlurDialog(AppState& st) {
     wasOpen = false;
     g_radialDialogOpen = false;
     g_radialRetarget = false;
-    clearExternalFilterPreview();
+    clearExternalFilterPreview("Radial Blur");
     return;
   }
   g_radialDialogOpen = true;
@@ -175,7 +176,7 @@ void drawRadialBlurDialog(AppState& st) {
       "handles on the canvas to move the centre and set the amount. Amount 0 leaves the "
       "image unchanged. The preview updates when you release a slider or a handle.");
 
-  if (edited.settled || !wasOpen) updateExternalPreview(od, previewRadialBlur, params);
+  if (edited.settled || !wasOpen) updateExternalPreview(od, previewRadialBlur, params, "Radial Blur");
   wasOpen = true;
 
   filterExtraFooter(od, status, radialBlurCommand(params),
@@ -294,7 +295,7 @@ void drawLensBlurDialog(AppState& st) {
   }
   if (!beginDialog("Lens Blur")) {
     wasOpen = false;
-    clearExternalFilterPreview();
+    clearExternalFilterPreview("Lens Blur");
     return;
   }
 
@@ -330,7 +331,7 @@ void drawLensBlurDialog(AppState& st) {
       "Radius 0 leaves the image unchanged. A bright texel above the highlight threshold blooms "
       "into the aperture's shape. The preview updates when you release a slider.");
 
-  if (edited.settled || !wasOpen) updateExternalPreview(od, previewLensBlur, params);
+  if (edited.settled || !wasOpen) updateExternalPreview(od, previewLensBlur, params, "Lens Blur");
   wasOpen = true;
 
   filterExtraFooter(od, status, lensBlurCommand(params),

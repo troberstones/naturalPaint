@@ -19,18 +19,19 @@ bool g_contentAwareFillRequested = false;
 bool g_seamHealRequested = false;
 
 template <typename PreviewFn, typename Params>
-void updateRepairPreview(OpenDocument* od, PreviewFn previewFn, const Params& params) {
+void updateRepairPreview(OpenDocument* od, PreviewFn previewFn, const Params& params,
+                         const char* owner) {
   if (od != nullptr) {
     TileStore tiles;
     const FilterOpResult r = previewFn(*od, params, &tiles);
     if (r.refusal == PixelOpRefusal::None && r.texelsChanged > 0) {
       if (const std::optional<size_t> idx = activeLayerIndex(*od)) {
-        setExternalFilterPreview(od->id, *idx, std::move(tiles));
+        setExternalFilterPreview(od->id, *idx, std::move(tiles), owner);
         return;
       }
     }
   }
-  clearExternalFilterPreview();
+  clearExternalFilterPreview(owner);
 }
 
 }  // namespace
@@ -49,7 +50,7 @@ void drawContentAwareFillDialog(AppState& st) {
   }
   if (!beginDialog("Content-Aware Fill")) {
     wasOpen = false;
-    clearExternalFilterPreview();
+    clearExternalFilterPreview("Content-Aware Fill");
     return;
   }
 
@@ -70,7 +71,7 @@ void drawContentAwareFillDialog(AppState& st) {
                        pixelOpRefusalMessage(reason, activeLayerOf(*od), "content-aware fill"));
   }
 
-  if (edited.settled || !wasOpen) updateRepairPreview(od, previewContentAwareFill, params);
+  if (edited.settled || !wasOpen) updateRepairPreview(od, previewContentAwareFill, params, "Content-Aware Fill");
   wasOpen = true;
 
   if (!status.empty()) dialogStatusLine(DialogStatus::Error, status);
@@ -82,7 +83,7 @@ void drawContentAwareFillDialog(AppState& st) {
   const DialogAction act = dialogFooter(footer);
   if (act == DialogAction::Alternate) {
     params.seed = nextRepairSeed(params.seed);
-    updateRepairPreview(od, previewContentAwareFill, params);
+    updateRepairPreview(od, previewContentAwareFill, params, "Content-Aware Fill");
   } else if (act == DialogAction::Commit && od != nullptr) {
     const PixelCommandOutcome out =
         runPixelCommand(*od, contentAwareFillCommand(params),
@@ -119,7 +120,7 @@ void drawSeamHealDialog(AppState& st) {
   }
   if (!beginDialog("Seam Heal")) {
     wasOpen = false;
-    clearExternalFilterPreview();
+    clearExternalFilterPreview("Seam Heal");
     return;
   }
 
@@ -141,7 +142,7 @@ void drawSeamHealDialog(AppState& st) {
                        pixelOpRefusalMessage(reason, activeLayerOf(*od), "seam heal"));
   }
 
-  if (edited.settled || !wasOpen) updateRepairPreview(od, previewSeamHeal, params);
+  if (edited.settled || !wasOpen) updateRepairPreview(od, previewSeamHeal, params, "Seam Heal");
   wasOpen = true;
 
   if (!status.empty()) dialogStatusLine(DialogStatus::Error, status);
@@ -153,7 +154,7 @@ void drawSeamHealDialog(AppState& st) {
   const DialogAction act = dialogFooter(footer);
   if (act == DialogAction::Alternate) {
     params.seed = nextRepairSeed(params.seed);
-    updateRepairPreview(od, previewSeamHeal, params);
+    updateRepairPreview(od, previewSeamHeal, params, "Seam Heal");
   } else if (act == DialogAction::Commit && od != nullptr) {
     const PixelCommandOutcome out =
         runPixelCommand(*od, seamHealCommand(params),
