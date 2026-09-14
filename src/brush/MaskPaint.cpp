@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "brush/Grain.hpp"
+#include "brush/PencilDeposit.hpp"
 #include "color/Space.hpp"
 #include "ops/PointOps.hpp"
 
@@ -80,7 +81,8 @@ MaskPaintStep paintMaskTexel(float dst, float strokeApplied, float weight, float
   return out;
 }
 
-void MaskPaintStroke::begin(float target, float ceiling) noexcept {
+void MaskPaintStroke::begin(float target, float ceiling, bool hardEdge) noexcept {
+  hardEdge_ = hardEdge;
   target_ = maskCoverageClamp(target);
   ceiling_ = std::clamp(ceiling, 0.0f, 1.0f);
   // A fresh accumulator, not a cleared one: assigning a default-constructed
@@ -105,7 +107,7 @@ DepositCount MaskPaintStroke::paintDab(MaskTileStore& store, const BrushTip& tip
                                        const Selection* selection,
                                        std::vector<TileCoord>* touchedOut) {
   DepositCount count;
-  if (!(tip.flow > 0.0f)) return count;
+  if (!hardEdge_ && !(tip.flow > 0.0f)) return count;
   if (!(ceiling_ > 0.0f)) return count;
 
   // `dabPixelBounds()` and `dabCoverage()` unchanged from every other route --
@@ -115,7 +117,13 @@ DepositCount MaskPaintStroke::paintDab(MaskTileStore& store, const BrushTip& tip
   // elsewhere: a painter paints a shape on the layer and then paints the same
   // shape into the mask to trim it, and a rim one texel wider in the mask would
   // eat the edge it was tidying.
-  const PixelBounds b = dabPixelBounds(tip, centre, canvasW, canvasH);
+  BrushTip aliased;
+  if (hardEdge_) {
+    aliased = tip;
+    aliased.edgePx = 0.0f;
+  }
+  const BrushTip& shape = hardEdge_ ? aliased : tip;
+  const PixelBounds b = dabPixelBounds(shape, centre, canvasW, canvasH);
   if (b.empty()) return count;
 
   const TileCoord first = tileCoordAt(PixelCoord{b.x0, b.y0});
@@ -173,7 +181,7 @@ DepositCount MaskPaintStroke::paintDab(MaskTileStore& store, const BrushTip& tip
           const float dx = (static_cast<float>(x) + 0.5f) - centre.x;
           const PixelCoord local = tileLocalOffset(PixelCoord{x, y});
 
-          const float rawCov = dabCoverage(tip, dx, dy);
+          const float rawCov = dabCoverage(shape, dx, dy);
           if (!(rawCov > 0.0f)) continue;
 
           // Paper tooth, at this texel's ABSOLUTE canvas position -- `x`/`y`,
@@ -189,7 +197,8 @@ DepositCount MaskPaintStroke::paintDab(MaskTileStore& store, const BrushTip& tip
           // notice. This route is in that predicate, so it makes the call, and
           // `app/selftest/StrokeSession.cpp` asserts the agreement route by
           // route.
-          const float cov = grainCoverageAt(tip.grain, rawCov, x, y);
+          const float grained = grainCoverageAt(tip.grain, rawCov, x, y);
+          const float cov = hardEdge_ ? pencilCoverage(grained) : grained;
           if (!(cov > 0.0f)) continue;  // a grain peak too tall for this pressure
           const float sel = selection != nullptr ? selectionTileCoverage(cover, local) : 1.0f;
           if (!(sel > 0.0f)) continue;
@@ -205,7 +214,8 @@ DepositCount MaskPaintStroke::paintDab(MaskTileStore& store, const BrushTip& tip
           // texel past half way. The first alone is a speed limit rather than a
           // bound, and a scrubbed stroke walks straight through it.
           const MaskPaintStep step =
-              paintMaskTexel(before, applied, tip.flow * cov * sel, ceiling_ * sel, target_);
+              paintMaskTexel(before, applied, (hardEdge_ ? 1.0f : tip.flow) * cov * sel,
+                             ceiling_ * sel, target_);
           // The ceiling, the transparent tail of the falloff, a texel the
           // selection excluded and a texel already at the target all arrive here
           // as `changed == false`, and all four mean the same thing: do not

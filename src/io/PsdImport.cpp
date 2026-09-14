@@ -1725,7 +1725,7 @@ PsdImportResult importPsd(std::span<const uint8_t> bytes) {
     // needs to be gathered first), so there is nowhere on it yet to write a
     // mask sample as the channel loop reads one.
     std::optional<MaskTileStore> maskTiles;
-    if (maskPresent && !maskDisabled) {
+    if (maskPresent) {
       maskTiles.emplace();
       // "default colour 0" (docs/psd-import-gaps.md): everything outside the
       // mask rect, across this layer's own extent, is HIDDEN -- and unlike
@@ -1968,10 +1968,11 @@ PsdImportResult importPsd(std::span<const uint8_t> bytes) {
       if (!hasFillBlock && !pl.vectorPath.empty())
         appendPsdVectorMask(pl, doc.width, doc.height, maskTiles, result.warnings);
     }
-    // flags bit 1 (mask disabled) imports as no mask at all -- `maskTiles`
-    // was never engaged for a disabled mask (guarded above), so this is
-    // simply "move it across when there was one to move".
-    if (maskTiles.has_value()) layer.mask = std::move(*maskTiles);
+    // Flags bit 1 imports as a disabled mask: texels kept, compositing off.
+    if (maskTiles.has_value()) {
+      layer.mask = std::move(*maskTiles);
+      layer.maskEnabled = !maskDisabled;
+    }
 
     layer.name = pl.name;
     layer.opacity = static_cast<float>(pl.opacity) / 255.0f;

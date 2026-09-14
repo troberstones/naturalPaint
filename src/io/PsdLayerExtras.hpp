@@ -218,7 +218,7 @@ bool psdMaskRect(const Layer& layer, PsdMaskRect& out);
 // **The same `psdMaskRect()` answer must drive the channel table.** A record
 // that writes this block but no channel `-2` (or the reverse) is malformed;
 // call `psdMaskRect()` once and let its result decide both.
-void writePsdMaskBlock(PsdWriter& w, const PsdMaskRect* rect);
+void writePsdMaskBlock(PsdWriter& w, const PsdMaskRect* rect, bool disabled = false);
 
 // Channel `-2`'s complete payload: the `u16` compression word (`1`, RLE),
 // then PackBits' row-count table for `rect.height()` rows, then the rows.

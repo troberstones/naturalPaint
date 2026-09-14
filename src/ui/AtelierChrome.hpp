@@ -73,7 +73,8 @@ constexpr size_t kResidentBudgetBytes = 512u * 1024u * 1024u;
 // when the view is clean -- the status bar shows nothing at all rather than a
 // row of "off" labels, because a marker that is always present is a marker
 // nobody reads.
-std::string atelierViewStateMarkers(const CanvasView& view);
+// `maskView`: the active document is showing a layer mask alone (T16).
+std::string atelierViewStateMarkers(const CanvasView& view, bool maskView = false);
 
 // The tool's display name. Moved here from `ui/MacPaintUI.cpp`'s anonymous
 // namespace because the options bar names the active tool and the palette

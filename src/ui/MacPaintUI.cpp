@@ -3630,34 +3630,32 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
       // reverse would let a user aim at a mask on a layer they are not editing,
       // which `resolveLayerEditTarget()` would then quietly answer `Content`
       // for -- a click that appears to work and does not.
-      ImGui::SetCursorScreenPos(contentThumbAt);
-      if (ImGui::InvisibleButton("##contentthumb", ImVec2(kLayerThumbPx, kLayerThumbPx))) {
+      auto thumbClicked = [&](const LayerThumbClickResult& r) {
+        if (r.action == LayerThumbAction::None) return;
+        g_layers.lastError = r.error;
+        if (!r.selectsRow) return;
         g_layers.selection = makeLayerSelection({i});
         g_layers.shiftAnchor = i;
         selected = i;
-        setActiveLayer(*od, i);
-        od->maskIsEditTarget = false;
-      }
+      };
+      thumbClicked(layerThumbButton(*od, i, LayerThumb::Content, contentThumbAt.x, contentThumbAt.y,
+                                    kLayerThumbPx));
       ImGui::SetItemTooltip("The layer's own pixels. Click to paint here.\n"
                           "%s",
                           rowTarget == LayerEditTarget::Content && rowIsActive
                               ? "This is the current paint target."
                               : "Not the current paint target.");
       if (layer.mask.has_value()) {
-        ImGui::SetCursorScreenPos(maskThumbAt);
-        if (ImGui::InvisibleButton("##maskthumb", ImVec2(kLayerThumbPx, kLayerThumbPx))) {
-          g_layers.selection = makeLayerSelection({i});
-          g_layers.shiftAnchor = i;
-          selected = i;
-          setActiveLayer(*od, i);
-          od->maskIsEditTarget = true;
-        }
+        thumbClicked(layerThumbButton(*od, i, LayerThumb::Mask, maskThumbAt.x, maskThumbAt.y,
+                                      kLayerThumbPx));
         // The tooltip says what the mask IS as well as what the click does,
         // because the two thumbnails are the same size and the same shape and
         // one of them is white for a reason a new user has no way to guess.
         ImGui::SetItemTooltip("The layer mask: white reveals, black hides.\n"
                             "Click to paint into it -- the brush paints the\n"
                             "foreground colour's grey as coverage.\n"
+                            "Shift-click to disable or enable it.\n"
+                            "Option-click to see it alone in the canvas.\n"
                             "%s",
                             rowTarget == LayerEditTarget::Mask && rowIsActive
                                 ? "This is the current paint target."
@@ -5845,7 +5843,7 @@ void drawBrushPaintGroup(AppState& st) {
     // routes, and giving Dodge a private "exposure" number would leave OPACITY
     // dimmed and inert whenever a tonal tool was selected -- the exact complaint
     // this disabled-rather-than-hidden treatment exists to answer.
-    const bool toning = route == StrokeRoute::TonalBrush;
+    const bool toning = route == StrokeRoute::TonalBrush || route == StrokeRoute::MaskTonal;
     // **The smudge USED to read this slider as its STRENGTH, and no longer
     // does** -- brush/Smudge.hpp §3b. That reading is what shipped the tool at
     // `BrushState::opacity`'s default of 1, which is the one strength at which a
@@ -5857,7 +5855,8 @@ void drawBrushPaintGroup(AppState& st) {
     // the treatment this block exists to apply.
     // Both smudge routes: the Pigment one reads the same STRENGTH field
     // (brush/PigmentSmudge §3), so this slider is just as dead there.
-    const bool smudging = route == StrokeRoute::Smudge || route == StrokeRoute::PigmentSmudge;
+    const bool smudging = route == StrokeRoute::Smudge || route == StrokeRoute::PigmentSmudge ||
+                          route == StrokeRoute::MaskSmudge;
     // The clone reads it as its per-stroke ceiling too -- the same slider and
     // the same meaning, "the fraction of the maximum effect one stroke may
     // reach" (brush/CloneStamp §1's accumulator is brush/RgbDeposit §2's). Left
@@ -5869,7 +5868,8 @@ void drawBrushPaintGroup(AppState& st) {
     // route left out of this list is a live control dimmed over a sentence
     // saying it does nothing.
     const bool honoured = erasing || toning || route == StrokeRoute::RgbDeposit ||
-                          route == StrokeRoute::CloneStamp || route == StrokeRoute::Heal;
+                          route == StrokeRoute::CloneStamp || route == StrokeRoute::Heal ||
+                          route == StrokeRoute::MaskPaint || route == StrokeRoute::MaskClone;
     ImGui::BeginDisabled(!honoured);
     ctlSlider("Opacity", &st.brush.opacity, 0.0f, 1.0f);
     ImGui::EndDisabled();
@@ -6581,6 +6581,35 @@ std::vector<uint16_t> packChannelViewHalf(const AlphaChannel& channel, int32_t w
     }
   }
   return halves;
+}
+
+std::vector<uint16_t> packLayerMaskViewHalf(const Layer& layer, int32_t width, int32_t height) {
+  std::vector<uint16_t> halves(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+  const uint16_t opaque = floatToHalf(1.0f);
+  const MaskTileStore* mask = layer.mask.has_value() ? &*layer.mask : nullptr;
+  for (int32_t y = 0; y < height; ++y) {
+    for (int32_t x = 0; x < width; ++x) {
+      const PixelCoord at{x, y};
+      const float coverage =
+          mask != nullptr ? maskCoverage(mask->find(tileCoordAt(at)), tileLocalOffset(at)) : 1.0f;
+      const uint16_t grey = floatToHalf(srgbDecode(coverage));
+      const size_t i = (static_cast<size_t>(y) * static_cast<size_t>(width) + x) * 4;
+      halves[i + 0] = grey;
+      halves[i + 1] = grey;
+      halves[i + 2] = grey;
+      halves[i + 3] = opaque;
+    }
+  }
+  return halves;
+}
+
+LayerThumbClickResult layerThumbButton(OpenDocument& od, size_t layerIndex, LayerThumb which,
+                                       float x, float y, float size) {
+  ImGui::SetCursorScreenPos(ImVec2(x, y));
+  const char* id = which == LayerThumb::Mask ? "##maskthumb" : "##contentthumb";
+  if (!ImGui::InvisibleButton(id, ImVec2(size, size))) return {};
+  const ImGuiIO& io = ImGui::GetIO();
+  return applyLayerThumbClick(od, layerIndex, which, io.KeyShift, io.KeyAlt);
 }
 
 // ---------------------------------------------------------------------------
@@ -10054,8 +10083,9 @@ WGPUTextureView quickMaskOverlayViewFor(GpuContext& gpu, const OpenDocument& act
 // same trade `ui/DocumentTexture.hpp`'s viewport margin makes on purpose.
 class ChannelViewTexture {
  public:
-  WGPUTextureView viewFor(GpuContext& gpu, const AlphaChannel& channel, int32_t width,
-                          int32_t height, uint64_t generation) {
+  template <class Pack>
+  WGPUTextureView viewFor(GpuContext& gpu, int32_t width, int32_t height, uint64_t generation,
+                          Pack&& pack) {
     if (width <= 0 || height <= 0) return nullptr;
     const bool freshTexture = texture_ == nullptr || width != width_ || height != height_;
     if (freshTexture) {
@@ -10075,7 +10105,7 @@ class ChannelViewTexture {
       uploaded_ = 0;
     }
     if (freshTexture || generation != uploaded_) {
-      const std::vector<uint16_t> halves = packChannelViewHalf(channel, width_, height_);
+      const std::vector<uint16_t> halves = pack(width_, height_);
       WGPUTexelCopyTextureInfo dst = {};
       dst.texture = texture_;
       dst.mipLevel = 0;
@@ -10116,8 +10146,24 @@ WGPUTextureView channelViewFor(GpuContext& gpu, const OpenDocument& activeDoc) {
   if (channel == nullptr) return nullptr;
   const uint64_t generation =
       static_cast<uint64_t>(activeDoc.id) * 1000003ull + activeDoc.revision;
-  return g_channelViewTexture.viewFor(gpu, *channel, activeDoc.document.width,
-                                      activeDoc.document.height, generation);
+  return g_channelViewTexture.viewFor(
+      gpu, activeDoc.document.width, activeDoc.document.height, generation,
+      [channel](int32_t w, int32_t h) { return packChannelViewHalf(*channel, w, h); });
+}
+
+ChannelViewTexture g_maskViewTexture;
+
+// The Option-click mask view, or nullptr. Keyed on the active layer as well as
+// the revision: switching rows moves no revision but changes the picture.
+WGPUTextureView maskViewFor(GpuContext& gpu, const OpenDocument& activeDoc) {
+  const Layer* layer = maskViewLayer(activeDoc);
+  if (layer == nullptr) return nullptr;
+  const uint64_t generation =
+      (static_cast<uint64_t>(activeDoc.id) * 1000003ull + activeDoc.revision) * 131ull +
+      activeDoc.activeLayer;
+  return g_maskViewTexture.viewFor(
+      gpu, activeDoc.document.width, activeDoc.document.height, generation,
+      [layer](int32_t w, int32_t h) { return packLayerMaskViewHalf(*layer, w, h); });
 }
 
 // The canvas draw code's one hook into all of this: `nullptr` when nothing
@@ -18016,6 +18062,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // from the CHANNELS panel, not tied to any modal dialog, so it only
       // yields to a filter preview (rarer, and already committed to winning
       // above) and otherwise replaces the real canvas until toggled off.
+      if (documentView == nullptr) documentView = maskViewFor(gpu, *activeDocument);
       if (documentView == nullptr) documentView = channelViewFor(gpu, *activeDocument);
       // Track `warp`'s live pixel preview: a whole-canvas composite with the
       // target already bent -- a warp has no quad, this IS its picture.

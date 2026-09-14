@@ -1,3 +1,4 @@
+#include "app/LayerThumbClick.hpp"
 #include "ui/AtelierChrome.hpp"
 
 #include <algorithm>
@@ -160,7 +161,7 @@ ResidentReading atelierResident() noexcept {
   return ResidentReading{currentResidentBytes(), kResidentBudgetBytes};
 }
 
-std::string atelierViewStateMarkers(const CanvasView& view) {
+std::string atelierViewStateMarkers(const CanvasView& view, bool maskView) {
   std::string out;
   const auto add = [&out](const char* s) {
     if (!out.empty()) out += "  ";
@@ -172,6 +173,7 @@ std::string atelierViewStateMarkers(const CanvasView& view) {
   if (view.mirrorX) add("MIRROR L/R");
   if (view.mirrorY) add("MIRROR U/D");
   if (view.grayscale) add("GRAYSCALE");
+  if (maskView) add("MASK VIEW");
   if (std::fabs(view.rotation) > 1e-4f) add("ROTATED");
   return out;
 }
@@ -2704,7 +2706,9 @@ void drawAtelierStatusBar(AppState& st, const AtelierBands& bands, uint32_t canv
       formatMiB(mem.bytes).c_str(), formatMiB(mem.budget).c_str(),
       formatMiB(currentFootprintBytes()).c_str());
 
-  const std::string markers = atelierViewStateMarkers(st.view);
+  const OpenDocument* markerDoc = st.documents.active();
+  const std::string markers =
+      atelierViewStateMarkers(st.view, markerDoc != nullptr && maskViewLayer(*markerDoc) != nullptr);
   if (!markers.empty()) {
     ImGui::SameLine(0.0f, 16.0f);
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(atelierToken(kAccent)));

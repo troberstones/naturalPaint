@@ -399,7 +399,7 @@ struct OpenDocument {
   //    effect of undoing the stroke. Which store you are working on is not part
   //    of the picture, and it is not saved to a file for the same reason.
   //    (`Layer::maskEnabled`, T16's second gesture, is the opposite case -- that
-  //    one IS document content and must round-trip -- and it is not built here.)
+  //    one IS document content and must round-trip; see core/LayerOps.)
   //
   // **A request, not a resolved answer.** It stays true across a click onto a
   // layer that has no mask, so clicking back restores the choice rather than
@@ -407,6 +407,11 @@ struct OpenDocument {
   // (this flag, that layer) into the store a stroke actually writes, and it
   // answers `Content` whenever there is no mask to answer otherwise about.
   bool maskIsEditTarget = false;
+
+  // Option-click on a mask thumbnail: the canvas shows this layer's mask alone
+  // as greyscale coverage. A view mode beside `viewedChannelName` -- never
+  // saved, never undone. Read through app/LayerThumbClick's `maskViewLayer()`.
+  std::optional<size_t> maskViewLayerIndex;
 
   // Monotonic change counter. Bumped by `recordEdit()`; a save sets
   // `savedRevision = revision`; a revert bumps it *and* marks clean, because

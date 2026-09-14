@@ -1557,8 +1557,8 @@ bool runPsdImportTest() {
       }
     }
 
-    // H4: flags bit 1 (mask disabled) -- imported as NO mask at all, not as
-    // an applied-but-empty one. A real -2 channel is present, at the SAME
+    // H4: flags bit 1 (mask disabled) -- imported as a DISABLED mask whose
+    // texels are kept (Layer::maskEnabled, T16). A real -2 channel is present, at the SAME
     // dimensions as the layer (so this fixture is insensitive to the
     // decode-size sabotage too), specifically to prove the content is
     // discarded wholesale rather than merely its "outside the rect" half.
@@ -1572,8 +1572,13 @@ bool runPsdImportTest() {
                         /*defaultColor=*/255, /*flags=*/0x02};  // bit 1: disabled
       const std::vector<uint8_t> bytes = buildPsd(4, 4, 8, {l});
       const PsdImportResult r = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
-      check(r.ok && r.document.layers.size() == 1 && !r.document.layers[0].mask.has_value(),
-            "H4: flags bit 1 (disabled) imports as Layer::mask == nullopt, not an applied mask");
+      const bool imported = r.ok && r.document.layers.size() == 1 &&
+                            r.document.layers[0].mask.has_value();
+      const MaskTile* h4Tile =
+          imported ? r.document.layers[0].mask->find(TileCoord{0, 0}) : nullptr;
+      check(imported && !r.document.layers[0].maskEnabled && h4Tile != nullptr &&
+                h4Tile->readCoverage(PixelCoord{1, 1}) < 0.1f,
+            "H4: flags bit 1 (disabled) imports as a disabled mask with its texels kept");
     }
 
     // H5/H6: the anti-vacuity pairing Section E already established for

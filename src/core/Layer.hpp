@@ -330,6 +330,11 @@ struct Layer {
   // lifecycle a user can reach.
   std::optional<MaskTileStore> mask;
 
+  // Photoshop's shift-click on the mask thumbnail: a disabled mask keeps its
+  // texels but composites as no mask. Document content, so it is undoable and
+  // saved (`np:maskOff`); meaningless while `mask` is absent.
+  bool maskEnabled = true;
+
   // The per-layer, non-destructive grading stack (DESIGN-imaging.md §3's own
   // Layer diagram: "ops  OpStack -- per-layer, non-destructive").
   //

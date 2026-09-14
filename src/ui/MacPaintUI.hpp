@@ -10,6 +10,7 @@
 #include "app/Command.hpp"
 #include "app/GradientTool.hpp"
 #include "app/LayerEditor.hpp"
+#include "app/LayerThumbClick.hpp"
 #include "core/LayerSetOps.hpp"
 #include "gfx/Context.hpp"
 #include "io/GradientPresetFile.hpp"
@@ -678,5 +679,17 @@ std::vector<uint16_t> packQuickMaskOverlayHalf(const QuickMask& mask, int32_t wi
 // `app/selftest` can prove the texel math without a window.
 std::vector<uint16_t> packChannelViewHalf(const AlphaChannel& channel, int32_t width,
                                           int32_t height);
+
+// T16's Option-click mask view: `layer`'s mask coverage as a full-canvas
+// greyscale image that replaces the canvas. Linear values, sRGB-decoded from
+// the coverage so 0.5 displays as mid grey -- the reading the mask thumbnail
+// gives it. An absent mask packs as reveal-all white.
+std::vector<uint16_t> packLayerMaskViewHalf(const Layer& layer, int32_t width, int32_t height);
+
+// One layer-row thumbnail hit target at (x, y): issues the button, reads
+// Shift/Alt from ImGui at the click and applies it through
+// `applyLayerThumbClick()`. Exported so --selftest can drive it headlessly.
+LayerThumbClickResult layerThumbButton(OpenDocument& od, size_t layerIndex, LayerThumb which,
+                                       float x, float y, float size);
 
 }  // namespace np

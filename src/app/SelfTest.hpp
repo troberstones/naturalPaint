@@ -1493,6 +1493,13 @@ bool runCropToolTest();
 // black. Headless and GPU-free.
 bool runMaskTargetTest();
 
+// T16's remaining mask controls: Layer::maskEnabled through every compositor
+// leaf and both opaque-floor shortcuts, undo, .npaint and PSD round trips, the
+// thumbnail X and row sub-line; the Option-click mask view and status marker;
+// the Shift/Option thumbnail gestures driven through headless ImGui frames;
+// and Pencil, Eraser, Dodge/Burn, Smudge and Clone Stamp on a mask target.
+bool runMaskControlsTest();
+
 // app/FramePacing (T27, "throttle the UI unless drawing to 60fps, and when
 // nothing is happening, throttle it further"): the three-tier frame budget,
 // lifted out of `main.cpp`'s frame loop so it can be asserted at all --

@@ -238,6 +238,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/FramePacing.cpp
   app/selftest/GradientTool.cpp
   app/selftest/MaskTarget.cpp
+  app/selftest/MaskControls.cpp
   app/selftest/MoveTool.cpp
   app/selftest/PasteCommands.cpp
   app/selftest/CropTool.cpp
@@ -360,6 +361,7 @@ add_executable(naturalPaint
 
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
+  app/LayerThumbClick.cpp
   app/LayerThumbnail.cpp
   app/MeasureLine.cpp
   app/GradientTool.cpp
@@ -392,6 +394,7 @@ add_executable(naturalPaint
   brush/Grain.cpp
   brush/Library.cpp
   brush/MaskPaint.cpp
+  brush/MaskTools.cpp
   brush/NativeBrush.cpp
   brush/PencilDeposit.cpp
   brush/PigmentErase.cpp
