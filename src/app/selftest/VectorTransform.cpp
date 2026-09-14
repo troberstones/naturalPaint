@@ -5,7 +5,9 @@
 #include <cstdio>
 #include <string>
 
+#include "app/CropTool.hpp"
 #include "app/MoveTool.hpp"
+#include "core/Merge.hpp"
 #include "app/TransformSession.hpp"
 #include "core/Composite.hpp"
 #include "core/LayerOps.hpp"
@@ -345,6 +347,96 @@ bool runVectorTransformTest() {
     check(wb.ok && !wc.ok && wc.error.find("Vector") != std::string::npos &&
               sameShapes(od.document.layers[0].shapes, before),
           "refusal: warp on a Vector layer is refused by name");
+  }
+
+  // --- 6. A perspective crop rasterises Vector and Text, with a warning -------
+  {
+    const auto build = [&](OpenDocument& od, DocumentId id) {
+      od.id = id;
+      od.document = Document::createBlank(64, 64, WorkingSpace{});
+      addLayer(od.document, 1, makeVectorLayer("shapes"));
+      od.document.layers[1].shapes.push_back(rectShape(10.0f, 10.0f, 40.0f, 30.0f));
+      od.document.layers[1].opacity = 0.5f;
+      (void)addLayerMask(od.document, 1);
+      addLayer(od.document, 2, makeTextLayer("caption"));
+      od.document.layers[2].text = makeTextContent("Hi", PathPoint{12.0f, 50.0f});
+      od.document.layers[2].locked = true;
+      od.recordEdit("crop fixture", EditKind::Structural);
+    };
+    CropQuad keystone;
+    // Not a parallelogram: the top edge is longer than the bottom one.
+    keystone.c = {Point2{2.0f, 2.0f}, Point2{62.0f, 6.0f}, Point2{54.0f, 60.0f}, Point2{10.0f, 58.0f}};
+
+    OpenDocument od;
+    build(od, 7310);
+    const Document before = od.document;
+    const DocumentTransformResult r = applyCropPerspective(od, keystone);
+    check(r.ok, "perspective crop: succeeds on a document holding Vector and Text layers");
+    const Layer& v = od.document.layers[1];
+    const Layer& t = od.document.layers[2];
+    check(r.ok && v.kind == LayerKind::RGB && t.kind == LayerKind::RGB && v.shapes.empty() &&
+              v.name == "shapes" && v.opacity == 0.5f && v.mask.has_value() && t.name == "caption" &&
+              t.locked,
+          "perspective crop: both become RGB, keeping name, opacity, mask and lock");
+
+    // Reference: rasterise, then the same perspective transform, by hand.
+    Document ref = before;
+    for (size_t i : {size_t{1}, size_t{2}}) {
+      const bool wasLocked = ref.layers[i].locked;
+      ref.layers[i].locked = false;
+      (void)rasteriseLayer(ref, i);
+      ref.layers[i].locked = wasLocked;
+    }
+    const DocumentRegion extent = perspectiveCropExtent(keystone);
+    const std::array<Point2, 4> dst{
+        Point2{0.0f, 0.0f}, Point2{static_cast<float>(extent.width), 0.0f},
+        Point2{static_cast<float>(extent.width), static_cast<float>(extent.height)},
+        Point2{0.0f, static_cast<float>(extent.height)}};
+    Mat3 persp;
+    std::string solveErr;
+    const bool solved = transformFromQuad(keystone.c, dst, &persp, &solveErr);
+    const DocumentTransformResult rr =
+        transformDocument(ref, persp, extent.width, extent.height, params, nullptr);
+    Document gotView = od.document, wantView = ref;
+    gotView.layers[0].visible = wantView.layers[0].visible = false;  // the shapes and text alone
+    const std::vector<float> got = compositeDocumentPremultiplied(gotView);
+    const std::vector<float> want = compositeDocumentPremultiplied(wantView);
+    double ink = 0.0;
+    for (size_t i = 3; i < got.size(); i += 4) ink += got[i];
+    check(solved && rr.ok && !mat3IsAffine(persp) && got == want && ink > 50.0,
+          "perspective crop: pixels equal rasterise-then-perspective-crop, bit for bit");
+
+    check(r.warnings.size() == 1 && r.warnings[0].find("'shapes' (Vector)") != std::string::npos &&
+              r.warnings[0].find("'caption' (Text)") != std::string::npos,
+          "perspective crop: the warning names each rasterised layer");
+
+    if (const Document* prior = od.history.undo()) od.document = *prior;
+    const TextContent& ut = od.document.layers[2].text;
+    const TextContent& bt = before.layers[2].text;
+    check(od.document.width == 64 && od.document.layers[1].kind == LayerKind::Vector &&
+              od.document.layers[2].kind == LayerKind::Text &&
+              sameShapes(od.document.layers[1].shapes, before.layers[1].shapes) && ut.utf8 == bt.utf8 &&
+              ut.origin.x == bt.origin.x && ut.origin.y == bt.origin.y &&
+              ut.style.sizePx == bt.style.sizePx && ut.transform.m == bt.transform.m,
+          "perspective crop: one undo restores the editable shapes and text exactly");
+
+    // A rectangle in Perspective mode solves to an affine matrix: nothing rasterises.
+    OpenDocument flat;
+    build(flat, 7311);
+    CropQuad rect;
+    rect.c = {Point2{4.0f, 4.0f}, Point2{60.0f, 4.0f}, Point2{60.0f, 60.0f}, Point2{4.0f, 60.0f}};
+    const DocumentTransformResult fr = applyCropPerspective(flat, rect);
+    check(fr.ok && fr.warnings.empty() && flat.document.layers[1].kind == LayerKind::Vector &&
+              flat.document.layers[2].kind == LayerKind::Text,
+          "perspective crop: an affine quad keeps Vector and Text editable, no warning");
+
+    OpenDocument boxed;
+    build(boxed, 7312);
+    const DocumentTransformResult br = applyCropRegion(boxed, DocumentRegion{4, 4, 56u, 56u});
+    check(br.ok && boxed.document.layers[1].kind == LayerKind::Vector &&
+              boxed.document.layers[2].kind == LayerKind::Text &&
+              nearPt(boxed.document.layers[1].shapes[0].path.subpaths[0].anchors[0].pt, 6.0f, 6.0f),
+          "crop: a rectangle crop keeps the geometry editable and moves it");
   }
 
   std::printf("[selftest] vector transform: %s\n", ok ? "all pass" : "FAILED");

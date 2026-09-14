@@ -5,6 +5,7 @@
 
 #include "app/AppState.hpp"  // enum class Tool, for toolCropsCanvas() alone
 #include "core/LayerGeometry.hpp"
+#include "core/Merge.hpp"
 #include "core/SelectionMask.hpp"
 
 namespace np {
@@ -418,10 +419,38 @@ DocumentTransformResult applyCropPerspective(OpenDocument& doc, const CropQuad& 
   }
 
   DocumentTransformParams params;
-  Selection* selection = doc.selection.has_value() ? &*doc.selection : nullptr;
-  DocumentTransformResult r = transformDocument(doc.document, dstFromSrc, extent.width,
+  // Shapes and type cannot follow a perspective map, so they become pixels first
+  // and go through the same resampler as every other layer. All on a copy, so a
+  // refusal leaves the document and its selection untouched.
+  Document scratch = doc.document;
+  auto scratchSelection = doc.selection;
+  std::vector<std::string> rasterised;
+  if (!mat3IsAffine(dstFromSrc)) {
+    for (size_t i = 0; i < scratch.layers.size(); ++i) {
+      const LayerKind kind = scratch.layers[i].kind;
+      if (kind != LayerKind::Vector && kind != LayerKind::Text) continue;
+      const bool wasLocked = scratch.layers[i].locked;
+      scratch.layers[i].locked = false;  // the crop moves locked layers too
+      const LayerOpResult lr = rasteriseLayer(scratch, i);
+      scratch.layers[i].locked = wasLocked;
+      if (!lr.ok) return refusal(doc.document, "Perspective crop refused: " + lr.error);
+      rasterised.push_back("'" + scratch.layers[i].name + "' (" + layerKindName(kind) + ")");
+    }
+  }
+  Selection* selection = scratchSelection.has_value() ? &*scratchSelection : nullptr;
+  DocumentTransformResult r = transformDocument(scratch, dstFromSrc, extent.width,
                                                 extent.height, params, selection);
   if (r.ok) {
+    doc.document = std::move(scratch);
+    doc.selection = std::move(scratchSelection);
+    if (!rasterised.empty()) {
+      std::string names;
+      for (size_t i = 0; i < rasterised.size(); ++i)
+        names += (i == 0 ? "" : (i + 1 == rasterised.size() ? " and " : ", ")) + rasterised[i];
+      r.warnings.push_back("Perspective crop rasterised " + names +
+                           " into pixels: shapes and type cannot follow a perspective map, so "
+                           "they are no longer editable. Undo restores them.");
+    }
     // The one place the engine's `editLabel` is overridden rather than passed
     // through. `transformDocument()` answers "transform document", which is
     // correct for the engine and wrong in an Edit menu that already offers

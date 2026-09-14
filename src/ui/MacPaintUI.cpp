@@ -19384,6 +19384,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                       r.editLabel.c_str(), r.previousWidth, r.previousHeight,
                       cropDoc->document.width, cropDoc->document.height, r.layersTouched,
                       r.reconstructionPasses);
+          if (!r.warnings.empty()) {
+            g_docStatus = "OK: " + r.editLabel;
+            for (const std::string& w : r.warnings) g_docStatus += "\n! " + w;
+          }
         }
       }
 
