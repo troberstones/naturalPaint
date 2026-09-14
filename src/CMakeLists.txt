@@ -669,6 +669,24 @@ if(NP_PLATFORM_MACOS)
   message(STATUS "naturalPaint: native raw two-finger touch capture (ui/MacTrackpadTouch.mm)")
 endif()
 
+# ---- the real iOS file panel (ui/FileDialogIOS.mm) -------------------------
+#
+# Replaces the "could not be shown" stub the iOS spike shipped
+# (docs/ios-spike-plan.md called this "port work, not spike work" and
+# deferred it). `UIDocumentPickerViewController` is UIKit, not AppKit, so this
+# is gated on NP_PLATFORM_IOS rather than living beside the three AppKit files
+# above -- same ARC rationale as those (a delegate object that outlives the
+# call that creates it, ui/FileDialogIOS.mm's own `g_activeDelegate`), and the
+# same "named explicitly rather than inherited from SDL" rationale for the
+# frameworks: this file `#import`s <UIKit/UIKit.h> and
+# <UniformTypeIdentifiers/UniformTypeIdentifiers.h> directly.
+if(NP_PLATFORM_IOS)
+  target_sources(naturalPaint PRIVATE ui/FileDialogIOS.mm)
+  set_source_files_properties(ui/FileDialogIOS.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  target_link_libraries(naturalPaint PRIVATE "-framework UIKit" "-framework UniformTypeIdentifiers")
+  message(STATUS "naturalPaint (iOS): native UIDocumentPickerViewController file panel (ui/FileDialogIOS.mm)")
+endif()
+
 # ---- text shaping (text/CoreTextShaper.mm) ---------------------------------
 #
 # `if(APPLE)`, not `if(NP_PLATFORM_MACOS)`: CoreText/CoreGraphics/

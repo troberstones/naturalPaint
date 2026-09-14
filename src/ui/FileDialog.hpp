@@ -198,6 +198,15 @@ struct FileDialogOutcome {
   // `SDL_GetError()`. Distinct from `cancelled`, because "the panel could not
   // be shown" and "you closed the panel" are different sentences.
   std::string error;
+  // iOS only, and only for a request made through
+  // `requestFileDialogForExport()`: the bytes are already at `path` (the
+  // platform's export picker copied them there itself), so a caller that
+  // would normally write to `path` now must not -- there is nothing left to
+  // write, and doing it anyway would either double-write a security-scoped
+  // destination or silently fail on one. False on every macOS outcome and on
+  // every ordinary (`requestFileDialog()`) iOS outcome, both of which keep
+  // the original "here is a path, please write to it" contract.
+  bool alreadyWritten = false;
 };
 
 // The hand-off from whatever thread SDL calls back on to the frame loop.
@@ -266,6 +275,22 @@ bool requestFileDialog(FileDialogPurpose purpose, const std::string& defaultDire
 // The row is copied into module storage, so the caller may pass a temporary.
 bool requestFileDialogWithFilter(FileDialogPurpose purpose, const std::string& defaultDirectory,
                                  const FileDialogFilterRow& row);
+
+// The iOS shape of a *write* purpose (`SaveDocument`, `SaveCopy`,
+// `ExportImage`). Not needed on macOS, where `requestFileDialog()` already
+// covers writes: NSSavePanel hands back an ordinary path the caller writes to
+// afterward. iOS's `UIDocumentPickerViewController` export mode has no such
+// mode -- it copies an *already-written* file to wherever the user picks
+// (ui/FileDialog.hpp's own header comment has the full argument) -- so this
+// entry point takes the finished file's path instead of a directory, presents
+// the export picker over it, and posts an outcome with `alreadyWritten=true`.
+//
+// `sourcePath` must exist and hold the final bytes before this is called. On
+// macOS this is equivalent to `requestFileDialog(purpose, defaultDirectory)`
+// (`sourcePath` is unused): macOS's own save flow does not need a pre-written
+// file, so there is nothing iOS-specific to route to.
+bool requestFileDialogForExport(FileDialogPurpose purpose, const std::string& sourcePath,
+                                const std::string& defaultDirectory);
 
 // True while a panel is up, or while its outcome is waiting to be consumed.
 bool fileDialogPending();
