@@ -633,9 +633,12 @@ bool runMaskControlsTest() {
     check(od.history.entries().size() == entries + 1 &&
               contains(od.history.entries().back().label, "mask") && contentUntouched(od),
           "F Heal: one history entry naming the mask; layer pixels untouched");
-    const Document* undone = od.history.undo();
+    // Guarded: a heal that recorded nothing would undo past the mask itself.
+    const Document* undone =
+        od.history.entries().size() == entries + 1 ? od.history.undo() : nullptr;
     if (undone != nullptr) od.document = *undone;
-    check(undone != nullptr && maskAt(*od.document.layers[0].mask, 127, 127) == 0.0f,
+    check(undone != nullptr && od.document.layers[0].mask.has_value() &&
+              maskAt(*od.document.layers[0].mask, 127, 127) == 0.0f,
           "F Heal: undo puts the speck back");
   }
   {  // Heal: a linear gradient across the dab is harmonic, so it survives
