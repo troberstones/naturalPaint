@@ -329,7 +329,7 @@
 //     is a no-op on them, and this file says so rather than refusing -- a
 //     document-level crop that failed because the stack contained one would
 //     be refusing on a technicality. Text and Vector layers DO follow a
-//     document transform: `transformTextLayer()` and `transformVectorLayer()`.
+//     document transform: `resizeTextLayer()` and `transformVectorLayer()`.
 //     A perspective crop of a document holding either is refused up front.
 namespace np {
 
@@ -619,9 +619,16 @@ struct LayerTransformResult {
 // a click back into a byte offset, so storing one would make the layer
 // permanently unclickable as well as invisible.
 //
-// `transformDocument()` and `cropDocument()` reach this too, with the lock
-// lifted, so Image Size scales captions and Canvas Size keeps them in origin form.
+// `cropDocument()` reaches this too, with the lock lifted, so Canvas Size and
+// crop keep a caption in origin form.
 LayerTransformResult transformTextLayer(Document& doc, size_t index, const Mat3& dstFromSrc);
+
+// The document-level resize of a Text layer (Image Size, via `transformDocument()`),
+// Photoshop's way: font size, tracking, leading, frame and origin scale by the
+// stretch along the block's vertical axis, and only what that cannot express (a
+// non-uniform remainder, an existing rotation) stays in `TextContent::transform`.
+// A uniform resize of an unrotated block keeps the identity matrix.
+LayerTransformResult resizeTextLayer(Document& doc, size_t index, const Mat3& dstFromSrc);
 
 // True when `m` has no perspective row. A Bezier's control points map exactly
 // only under an affine map.

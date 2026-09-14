@@ -1,5 +1,6 @@
 #include "app/selftest/Support.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -167,7 +168,7 @@ bool runVectorTransformTest() {
     check(std::fabs(alpha - 32.0 * 32.0) < 0.5, "image size: covered area is 32x32, four times 16x16");
   }
 
-  // --- 3. Text: Image Size composes the matrix; Canvas Size keeps origin form -
+  // --- 3. Text: Image Size scales the type; Canvas Size keeps origin form ----
   {
     Document doc = Document::createBlank(64, 64, WorkingSpace{});
     addLayer(doc, 1, makeTextLayer("caption"));
@@ -175,12 +176,14 @@ bool runVectorTransformTest() {
     Document canvasDoc = doc;
     Document cropDoc = doc;
 
+    doc.layers[1].text.style.tracking = 1.5f;
+    doc.layers[1].text.style.leading = 30.0f;
     const DocumentTransformResult r = resizeDocumentImage(doc, 128, 128, params, nullptr);
     const TextContent& t = doc.layers[1].text;
-    check(r.ok && near(t.transform.m[0], 2.0f) && near(t.transform.m[4], 2.0f) &&
-              near(t.transform.m[1], 0.0f) && near(t.transform.m[2], 0.0f) &&
-              t.origin.x == 10.0f && t.origin.y == 20.0f,
-          "text: image size x2 composes scale(2) onto the matrix, origin unchanged");
+    check(r.ok && t.style.sizePx == 48.0f && t.style.tracking == 3.0f && t.style.leading == 60.0f,
+          "text: image size x2 doubles font size, tracking and leading");
+    check(t.transform.m == mat3Identity().m && t.origin.x == 20.0f && t.origin.y == 40.0f,
+          "text: a uniform x2 keeps the identity matrix and doubles the origin");
 
     const DocumentTransformResult c =
         resizeDocumentCanvas(canvasDoc, 80, 80, CanvasAnchor::Center, nullptr);
@@ -199,6 +202,87 @@ bool runVectorTransformTest() {
     const DocumentTransformResult vk = resizeDocumentCanvas(vcrop, 80, 80, CanvasAnchor::Center, nullptr);
     check(vk.ok && nearPt(vcrop.layers[0].shapes[0].path.subpaths[0].anchors[0].pt, 16.0f, 16.0f),
           "vector: canvas size (centre, +16) moves the shapes by 8");
+  }
+
+  // --- 3b. Text resized in type units renders as the true scaled image --------
+  {
+    // Reference: the same block with the whole resize carried by its matrix,
+    // which maps the outlines exactly.
+    const auto textOnly = [](int32_t w, int32_t h, const TextContent& text) {
+      Document d = Document::createBlank(w, h, WorkingSpace{});
+      d.layers.clear();
+      addLayer(d, 0, makeTextLayer("caption"));
+      d.layers[0].text = text;
+      return d;
+    };
+    // Largest alpha difference, and differing alpha as a fraction of the ink.
+    const auto compare = [](const Document& got, const Document& want, float* maxDiff, double* inkFrac) {
+      const std::vector<float> a = compositeDocumentPremultiplied(got);
+      const std::vector<float> b = compositeDocumentPremultiplied(want);
+      *maxDiff = 1.0f;
+      *inkFrac = 1.0;
+      if (a.size() != b.size() || a.empty()) return;
+      double diff = 0.0, ink = 0.0;
+      float mx = 0.0f;
+      for (size_t i = 3; i < a.size(); i += 4) {
+        mx = std::max(mx, std::fabs(a[i] - b[i]));
+        diff += std::fabs(a[i] - b[i]);
+        ink += b[i];
+      }
+      *maxDiff = mx;
+      *inkFrac = ink > 0.0 ? diff / ink : 1.0;
+    };
+
+    TextContent base = makeTextContent("Hamburgefonstiv", PathPoint{6.0f, 40.0f});
+    base.style.sizePx = 13.0f;
+
+    struct Case {
+      const char* name;
+      uint32_t w, h;
+      Mat3 pre;  // the block's matrix before the resize
+    };
+    const Case cases[] = {
+        {"uniform x2", 256, 128, mat3Identity()},
+        {"non-uniform 2 x 1.5", 256, 96, mat3Identity()},
+        {"rotated 30, x2", 256, 128, transformRotateDegreesAbout(30.0f, Point2{60.0f, 40.0f})},
+    };
+    for (const Case& c : cases) {
+      TextContent pre = base;
+      pre.transform = c.pre;
+      Document doc = textOnly(128, 64, pre);
+      const DocumentTransformResult r = resizeDocumentImage(doc, c.w, c.h, params, nullptr);
+      const float sx = static_cast<float>(c.w) / 128.0f, sy = static_cast<float>(c.h) / 64.0f;
+      TextContent ref = pre;
+      ref.transform = mat3Multiply(transformScale(sx, sy), pre.transform);
+      float maxDiff = 0.0f;
+      double inkFrac = 0.0;
+      compare(doc, textOnly(static_cast<int32_t>(c.w), static_cast<int32_t>(c.h), ref), &maxDiff,
+              &inkFrac);
+      std::printf("  [measure] text %s: font %.2f, max alpha diff %.4f, diff/ink %.5f\n", c.name,
+                  doc.layers[0].text.style.sizePx, maxDiff, inkFrac);
+      const std::string what = std::string("text render: ") + c.name +
+                               " matches the matrix-scaled reference (diff/ink < 1%)";
+      check(r.ok && inkFrac < 0.01, what.c_str());
+    }
+
+    TextContent pre = base;
+    Document nu = textOnly(128, 64, pre);
+    (void)resizeDocumentImage(nu, 256, 96, params, nullptr);
+    const TextContent& nt = nu.layers[0].text;
+    check(nt.style.sizePx == 19.5f && near(nt.transform.m[0], 4.0f / 3.0f) && nt.transform.m[4] == 1.0f &&
+              nt.transform.m[1] == 0.0f && nt.transform.m[3] == 0.0f && near(nt.origin.x, 9.0f) &&
+              near(nt.origin.y, 60.0f),
+          "text: non-uniform 2 x 1.5 scales the font by 1.5 and keeps x 4/3 in the matrix");
+
+    TextContent rot = base;
+    rot.transform = transformRotateDegrees(30.0f);
+    Document rd = textOnly(128, 64, rot);
+    (void)resizeDocumentImage(rd, 256, 128, params, nullptr);
+    const TextContent& rt = rd.layers[0].text;
+    check(rt.style.sizePx == 26.0f && near(rt.transform.m[0], rot.transform.m[0]) &&
+              near(rt.transform.m[1], rot.transform.m[1]) && near(rt.transform.m[3], rot.transform.m[3]) &&
+              near(rt.transform.m[4], rot.transform.m[4]),
+          "text: a rotated block doubles its font and keeps its rotation");
   }
 
   // --- 4. Move session and nudge on a Vector layer, and undo -----------------
