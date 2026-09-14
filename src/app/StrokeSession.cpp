@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "app/PenAxes.hpp"
+#include "brush/BrushModelDiff.hpp"
 #include "brush/Taper.hpp"
 #include "brush/ToolOptionsBlend.hpp"
 #include "color/Space.hpp"
@@ -1437,7 +1438,10 @@ bool brushIsEdited(const BrushState& brush) {
   // does not carry it (`NativeBrush`'s own header).
   return !presetMatches(p, brush.model.tip.diameterPx / 2.0f, brush.model.tip.hardness,
                         brush.model.tip.spacingPercent / 100.0f, brush.model.tip.roundness,
-                        brush.model.tip.angleDeg, brush.native, brush.links);
+                        brush.model.tip.angleDeg, brush.native, brush.links) ||
+         // Every other panel the Brush Settings window edits, and the tip picked
+         // from the grid: without these an edit there leaves Save disabled.
+         !brushModelEqual(p.model, brush.model) || p.dabId != brush.dabId;
 }
 
 // The deposit routes' own per-stroke state -- each `begin()`'s accumulator or

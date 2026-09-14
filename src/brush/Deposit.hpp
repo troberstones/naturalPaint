@@ -1093,8 +1093,8 @@ struct BrushTip {
   //
   // **Applied on RGB layers and when stroking a path; not yet on Strokes
   // layers or Pigment layers.** That sentence is the whole user-visible
-  // contract, and the Tool Options banner (`ui/MacPaintUI.cpp`'s
-  // `drawBrushToolOptionsGroup()`) says it in the same words.
+  // contract, and the Brush Settings window's Tool Options page
+  // (`ui/BrushSettingsWindow.cpp`) says it in the same words.
   //
   // **Set by `brushTipFor()`. Read by exactly ONE downstream consumer,
   // `brush/RgbDeposit`'s `RgbStroke`, reached from two places:**

@@ -2005,15 +2005,10 @@ struct AppState {
   // flag is only step (a).
   bool showAdvancedDynamics = false;
 
-  // `--brush-settings-demo [tab]`: which tab to open on, as a
-  // `BrushSettingsTab` ordinal, or -1 for "leave it alone". **Consumed on the
-  // frame it is applied** and reset to -1, so it selects a tab once rather
-  // than pinning it -- a value re-applied every frame would make the tab strip
-  // unclickable, which is a strange way for a screenshot flag to break an
-  // interactive session. Same purpose as `dabDemoId` above: the window is
-  // opened from a menu and switched with a click, and `--screenshot` has
-  // neither.
-  int brushSettingsDemoTab = -1;
+  // The Brush Settings page on show, as a `BrushPanel` ordinal. Kept here rather
+  // than in the window so `--brush-settings-demo <panel>` can choose it before
+  // the first frame; `--screenshot` has no pointer to click the list with.
+  int brushSettingsPanel = 0;
   bool showGuides = true;
   bool showGrid = false;
   // View > Show Frames and Slices (brief item 2). Drawn whenever true, in

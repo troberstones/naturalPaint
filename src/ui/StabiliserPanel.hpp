@@ -14,9 +14,9 @@ namespace np {
 // The popover: a button plus a popup with "All brushes" (the global
 // setting), "This brush" (follow x amount / off / own), the resolved
 // effective setting as one line, and a plain-voice note on where it does not
-// apply. The one call `drawBrushToolOptionsGroup()` makes into this file --
-// the Brush Settings window's own look, kept as it was (Wave 2 brief item 4
-// only asks for the options bar's copy to match the bar).
+// apply. No caller since the Brush Settings window's Tool Options page became
+// a table: the window draws the "This brush" controls inline on its Taper &
+// Stabiliser page, and the options bar uses the field below.
 void drawStabiliserPopover(AppState& st);
 
 // The same popup contents, behind a field-styled trigger (a `BeginCombo`
@@ -30,7 +30,7 @@ void drawStabiliserPopover(AppState& st);
 // field (WET, TIP, ...).
 void drawStabiliserOptionsBarField(AppState& st);
 
-// The "This brush" controls alone, for `drawBrushNativeGroup()`.
+// The "This brush" controls alone, for the Brush Settings window's Taper & Stabiliser page.
 void drawPerBrushStabiliserControls(AppState& st);
 
 }  // namespace np

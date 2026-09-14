@@ -69,7 +69,7 @@
 #include "sim/PaintSim.hpp"
 #include "ui/AppIcon.hpp"
 #include "ui/Fonts.hpp"
-#include "ui/BrushSettingsWindow.hpp"
+#include "ui/BrushPanelLayout.hpp"
 #include "ui/CanvasQuad.hpp"
 #include "ui/FileDialog.hpp"
 #include "ui/MacNativeMenu.hpp"
@@ -1892,7 +1892,7 @@ int main(int argc, char** argv) {
   const char* batchNameTemplate = nullptr;
   const char* dabDemoId = nullptr;
   bool brushSettingsDemo = false;
-  int brushSettingsDemoTab = -1;
+  int brushSettingsPanel = 0;
   // --brush-sheet <file.abr> <out.png> : paint every imported preset with
   // Photoshop's own preview stroke and write one contact sheet. Also headless.
   const char* brushSheetAbr = nullptr;
@@ -1963,24 +1963,27 @@ int main(int argc, char** argv) {
       // plan); it is deliberately a flag rather than a default, so no other
       // capture grows a window over it.
       brushSettingsDemo = true;
-      // An optional tab name, so a capture can photograph any one of the four
-      // rather than only whichever ImGui opens on. Matched against
-      // `brushSettingsTabName()` so there is one spelling of each, not two.
+      // An optional panel name, matched against `brushPanelName()` so there is
+      // one spelling of each.
       if (i + 1 < argc && argv[i + 1][0] != '-') {
         const std::string want = argv[++i];
-        for (size_t t = 0; t < np::kBrushSettingsTabCount; ++t) {
-          const auto tab = static_cast<np::BrushSettingsTab>(t);
-          if (want == np::brushSettingsTabName(tab)) {
-            brushSettingsDemoTab = static_cast<int>(t);
+        bool found = false;
+        for (size_t p = 0; p < np::kBrushPanelCount; ++p) {
+          if (want == np::brushPanelName(static_cast<np::BrushPanel>(p))) {
+            brushSettingsPanel = static_cast<int>(p);
+            found = true;
             break;
           }
         }
-        if (brushSettingsDemoTab < 0)
+        if (!found) {
+          std::string names;
+          for (size_t p = 0; p < np::kBrushPanelCount; ++p)
+            names += std::string(" ") + np::brushPanelName(static_cast<np::BrushPanel>(p));
           std::fprintf(stderr,
-                       "--brush-settings-demo: '%s' is not a tab; opening on the "
-                       "default one. Tabs: TipShape ShapeDynamics Scattering Texture "
-                       "DualBrush ColorDynamics Transfer ToolOptions Dynamics\n",
-                       want.c_str());
+                       "--brush-settings-demo: '%s' is not a panel; opening on the tip. "
+                       "Panels:%s\n",
+                       want.c_str(), names.c_str());
+        }
       }
     } else if (a == "--brush-sheet") {
       if (i + 1 < argc) brushSheetAbr = argv[++i];
@@ -3460,10 +3463,8 @@ int main(int argc, char** argv) {
     // brush/BrushModelDiff: the diff/equal pair over the same 149 leaves,
     // which presetMatches() and the round-trip proof both need. Headless.
     const bool brushModelDiffOk = !wanted("runBrushModelDiffTest") || np::runBrushModelDiffTest();
-    // ui/BrushFieldPresentation: every BrushModel leaf is in exactly one of
-    // the presentation table (gets a live control) or the omission table
-    // (deliberately does not, with a reason) -- the exhaustiveness guarantee
-    // behind ui/BrushSettingsWindow's Photoshop-shaped tabs. Headless.
+    // ui/BrushPanelLayout: every BrushModel leaf has one control in the Brush
+    // Settings window, or a reason it has none. Headless.
     const bool brushPanelBindingOk = !wanted("runBrushPanelBindingTest") || np::runBrushPanelBindingTest();
     // track10/angle: an independent geometric pin -- BrushTip::angle is
     // clockwise-positive on screen, and DIRECTION->Angle actually faces the
@@ -4596,7 +4597,7 @@ int main(int argc, char** argv) {
   if (dabDemoId != nullptr) st.dabDemoId = dabDemoId;
   if (brushSettingsDemo) {
     st.showBrushSettings = true;
-    st.brushSettingsDemoTab = brushSettingsDemoTab;
+    st.brushSettingsPanel = brushSettingsPanel;
   }
   st.openExportStatesDialog = openExportStates;
   st.actionsDemo = actionsDemo;

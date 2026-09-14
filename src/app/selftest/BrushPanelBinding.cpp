@@ -1,32 +1,22 @@
 #include "app/selftest/Support.hpp"
 
+#include <map>
 #include <set>
 #include <string>
 
 #include "brush/BrushModelIo.hpp"
-#include "ui/BrushFieldPresentation.hpp"
+#include "ui/BrushPanelLayout.hpp"
 
 namespace np {
 
 // ---------------------------------------------------------------------------
-// ui/BrushFieldPresentation: the exhaustiveness guarantee this task exists
-// to add.
+// ui/BrushPanelLayout: every `BrushModel` field has exactly one home.
 //
-// Before this file, a `BrushModel` leaf (brush/BrushModelFields.hpp's own
-// 149, walked by `visitBrushModelFields()`) could go from "the importer
-// fills it in" to "no control anywhere ever draws it" with no warning at
-// all -- `BrushModelFields.hpp`'s own header names this as the third thing
-// its one visitor was always going to need to support, and this is that
-// support arriving.
-//
-// The load-bearing claim is section B: every path `brushModelFieldPaths()`
-// produces is in EXACTLY ONE of `brushFieldPresentationTable()` (gets a
-// live control somewhere) or `brushFieldOmissionTable()` (deliberately does
-// not, with a reason). A path in neither is a field silently missing a
-// control; a path in both is two tables disagreeing about whether one
-// exists. Section C is the mirror-image failure: a stale row in either
-// table naming a path that is no longer a real field at all (a rename or a
-// removal left behind a dangling entry).
+// A field is edited by a row of a Brush Settings page, switched by a panel's
+// checkbox in the list, or named in the omission table with a reason. A field in
+// none of them is one the importer fills in and no painter can see; a field in
+// two is two controls fighting over one value. Section C is the mirror image: a
+// table naming a field that no longer exists.
 // ---------------------------------------------------------------------------
 bool runBrushPanelBindingTest() {
   bool ok = true;
@@ -37,115 +27,73 @@ bool runBrushPanelBindingTest() {
 
   const std::vector<std::string> fieldPaths = brushModelFieldPaths();
   const std::set<std::string> fieldPathSet(fieldPaths.begin(), fieldPaths.end());
-  const std::vector<BrushFieldSpec>& presentation = brushFieldPresentationTable();
   const std::vector<BrushFieldOmission>& omission = brushFieldOmissionTable();
 
-  // ==========================================================================
-  std::printf("  -- A. no duplicate rows in either table --\n");
-  // ==========================================================================
+  // Every leaf a control edits, with how many controls edit it.
+  std::map<std::string, size_t> shown;
+  for (const BrushRowSpec& row : brushPanelRows())
+    for (const std::string& leaf : brushRowLeafPaths(row)) ++shown[leaf];
+  for (size_t i = 0; i < kBrushPanelCount; ++i) {
+    const BrushPanelSpec& spec = brushPanelSpec(static_cast<BrushPanel>(i));
+    if (spec.enablePath[0] != '\0') ++shown[spec.enablePath];
+  }
+  std::set<std::string> omitted;
+  for (const BrushFieldOmission& row : omission) omitted.insert(row.path);
+
+  std::printf("  -- A. no field has two controls, and no omission is listed twice --\n");
   {
-    std::set<std::string> presPaths, omitPaths;
-    for (const BrushFieldSpec& row : presentation) presPaths.insert(row.path);
-    for (const BrushFieldOmission& row : omission) omitPaths.insert(row.path);
-    check(presPaths.size() == presentation.size(),
-          "presentation table: no path listed twice");
-    check(omitPaths.size() == omission.size(), "omission table: no path listed twice");
+    size_t doubled = 0;
+    std::string first;
+    for (const auto& [path, count] : shown)
+      if (count > 1 && doubled++ == 0) first = path;
+    if (doubled > 0) std::printf("  [measured] %zu field(s) with two controls, first: %s\n", doubled, first.c_str());
+    check(doubled == 0, "panels: every field is edited by at most one row or switch");
+    check(omitted.size() == omission.size(), "omission table: no path listed twice");
   }
 
-  // ==========================================================================
-  std::printf("  -- B. every real field is in exactly one table --\n");
-  // ==========================================================================
+  std::printf("  -- B. every real field has a control or a reason --\n");
   {
-    size_t missing = 0, doubled = 0;
-    std::string firstMissing, firstDoubled;
+    size_t missing = 0, both = 0;
+    std::string firstMissing, firstBoth;
     for (const std::string& path : fieldPaths) {
-      const bool inPresentation = findBrushFieldSpec(path) != nullptr;
-      const bool inOmission = findBrushFieldOmissionReason(path) != nullptr;
-      if (!inPresentation && !inOmission) {
-        if (missing == 0) firstMissing = path;
-        ++missing;
-      } else if (inPresentation && inOmission) {
-        if (doubled == 0) firstDoubled = path;
-        ++doubled;
-      }
+      const bool hasControl = shown.count(path) != 0;
+      const bool isOmitted = omitted.count(path) != 0;
+      if (!hasControl && !isOmitted && missing++ == 0) firstMissing = path;
+      if (hasControl && isOmitted && both++ == 0) firstBoth = path;
     }
     if (missing > 0)
-      std::printf("  [measured] %zu path(s) in neither table, first: %s\n", missing,
-                  firstMissing.c_str());
-    check(missing == 0,
-          "every path from brushModelFieldPaths() is in the presentation table or the "
-          "omission table");
-    if (doubled > 0)
-      std::printf("  [measured] %zu path(s) in BOTH tables, first: %s\n", doubled,
-                  firstDoubled.c_str());
-    check(doubled == 0, "no path is in both the presentation table and the omission table");
-
-    // Belt and braces on the same claim, arithmetically: if every path is in
-    // exactly one table and neither table has a stray entry (section C), the
-    // two sizes must sum to the field count.
-    check(presentation.size() + omission.size() == fieldPaths.size(),
-          "presentation table size + omission table size == brushModelFieldPaths().size()");
+      std::printf("  [measured] %zu field(s) with neither, first: %s\n", missing, firstMissing.c_str());
+    check(missing == 0, "every path from brushModelFieldPaths() has a control or an omission reason");
+    if (both > 0)
+      std::printf("  [measured] %zu field(s) with both, first: %s\n", both, firstBoth.c_str());
+    check(both == 0, "no field has both a control and an omission reason");
+    check(shown.size() + omitted.size() == fieldPaths.size(),
+          "controlled fields + omitted fields == brushModelFieldPaths().size()");
   }
 
-  // ==========================================================================
-  std::printf("  -- C. neither table names a field that does not exist --\n");
-  // ==========================================================================
-  //
-  // The mirror-image failure from section B: a path renamed or removed in
-  // `BrushModelFields.hpp` that leaves a now-dangling row behind in either
-  // table here. Section B alone would not catch this -- it only walks
-  // `brushModelFieldPaths()` forward, never asks whether a table row was
-  // reachable from there.
+  std::printf("  -- C. no table names a field that does not exist --\n");
   {
-    size_t stalePresentation = 0, staleOmission = 0;
-    std::string firstStalePresentation, firstStaleOmission;
-    for (const BrushFieldSpec& row : presentation) {
-      if (fieldPathSet.count(row.path) == 0) {
-        if (stalePresentation == 0) firstStalePresentation = row.path;
-        ++stalePresentation;
-      }
-    }
-    for (const BrushFieldOmission& row : omission) {
-      if (fieldPathSet.count(row.path) == 0) {
-        if (staleOmission == 0) firstStaleOmission = row.path;
-        ++staleOmission;
-      }
-    }
-    if (stalePresentation > 0)
-      std::printf("  [measured] %zu stale presentation-table path(s), first: %s\n",
-                  stalePresentation, firstStalePresentation.c_str());
-    check(stalePresentation == 0,
-          "every presentation-table path names a real BrushModel field");
-    if (staleOmission > 0)
-      std::printf("  [measured] %zu stale omission-table path(s), first: %s\n", staleOmission,
-                  firstStaleOmission.c_str());
-    check(staleOmission == 0, "every omission-table path names a real BrushModel field");
+    size_t staleShown = 0, staleOmitted = 0;
+    std::string firstShown, firstOmitted;
+    for (const auto& [path, count] : shown)
+      if (fieldPathSet.count(path) == 0 && staleShown++ == 0) firstShown = path;
+    for (const std::string& path : omitted)
+      if (fieldPathSet.count(path) == 0 && staleOmitted++ == 0) firstOmitted = path;
+    if (staleShown > 0)
+      std::printf("  [measured] %zu stale control path(s), first: %s\n", staleShown, firstShown.c_str());
+    check(staleShown == 0, "every row and switch names a real BrushModel field");
+    if (staleOmitted > 0)
+      std::printf("  [measured] %zu stale omission path(s), first: %s\n", staleOmitted,
+                  firstOmitted.c_str());
+    check(staleOmitted == 0, "every omission-table path names a real BrushModel field");
   }
 
-  // ==========================================================================
   std::printf("  -- D. every omission carries an actual reason --\n");
-  // ==========================================================================
-  //
-  // An empty reason string would still make sections A-C pass -- this is the
-  // one property only readable from the table itself, so it gets its own
-  // check rather than riding along with something else.
   {
-    bool everyReasonNonEmpty = true;
-    for (const BrushFieldOmission& row : omission) {
-      if (row.reason == nullptr || row.reason[0] == '\0') everyReasonNonEmpty = false;
-    }
-    check(everyReasonNonEmpty, "every omission-table row carries a non-empty reason");
-  }
-
-  // ==========================================================================
-  std::printf("  -- E. every presentation row carries an actual label --\n");
-  // ==========================================================================
-  {
-    bool everyLabelNonEmpty = true;
-    for (const BrushFieldSpec& row : presentation) {
-      if (row.label == nullptr || row.label[0] == '\0') everyLabelNonEmpty = false;
-    }
-    check(everyLabelNonEmpty, "every presentation-table row carries a non-empty label");
+    bool everyReason = true;
+    for (const BrushFieldOmission& row : omission)
+      if (row.reason == nullptr || row.reason[0] == '\0') everyReason = false;
+    check(everyReason, "every omission-table row carries a non-empty reason");
   }
 
   std::printf("[selftest] brush panel binding %s\n", ok ? "PASS" : "FAIL");

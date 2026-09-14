@@ -18,7 +18,7 @@ namespace np {
 // exactly as it does for STABILISER and every other band field.
 void drawTaperOptionsBarField(AppState& st);
 
-// Both tapers, one switchable group each, for `drawBrushNativeGroup()`.
+// Both tapers, one switchable group each, for the Brush Settings window's Taper & Stabiliser page.
 void drawBrushTaperControls(AppState& st);
 
 }  // namespace np

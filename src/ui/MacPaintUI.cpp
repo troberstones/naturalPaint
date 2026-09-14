@@ -101,7 +101,6 @@
 #include "io/ExportStates.hpp"
 #include "io/GradientPresetFile.hpp"
 #include "brush/BrushModelFields.hpp"
-#include "ui/BrushFieldPresentation.hpp"
 #include "ui/BrushSettingsWindow.hpp"
 #include "ui/CanvasQuad.hpp"
 #include "ui/DocumentTexture.hpp"
@@ -5450,128 +5449,7 @@ void drawBrushLibrarySection(AppState& st, GpuContext& gpu, const MixboxLut& lut
 // the namespace enclosing it.
 //
 // `drawBrushSection()` at the bottom calls them in column order; the window
-// calls them one per tab.
-
-namespace {
-
-// --- The presentation-table dispatch --------------------------------------
-//
-// `ui/BrushFieldPresentation.hpp`'s table says WHICH leaves get a control and
-// what each one is called and ranged; these functions say HOW to draw one,
-// dispatched on the leaf's own C++ type. Overloaded rather than templated or
-// switched, matching `brush/BrushModelIo.cpp`'s `toFieldString()`/
-// `parseField()` overload set for the identical reason: the set of types a
-// `BrushModel` leaf can be is CLOSED (bool, int32_t, float, std::string,
-// `VarianceControl`, `CoverageBlend`), so a leaf of some new type added to
-// `BrushModel` with no matching overload here fails to COMPILE rather than
-// silently drawing nothing or picking the wrong widget.
-
-void drawBrushFieldControl(const BrushFieldSpec& spec, bool& v) { ImGui::Checkbox(spec.label, &v); }
-
-void drawBrushFieldControl(const BrushFieldSpec& spec, int32_t& v) {
-  int iv = v;
-  if (ctlSliderInt(spec.label, &iv, spec.iLo, spec.iHi)) v = iv;
-}
-
-void drawBrushFieldControl(const BrushFieldSpec& spec, float& v) {
-  ctlSlider(spec.label, &v, spec.lo, spec.hi, spec.fmt);
-}
-
-void drawBrushFieldControl(const BrushFieldSpec& spec, std::string& v) {
-  char buf[256];
-  std::snprintf(buf, sizeof(buf), "%s", v.c_str());
-  if (spec.readOnly) {
-    ImGui::BeginDisabled(true);
-    ctlInputText(spec.label, buf, sizeof(buf), ImGuiInputTextFlags_ReadOnly);
-    ImGui::EndDisabled();
-  } else if (ctlInputText(spec.label, buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)) {
-    v = buf;
-  }
-}
-
-void drawBrushFieldControl(const BrushFieldSpec& spec, VarianceControl& v) {
-  if (ctlBeginCombo(spec.label, varianceControlName(v))) {
-    for (int i = 0; i <= static_cast<int>(VarianceControl::InitialDirection); ++i) {
-      const auto candidate = static_cast<VarianceControl>(i);
-      const bool selected = v == candidate;
-      if (ImGui::Selectable(varianceControlName(candidate), selected)) v = candidate;
-      if (selected) ImGui::SetItemDefaultFocus();
-    }
-    ImGui::EndCombo();
-  }
-}
-
-void drawBrushFieldControl(const BrushFieldSpec& spec, CoverageBlend& v) {
-  if (ctlBeginCombo(spec.label, coverageBlendName(v))) {
-    for (int i = 0; i <= static_cast<int>(CoverageBlend::LinearHeight); ++i) {
-      const auto candidate = static_cast<CoverageBlend>(i);
-      const bool selected = v == candidate;
-      if (ImGui::Selectable(coverageBlendName(candidate), selected)) v = candidate;
-      if (selected) ImGui::SetItemDefaultFocus();
-    }
-    ImGui::EndCombo();
-  }
-}
-
-// Draws every leaf of `st.brush.model` whose path starts with `prefix`, in
-// `visitBrushModelFields()`'s own walk order, skipping:
-//   * any path found in `skipPaths` -- already drawn by a hand-written
-//     control elsewhere on the SAME tab (Tip Shape's Radius/Angle/Roundness/
-//     Spacing/Hardness sliders, which use different units than a raw model
-//     leaf would);
-//   * any path with no row in `brushFieldPresentationTable()` -- silently,
-//     because `runBrushPanelBindingTest()` is what proves that means the
-//     path is instead on the omission table, not that it was forgotten.
-//
-// **`Variance::fadeSteps` is drawn disabled, with a reason, whenever its own
-// sibling `control` is not `Fade`** (Variance.hpp's own comment: fadeSteps
-// only matters under Fade). This walk can do that with one piece of local
-// state because `visitVariance()` (brush/BrushModelFields.hpp) always visits
-// a Variance's five leaves in the fixed order control/jitter/minimum/
-// fadeSteps/present, so the most recently seen `VarianceControl` is always
-// the fadeSteps leaf's own sibling, never a different Variance's.
-void drawBrushModelFieldsForPrefix(AppState& st, const char* prefix,
-                                    const std::set<std::string>& skipPaths = {}) {
-  const size_t prefixLen = std::strlen(prefix);
-  VarianceControl lastControl = VarianceControl::Off;
-  visitBrushModelFields(st.brush.model, [&](const std::string& path, auto& leaf) {
-    if (path.compare(0, prefixLen, prefix) != 0) return;
-    if (skipPaths.count(path) != 0) return;
-    using LeafType = std::decay_t<decltype(leaf)>;
-    if constexpr (std::is_same_v<LeafType, VarianceControl>) lastControl = leaf;
-    const BrushFieldSpec* spec = findBrushFieldSpec(path);
-    if (spec == nullptr) return;
-    if constexpr (std::is_same_v<LeafType, int32_t>) {
-      const bool isFadeSteps =
-          path.size() > 10 && path.compare(path.size() - 10, 10, ".fadeSteps") == 0;
-      if (isFadeSteps) {
-        const bool relevant = lastControl == VarianceControl::Fade;
-        ImGui::BeginDisabled(!relevant);
-        drawBrushFieldControl(*spec, leaf);
-        ImGui::EndDisabled();
-        if (!relevant) ImGui::TextDisabled("Only used when Control is Fade.");
-        return;
-      }
-    }
-    drawBrushFieldControl(*spec, leaf);
-  });
-}
-
-// Draws `path`'s own control (a checkbox, in practice -- every panel's own
-// `enabled` leaf is a bool) unconditionally, live, regardless of any
-// enclosing BeginDisabled(). Used for the one control on each gated tab that
-// must stay clickable even while the rest of the tab is greyed out: the
-// checkbox that turns the greying off.
-void drawBrushModelField(AppState& st, const char* path) {
-  visitBrushModelFields(st.brush.model, [&](const std::string& p, auto& leaf) {
-    if (p != path) return;
-    const BrushFieldSpec* spec = findBrushFieldSpec(p);
-    if (spec == nullptr) return;
-    drawBrushFieldControl(*spec, leaf);
-  });
-}
-
-}  // namespace
+// calls them from its pages.
 
 void drawBrushPresetHeader(AppState& st) {
   // Defensive, not the primary load site (that is drawBrushLibrarySection()
@@ -5702,52 +5580,10 @@ void drawBrushTipShapeGroup(AppState& st, GpuContext& gpu, const MixboxLut& lut)
   // atlas in it is exactly the kind of thing that should not be another two
   // hundred lines here. It reports; this block decides.
   if (ImGui::TreeNodeEx("Tip", ImGuiTreeNodeFlags_DefaultOpen)) {
-    ensureDabLibraryScanned(st);
-    const DabPickerAction action = drawDabPicker("brush-tip", st.dabLibrary, gpu, st.brush.dabId);
-    if (action.rescanRequested) st.dabLibrary.rescan();
-    if (action.revealRequested) revealDabFolder(st);
-    if (action.selected) {
-      // **The tip, and nothing else** (ui/DabPicker.hpp §3). Radius, spacing,
-      // hardness and roundness are left exactly as they were, so trying the
-      // next tip along is one click to do and one to undo.
-      st.brush.dabId = action.id;
-      st.brush.tipBitmap = action.id.empty() ? nullptr : st.dabLibrary.resolve(action.id);
-      // An id that resolved a moment ago for the thumbnail and does not now
-      // means the file went away between the two. Falling back to the
-      // procedural tip AND clearing the id keeps the two in step -- an id
-      // naming a bitmap the brush is not using is what would get saved.
-      if (!action.id.empty() && st.brush.tipBitmap == nullptr) st.brush.dabId.clear();
-    }
-    if (action.useNativeSize && action.nativeWidth > 0 && action.nativeHeight > 0) {
-      // The tip's own larger dimension is its DIAMETER; Radius is half of it.
-      // Same reading `io/AbrBrushes.cpp` gives a `#Prc` diameter, and clamped
-      // to the slider's own range rather than to something wider, so the
-      // button can never put the brush somewhere the slider cannot express.
-      const float diameter = static_cast<float>(std::max(action.nativeWidth, action.nativeHeight));
-      st.brush.model.tip.diameterPx =
-          std::clamp(diameter * 0.5f, kBrushRadiusMin, kBrushRadiusMax) * 2.0f;
-    }
-    if (action.useFileSpacing)
-      // `action.fileSpacing` is already in the same RADII unit the slider
-      // above uses (`ui/DabPicker.cpp`'s own conversion off the dab
-      // library's `spacingPercent` field) -- `* 50` is the radii ->
-      // percent-of-diameter boundary conversion, not `* 100` (this group's
-      // Spacing slider, just above, names the same factor of two).
-      st.brush.model.tip.spacingPercent = std::clamp(action.fileSpacing, 0.02f, 1.0f) * 50.0f;
+    (void)drawBrushTipPicker(st, gpu, /*dual=*/false);
     ImGui::TreePop();
   }
 
-  // --- The rest of tip.* ---------------------------------------------------
-  //
-  // diameterPx/angleDeg/roundness/spacingPercent/hardness are drawn above by
-  // hand, in different units (radius, spacing-in-radii) than a raw model
-  // leaf would use -- skipped here so this walk cannot draw a second,
-  // differently-scaled control for the same field. `tip.computed` is on
-  // `ui/BrushFieldPresentation`'s omission table, so it is simply absent
-  // from `brushFieldPresentationTable()` and this walk skips it on its own.
-  drawBrushModelFieldsForPrefix(
-      st, "tip.",
-      {"tip.diameterPx", "tip.angleDeg", "tip.roundness", "tip.spacingPercent", "tip.hardness"});
 }
 
 void drawBrushPaintGroup(AppState& st) {
@@ -5927,14 +5763,6 @@ void drawBrushTextureGroup(AppState& st, bool ownPage) {
   // `ownPage` short-circuits the header rather than passing it a
   // default-open flag: on a tab there should be no header, not an opened one.
   // ui/BrushSettingsWindow.hpp carries the reasoning.
-  //
-  // **`ownPage` now also draws a `SeparatorText()` label**, unlike before
-  // this task: a tab used to have exactly one topic, so no title was needed
-  // (the tab's own label already said what the page was) -- now it has two,
-  // PAPER GRAIN and the model.texture.* section appended below, and two
-  // controls both named "Enabled" with two different "Scale"/"Depth"
-  // sliders under them is genuinely ambiguous without one.
-  if (ownPage) ImGui::SeparatorText("PAPER GRAIN");
   if (ownPage || ImGui::CollapsingHeader("PAPER GRAIN")) {
     // **Reaches all four layer-writing routes**, and that is a correction
     // rather than a fact that was always true. This block used to read
@@ -5990,65 +5818,6 @@ void drawBrushTextureGroup(AppState& st, bool ownPage) {
     else
       ImGui::TextDisabled("Off: every dab covers exactly what its falloff says, paper or not.");
   }
-
-  // --- BrushModel::texture -- Photoshop's imported Texture panel ----------
-  //
-  // A DIFFERENT struct from PAPER GRAIN above (`st.brush.native.grain`): this is
-  // `model.texture`, what a '.abr' file's own Texture panel carries --
-  // pattern, scale, depth, blend mode, brightness/contrast. Not yet read at
-  // paint time (`BrushModel.hpp`'s own comment: "imported by nothing until
-  // now" still holds for this struct, unlike shape/scatter/transfer, which
-  // Phase B/C wired), so its controls are shown live and persist to the
-  // model and the saved preset -- the same treatment Tool Options gets, for
-  // the same reason: this is ordinary "not wired yet", not the specific,
-  // permanent refusals Dual Brush's LinearHeight blend or Color Dynamics
-  // carry.
-  //
-  // `ownPage`-gated for the identical reason PAPER GRAIN's own header is:
-  // the docked column has no room for 16 more controls (`ui/
-  // BrushSettingsWindow.hpp` §2's asymmetry) -- so this section exists only
-  // on the window's own Texture tab.
-  if (ownPage) {
-    ImGui::SeparatorText("TEXTURE (IMPORTED)");
-    drawBrushModelField(st, "texture.enabled");
-    const bool enabled = st.brush.model.texture.enabled;
-    ImGui::BeginDisabled(!enabled);
-    drawBrushModelFieldsForPrefix(st, "texture.", {"texture.enabled"});
-    ImGui::EndDisabled();
-    if (!enabled)
-      ImGui::TextDisabled("Texture is off -- turn it on above to edit these.");
-  }
-}
-
-// The NATURALPAINT group: a small seam at the top of the Dynamics tab's own
-// window page for naturalPaint's own brush parameters, beside the shelved
-// matrix this tab has always carried -- see `BrushSettingsTab::Dynamics`'s
-// own comment on why this is the tab that holds it. LOAD/WETNESS bind to
-// `st.brush.native` (brush/NativeBrush.hpp); OPACITY binds to the plain
-// `st.brush.opacity`, which is naturalPaint's own too but deliberately NOT in
-// `native` -- per-session options-bar state a preset does not carry
-// (NativeBrush.hpp's header). NOT drawn in the docked column:
-// `drawBrushSection()` calls `drawBrushDynamicsGroup()` below directly, and
-// `drawBrushPaintGroup()` already shows these same three controls, with their
-// full reasoning, there.
-void drawBrushNativeGroup(AppState& st) {
-  if (!ImGui::CollapsingHeader("NATURALPAINT", ImGuiTreeNodeFlags_DefaultOpen)) return;
-  ctlSlider("Load", &st.brush.native.load, kBrushLoadMin, kBrushLoadMax);
-  const OpenDocument* od = st.documents.active();
-  const Layer* target = od != nullptr ? activeLayerOf(*od) : nullptr;
-  const bool wetHonoured = wetnessReachesSolver(strokeRouteFor(st.brush.tool, target));
-  ImGui::BeginDisabled(!wetHonoured);
-  ctlSlider("Wetness", &st.brush.native.wetness, kBrushWetnessMin, kBrushWetnessMax);
-  ImGui::EndDisabled();
-  if (!wetHonoured) ImGui::TextDisabled("Reaches the wet canvas only.");
-  ctlSlider("Opacity", &st.brush.opacity, 0.0f, 1.0f);
-
-  ImGui::Spacing();
-  drawBrushTaperControls(st);
-
-  ImGui::Spacing();
-  ImGui::TextUnformatted("STABILISER");
-  drawPerBrushStabiliserControls(st);
 }
 
 // **The two draws below are gated behind `st.showAdvancedDynamics`.** The
@@ -6070,148 +5839,59 @@ void drawBrushDynamicsGroup(AppState& st) {
     if (st.showAdvancedDynamics) drawLinkEditor(st);
 }
 
-// --- The six Photoshop-shaped, presentation-table-driven groups -----------
-//
-// Window-only (`ui/BrushSettingsWindow.hpp` §2's asymmetry) and each built
-// the same way: the panel's own `Enabled` checkbox drawn live by hand (so it
-// stays clickable while the rest of the tab is greyed out), then a generic
-// walk of that panel's own path prefix through `ui/BrushFieldPresentation`'s
-// table, disabled with a one-line reason when the panel itself is off. Every
-// leaf either gets a control this way or is on the omission table --
-// `runBrushPanelBindingTest()` is what proves it.
-
-void drawBrushShapeDynamicsGroup(AppState& st) {
-  drawBrushModelField(st, "shape.enabled");
-  const bool enabled = st.brush.model.shape.enabled;
-  ImGui::BeginDisabled(!enabled);
-  drawBrushModelFieldsForPrefix(st, "shape.", {"shape.enabled"});
-  ImGui::EndDisabled();
-  if (!enabled) ImGui::TextDisabled("Shape Dynamics is off -- turn it on above to edit these.");
+// The dab grid, reporting what was pressed; this decides what it does to the
+// brush. One body for the brush's own tip and the Dual Brush's second tip, so
+// the two grids cannot come to behave differently.
+bool drawBrushTipPicker(AppState& st, GpuContext& gpu, bool dual) {
+  ensureDabLibraryScanned(st);
+  PsTipShape& shape = dual ? st.brush.model.dual.tip : st.brush.model.tip;
+  const std::string current = dual ? shape.dab.id : st.brush.dabId;
+  const DabPickerAction action =
+      drawDabPicker(dual ? "dual-tip" : "brush-tip", st.dabLibrary, gpu, current);
+  if (action.rescanRequested) st.dabLibrary.rescan();
+  if (action.revealRequested) revealDabFolder(st);
+  bool changed = false;
+  if (action.selected) {
+    // **The tip, and nothing else** (ui/DabPicker.hpp §3): size, spacing and
+    // shape stay as they were, so trying the next tip along is one click to do
+    // and one to undo.
+    std::shared_ptr<const BrushTipBitmap> bitmap =
+        action.id.empty() ? nullptr : st.dabLibrary.resolve(action.id);
+    // An id that resolved for the thumbnail and does not now means the file went
+    // away between the two. Clearing the id with the bitmap keeps them in step:
+    // an id naming a bitmap the brush is not using is what would get saved.
+    const std::string id = bitmap != nullptr ? action.id : std::string();
+    shape.dab.id = id;
+    shape.dab.bitmap = bitmap;
+    if (!dual) {
+      st.brush.dabId = id;
+      st.brush.tipBitmap = bitmap;
+    }
+    changed = true;
+  }
+  if (action.useNativeSize && action.nativeWidth > 0 && action.nativeHeight > 0) {
+    // The tip's larger dimension is its diameter, clamped to what the Size
+    // slider can express so the button never puts the brush out of its reach.
+    const float diameter = static_cast<float>(std::max(action.nativeWidth, action.nativeHeight));
+    shape.diameterPx = std::clamp(diameter * 0.5f, kBrushRadiusMin, kBrushRadiusMax) * 2.0f;
+    changed = true;
+  }
+  if (action.useFileSpacing) {
+    // `fileSpacing` is in radii and `spacingPercent` is a percentage of the
+    // diameter, hence 50 rather than 100.
+    shape.spacingPercent = std::clamp(action.fileSpacing, 0.02f, 1.0f) * 50.0f;
+    changed = true;
+  }
+  return changed;
 }
 
-void drawBrushScatteringGroup(AppState& st) {
-  drawBrushModelField(st, "scatter.enabled");
-  const bool enabled = st.brush.model.scatter.enabled;
-  ImGui::BeginDisabled(!enabled);
-  drawBrushModelFieldsForPrefix(st, "scatter.", {"scatter.enabled"});
-  ImGui::EndDisabled();
-  if (!enabled) ImGui::TextDisabled("Scattering is off -- turn it on above to edit these.");
-}
-
-void drawBrushDualBrushGroup(AppState& st) {
-  drawBrushModelField(st, "dual.enabled");
-  const bool enabled = st.brush.model.dual.enabled;
-  ImGui::BeginDisabled(!enabled);
-
-  // Blend Mode stays live inside the `enabled` gate but OUTSIDE the
-  // renderability gate below it -- a painter stuck on Linear Height needs
-  // this control clickable to get off it.
-  drawBrushModelField(st, "dual.blend");
-
-  // **Linear Height is REFUSED, deliberately** (brush/CoverageBlend.hpp's
-  // own comment on `CoverageBlend::LinearHeight`): no per-pixel formula in
-  // any source consulted, and `applyCoverageBlend()` will not compute it --
-  // `coverageBlendIsRenderable()` is the same predicate that function's own
-  // caller must check. 29 of 66 dual-brush presets measured name it, so this
-  // is not a rare corner: the second tip's shape/scatter controls below are
-  // real but currently inert whenever this is the blend, and this says so
-  // rather than leaving them live over nothing.
-  const bool blendRenderable = coverageBlendIsRenderable(st.brush.model.dual.blend);
-  ImGui::BeginDisabled(!blendRenderable);
-  drawBrushModelFieldsForPrefix(st, "dual.", {"dual.enabled", "dual.blend"});
-  ImGui::EndDisabled();
-  if (!blendRenderable)
-    ImGui::TextDisabled(
-        "Linear Height is refused, deliberately -- no per-pixel formula for it exists in "
-        "any source consulted. Pick a different Blend Mode above to edit these.");
-
-  ImGui::EndDisabled();
-  if (!enabled) ImGui::TextDisabled("Dual Brush is off -- turn it on above to edit these.");
-}
-
-void drawBrushColorDynamicsGroup(AppState& st) {
-  // **A permanent fact about the ENGINE, independent of this panel's own
-  // `enabled` gate below** -- `StrokeSession::brushTipFor()` passes the
-  // Hue/Saturation/Value identity regardless of what is set here (that
-  // function's own comment: "future work, not this commit's"), and measured
-  // 1 of 101 presets uses this panel at all. So this is a standing caption,
-  // not a BeginDisabled(): the controls stay live and persist to the model
-  // and the saved preset either way, honestly reflecting that this build
-  // remembers Color Dynamics without yet painting from it.
-  textDisabledWrapped(
-      "naturalPaint does not yet apply Color Dynamics to a stroke. These settings persist "
-      "to the model and the saved preset, but are not read when painting.");
-  ImGui::Separator();
-
-  drawBrushModelField(st, "color.enabled");
-  const bool enabled = st.brush.model.color.enabled;
-  ImGui::BeginDisabled(!enabled);
-  drawBrushModelFieldsForPrefix(st, "color.", {"color.enabled"});
-  ImGui::EndDisabled();
-  if (!enabled) ImGui::TextDisabled("Color Dynamics is off -- turn it on above to edit these.");
-}
-
-void drawBrushTransferGroup(AppState& st) {
-  drawBrushModelField(st, "transfer.enabled");
-  const bool enabled = st.brush.model.transfer.enabled;
-  ImGui::BeginDisabled(!enabled);
-  drawBrushModelFieldsForPrefix(st, "transfer.", {"transfer.enabled"});
-  ImGui::EndDisabled();
-  if (!enabled) ImGui::TextDisabled("Transfer is off -- turn it on above to edit these.");
-}
-
-void drawBrushToolOptionsGroup(AppState& st) {
-  // No `enabled` field on `PsToolOptions` -- Tool Options has no off switch
-  // in Photoshop either (BrushSettingsTab::ToolOptions's own comment).
-  //
-  // **Blend Mode is now the one field below this line the engine actually
-  // reads on a stroke** -- brush/RgbDeposit.hpp §2a, reached through
-  // `brush/ToolOptionsBlend.hpp`'s mapping and `RgbStroke::begin()`. Opacity,
-  // Flow and Smoothing are not: `BrushState::opacity`/`native.load` (the brush's own
-  // sliders, drawn on the Paint group, not this imported value) are what a
-  // stroke actually reads for the first two, and Smoothing has no engine
-  // target at all. Said here, once, rather than leaving the reader to guess
-  // which of four adjacent fields the RGB-blend work below changed.
-  //
-  // The first sentence is `BrushTip::blend`'s own contract, in the same words
-  // (brush/Deposit.hpp): applied on RGB layers and when stroking a path (Stroke
-  // Path with Brush onto an RGB layer, app/PathConsumers.cpp), not yet on
-  // Strokes layers -- a dab record has no blend field, so a recorded mark
-  // composites Normal -- or on Pigment layers, which have no RGBA to blend.
-  textDisabledWrapped(
-      "Blend Mode is applied on RGB layers and when stroking a path; not yet on Strokes "
-      "layers or Pigment layers. Normal, Multiply and Darken are applied -- Linear Burn and "
-      "Dissolve are refused by name, brush/ToolOptionsBlend.hpp. A Strokes layer's dab "
-      "records carry no blend mode yet, so marks recorded there composite Normal; a Pigment "
-      "layer has no RGBA to blend. Opacity, Flow and Smoothing below are parsed and carried "
-      "but not applied -- the brush's own Opacity/Flow sliders are what a stroke actually "
-      "reads.");
-  drawBrushModelFieldsForPrefix(st, "options.");
-
-  // The bare top-level checkbox tail -- `noise`/`wetEdges`/`airbrush`/
-  // `brushPose`, no `options.` prefix and no Photoshop panel of their own
-  // (`BrushModel::noise`'s own comment calls this "the checkbox tail of
-  // Photoshop's panel"). Landed on this tab for lack of a more specific one
-  // -- see `BrushSettingsTab::ToolOptions`'s own comment on the decision.
-  ImGui::Separator();
-  textDisabledWrapped(
-      "Parsed from the file and carried; none of the four below is applied to a stroke "
-      "yet -- io/AbrBrushes.cpp has each one's own refusal reason.");
-  drawBrushModelField(st, "noise");
-  drawBrushModelField(st, "wetEdges");
-  drawBrushModelField(st, "airbrush");
-  drawBrushModelField(st, "brushPose");
-
-  // naturalPaint's own stabiliser, next to the imported Smoothing bool just
-  // above it (which, as the note there says, has no engine target of its
-  // own -- this is what actually smooths a stroke).
-  ImGui::Separator();
-  drawStabiliserPopover(st);
+void drawBrushPreviewStroke(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
+  drawTestStroke(st, gpu, lut);
 }
 
 // The docked BRUSH column: every group, in the order it has always drawn
-// them. The window (ui/BrushSettingsWindow) draws the same five calls one per
-// tab, which is what makes the two surfaces incapable of disagreeing.
+// them. The window's pages (ui/BrushSettingsWindow) call the same groups, so
+// the two surfaces cannot disagree about them.
 void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
   drawBrushPresetHeader(st);
   drawBrushTipShapeGroup(st, gpu, lut);

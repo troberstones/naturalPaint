@@ -2054,17 +2054,10 @@ bool runPatternExtractTest();
 // bug that looks like a rendering glitch and is not one. Headless and GPU-free.
 bool runDabPickerTest();
 
-// ui/BrushSettingsWindow's tab table -- which groups of brush settings exist,
-// what they are called, and that each row of the table carries its own id.
-//
-// Same reason as the picker above: `--selftest` cannot reach an ImGui dispatch
-// site (reachability-audit F4), so a tab strip written as a run of
-// `BeginTabItem()` calls has no assertions on it and a group dropped in a
-// later edit is invisible until a painter goes looking for a control that is
-// no longer anywhere. The load-bearing assertion is that the table is indexed
-// by its own enum -- ui/MenuModel's spec table has the identical hazard, and a
-// row out of order draws one group's controls under another group's name,
-// which is completely invisible on inspection. Headless and GPU-free.
+// ui/BrushPanelLayout: the Brush Settings list is Photoshop's, in order; every
+// row names a field of the type its control writes; there is a tip grid for
+// the brush and for the Dual Brush. `--selftest` cannot open the window
+// (reachability-audit F4), so the tables are what is asserted. Headless.
 bool runBrushSettingsWindowTest();
 
 // brush/BrushModelIo: the text format for a `BrushModel` (Photoshop's Brush
@@ -2095,13 +2088,9 @@ bool runBrushModelIoTest();
 // I/O -- BrushModel is a plain struct.
 bool runBrushModelDiffTest();
 
-// ui/BrushFieldPresentation: the exhaustiveness guarantee that a BrushModel
-// leaf cannot silently end up with no control anywhere. Asserts that every
-// path `brushModelFieldPaths()` produces is in EXACTLY ONE of
-// `brushFieldPresentationTable()` (gets a live control) or
-// `brushFieldOmissionTable()` (deliberately does not, with a reason), and
-// that neither table names a field that does not exist (the mirror-image
-// failure -- a rename or removal left a stale row behind). Pure CPU, no GPU.
+// ui/BrushPanelLayout: every BrushModel leaf is edited by exactly one row or
+// panel switch of the Brush Settings window, or named in the omission table
+// with a reason; and no table names a field that does not exist. Pure CPU.
 bool runBrushPanelBindingTest();
 
 // track10/angle: is the angle input interpreted correctly? An independent
