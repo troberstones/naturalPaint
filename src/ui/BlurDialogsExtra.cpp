@@ -185,7 +185,8 @@ void drawRadialBlurDialog(AppState& st) {
 
 bool radialBlurTakesPaneClick(Vec2 paneMin, Vec2 paneMax) {
   // The pane's own focus button never fires under the modal, hence raw input.
-  if (!g_radialDialogOpen || g_radialDrag.handle != RadialBlurHandle::None) return false;
+  // Any other modal hides the pane from hover the same way, hence the open check.
+  if (!g_radialDialogOpen) return false;
   if (!ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
       ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow))
     return false;
@@ -194,6 +195,8 @@ bool radialBlurTakesPaneClick(Vec2 paneMin, Vec2 paneMax) {
   g_radialRetarget = true;
   return true;
 }
+
+const RadialBlurParams& radialBlurDialogParams() { return g_radialParams; }
 
 void drawRadialBlurCanvasHandles(AppState& st, const ViewTransform& view, Vec2 paneMin,
                                  Vec2 paneMax, ImDrawList* dl) {

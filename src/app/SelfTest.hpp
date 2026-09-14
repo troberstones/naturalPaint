@@ -6806,6 +6806,10 @@ bool runSplitViewTest();
 // app/RadialBlurHandles: the Radial Blur dialog's on-canvas handles.
 bool runRadialBlurHandlesTest();
 
+// Radial Blur in Split View: headless ImGui frames drive the real dialog,
+// handles and other-pane click; the blur, preview and dialog follow focus.
+bool runRadialBlurRetargetTest();
+
 // Filter > Dust & Scratches (PRD D11): median gated by a threshold. Headless.
 bool runDustScratchesTest();
 

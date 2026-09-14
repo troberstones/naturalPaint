@@ -574,6 +574,8 @@ PixelCommandOutcome runPixelCommand(OpenDocument& od, const Command& command,
 // `External` owner is safe: only one modal is ever open at a time.
 void setExternalFilterPreview(DocumentId id, size_t layerIndex, TileStore tiles);
 void clearExternalFilterPreview();
+// The document an External preview is showing on, or 0. For the self-test.
+DocumentId externalFilterPreviewDocument();
 
 // A layer gesture or a layer value setter, through the same door. Both report
 // the same three things, because `g_layers`' message band shows the same three

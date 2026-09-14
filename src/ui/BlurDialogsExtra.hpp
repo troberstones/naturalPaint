@@ -25,6 +25,7 @@ struct ImDrawList;
 namespace np {
 
 struct AppState;
+struct RadialBlurParams;
 
 void requestRadialBlurDialog();
 void drawRadialBlurDialog(AppState& st);
@@ -36,6 +37,8 @@ void drawRadialBlurCanvasHandles(AppState& st, const ViewTransform& view, Vec2 p
 // (paneMin..paneMax). The caller focuses that pane; the dialog re-centres on
 // its document next frame.
 bool radialBlurTakesPaneClick(Vec2 paneMin, Vec2 paneMax);
+// The parameters the dialog would apply now, for the self-test.
+const RadialBlurParams& radialBlurDialogParams();
 
 void requestLensBlurDialog();
 void drawLensBlurDialog(AppState& st);

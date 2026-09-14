@@ -99,6 +99,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/FiltersExt.cpp
   app/selftest/BlurFilters.cpp
   app/selftest/RadialBlurHandles.cpp
+  app/selftest/RadialBlurRetarget.cpp
   app/selftest/FloodFill.cpp
   app/selftest/FloodFillOptions.cpp
   app/selftest/Fonts.cpp

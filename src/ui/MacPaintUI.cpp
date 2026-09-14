@@ -12980,6 +12980,9 @@ void setExternalFilterPreview(DocumentId id, size_t layerIndex, TileStore tiles)
   setFilterPreview(FilterPreviewOwner::External, id, layerIndex, std::move(tiles));
 }
 void clearExternalFilterPreview() { clearFilterPreview(FilterPreviewOwner::External); }
+DocumentId externalFilterPreviewDocument() {
+  return g_filterPreview.owner == FilterPreviewOwner::External ? g_filterPreview.documentId : 0;
+}
 
 // Declared in ui/MacPaintUI.hpp. **Moved out of the anonymous namespace**
 // 2026-09-10 for the reason `toolMenuFamily()` just below was put here:
