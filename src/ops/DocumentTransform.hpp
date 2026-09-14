@@ -330,7 +330,8 @@
 //     document-level crop that failed because the stack contained one would
 //     be refusing on a technicality. Text and Vector layers DO follow a
 //     document transform: `resizeTextLayer()` and `transformVectorLayer()`.
-//     A perspective crop of a document holding either is refused up front.
+//     `transformDocument()` refuses a perspective matrix on either; app/CropTool's
+//     perspective crop rasterises them first, with a warning.
 namespace np {
 
 // --------------------------------------------------------------------------
@@ -695,6 +696,10 @@ struct DocumentTransformResult {
 
   // True when a `Selection*` was passed and was carried along with the pixels.
   bool selectionMoved = false;
+
+  // Sentences for the status line on success, e.g. the layers a perspective crop
+  // had to rasterise.
+  std::vector<std::string> warnings;
 };
 
 // **Crop** (PRD D17). Extracts `[x, x + width) x [y, y + height)` of document
