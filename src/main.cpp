@@ -28,6 +28,7 @@
 #include "app/PsdReport.hpp"
 #include "app/DabLibrary.hpp"
 #include "app/BrushSheet.hpp"
+#include "app/BrushStrokeDemo.hpp"
 #include "app/StrokePreview.hpp"
 #include "app/AppState.hpp"
 #include "app/FixedStep.hpp"
@@ -1786,6 +1787,7 @@ int main(int argc, char** argv) {
   bool demoDocument = false;
   bool pigmentStrokeDemo = false;
   bool pigmentStrokeDemoMix = true;
+  bool brushStrokeDemo = false;
   bool compsDemo = false;
   size_t compsDemoRestore = 0;
   bool compsDemoDrop = false;
@@ -2100,6 +2102,10 @@ int main(int argc, char** argv) {
         pigmentStrokeDemoMix = false;
         ++i;
       }
+    } else if (a == "--brush-stroke-demo") {
+      // Rows of strokes exercising taper, Wash/Build Up and the brush panels,
+      // for the golden harness's `brush_strokes` view. See app/BrushStrokeDemo.
+      brushStrokeDemo = true;
     } else if (a == "--comps-demo") {
       // PLAN.md Phase 5 step 12: capture two comps of the current document and
       // restore the one named, so --screenshot can photograph the same
@@ -4743,6 +4749,9 @@ int main(int argc, char** argv) {
   if (pigmentStrokeDemo) {
     if (np::OpenDocument* od = st.documents.active())
       buildPigmentStrokeDemo(*od, pigmentStrokeDemoMix);
+  }
+  if (brushStrokeDemo) {
+    if (np::OpenDocument* od = st.documents.active()) np::buildBrushStrokeDemo(*od, lut);
   }
   if (penDemo) {
     if (np::OpenDocument* od = st.documents.active()) preparePenDemo(*od);

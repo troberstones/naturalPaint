@@ -379,6 +379,7 @@ add_executable(naturalPaint
   app/StrokeBake.cpp
   app/PathConsumers.cpp
   app/StrokePreview.cpp
+  app/BrushStrokeDemo.cpp
   app/StrokeSession.cpp
   app/DocumentPresets.cpp
   app/TilePreview.cpp
