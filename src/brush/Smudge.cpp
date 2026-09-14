@@ -107,8 +107,8 @@ DepositCount SmudgeStroke::smudgeDab(TileStore& store, const BrushTip& tip, Vec2
   // `flow` is a different quantity: it is how much a dab LAYS DOWN, and the
   // pick-up rule (§2) does not mention it. Skipping the pick-up on a flow-0 dab
   // would be an undocumented coupling with a real consequence, because flow is
-  // resolved per DAB now (Photoshop's Transfer Flow, `app/StrokeSession`'s
-  // `transferFlowMul_`): a dab whose resolved flow momentarily hit 0 would
+  // resolved per DAB (Photoshop's Transfer Flow, in `app/StrokeSession`'s
+  // `depositPending()`): a dab whose resolved flow momentarily hit 0 would
   // FREEZE the finger, and the next dab would lay down a colour picked up from
   // somewhere the tip has since left. So a flow-0 dab picks up and writes
   // nothing, which is also what makes the pick-up rule assertable on its own.

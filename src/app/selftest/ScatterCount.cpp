@@ -86,6 +86,7 @@ bool runScatterCountTest() {
     model.tip.diameterPx = kRadius * 2.0f;
     model.tip.angleDeg = 0.0f;
     model.tip.roundness = 1.0f;
+    model.scatter.enabled = true;
     model.scatter.count = count;
     // model.shape.size/angle/roundness, model.scatter.scatter and
     // model.scatter.countJitter are all default-constructed `Variance`s --

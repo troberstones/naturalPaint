@@ -275,7 +275,14 @@ set(NP_SELFTEST_SOURCES
   app/selftest/NativeBrush.cpp
   app/selftest/StrokeInput.cpp
   app/selftest/PointerQueue.cpp
+  app/selftest/Stabiliser.cpp
+  app/selftest/BrushTaper.cpp
+  app/selftest/PigmentBuildup.cpp
+  ui/BuildupPanel.cpp
   app/selftest/AppIcon.cpp
+  app/selftest/AirbrushBuildUp.cpp
+  app/selftest/BrushPanelsLive.cpp
+  app/selftest/PatternLibrary.cpp
   # PRD Q1 zoom to selection.
   app/selftest/ZoomToSelection.cpp
   app/selftest/SplitView.cpp
@@ -289,6 +296,7 @@ add_executable(naturalPaint
   main.cpp
   app/BrushLibraryFile.cpp
   app/DabLibrary.cpp
+  app/PatternLibrary.cpp
   app/AbrReport.cpp
   app/BrushSheet.cpp
   app/BrushRowIcon.cpp
@@ -376,6 +384,7 @@ add_executable(naturalPaint
   app/StrokeBake.cpp
   app/PathConsumers.cpp
   app/StrokePreview.cpp
+  app/BrushStrokeDemo.cpp
   app/StrokeSession.cpp
   app/DocumentPresets.cpp
   app/TilePreview.cpp
@@ -411,6 +420,9 @@ add_executable(naturalPaint
   brush/TonalBrush.cpp
   brush/ToolOptionsBlend.cpp
   brush/Variance.cpp
+  brush/Stabiliser.cpp
+  brush/Taper.cpp
+  app/StrokePreferences.cpp
   color/LutBake.cpp
   color/Shaper.cpp
   color/Space.cpp
@@ -531,8 +543,11 @@ add_executable(naturalPaint
   ui/AtelierTheme.cpp
   ui/CanvasQuad.cpp
   ui/DabPicker.cpp
+  ui/PatternPicker.cpp
   ui/BrushSettingsWindow.cpp
-  ui/BrushFieldPresentation.cpp
+  ui/BrushPanelLayout.cpp
+  ui/StabiliserPanel.cpp
+  ui/TaperPanel.cpp
   ui/FileDialog.cpp
   ui/AtelierLayout.cpp
   ui/DockLayout.cpp

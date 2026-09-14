@@ -29,6 +29,9 @@
 #include "ui/AtelierTheme.hpp"
 #include "ui/Fonts.hpp"
 #include "ui/MacPaintUI.hpp"
+#include "ui/StabiliserPanel.hpp"
+#include "ui/BuildupPanel.hpp"
+#include "ui/TaperPanel.hpp"
 
 #include "imgui.h"
 
@@ -2463,6 +2466,28 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
       ImGui::EndDisabled();
     }
     popAtelierMono();
+
+    bandSeparator();
+    // Wave 2 brief item 4: a `capsLabel` + field, matching every other
+    // control in this band (WET/TIP above), not a bare grey `ImGui::Button`
+    // -- `drawStabiliserOptionsBarField()`'s own comment on why it needs the
+    // label drawn here rather than inside itself.
+    capsLabel("STABILISER");
+    ImGui::SameLine();
+    drawStabiliserOptionsBarField(st);
+
+    bandSeparator();
+    // Same shape again, for the same reason the stabiliser needed it: the
+    // controls exist in the Brush Settings window's NATURALPAINT group, and
+    // a painter who does not already know that cannot find them there.
+    capsLabel("TAPER");
+    ImGui::SameLine();
+    drawTaperOptionsBarField(st);
+
+    bandSeparator();
+    capsLabel("BUILDUP");
+    ImGui::SameLine();
+    drawBuildupOptionsBarField(st);
   }
 
   // --- the smudge's own controls -------------------------------------------

@@ -498,12 +498,25 @@ PathStrokeResult strokePathWithBrush(Layer& target, const std::vector<VectorShap
       // assertion that covers the property is real and is reddened by
       // deleting the `flush()` below instead.
       emitter.reset();
+      const size_t contourFirstDab = dabs.size();
       for (const PathPoint& p : contour.points) emitter.addPoint(p.x, p.y, spacingPx, dabs);
       // A closed contour does not repeat its first point (core/PathFlatten.hpp),
       // so the closing edge is walked by feeding it once more.
       if (contour.closed)
         emitter.addPoint(contour.points.front().x, contour.points.front().y, spacingPx, dabs);
       emitter.flush(spacingPx, dabs);
+      // Fix 9: closed-contour seam double stamp. The origin dab above already
+      // lands at the contour's own first point; re-feeding that same point to
+      // walk the closing edge can lay a SECOND dab within a fraction of a
+      // spacing of it. Dropped only when it is actually a near-duplicate of
+      // the contour's own first dab, so a genuinely short closing edge (a
+      // legitimate dab close to the seam by the path's own geometry, not a
+      // re-stamp of the same point) is never eaten by this.
+      if (contour.closed && dabs.size() > contourFirstDab + 1) {
+        const Vec2& first = dabs[contourFirstDab];
+        const Vec2& last = dabs.back();
+        if (std::hypot(last.x - first.x, last.y - first.y) <= spacingPx * 0.5f) dabs.pop_back();
+      }
     }
   }
 

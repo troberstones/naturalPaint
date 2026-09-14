@@ -2094,17 +2094,10 @@ bool runPatternExtractTest();
 // bug that looks like a rendering glitch and is not one. Headless and GPU-free.
 bool runDabPickerTest();
 
-// ui/BrushSettingsWindow's tab table -- which groups of brush settings exist,
-// what they are called, and that each row of the table carries its own id.
-//
-// Same reason as the picker above: `--selftest` cannot reach an ImGui dispatch
-// site (reachability-audit F4), so a tab strip written as a run of
-// `BeginTabItem()` calls has no assertions on it and a group dropped in a
-// later edit is invisible until a painter goes looking for a control that is
-// no longer anywhere. The load-bearing assertion is that the table is indexed
-// by its own enum -- ui/MenuModel's spec table has the identical hazard, and a
-// row out of order draws one group's controls under another group's name,
-// which is completely invisible on inspection. Headless and GPU-free.
+// ui/BrushPanelLayout: the Brush Settings list is Photoshop's, in order; every
+// row names a field of the type its control writes; there is a tip grid for
+// the brush and for the Dual Brush. `--selftest` cannot open the window
+// (reachability-audit F4), so the tables are what is asserted. Headless.
 bool runBrushSettingsWindowTest();
 
 // brush/BrushModelIo: the text format for a `BrushModel` (Photoshop's Brush
@@ -2135,13 +2128,9 @@ bool runBrushModelIoTest();
 // I/O -- BrushModel is a plain struct.
 bool runBrushModelDiffTest();
 
-// ui/BrushFieldPresentation: the exhaustiveness guarantee that a BrushModel
-// leaf cannot silently end up with no control anywhere. Asserts that every
-// path `brushModelFieldPaths()` produces is in EXACTLY ONE of
-// `brushFieldPresentationTable()` (gets a live control) or
-// `brushFieldOmissionTable()` (deliberately does not, with a reason), and
-// that neither table names a field that does not exist (the mirror-image
-// failure -- a rename or removal left a stale row behind). Pure CPU, no GPU.
+// ui/BrushPanelLayout: every BrushModel leaf is edited by exactly one row or
+// panel switch of the Brush Settings window, or named in the omission table
+// with a reason; and no table names a field that does not exist. Pure CPU.
 bool runBrushPanelBindingTest();
 
 // track10/angle: is the angle input interpreted correctly? An independent
@@ -5891,15 +5880,15 @@ bool runStrokePreviewTest();
 bool runPressureFeelTest();
 
 // Phase C Part 2: Transfer Opacity/Flow (`PsTransfer::opacity`/`.flow`,
-// `opVr`/`prVr`), latched once at `StrokeSession::begin()` -- Opacity
-// directly into the RGB deposit/erase accumulators, Flow into
-// `transferFlowMul_`, applied fresh every dab. Asserts a stroke with an
+// `opVr`/`prVr`) -- Opacity latched once at `StrokeSession::begin()` into
+// the RGB deposit/erase accumulators, Flow resolved per dab. Asserts a stroke with an
 // inert Transfer Variance paints bit-identically to no model at all (dab/
 // texel counts, tile set AND the stored pixel), and that a real, hand-built
 // `opVr`/`prVr` with a `PenPressure` control measurably -- and, at a single
 // non-overlapping hard-disc dab's own centre, EXACTLY -- changes the stored
 // alpha (1.0 unscaled vs 0.5 halved, for both Opacity's ceiling and Flow's
-// weight). Pure CPU, no document window, no GPU.
+// weight), and that one stroke's Flow follows the pen's pressure and its
+// jitter dab by dab. Pure CPU, no document window, no GPU.
 bool runTransferDynamicsTest();
 
 // Phase C Part 3 (bounded investigation): `blendModeFromPsToolOptions()`
@@ -6749,9 +6738,44 @@ bool runStrokeInputTest();
 // Headless, GPU-free, writes no files. See app/selftest/PointerQueue.cpp.
 bool runPointerQueueTest();
 
+// The stroke stabiliser (`brush/Stabiliser.hpp`) -- pulled string, the
+// weighted-average (1-euro) filter, the global/per-brush resolution rule
+// (`resolveStabiliser()`), catch up at stroke end and while paused, sample-
+// rate independence, and persistence for `stroke-preferences.txt` (global)
+// and the two new `user-presets.txt` keys (per brush), plus the `.abr`
+// smoothing mapping. Headless, GPU-free. See app/selftest/Stabiliser.cpp.
+bool runStabiliserTest();
+
+// Entry taper (`brush/EntryTaper.hpp`, `NativeBrush::taperInPx`/
+// `taperMinSize`/`taperFlow`) and the origin-dab fix it depends on -- a
+// moving stroke's first dab is its own (stabilised) origin rather than one
+// spacing along the curve, without double-stamping the stationary-click dab
+// `StrokePath::flush()` already emits. Headless, GPU-free. See
+// app/selftest/BrushTaper.cpp.
+bool runBrushTaperTest();
+
+// app/selftest/PigmentBuildup.cpp -- brush/Deposit.hpp §1a: Wash against
+// Build-up on the Pigment and RGB routes, and that Build-up is each route's
+// historical arithmetic bit for bit.
+bool runPigmentBuildupTest();
+
 // ui/AppIcon: the embedded PNG decodes at 512 px, matches the committed file
 // byte for byte, reaches SDL unchanged, and the window accepted it.
 bool runAppIconTest();
+
+// Photoshop's Build-up: a held pen keeps laying dabs at the nib, on a clock, and
+// only for a brush with `BrushModel::airbrush` on.
+bool runAirbrushBuildUpTest();
+
+// Brush Settings panels reach the stroke live: a switched-off panel contributes
+// nothing, Texture is read off the model, and the Dual Brush tip is built from
+// its panel by the importer, the pickers and a reloaded preset alike.
+bool runBrushPanelsLiveTest();
+
+// app/PatternLibrary: the Texture picker's papers. A scan decodes nothing, a paper
+// reads back as the heights written, picking puts it on the panel, and a saved
+// preset gets its paper back. Real files in a temporary folder; no GPU.
+bool runPatternLibraryTest();
 
 // app/PasteCommands (PRD M9): Paste Into and Paste as New Document. (The
 // third build, the Move tool's Option-drag duplicate, is proven by

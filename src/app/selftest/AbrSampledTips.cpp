@@ -134,6 +134,21 @@ std::vector<uint8_t> oneTexturedBrushDesc(const char* name, const char* patternI
   return f.bytes;
 }
 
+// Texture Brightness and Contrast as Photoshop writes them: `long`, not a unit
+// float, so a reader of unit floats alone drops both.
+std::vector<uint8_t> oneAdjustedTextureBrushDesc(int32_t brightness, int32_t contrast) {
+  DescFixture f;
+  f.version();
+  f.descriptor("null", "null", 1);
+  f.key4("Brsh").vlls(1);
+  f.objc("brushPreset", "brushPreset", 4);
+  f.key4("Nm  ").textv("Adjusted Paper");
+  f.keyN("useTexture").boolv(true);
+  f.keyN("textureBrightness").longv(brightness);
+  f.keyN("textureContrast").longv(contrast);
+  return f.bytes;
+}
+
 }  // namespace
 
 // io/AbrBrushes' `samp` block (brush/Deposit.hpp §2c): the bitmap tip a
@@ -739,11 +754,9 @@ bool runAbrSampledTipsTest() {
     // from (`preset.model`, io/AbrBrushes.cpp), not into a side vector --
     // and it is not left default-constructed for a preset whose Texture
     // panel is on. `model.texture.pattern.name` is the discriminating field:
-    // `preset.native.grain`, filled from this identical `Txtr` block by
-    // `grainFromTexture()` a few lines below where `preset.model` is set,
-    // carries the pattern's PIXELS but never its name -- so this assertion
-    // cannot pass by accident through the grain path, only through the model
-    // itself having made the trip.
+    // the resolved paper (`pattern.field`) carries the pattern's PIXELS but
+    // never its name -- so this assertion cannot pass by accident through the
+    // paper, only through the model itself having made the trip.
     const auto desc = oneTexturedBrushDesc("Textured Inker",
                                            "a1b2c3d4-0000-1111-2222-333333333333",
                                            "Kyle's Rough Watercolor Paper");
@@ -757,6 +770,16 @@ bool runAbrSampledTipsTest() {
                 m.texture.pattern.name == "Kyle's Rough Watercolor Paper",
             "abr-samp/model: the importer writes the Texture panel onto presets[i].model, by "
             "name and id -- not just a bit saying something was on");
+    }
+
+    // E1b. Brightness and Contrast arrive as integers.
+    {
+      const AbrImportResult adjusted =
+          importAbrBrushes(wrapAbrWithSamp({}, oneAdjustedTextureBrushDesc(-42, 50)));
+      const bool one = adjusted.ok && adjusted.presets.size() == 1;
+      check(one && adjusted.presets[0].model.texture.brightness == -42.0f &&
+                adjusted.presets[0].model.texture.contrast == 50.0f,
+            "abr-samp/model: Texture Brightness and Contrast are read from `long` keys");
     }
 
     // E2. Duplicate preserves the model. This is the defect itself: before

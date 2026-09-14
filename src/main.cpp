@@ -17,6 +17,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <cctype>
 #include <string_view>
 #include <vector>
 
@@ -27,6 +28,7 @@
 #include "app/PsdReport.hpp"
 #include "app/DabLibrary.hpp"
 #include "app/BrushSheet.hpp"
+#include "app/BrushStrokeDemo.hpp"
 #include "app/StrokePreview.hpp"
 #include "app/AppState.hpp"
 #include "app/FixedStep.hpp"
@@ -69,7 +71,7 @@
 #include "sim/PaintSim.hpp"
 #include "ui/AppIcon.hpp"
 #include "ui/Fonts.hpp"
-#include "ui/BrushSettingsWindow.hpp"
+#include "ui/BrushPanelLayout.hpp"
 #include "ui/CanvasQuad.hpp"
 #include "ui/FileDialog.hpp"
 #include "ui/MacNativeMenu.hpp"
@@ -1707,6 +1709,9 @@ int main(int argc, char** argv) {
   // [[maybe_unused]]: only --selftest reads these, and NP_SELFTEST=OFF compiles
   // that chain out. -Werror would otherwise make the option unbuildable.
   [[maybe_unused]] const char* selfTestOut = nullptr;
+  // --selftest-only <substring>: run only the sections whose run...Test()
+  // name contains it (case-insensitive), for a fast edit-test loop.
+  [[maybe_unused]] std::string selfTestOnly;
   bool selfTest = false;
   float diagSeconds = 0.0f;
   bool modeTest = false;
@@ -1788,6 +1793,7 @@ int main(int argc, char** argv) {
   bool demoDocument = false;
   bool pigmentStrokeDemo = false;
   bool pigmentStrokeDemoMix = true;
+  bool brushStrokeDemo = false;
   bool compsDemo = false;
   size_t compsDemoRestore = 0;
   bool compsDemoDrop = false;
@@ -1953,7 +1959,7 @@ int main(int argc, char** argv) {
   const char* batchNameTemplate = nullptr;
   const char* dabDemoId = nullptr;
   bool brushSettingsDemo = false;
-  int brushSettingsDemoTab = -1;
+  int brushSettingsPanel = 0;
   // --brush-sheet <file.abr> <out.png> : paint every imported preset with
   // Photoshop's own preview stroke and write one contact sheet. Also headless.
   const char* brushSheetAbr = nullptr;
@@ -1984,6 +1990,9 @@ int main(int argc, char** argv) {
     } else if (a == "--selftest") {
       selfTest = true;
       if (i + 1 < argc && argv[i + 1][0] != '-') selfTestOut = argv[++i];
+    } else if (a == "--selftest-only") {
+      selfTest = true;
+      if (i + 1 < argc) selfTestOnly = argv[++i];
     } else if (a == "--abr-report") {
       if (i + 1 < argc) abrReportPath = argv[++i];
     } else if (a == "--psd-report") {
@@ -2025,24 +2034,27 @@ int main(int argc, char** argv) {
       // plan); it is deliberately a flag rather than a default, so no other
       // capture grows a window over it.
       brushSettingsDemo = true;
-      // An optional tab name, so a capture can photograph any one of the four
-      // rather than only whichever ImGui opens on. Matched against
-      // `brushSettingsTabName()` so there is one spelling of each, not two.
+      // An optional panel name, matched against `brushPanelName()` so there is
+      // one spelling of each.
       if (i + 1 < argc && argv[i + 1][0] != '-') {
         const std::string want = argv[++i];
-        for (size_t t = 0; t < np::kBrushSettingsTabCount; ++t) {
-          const auto tab = static_cast<np::BrushSettingsTab>(t);
-          if (want == np::brushSettingsTabName(tab)) {
-            brushSettingsDemoTab = static_cast<int>(t);
+        bool found = false;
+        for (size_t p = 0; p < np::kBrushPanelCount; ++p) {
+          if (want == np::brushPanelName(static_cast<np::BrushPanel>(p))) {
+            brushSettingsPanel = static_cast<int>(p);
+            found = true;
             break;
           }
         }
-        if (brushSettingsDemoTab < 0)
+        if (!found) {
+          std::string names;
+          for (size_t p = 0; p < np::kBrushPanelCount; ++p)
+            names += std::string(" ") + np::brushPanelName(static_cast<np::BrushPanel>(p));
           std::fprintf(stderr,
-                       "--brush-settings-demo: '%s' is not a tab; opening on the "
-                       "default one. Tabs: TipShape ShapeDynamics Scattering Texture "
-                       "DualBrush ColorDynamics Transfer ToolOptions Dynamics\n",
-                       want.c_str());
+                       "--brush-settings-demo: '%s' is not a panel; opening on the tip. "
+                       "Panels:%s\n",
+                       want.c_str(), names.c_str());
+        }
       }
     } else if (a == "--brush-sheet") {
       if (i + 1 < argc) brushSheetAbr = argv[++i];
@@ -2098,6 +2110,10 @@ int main(int argc, char** argv) {
         pigmentStrokeDemoMix = false;
         ++i;
       }
+    } else if (a == "--brush-stroke-demo") {
+      // Rows of strokes exercising taper, Wash/Build Up and the brush panels,
+      // for the golden harness's `brush_strokes` view. See app/BrushStrokeDemo.
+      brushStrokeDemo = true;
     } else if (a == "--comps-demo") {
       // PLAN.md Phase 5 step 12: capture two comps of the current document and
       // restore the one named, so --screenshot can photograph the same
@@ -2954,7 +2970,19 @@ int main(int argc, char** argv) {
     // are genuinely absent -- then cycles setMode() through all three media
     // and confirms each outgoing medium's fields actually get freed, not
     // just the incoming one's allocated.
-    const bool fieldAllocOk = np::runFieldAllocationTest(gpu, *s);
+    int selfTestSelected = 0;
+    auto wanted = [&](std::string_view fn) {
+      if (selfTestOnly.empty()) return true;
+      auto lower = [](std::string_view v) {
+        std::string r(v);
+        for (char& c : r) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return r;
+      };
+      const bool hit = lower(fn).find(lower(selfTestOnly)) != std::string::npos;
+      selfTestSelected += hit ? 1 : 0;
+      return hit;
+    };
+    const bool fieldAllocOk = !wanted("runFieldAllocationTest") || np::runFieldAllocationTest(gpu, *s);
     // docs/testing-issues.md T6: the same solver, priced in bytes. Placed
     // here, and the ordering is load-bearing in both directions -- the
     // section above must run first because its own premise is a sim that has
@@ -2963,112 +2991,112 @@ int main(int argc, char** argv) {
     // them against `sim->width()`/`height()`. The section above leaves the
     // mode back in Watercolour, which is what this one's first assertion
     // checks rather than assumes.
-    const bool solverFootprintOk = np::runSolverFootprintTest(gpu, *s);
-    const bool pigmentOk = np::runSelfTest(gpu, *s, lut,
+    const bool solverFootprintOk = !wanted("runSolverFootprintTest") || np::runSolverFootprintTest(gpu, *s);
+    const bool pigmentOk = !wanted("runSelfTest") || np::runSelfTest(gpu, *s, lut,
                                     selfTestOut ? selfTestOut : "selftest.png");
     // Headless, GPU-free — doesn't need sim/gpu at all, but runs from the
     // same --selftest entry point since it's the same "does the solver
     // still behave" gate a CI run would check.
-    const bool accumulatorOk = np::runAccumulatorTest();
+    const bool accumulatorOk = !wanted("runAccumulatorTest") || np::runAccumulatorTest();
     // 2.3: color/Space's sRGB/Rec.709 transfer function round trip. Also
     // headless and GPU-free -- pure CPU math, no PaintSim involvement.
-    const bool colorSpaceOk = np::runColorSpaceTest();
+    const bool colorSpaceOk = !wanted("runColorSpaceTest") || np::runColorSpaceTest();
     // core/CanvasLimits: the extent guard. Headless and GPU-free for the same
     // reason -- and deliberately so, since the abort it prevents is a GPU
     // failure that a GPU-driven test could only reproduce by causing it.
     std::printf("-- canvas limits (core/CanvasLimits) --\n");
-    const bool canvasLimitsOk = np::runCanvasLimitsTest();
+    const bool canvasLimitsOk = !wanted("runCanvasLimitsTest") || np::runCanvasLimitsTest();
     // color/Gamut + io/SourceGamut: import-time gamut conversion. Headless
     // and GPU-free -- pure colour maths plus container parsing.
     std::printf("-- gamut (color/Gamut, io/SourceGamut) --\n");
-    const bool gamutOk = np::runGamutTest();
+    const bool gamutOk = !wanted("runGamutTest") || np::runGamutTest();
     // color/Munsell: the third COLOR picker's geometry
     // (docs/munsell-picker.md). Headless and GPU-free -- pure CPU math, the
     // same standing as the sections either side of it. The banner follows the
     // convention main introduced while this branch was out.
     std::printf("-- munsell page (color/Munsell, app/MunsellSelection) --\n");
-    const bool munsellOk = np::runMunsellTest();
+    const bool munsellOk = !wanted("runMunsellTest") || np::runMunsellTest();
     // Phase 3 step 1 (ADR-0004): color/Shaper's ACEScct log encode/decode --
     // breakpoint continuity, round trip, a hand-computed known-value check,
     // and monotonicity. Also headless and GPU-free -- pure CPU math, no
     // PaintSim involvement.
-    const bool shaperOk = np::runShaperTest();
+    const bool shaperOk = !wanted("runShaperTest") || np::runShaperTest();
     // Phase 2 step 15: app/Keymap load, conflict detection and resolve().
     // Headless, GPU-free -- pure CPU/file-IO, no PaintSim involvement.
-    const bool keymapOk = np::runKeymapTest();
+    const bool keymapOk = !wanted("runKeymapTest") || np::runKeymapTest();
     // docs/shortcuts.md §1's tool letters: the two-directional check that
     // `kToolMeta`'s shortcut column and keymaps/default.json say the same
     // thing. That column was display-only text for the whole life of the
     // build -- twenty-one tooltips promising a key nothing read -- and this
     // is what makes going back to that state a red line. Headless, GPU-free.
-    const bool toolHotkeysOk = np::runToolHotkeysTest();
+    const bool toolHotkeysOk = !wanted("runToolHotkeysTest") || np::runToolHotkeysTest();
     // UI detour: ui/Fonts -- ImGui's built-in ProggyClean holds no glyph above
     // U+00FF, so six of docs/ui.md 3.2's seven layer-kind glyphs could not be
     // drawn at all. Headless and GPU-free: it bakes a real font atlas on the
     // CPU and asks it, per codepoint, rather than asking what a function
     // returns -- which is the question nine other sections already ask.
-    const bool fontsOk = np::runFontsTest();
-    const bool atelierOk = np::runAtelierChromeTest();
-    const bool activeLayerOk = np::runActiveLayerTest();
+    const bool fontsOk = !wanted("runFontsTest") || np::runFontsTest();
+    const bool atelierOk = !wanted("runAtelierChromeTest") || np::runAtelierChromeTest();
+    const bool activeLayerOk = !wanted("runActiveLayerTest") || np::runActiveLayerTest();
     // The solver-to-document mass mapping, the arithmetic half of the
     // stroke bridge. Pure CPU -- it is a claim about numbers.
-    const bool pigmentBakeOk = np::runPigmentBakeTest();
+    const bool pigmentBakeOk = !wanted("runPigmentBakeTest") || np::runPigmentBakeTest();
     // docs/reachability-audit.md's B1: does a baked Pigment layer survive
     // saveNpaint()/loadNpaint()? Pure CPU -- it bakes from hand-built solver
     // output, same as pigmentBakeOk above, and needs no GPU either.
-    const bool solverPersistenceOk = np::runSolverPersistenceTest();
-    const bool strokeBridgeOk = np::runStrokeBridgeTest(gpu);
+    const bool solverPersistenceOk = !wanted("runSolverPersistenceTest") || np::runSolverPersistenceTest();
+    const bool strokeBridgeOk = !wanted("runStrokeBridgeTest") || np::runStrokeBridgeTest(gpu);
     // The presentation transfer function, from a linear value in a layer to a
     // byte in a screenshot -- the one edge no section covered, which is why the
     // chrome's measured darkening had no explanation. Needs the GPU.
-    const bool presentTransferOk = np::runPresentTransferTest(gpu);
+    const bool presentTransferOk = !wanted("runPresentTransferTest") || np::runPresentTransferTest(gpu);
     // Phase 2 step 2: core/Half's shared half<->float codec and
     // core/TileStore's allocate-on-write / query-without-allocating /
     // iterate-occupied sparse map. Also headless and GPU-free -- pure CPU,
     // no PaintSim involvement.
-    const bool tileStoreOk = np::runTileStoreTest();
+    const bool tileStoreOk = !wanted("runTileStoreTest") || np::runTileStoreTest();
     // Phase 2 step 6 (decode half): io/ImageDecode's PNG/JPEG/TGA/BMP -> linear
     // float RGBA path. Also headless and GPU-free -- pure CPU decode, no
     // PaintSim involvement.
-    const bool imageDecodeOk = np::runImageDecodeTest();
+    const bool imageDecodeOk = !wanted("runImageDecodeTest") || np::runImageDecodeTest();
     // Phase 2 step 4: core/Document + core/Layer -- one-entry layer list,
     // LayerKind's seven CONTEXT.md values, and the RGB layer's tile storage
     // round-trip. Also headless and GPU-free -- pure CPU, no PaintSim
     // involvement.
-    const bool documentOk = np::runDocumentTest();
+    const bool documentOk = !wanted("runDocumentTest") || np::runDocumentTest();
     // Phase 2 step 14 (PRD C16): the base layer is an ordinary layer with
     // alpha, no locked Background -- core/Layer.hpp has no such concept at
     // all, so this proves the property rather than leaving it assumed. Also
     // headless and GPU-free -- pure CPU, no PaintSim involvement.
-    const bool baseLayerAlphaOk = np::runBaseLayerAlphaTest();
+    const bool baseLayerAlphaOk = !wanted("runBaseLayerAlphaTest") || np::runBaseLayerAlphaTest();
     // Phase 2 step 5: Document::createBlank() -- given size/working-space,
     // exactly one RGB-kind layer, and zero tiles allocated even for a large
     // canvas. Also headless and GPU-free -- pure CPU, no PaintSim
     // involvement.
-    const bool createBlankOk = np::runCreateBlankTest();
+    const bool createBlankOk = !wanted("runCreateBlankTest") || np::runCreateBlankTest();
     // Phase 2 step 6 (the remaining half): io/ImageIO -- premultiply + pack
     // a decoded image into a Document's tiles, on top of createBlank() and
     // ImageDecode. Also headless and GPU-free -- pure CPU, no PaintSim
     // involvement.
-    const bool imageIOOk = np::runImageIOTest();
+    const bool imageIOOk = !wanted("runImageIOTest") || np::runImageIOTest();
     // Phase 2 step 13 (narrow, Document-level slice; PRD I14): io/ImageIO's
     // placeImageAsLayer() -- append an image as a new top layer onto an
     // already-open Document, distinct from openImageAsDocument() creating a
     // brand-new one. Also headless and GPU-free -- pure CPU, no PaintSim
     // involvement.
-    const bool placeImageAsLayerOk = np::runPlaceImageAsLayerTest();
+    const bool placeImageAsLayerOk = !wanted("runPlaceImageAsLayerTest") || np::runPlaceImageAsLayerTest();
     // Phase 2 step 9: ui/NaturalPaintUI's mip pyramid -- CPU-side box-filter
     // downsample correctness, the zoom->level formula, a pure-geometry
     // check on tileScreenRect(), and an end-to-end GPU proof that mip-level
     // selection actually changes which texels render. Needs `gpu` for the
     // end-to-end part only -- see SelfTest.hpp.
-    const bool mipPyramidOk = np::runMipPyramidTest(gpu);
+    const bool mipPyramidOk = !wanted("runMipPyramidTest") || np::runMipPyramidTest(gpu);
     // Phase 2 step 10 (narrow, Document-level slice; PRD Q10): core/Probe's
     // probePixel() -- linear + display readout, NxN sample-size averaging,
     // sample-all-layers as a parameter of the sample rather than a separate
     // tool, and premultiply-aware un-premultiplication on read. Also
     // headless and GPU-free -- pure CPU, no PaintSim involvement.
-    const bool probeOk = np::runProbeTest();
+    const bool probeOk = !wanted("runProbeTest") || np::runProbeTest();
     // Phase 2 step 10's other half (PRD Q10 and L4, both P0): the eyedropper
     // tool itself -- three sample sources over a stack built so they must
     // disagree, box clipping at the document edge, the foreground colour a
@@ -3076,7 +3104,7 @@ int main(int argc, char** argv) {
     // implemented-vs-has-a-handler tripwire that would have caught the two
     // phases in which `Tool::Eyedropper` claimed to be built and was not.
     // Headless and GPU-free -- pure CPU, no PaintSim involvement.
-    const bool eyedropperOk = np::runEyedropperTest();
+    const bool eyedropperOk = !wanted("runEyedropperTest") || np::runEyedropperTest();
     // T25a: the scene-referred foreground -- an eyedropper pick above white
     // surviving into `BrushState::rgb` instead of being clamped away, the two
     // decoders still agreeing in that range, the named display-range clamp and
@@ -3084,31 +3112,31 @@ int main(int argc, char** argv) {
     // on a real LUT, and an RGB stroke that does not. Runs straight after the
     // eyedropper's own section because it extends that section's foreground
     // assertions into the range they never covered. Headless and GPU-free.
-    const bool sceneReferredColourOk = np::runSceneReferredColourTest();
+    const bool sceneReferredColourOk = !wanted("runSceneReferredColourTest") || np::runSceneReferredColourTest();
     // app/MeasureLine: the Measure tool, the one palette cell whose gesture
     // writes nothing at all -- length and heading off a two-point drag, the
     // angle convention pinned geometrically through dabCoverage() rather than
     // restated, the zero-length click, and the seventh canvas gate that had to
     // be added rather than folded into the eyedropper's. Headless and GPU-free.
-    const bool measureOk = np::runMeasureTest();
+    const bool measureOk = !wanted("runMeasureTest") || np::runMeasureTest();
     // app/ToolSwitch (T20 + T24): the single writer of `brush.tool`, the
     // previous-tool ledger it keeps, the spring-loaded Hand's borrow-and-give-
     // back (which deliberately leaves no ledger entry), and the angle
     // `Image > Transform...` opens with -- both directions of that
     // conditional, walked over the whole `Tool` enum rather than sampled.
     // Headless and GPU-free.
-    const bool flatsExpandOk = np::runFlatsExpandTest();
-    const bool flatsSourceOk = np::runFlatsSourceTest();
+    const bool flatsExpandOk = !wanted("runFlatsExpandTest") || np::runFlatsExpandTest();
+    const bool flatsSourceOk = !wanted("runFlatsSourceTest") || np::runFlatsSourceTest();
     // PLAN.md phase 8's substrate -- see `runStrokesLayerTest()`'s own comment
     // in app/SelfTest.hpp for the list. Headless and GPU-free.
-    const bool strokesLayerOk = np::runStrokesLayerTest();
-    const bool toolSwitchOk = np::runToolSwitchTest();
+    const bool strokesLayerOk = !wanted("runStrokesLayerTest") || np::runStrokesLayerTest();
+    const bool toolSwitchOk = !wanted("runToolSwitchTest") || np::runToolSwitchTest();
     // app/ToolSwitch: the spring-loaded Eyedropper (Alt/Option), the Hand's
     // borrow-and-give-back shape applied to a second tool -- eligibility
     // walked over every (Tool, BucketFill) pair, the borrow writing no
     // ledger entry, and the two springs proven mutually exclusive rather
     // than merely never observed together. Headless and GPU-free.
-    const bool springEyedropperOk = np::runSpringEyedropperTest();
+    const bool springEyedropperOk = !wanted("runSpringEyedropperTest") || np::runSpringEyedropperTest();
     // app/ToolSurface (docs/testing-issues.md T5, short-term half): the SECOND
     // axis of "is this palette cell live". `toolImplemented()` and
     // `toolHasCanvasHandler()` both ask whether a tool is BUILT; neither can
@@ -3117,26 +3145,26 @@ int main(int argc, char** argv) {
     // both surface states, and asserts first of all that the new predicate is
     // a PROPER subset of the old ones -- a synonym would make every other
     // assertion here unfalsifiable. Headless and GPU-free.
-    const bool toolSurfaceOk = np::runToolSurfaceTest();
+    const bool toolSurfaceOk = !wanted("runToolSurfaceTest") || np::runToolSurfaceTest();
     // docs/testing-issues.md T5, reversed 2026-09-08: no document means no
     // canvas at all now, not a bare paintable one belonging to nobody.
     // Pins DocumentSession::empty() as the predicate the canvas block and
     // ensurePaintSim()'s call site gate on, and that a private PaintSim's
     // shutdown() measurably drops the process footprint.
-    const bool noDocumentCanvasOk = np::runNoDocumentCanvasTest(gpu, lut);
+    const bool noDocumentCanvasOk = !wanted("runNoDocumentCanvasTest") || np::runNoDocumentCanvasTest(gpu, lut);
     // Phase 2 step 11 ("View controls", PRD Q1-Q4): the unified view
     // transform's round-trip identity, one hand-worked known-point check,
     // and the view-only proof that mirror/rotation/grayscale never mutate
     // PaintSim's own canvas texture. Needs `gpu`/`*s` only for that last
     // part -- see SelfTest.hpp for the full breakdown.
-    const bool viewTransformOk = np::runViewTransformTest(gpu, *s);
+    const bool viewTransformOk = !wanted("runViewTransformTest") || np::runViewTransformTest(gpu, *s);
     // Phase 2 step 12 ("Rulers, guides, grid and snapping", PRD Q5-Q7):
     // app/Snapping.hpp's pure math -- grid spacing/subdivision line
     // positions, the numeric/percentage guide-position parser, and the
     // snapping resolution function against hand-computable cases. Also
     // headless and GPU-free -- rulers/drag-to-create/the popup/the grid
     // overlay itself are UI with no headless driver; see SelfTest.hpp.
-    const bool guidesGridSnapOk = np::runGuidesGridSnapTest();
+    const bool guidesGridSnapOk = !wanted("runGuidesGridSnapTest") || np::runGuidesGridSnapTest();
     // Phase 3 step 7 ("Histogram over the visible region"): core/Histogram's
     // computeHistogram() -- display-domain R/G/B/Luma bin placement,
     // alpha<=0 texels excluded, region clipping against the tile store's
@@ -3146,36 +3174,36 @@ int main(int argc, char** argv) {
     // docs/architecture-review.md P0-1: the hardware half convert against the
     // software routine it replaced, swept exhaustively in one direction and
     // structurally in the other. Headless and GPU-free.
-    const bool halfOk = np::runHalfTest();
-    const bool histogramOk = np::runHistogramTest();
+    const bool halfOk = !wanted("runHalfTest") || np::runHalfTest();
+    const bool histogramOk = !wanted("runHistogramTest") || np::runHistogramTest();
     // Phase 3 steps 2+3 (ops/PointOps; docs/operations.md §1.1; PRD B4):
     // Levels, Curves (through color/Shaper), Exposure, Saturation,
     // RGB->grayscale, channel mixer -- each a plain rgb->rgb function --
     // plus the un-premultiply/re-premultiply wrapper bracketing them.
     // Also headless and GPU-free -- pure CPU math, no PaintSim involvement.
-    const bool pointOpsOk = np::runPointOpsTest();
+    const bool pointOpsOk = !wanted("runPointOpsTest") || np::runPointOpsTest();
     // ops/ToneOps (docs/operations.md §1.2 "Committed additions"): four more
     // pure rgb->rgb point ops -- gain/offset/gamma, invert (both domains,
     // each an involution), posterize and threshold (both shaper-domain).
     // Also headless and GPU-free -- pure CPU math, no PaintSim involvement.
-    const bool toneOpsOk = np::runToneOpsTest();
+    const bool toneOpsOk = !wanted("runToneOpsTest") || np::runToneOpsTest();
     // ops/ColorOps (docs/operations.md §1.2): hue/saturation/lightness (a
     // Rodrigues rotation about the normalised Rec.709 luma axis, so luma is
     // preserved exactly rather than approximately), vibrance, colour balance
     // by tonal range, and photo filter. Also headless and GPU-free.
-    const bool colorOpsOk = np::runColorOpsTest();
+    const bool colorOpsOk = !wanted("runColorOpsTest") || np::runColorOpsTest();
     // ops/MonoOps (docs/operations.md §1.2): Black & white's six hue-wheel
     // weights and Gradient map's luma->ramp lookup, both reusing
     // ops/PointOps.hpp's `rgb -> rgb` contract and ops/Gradient.hpp's stop
     // model rather than inventing either afresh. Also headless and
     // GPU-free -- pure CPU math, no PaintSim involvement.
-    const bool monoOpsOk = np::runMonoOpsTest();
+    const bool monoOpsOk = !wanted("runMonoOpsTest") || np::runMonoOpsTest();
     // ops/AutoLevels (docs/operations.md §1.2): auto-tone, auto-contrast,
     // auto-white-balance and equalize -- "a parameter solver, not an op", so
     // each inspects a core::HistogramResult and returns parameters for an
     // ordinary editable Levels or Curves op rather than touching a pixel.
     // Headless and GPU-free -- hand-built histogram fixtures, no Document.
-    const bool autoLevelsOk = np::runAutoLevelsTest();
+    const bool autoLevelsOk = !wanted("runAutoLevelsTest") || np::runAutoLevelsTest();
     // Phase 6 (ops/Gradient; PRD D24 and the gradient half of D26): linear,
     // radial and angular geometries, the independently-positioned colour and
     // opacity stop lists, straight-colour interpolation in linear light, and
@@ -3183,17 +3211,17 @@ int main(int argc, char** argv) {
     // the null-selection-means-everywhere case through the op's own hoisted
     // loop. The op only; the editor and presets are not built. Also headless
     // and GPU-free -- pure CPU tile arithmetic, no PaintSim involvement.
-    const bool gradientOk = np::runGradientTest();
+    const bool gradientOk = !wanted("runGradientTest") || np::runGradientTest();
     // PLAN.md "Phase 6 -- Filter and transform it" (DESIGN-imaging.md class B;
     // PRD E4): ops/Roi's backwards ROI propagation, ops/Blur's separable
     // Gaussian and box over a TileStore -- including the tile-seam property,
     // asserted bit-for-bit and then proved sensitive against the tile-local
     // blur it rejects -- and ops/Feather. Also headless and GPU-free.
-    const bool blurOk = np::runBlurTest();
+    const bool blurOk = !wanted("runBlurTest") || np::runBlurTest();
     // ops/Blur.cpp's blurPlane() CPU cost: channel-vectorised convolveLine4/
     // boxLine4 and the threaded row/column loop above blurTiles()'s own
     // already-threaded tile loops. Headless and GPU-free.
-    const bool blurSimdOk = np::runBlurSimdTest();
+    const bool blurSimdOk = !wanted("runBlurSimdTest") || np::runBlurSimdTest();
     // PLAN.md "Phase 6 -- Filter and transform it": ops/Filters -- the filter
     // set that hangs off the blur spine. Highpass as `src - blur(src)`,
     // unsharp with amount/radius/threshold, sharpen, offset with wrap, add
@@ -3205,88 +3233,88 @@ int main(int argc, char** argv) {
     // stops where linear-light noise varies by 234x, and a log-domain local
     // contrast cannot produce the negative light a linear unsharp does. Also
     // headless and GPU-free.
-    const bool filtersOk = np::runFiltersTest();
+    const bool filtersOk = !wanted("runFiltersTest") || np::runFiltersTest();
     // ops/Filters sections 7-9: emboss, median/despeckle, motion blur -- three
     // filters extending the set above, each earning the tile-seam property a
     // different way. See app/SelfTest.hpp's own comment on
     // runFiltersExtTest() for the shape of the argument. Also headless and
     // GPU-free.
-    const bool filtersExtOk = np::runFiltersExtTest();
+    const bool filtersExtOk = !wanted("runFiltersExtTest") || np::runFiltersExtTest();
     // docs/operations.md §2.2: Radial/Spin+Zoom blur and Lens blur --
     // two more filters extending the same set, each with its own engine file
     // (ops/RadialBlur.hpp, ops/LensBlur.hpp) rather than growing ops/Filters.
     // See app/SelfTest.hpp's own comment on runBlurFiltersTest(). Also
     // headless and GPU-free.
-    const bool blurFiltersOk = np::runBlurFiltersTest();
+    const bool blurFiltersOk = !wanted("runBlurFiltersTest") || np::runBlurFiltersTest();
     // PLAN.md "Phase 8 -- Repair it" (PRD D7, first half): ops/Inpaint's
     // diffusion fill and the Filter > Inpaint command. The one op here whose
     // selection is the HOLE rather than a bound on the result -- see
     // app/SelfTest.hpp's comment on runInpaintTest() for why that inversion is
     // asserted from both ends. Also headless and GPU-free.
-    const bool inpaintOk = np::runInpaintTest();
+    const bool inpaintOk = !wanted("runInpaintTest") || np::runInpaintTest();
     // PRD D7's second half: ops/PatchMatch and Edit > Content-Aware Fill.
     // Also headless and GPU-free.
-    const bool patchMatchOk = np::runPatchMatchTest();
+    const bool patchMatchOk = !wanted("runPatchMatchTest") || np::runPatchMatchTest();
     // PRD D8's missing third piece: ops/SeamHeal and Filter > Seam Heal.
     // Also headless and GPU-free.
-    const bool seamHealOk = np::runSeamHealTest();
+    const bool seamHealOk = !wanted("runSeamHealTest") || np::runSeamHealTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD E1, E2, M1): core/SelectionMask's
     // uint8 coverage store, its antialiased rectangle constructor, and the
     // coverage-weighted clear. Also headless and GPU-free -- pure CPU tile
     // arithmetic, no PaintSim involvement.
-    const bool selectionOk = np::runSelectionTest();
+    const bool selectionOk = !wanted("runSelectionTest") || np::runSelectionTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD E11, E12, E13): core/Channels'
     // named coverage channels in the document, the exact selection<->channel
     // round trip, saved selections, quick mask, and io/NpaintFile's `S####`
     // part -- including that a document written with no channels still loads.
     // Mostly headless; the format sections write a real `.npaint` to disk.
-    const bool channelsOk = np::runChannelsTest();
+    const bool channelsOk = !wanted("runChannelsTest") || np::runChannelsTest();
     // ops/FloodFill (PLAN.md "Phase 6" paint bucket + "Phase 7" magic wand;
     // PRD D25, D26, E2, E3): the display-encoded tolerance metric, the derived
     // antialiased coverage ramp, the scanline traversal that pages through the
     // tile store, and the fill that goes through the selection the wand
     // produces. Also headless and GPU-free.
-    const bool floodFillOk = np::runFloodFillTest();
+    const bool floodFillOk = !wanted("runFloodFillTest") || np::runFloodFillTest();
     // app/AppState's two FloodFillParams blocks and the options-bar row that
     // edits them (PRD D25, E3): the tool -> block mapping, the REACH table,
     // TOLERANCE's 0..255 display units, and what each of the three controls
     // does to real texels. The engine above was already complete; this is the
     // binding, and the trap a binding carries is a control wired to a field
     // nothing reads. Headless and GPU-free.
-    const bool floodFillOptionsOk = np::runFloodFillOptionsTest();
+    const bool floodFillOptionsOk = !wanted("runFloodFillOptionsTest") || np::runFloodFillOptionsTest();
     // core/SelectionShapes (PRD E3): the ellipse, lasso and polygon lasso, and
     // the exact-area claim behind all three. Headless, pure CPU.
-    const bool selectionShapesOk = np::runSelectionShapesTest();
+    const bool selectionShapesOk = !wanted("runSelectionShapesTest") || np::runSelectionShapesTest();
     // core/SelectionRefine (PRD E8, E9): grow and shrink through a signed
     // distance field seeded at sub-texel accuracy from the coverage itself,
     // and the two range selections, which reuse ops/FloodFill's tolerance
     // metric rather than inventing a second one. Headless, pure CPU.
-    const bool selectionRefineOk = np::runSelectionRefineTest();
+    const bool selectionRefineOk = !wanted("runSelectionRefineTest") || np::runSelectionRefineTest();
     // ui/MacPaintUI's commitDrawnSelection(): the intent rules all five of
     // PRD E3's selection tools funnel through. Headless, pure CPU.
-    const bool selectionToolsOk = np::runSelectionToolsTest();
+    const bool selectionToolsOk = !wanted("runSelectionToolsTest") || np::runSelectionToolsTest();
     // docs/testing-issues.md T10: app/SelectionDrag.hpp's pure geometry
     // behind Shift-constrain, Option-from-centre and Space-move on the
     // rectangle/ellipse marquee drag. Headless, pure CPU.
-    const bool selectionDragOk = np::runSelectionDragTest();
+    const bool selectionDragOk = !wanted("runSelectionDragTest") || np::runSelectionDragTest();
     // docs/testing-issues.md T13: app/SelectionDrag.hpp's
     // ellipseMarqueePreviewPoints() -- the ellipse marquee's live preview
     // agrees with what the commit path actually builds, for the same box.
     // Headless, pure CPU.
-    const bool ellipseMarqueePreviewOk = np::runEllipseMarqueePreviewTest();
+    const bool ellipseMarqueePreviewOk = !wanted("runEllipseMarqueePreviewTest") || np::runEllipseMarqueePreviewTest();
     // core/SelectionBoundary (PRD E6): the true outline the marching ants draw
     // -- islands, holes and concave corners -- which replaced the bounding box
     // that made every lasso, wand and Shift-add selection render as a
     // rectangle. Includes the 0.5 coverage threshold, the revision-keyed cache
     // and its invalidation, and the extraction's cost against PRD F3's 20 ms.
     // Headless, pure CPU.
-    const bool selectionBoundaryOk = np::runSelectionBoundaryTest();
+    const bool selectionBoundaryOk = !wanted("runSelectionBoundaryTest") || np::runSelectionBoundaryTest();
     // PLAN.md "Phase 6 -- Filter and transform it" (PRD D14-D17): ops/Transform's
     // 3x3 matrix stack composed BEFORE resampling, the exact no-resample paths
     // for flips and quarter turns, the five reconstruction kernels, the
     // area-average prefilter a downscale must run first, and crop/canvas
     // size/image size. Also headless and GPU-free -- pure CPU resampling.
-    const bool transformOk = np::runTransformTest();
+    const bool transformOk = !wanted("runTransformTest") || np::runTransformTest();
     // PLAN.md "Phase 6" again, one level up (PRD D14, D16, D17, E10):
     // ops/DocumentTransform, the Document/Layer entry point to that resampler.
     // A crop moving masks and selections with the pixels (a Layer has no offset
@@ -3294,81 +3322,81 @@ int main(int argc, char** argv) {
     // mass-weighted through a kernel with no negative lobes, enforced by type;
     // and D16 asserted at document level -- a stack of any depth resamples once.
     // Headless and GPU-free.
-    const bool documentTransformOk = np::runDocumentTransformTest();
+    const bool documentTransformOk = !wanted("runDocumentTransformTest") || np::runDocumentTransformTest();
     // docs/reachability-audit.md C1: app/TransformSession, the pure session
     // behind an interactive layer/selection transform -- handles, hit-testing,
     // drag semantics, and commit through ops/DocumentTransform's own resample
     // and app/DocumentLifecycle's recordEdit() undo funnel. Headless and
     // GPU-free.
-    const bool transformSessionOk = np::runTransformSessionTest();
+    const bool transformSessionOk = !wanted("runTransformSessionTest") || np::runTransformSessionTest();
     // app/MoveTool: Tool::Move -- the target rule (a selection scopes the
     // move), the refusals, the arrow-key nudge, and the bit-identity of an
     // integer translate there and back. Headless and GPU-free.
-    const bool moveToolOk = np::runMoveToolTest();
+    const bool moveToolOk = !wanted("runMoveToolTest") || np::runMoveToolTest();
     // app/CropTool: Tool::Crop in both modes -- the rectangle rule (outward,
     // unclamped), the perspective output extent and why it is the longer of
     // each pair of opposite edges, the refusal ladder including the bow-tie
     // the engine does not refuse, and the two Image-menu items. Headless and
     // GPU-free.
-    const bool cropToolOk = np::runCropToolTest();
+    const bool cropToolOk = !wanted("runCropToolTest") || np::runCropToolTest();
     // app/LayerThumbnail + brush/MaskPaint + StrokeSession's mask target:
     // testing-issues T16 -- the target concept, the mask stroke route, the two
     // thumbnails' two different transfer functions, and the thumbnail cache's
     // invalidation rule. Headless and GPU-free.
-    const bool maskTargetOk = np::runMaskTargetTest();
-    const bool maskControlsOk = np::runMaskControlsTest();
+    const bool maskTargetOk = !wanted("runMaskTargetTest") || np::runMaskTargetTest();
+    const bool maskControlsOk = !wanted("runMaskControlsTest") || np::runMaskControlsTest();
     // app/FramePacing: T27's three frame-budget tiers, the --screenshot
     // exemption the golden harness depends on, and the fixed-timestep ceiling
     // that decides how slow the idle tier is allowed to be. Headless and
     // GPU-free -- and the only place this decision is observable at all, since
     // --selftest never reaches the frame loop it was lifted out of.
-    const bool framePacingOk = np::runFramePacingTest();
+    const bool framePacingOk = !wanted("runFramePacingTest") || np::runFramePacingTest();
     // app/GradientTool: Tool::Gradient -- the ramp, the aim, the shared
     // degeneracy test, and that the options bar swatch and the committed
     // pixels are one computation rather than two that agree. Headless and
     // GPU-free.
-    const bool gradientToolOk = np::runGradientToolTest();
+    const bool gradientToolOk = !wanted("runGradientToolTest") || np::runGradientToolTest();
     // core/Path, core/PathFlatten, core/PathRaster: PLAN.md phase 13's
     // geometry model, curve flattener and antialiased coverage rasteriser.
     // The load-bearing check is differential -- the new rasteriser is held
     // against core/SelectionShapes' independently written exact-area
     // `selectPolygon()`, to that oracle's own 1/255 quantisation step.
     // Headless and GPU-free; writes no files.
-    const bool pathRasterOk = np::runPathRasterTest();
+    const bool pathRasterOk = !wanted("runPathRasterTest") || np::runPathRasterTest();
     // io/SvgPath: SVG's text-to-geometry grammars -- the `d` mini-language,
     // `transform`, lengths/units, viewBox/preserveAspectRatio and the basic
     // shapes. Pure parsing, headless and GPU-free; writes no files.
-    const bool svgPathOk = np::runSvgPathTest();
+    const bool svgPathOk = !wanted("runSvgPathTest") || np::runSvgPathTest();
     // io/SvgStyle -- the CSS cascade for SVG presentation: which declaration
     // wins among a presentation attribute, a matching <style> sheet rule and
     // a style="" attribute. The load-bearing check is the counter-intuitive
     // step in SVG 1.1 section 6.4's order -- any matching sheet rule
     // outranks a presentation attribute, whatever its own specificity.
     // Headless, GPU-free, writes no files, and depends on no XML parser.
-    const bool svgStyleOk = np::runSvgStyleTest();
+    const bool svgStyleOk = !wanted("runSvgStyleTest") || np::runSvgStyleTest();
     // io/SvgImport -- the pugixml-backed walk that turns a real SVG document
     // into document-space core::VectorShapes, wiring io/SvgPath's grammars
     // and io/SvgStyle's cascade to a real element tree: the transform stack,
     // viewBox, <use> expansion, colour, clip-path, every refusal named, and
     // the security caps against a hostile <use> bomb. Headless, GPU-free,
     // writes no files.
-    const bool svgImportOk = np::runSvgImportTest();
+    const bool svgImportOk = !wanted("runSvgImportTest") || np::runSvgImportTest();
     // app/PenTool -- the headless core of Stage 4's vector editing: the two
     // selection modes and their shared modifier grammar, gnomon/pivot/anchor/
     // tangent/segment hit-test priority, the two pivot concepts and the
     // shape-vs-component affine asymmetry between them, and toolEditsPath().
     // Headless and GPU-free; writes no files; touches no ui/ file.
-    const bool penToolOk = np::runPenToolTest();
+    const bool penToolOk = !wanted("runPenToolTest") || np::runPenToolTest();
     // app/PathOps -- the PATHS panel's verbs: close/open/join/reverse over
     // subpaths, smooth/corner/break/insert/delete over anchors,
     // compound/release over shapes, and the refusal enum that specifies them.
     // Also covers `reverseSubPath()`'s handle swap and `fitAnchorTangent()`,
     // both promoted into core/Path so Curve mode and the SMOOTH button share
     // one implementation. Headless and GPU-free; writes no files.
-    const bool pathOpsOk = np::runPathOpsTest();
+    const bool pathOpsOk = !wanted("runPathOpsTest") || np::runPathOpsTest();
     // core/PathBoolean -- the region booleans behind the PATHS panel's
     // UNITE/INTERSECT/SUBTRACT/EXCLUDE and PSD's Intersect.
-    const bool pathBooleanOk = np::runPathBooleanTest();
+    const bool pathBooleanOk = !wanted("runPathBooleanTest") || np::runPathBooleanTest();
     // The PATHS panel (docs/path-editing-plan.md section 4): its registration
     // in three of the four tables a section must appear in, that every verb
     // button greys on its own `pathOpCanRun()` answer, that
@@ -3376,20 +3404,20 @@ int main(int argc, char** argv) {
     // session after a verb erases geometry, and the layer-below rule MAKE
     // FILL and MAKE STROKE need and no other paint command in this build
     // does. Headless and GPU-free; writes no files; opens no window.
-    const bool pathsPanelOk = np::runPathsPanelTest();
+    const bool pathsPanelOk = !wanted("runPathsPanelTest") || np::runPathsPanelTest();
     // app/PenTool section 9 -- Pen/Curve placement: a press creating and
     // extending a shape, a press on its own first anchor closing it, a drag
     // setting a mirrored tangent, Escape leaving what was placed, and
     // Curve's Catmull-Rom tangent fit proven C1-continuous numerically.
     // Headless and GPU-free; writes no files; touches no ui/ file.
-    const bool penDrawOk = np::runPenDrawTest();
+    const bool penDrawOk = !wanted("runPenDrawTest") || np::runPenDrawTest();
     // app/VectorStyle -- the Pen's paint: the stroke-on/fill-off default,
     // `pathEditBeginPen()` stamping it onto the shape it creates (without
     // which every pen-drawn path rasterised to nothing), the options bar's
     // selection-first-else-default rule and its mixed readout, and the
     // linear-not-sRGB colour path from the foreground to `Paint::rgba`.
     // Headless and GPU-free; writes no files.
-    const bool vectorStyleOk = np::runVectorStyleTest();
+    const bool vectorStyleOk = !wanted("runVectorStyleTest") || np::runVectorStyleTest();
     // app/TextTool -- the headless core of PLAN.md phase 14's Text tool: the
     // gate predicate, the caret-editing session's UTF-8-safe string edits
     // (insert/backspace/forward-delete/caret movement, all routed through
@@ -3398,81 +3426,81 @@ int main(int argc, char** argv) {
     // core/TextContent.hpp's own free functions -- a sibling track's `.cpp`,
     // not yet linkable against this base. Headless and GPU-free; writes no
     // files; touches no ui/ file.
-    const bool textToolOk = np::runTextToolTest();
+    const bool textToolOk = !wanted("runTextToolTest") || np::runTextToolTest();
     // text/Shaper: PRD K2's platform-independent shaping interface and its
     // CoreText implementation -- point/paragraph text, the y-up-to-y-down
     // flip, quadratic-to-cubic glyph outlines, and UTF-16 clusters translated
     // to UTF-8 byte offsets. Guarded on `shaperAvailable()`, so a build with
     // no CoreText (text/StubShaper.cpp) skips this section rather than
     // failing it. Headless, GPU-free, writes no files.
-    const bool textShaperOk = np::runTextShaperTest();
+    const bool textShaperOk = !wanted("runTextShaperTest") || np::runTextShaperTest();
     // LayerKind::Vector -- the geometry-holding layer, its raster cache, and
     // the materialised view it reaches core/Composite through. The
     // load-bearing check is that a pure geometry edit is VISIBLE:
     // core/DirtyTiles' pass 1 could not see one before this phase.
     // Headless and GPU-free; writes no files.
-    const bool vectorLayerOk = np::runVectorLayerTest();
+    const bool vectorLayerOk = !wanted("runVectorLayerTest") || np::runVectorLayerTest();
     // docs/psd-vector-shapes.md S2: a gradient fill on a vector shape -- the
     // document-level table, the raster that reads it, the hash that guards
     // the raster against a ramp edit nobody would otherwise see, and both
     // halves of the on-disk form. Headless and GPU-free; writes and removes
     // real .npaint files.
-    const bool vectorGradientOk = np::runVectorGradientTest();
+    const bool vectorGradientOk = !wanted("runVectorGradientTest") || np::runVectorGradientTest();
     // core/TextContent (PLAN.md phase 14): what a `LayerKind::Text` layer
     // holds -- makeTextContent(), textContentToShapes() (shaping a block
     // into per-glyph VectorShapes, translated by origin plus each glyph's
     // own pen position), textContentBounds() and textContentDraws(). Also
     // guarded on `shaperAvailable()`, for the same reason runTextShaperTest()
     // is. Headless, GPU-free, writes no files.
-    const bool textContentOk = np::runTextContentTest();
+    const bool textContentOk = !wanted("runTextContentTest") || np::runTextContentTest();
 
     // io/TextSerial -- the `np:text` carrier for a `LayerKind::Text` layer's
     // content, io/PathSerial's sibling for a `TextContent` instead of a
     // shape list. Headless and GPU-free, and NOT guarded on
     // `shaperAvailable()`: a serialiser has no platform dependency.
-    const bool textSerialOk = np::runTextSerialTest();
+    const bool textSerialOk = !wanted("runTextSerialTest") || np::runTextSerialTest();
     // app/PathConsumers (PRD J1/J2/J3/J4): path -> selection, fill path, and
     // stroke path with the current brush. Headless and GPU-free; guards its
     // Text sections on shaperAvailable() the way runTextContentTest() does.
-    const bool pathConsumersOk = np::runPathConsumersTest();
+    const bool pathConsumersOk = !wanted("runPathConsumersTest") || np::runPathConsumersTest();
     // The Text tool owning the keyboard while a session is live: app/Keymap's
     // keyChordReachesKeymap() gate, app/TextTool's textSessionActive()
     // transitions, and that every way out of a session keeps the text. Headless
     // and GPU-free; writes no files.
-    const bool textKeyCaptureOk = np::runTextKeyCaptureTest();
+    const bool textKeyCaptureOk = !wanted("runTextKeyCaptureTest") || np::runTextKeyCaptureTest();
     // docs/testing-issues.md T14: the CPU half of the Free Transform live
     // pixel preview -- ui/TransformPreviewTexture's crop-and-pack, headless
     // and GPU-free (the GPU upload wrapper itself is untested, matching this
     // suite's own precedent for DabPreviewTexture/StrokePreviewTexture).
-    const bool transformPreviewTextureOk = np::runTransformPreviewTextureTest();
+    const bool transformPreviewTextureOk = !wanted("runTransformPreviewTextureTest") || np::runTransformPreviewTextureTest();
     // The three-way canvas a live Free Transform draws -- layers below, the
     // moving pixels, layers above -- and the predicate that says when taking
     // the composite apart that way is exact. Headless and GPU-free.
-    const bool transformCompositeSplitOk = np::runTransformCompositeSplitTest();
+    const bool transformCompositeSplitOk = !wanted("runTransformCompositeSplitTest") || np::runTransformCompositeSplitTest();
     // io/PackBits' refusal contract on hand-built malformed streams. Both its
     // importers (io/AbrBrushes, io/PsdImport) exercise it only through
     // well-formed files, which is the one input that cannot tell a checked
     // decoder from an unchecked one. Headless and GPU-free.
-    const bool packBitsOk = np::runPackBitsTest();
-    const bool psdWriteOk = np::runPsdWriteTest();
+    const bool packBitsOk = !wanted("runPackBitsTest") || np::runPackBitsTest();
+    const bool psdWriteOk = !wanted("runPsdWriteTest") || np::runPsdWriteTest();
     // io/PsdBlendKeys: the one Photoshop-blend-key table, read in both
     // directions now that PSD export needs mode -> key. Includes the tripwire
     // that a new core::BlendMode must be triaged into the table or into a
     // named "no PSD key" list rather than exporting as Normal by omission.
-    const bool psdBlendKeysOk = np::runPsdBlendKeysTest();
+    const bool psdBlendKeysOk = !wanted("runPsdBlendKeysTest") || np::runPsdBlendKeysTest();
     // io/PsdExport: the PSD container and its flattened composite (PSD export
     // tier 1). Headless and GPU-free.
-    const bool psdExportOk = np::runPsdExportTest();
+    const bool psdExportOk = !wanted("runPsdExportTest") || np::runPsdExportTest();
     // io/PsdLayerSection: PSD's Layer and Mask Information section, written --
     // one PSD layer record per naturalPaint layer, asserted by round trip
     // through io/PsdImport (docs/psd-export.md tier 2). Headless and GPU-free.
-    const bool psdLayerSectionOk = np::runPsdLayerSectionTest();
-    const bool psdLayerExtrasOk = np::runPsdLayerExtrasTest();
+    const bool psdLayerSectionOk = !wanted("runPsdLayerSectionTest") || np::runPsdLayerSectionTest();
+    const bool psdLayerExtrasOk = !wanted("runPsdLayerExtrasTest") || np::runPsdLayerExtrasTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD M1, M3, M4, M5, M8): the
     // internal clipboard's copy/cut/paste, its copy-on-write sharing, and the
     // two different coverage-weighting rules RGB and Pigment tiles take. Also
     // headless and GPU-free.
-    const bool clipboardOk = np::runClipboardTest();
+    const bool clipboardOk = !wanted("runClipboardTest") || np::runClipboardTest();
     // Phase 3 step 5 ("core/OpStack -- ordered ops, dirty tracking, run
     // detection for the collapse"): OpStack's add/remove/reorder/setEnabled/
     // setOp mutators and version() bumping, plus detectRuns()'s maximal-run
@@ -3480,14 +3508,14 @@ int main(int argc, char** argv) {
     // "a disabled PointA entry does not split a run" rule. Also headless and
     // GPU-free -- pure CPU bookkeeping plus calls into the already-tested
     // ops/PointOps functions, no PaintSim involvement.
-    const bool opStackOk = np::runOpStackTest();
+    const bool opStackOk = !wanted("runOpStackTest") || np::runOpStackTest();
     // Phase 3 step 4 (color/LutBake, ADR-0004): bakes a maximal run of
     // adjacent point ops onto a 32^3 rgba16float 3-D LUT via a seed compute
     // dispatch plus one dispatch per op, and checks the baked result
     // against the CPU ops/PointOps reference at hand-picked grid cells.
     // Needs `gpu` for a real device/queue -- genuine compute-shader work,
     // no PaintSim involvement.
-    const bool lutBakeOk = np::runLutBakeTest(gpu);
+    const bool lutBakeOk = !wanted("runLutBakeTest") || np::runLutBakeTest(gpu);
     // Phase 3 step 6 ("Apply pass -- shaper -> 3-D LUT fetch -> un-
     // shape"): sim::PaintSim::updateGradePreview()'s bake-gate/blit
     // pipeline against the live simulation canvas, checked against an
@@ -3495,7 +3523,7 @@ int main(int argc, char** argv) {
     // canvas pixels, plus the version-gating rebake proof. Needs `*s` for
     // a real PaintSim -- the same shared instance every other PaintSim-
     // backed --selftest case in this chain already uses.
-    const bool applyPassOk = np::runApplyPassTest(gpu, *s);
+    const bool applyPassOk = !wanted("runApplyPassTest") || np::runApplyPassTest(gpu, *s);
     // docs/architecture-review.md P0-5: core/Composite.cpp's adjustment-
     // layer walk no longer calls a std::function per op per pixel -- it
     // calls core::applyOpDirect()'s switch (core/OpStack.hpp) instead.
@@ -3503,117 +3531,115 @@ int main(int argc, char** argv) {
     // measures a from-scratch CPU-only LUT-accuracy question the review's
     // own suggested fix raised, and prints before/after timing. Headless
     // and GPU-free.
-    const bool gradeDispatchOk = np::runGradeDispatchTest();
+    const bool gradeDispatchOk = !wanted("runGradeDispatchTest") || np::runGradeDispatchTest();
     // Phase 3 step 8 ("Op-stack UI... and a curve widget operating in the
     // shaper domain"): app/CurveEdit.hpp's pure screen<->curve-space
     // geometry and list-mutation math -- everything the interactive curve
     // widget (ui/MacPaintUI.cpp) calls into. Also headless and GPU-free --
     // pure CPU, no PaintSim involvement.
-    const bool curveEditOk = np::runCurveEditTest();
+    const bool curveEditOk = !wanted("runCurveEditTest") || np::runCurveEditTest();
     // The brush dynamics link model (design "naturalPaint Panels" turn 4a):
     // range semantics, invert, curve clamping, and the commutative fold that
     // lets three sources drive one target. Headless and GPU-free.
-    const bool brushDynamicsOk = np::runBrushDynamicsTest();
+    const bool brushDynamicsOk = !wanted("runBrushDynamicsTest") || np::runBrushDynamicsTest();
     // A6 (docs/reachability-audit.md): the four sources that used to be
     // hard 0.0 (VELOCITY, FADE, NOISE, RANDOM), the six targets nothing
     // read, and the determinism the two stochastic sources must hold under
     // a replayed stroke. Headless and GPU-free.
-    const bool dynamicsSourcesOk = np::runDynamicsSourcesTest();
+    const bool dynamicsSourcesOk = !wanted("runDynamicsSourcesTest") || np::runDynamicsSourcesTest();
     // The BRUSH EDITOR's tip preview (app/DabPreview): the rasterised dab
     // checked against a real depositDab(), plus the elliptical tip that
     // building it found missing. Headless and GPU-free.
-    const bool dabPreviewOk = np::runDabPreviewTest();
+    const bool dabPreviewOk = !wanted("runDabPreviewTest") || np::runDabPreviewTest();
     // io/AbrBrushes: Photoshop `.abr` libraries into brush/Library presets --
     // the container framing and the parameter mapping, including what an
     // import could NOT bring across. Headless and GPU-free.
-    const bool abrBrushesOk = np::runAbrBrushesTest();
+    const bool abrBrushesOk = !wanted("runAbrBrushesTest") || np::runAbrBrushesTest();
     // docs/architecture-review.md P2-2 item 1: io/AbrBrushes.hpp's
     // `checkedAdd()`, driven at SIZE_MAX/SIZE_MAX-1 -- a boundary none of the
     // parser's own call sites reach. Headless and GPU-free.
-    const bool checkedAddOk = np::runCheckedAddTest();
+    const bool checkedAddOk = !wanted("runCheckedAddTest") || np::runCheckedAddTest();
     // docs/reachability-audit.md B6 and B7: a Multiply target's floor applied
     // exactly once, downstream of both halves of app/StrokeSession's
     // hardware/stroke-local split, rather than once per contributing link or
     // once per half. Headless and GPU-free.
-    const bool multiplyFloorOk = np::runMultiplyFloorTest();
+    const bool multiplyFloorOk = !wanted("runMultiplyFloorTest") || np::runMultiplyFloorTest();
     // app/selftest/ShelvedLinks.cpp: the dedicated test for the shelved
     // 10x12 link matrix -- a user-presets.txt fixture's link/floor/point
     // lines round-trip byte-for-byte with no live BrushLinkSet built, and a
     // hand-built, non-empty BrushLinkSet changes nothing brushTipFor()
     // reads. Headless and GPU-free.
-    const bool shelvedLinksOk = np::runShelvedLinksTest();
+    const bool shelvedLinksOk = !wanted("runShelvedLinksTest") || np::runShelvedLinksTest();
     // app/StrokeSession's applyPerDabScatter(): docs/reachability-audit.md
     // B5's axis defect. Checks the geometry directly -- tangent component
     // ~0, perpendicular component real -- rather than a flag. Headless and
     // GPU-free.
-    const bool scatterOk = np::runScatterTest();
+    const bool scatterOk = !wanted("runScatterTest") || np::runScatterTest();
     // Phase C Part 1: Scatter Count, resolved per dab and dispatched as N
     // sub-dabs per nominal position. Headless and GPU-free.
-    const bool scatterCountOk = np::runScatterCountTest();
+    const bool scatterCountOk = !wanted("runScatterCountTest") || np::runScatterCountTest();
     // brush/StrokePath itself: a single click lays exactly one dab at its own
     // position, and a drag's dab coordinates are unchanged by that. Headless
     // and GPU-free.
-    const bool strokePathOk = np::runStrokePathTest();
+    const bool strokePathOk = !wanted("runStrokePathTest") || np::runStrokePathTest();
     // io/AbrBrushes' `samp` block: sampled bitmap tips decoded and stamped by
     // brush/Deposit.hpp §2c in place of the procedural tip. Headless and
     // GPU-free.
-    const bool abrSampledTipsOk = np::runAbrSampledTipsTest();
+    const bool abrSampledTipsOk = !wanted("runAbrSampledTipsTest") || np::runAbrSampledTipsTest();
     // io/PsPatterns: the `patt` block, decoded rather than stepped over.
-    const bool psPatternsOk = np::runPsPatternsTest();
+    const bool psPatternsOk = !wanted("runPsPatternsTest") || np::runPsPatternsTest();
     // io/GimpBrush: `.gbr`/`.gih`, the other brush corpus the dab folder takes.
-    const bool gimpBrushOk = np::runGimpBrushTest();
+    const bool gimpBrushOk = !wanted("runGimpBrushTest") || np::runGimpBrushTest();
     // brush/Variance: the one resolver behind all twelve of Photoshop's
     // Control/Jitter/Minimum/Fade groups.
-    const bool varianceOk = np::runVarianceTest();
+    const bool varianceOk = !wanted("runVarianceTest") || np::runVarianceTest();
     // brush/CoverageBlend: the shared Dual-Brush/Texture blend table, and the
     // no-blend-creates-coverage invariant both of its callers stand on.
-    const bool coverageBlendOk = np::runCoverageBlendTest();
+    const bool coverageBlendOk = !wanted("runCoverageBlendTest") || np::runCoverageBlendTest();
     // brush/Grain's sampled `PaperField` -- a `.abr`'s own scanned paper under
     // the brush -- and the three deposit routes that had no grain call at all.
-    const bool paperTextureOk = np::runPaperTextureTest();
+    const bool paperTextureOk = !wanted("runPaperTextureTest") || np::runPaperTextureTest();
     // app/DabLibrary: the watched folder -- an unchanged rescan decoding
     // nothing, and a rename not orphaning the presets that point at it.
-    const bool dabLibraryOk = np::runDabLibraryTest();
+    const bool dabLibraryOk = !wanted("runDabLibraryTest") || np::runDabLibraryTest();
     // app/DabLibrary's pattern extraction: a decoded `.abr` pattern written to
     // patterns-imported/<uuid>.png, single-channel and byte-exact, the
     // patt-block sibling of the dab-library test's own tip-extraction section.
-    const bool patternExtractOk = np::runPatternExtractTest();
+    const bool patternExtractOk = !wanted("runPatternExtractTest") || np::runPatternExtractTest();
     // ui/DabPicker: the grid arithmetic, including the hit test as the exact
     // inverse of the cell placement.
-    const bool dabPickerOk = np::runDabPickerTest();
+    const bool dabPickerOk = !wanted("runDabPickerTest") || np::runDabPickerTest();
     // ui/BrushSettingsWindow: the tab table -- one row per group of brush
     // settings, each carrying its own id.
-    const bool brushSettingsWindowOk = np::runBrushSettingsWindowTest();
+    const bool brushSettingsWindowOk = !wanted("runBrushSettingsWindowTest") || np::runBrushSettingsWindowTest();
     // brush/BrushModelIo: the text form of a BrushModel -- one templated
     // visitor over all 149 leaves rather than 149 hand-written branches, in
     // both directions. Headless and GPU-free.
-    const bool brushModelIoOk = np::runBrushModelIoTest();
+    const bool brushModelIoOk = !wanted("runBrushModelIoTest") || np::runBrushModelIoTest();
     // brush/BrushModelDiff: the diff/equal pair over the same 149 leaves,
     // which presetMatches() and the round-trip proof both need. Headless.
-    const bool brushModelDiffOk = np::runBrushModelDiffTest();
-    // ui/BrushFieldPresentation: every BrushModel leaf is in exactly one of
-    // the presentation table (gets a live control) or the omission table
-    // (deliberately does not, with a reason) -- the exhaustiveness guarantee
-    // behind ui/BrushSettingsWindow's Photoshop-shaped tabs. Headless.
-    const bool brushPanelBindingOk = np::runBrushPanelBindingTest();
+    const bool brushModelDiffOk = !wanted("runBrushModelDiffTest") || np::runBrushModelDiffTest();
+    // ui/BrushPanelLayout: every BrushModel leaf has one control in the Brush
+    // Settings window, or a reason it has none. Headless.
+    const bool brushPanelBindingOk = !wanted("runBrushPanelBindingTest") || np::runBrushPanelBindingTest();
     // track10/angle: an independent geometric pin -- BrushTip::angle is
     // clockwise-positive on screen, and DIRECTION->Angle actually faces the
     // tip along the stroke's travel vector. Headless and GPU-free.
-    const bool angleConventionOk = np::runAngleConventionTest();
+    const bool angleConventionOk = !wanted("runAngleConventionTest") || np::runAngleConventionTest();
     // io/AbrBrushes' Dual Brush support: a second tip composited into
     // brush/Deposit.hpp §2d's dabCoverage() by Multiply/Overlay, and what an
     // import still cannot honour (an unsupported blend mode, the second tip's
     // own spacing/scatter/count). Headless and GPU-free.
-    const bool abrDualBrushOk = np::runAbrDualBrushTest();
+    const bool abrDualBrushOk = !wanted("runAbrDualBrushTest") || np::runAbrDualBrushTest();
     // app/BrushLibraryFile: the preferences file for imported `.abr` libraries,
     // the row cache that makes launch pay nothing for them, and unload.
     // Headless and GPU-free.
-    const bool brushLibraryFileOk = np::runBrushLibraryFileTest();
+    const bool brushLibraryFileOk = !wanted("runBrushLibraryFileTest") || np::runBrushLibraryFileTest();
     // app/UserBrushLibrary: the presets a user made, persisted to their own
     // file (PRD G6, A7) -- the round trip of a full BrushLinkSet, the fork
     // Save performs on a built-in, and a simulated mid-write crash. Headless
     // and GPU-free.
-    const bool userBrushLibraryOk = np::runUserBrushLibraryTest();
+    const bool userBrushLibraryOk = !wanted("runUserBrushLibraryTest") || np::runUserBrushLibraryTest();
     // Phase 4 step 1 ("Export path -- encode from working space to a chosen
     // target space and bit depth, explicitly, never silently"; PRD B6, I5,
     // I1): io/Export's flatten -> un-premultiply -> encode -> quantize ->
@@ -3623,7 +3649,7 @@ int main(int argc, char** argv) {
     // error strings actually inspected, the three target spaces proven
     // distinct, and the primaries-mismatch refusal. Also headless and
     // GPU-free -- pure CPU, no PaintSim involvement.
-    const bool exportOk = np::runExportTest();
+    const bool exportOk = !wanted("runExportTest") || np::runExportTest();
     // Phase 4 steps 2+3 ("io/OiioBackend behind NP_USE_OIIO -- EXR, TIFF,
     // HDR, DPX, flattened PSD, camera raw"; "Capability query -- format
     // support is discovered at runtime; the core builds and runs without
@@ -3635,7 +3661,7 @@ int main(int argc, char** argv) {
     // answers -- in BOTH NP_USE_OIIO configurations; see SelfTest.hpp on
     // why compiling it out of the OFF build would defeat its purpose. Also
     // headless and GPU-free -- pure CPU, no PaintSim involvement.
-    const bool formatSupportOk = np::runFormatSupportTest();
+    const bool formatSupportOk = !wanted("runFormatSupportTest") || np::runFormatSupportTest();
     // Phase 4 step 4 ("Native `.npaint` save and load -- multi-part tiled
     // EXR via OIIO"; docs/document-format.md; PRD I4, I5b, I6, I7, I8, I10,
     // I11, I12): io/NpaintFile's document round trip -- every layer's tiles
@@ -3647,7 +3673,7 @@ int main(int argc, char** argv) {
     // NP_USE_OIIO configurations. Headless and GPU-free, but the one
     // section that writes real scratch files, since a document format is a
     // file format; it removes every one of them.
-    const bool npaintOk = np::runNpaintFormatTest();
+    const bool npaintOk = !wanted("runNpaintFormatTest") || np::runNpaintFormatTest();
     // Phase 4 step 5 ("Wire OIIO's `ImageCache` as the residency layer for
     // unmodified source tiles. This is the main reason the dependency earns
     // its cost"; ADR-0001; docs/document-format.md §1): io/TileResidency's
@@ -3661,7 +3687,7 @@ int main(int argc, char** argv) {
     // correct ones -- in BOTH NP_USE_OIIO configurations, because Eager is a
     // complete residency strategy and not a degraded mode. Headless and
     // GPU-free; writes and removes selftest_residency_* scratch files.
-    const bool tileResidencyOk = np::runTileResidencyTest();
+    const bool tileResidencyOk = !wanted("runTileResidencyTest") || np::runTileResidencyTest();
     // Phase 4 step 7 ("Export As -- format, space, depth *and resize*, with
     // saveable presets (PRD I15). Downscale prefilters; see the phase 6
     // warning"; PRD I5, I11, B6): io/ExportAs' request model, offerable-set
@@ -3677,7 +3703,7 @@ int main(int argc, char** argv) {
     // that matters most here is what an ON-build preset does in an OFF
     // build. Headless and GPU-free; writes and removes selftest_exportas_*
     // scratch files.
-    const bool exportAsOk = np::runExportAsTest();
+    const bool exportAsOk = !wanted("runExportAsTest") || np::runExportAsTest();
     // Phase 4 step 8 ("Document lifecycle -- revert, duplicate document, save
     // a copy, save incremental, open recent"; PRD I18, and I10/I11/I12 which
     // every save path here must keep honouring): app/DocumentLifecycle's
@@ -3694,7 +3720,7 @@ int main(int argc, char** argv) {
     // file-backed operations forward io/NpaintFile's own named refusal in the
     // build that has no writer. Headless and GPU-free; writes and removes a
     // selftest_lifecycle/ scratch directory.
-    const bool documentLifecycleOk = np::runDocumentLifecycleTest();
+    const bool documentLifecycleOk = !wanted("runDocumentLifecycleTest") || np::runDocumentLifecycleTest();
     // Phase 4 step 9 ("`core/Journal` -- the recovery journal from ADR-0008";
     // PRD O5-O10): app/Journal's scratch directory, its timer, and the
     // recovery path. The timer rule is asserted as a pure function so both
@@ -3708,7 +3734,7 @@ int main(int argc, char** argv) {
     // the only writer and PRD O7 forbids a second one. Headless and GPU-free;
     // writes and removes a selftest_journal/ scratch directory, with
     // $NP_JOURNAL_DIR pointed at it so no real user state is touched.
-    const bool recoveryJournalOk = np::runRecoveryJournalTest();
+    const bool recoveryJournalOk = !wanted("runRecoveryJournalTest") || np::runRecoveryJournalTest();
     // Phase 5 step 1 ("Multiple layers in `Document`, with reorder,
     // visibility, lock, opacity"; PRD C4, C16): core/Composite's `over`
     // against a hand-computed reference, opacity proven distinct from alpha,
@@ -3723,7 +3749,7 @@ int main(int argc, char** argv) {
     // Runs, and asserts the correct answers, in BOTH NP_USE_OIIO
     // configurations. Headless and GPU-free; writes and removes one
     // selftest_layerstack.npaint.
-    const bool layerStackOk = np::runLayerStackTest();
+    const bool layerStackOk = !wanted("runLayerStackTest") || np::runLayerStackTest();
     // Phase 5 step 2 ("`core/Blend` -- the linear-safe set (over, plus,
     // multiply, screen, min, max) and `Mix`, the KM latent lerp.
     // Display-referred modes labelled as such"; PRD B7, C3, L5): every mode
@@ -3738,7 +3764,7 @@ int main(int argc, char** argv) {
     // 1's regression boundary with a DIFFERENT blend on each layer. Runs, and
     // asserts the same answers, in BOTH NP_USE_OIIO configurations. Headless
     // and GPU-free; writes no files.
-    const bool blendOk = np::runBlendTest();
+    const bool blendOk = !wanted("runBlendTest") || np::runBlendTest();
     // Phase 5 step 3 ("Pigment layers -- latent x mass tile storage at f16.
     // Per-layer op stack applies *after* the latent->RGB projection, so
     // grading never bakes the latents"; PRD C1, C3, C8, F10, L5): the
@@ -3751,13 +3777,13 @@ int main(int argc, char** argv) {
     // layer together. Runs, and asserts the correct answers, in BOTH
     // NP_USE_OIIO configurations. Headless and GPU-free; writes and removes
     // one selftest_pigment.npaint.
-    const bool pigmentLayerOk = np::runPigmentLayerTest();
+    const bool pigmentLayerOk = !wanted("runPigmentLayerTest") || np::runPigmentLayerTest();
     // Phase 5 step 15 / PRD C8, I4: the pigment basis as a `core::Document`
     // field -- stamped from the document, read back onto it, a basis this build
     // cannot interpret round-tripped rather than relabelled, an ordinary
     // document's file proven byte-identical, and the export warnings that never
     // reached a caller.
-    const bool pigmentBasisOk = np::runPigmentBasisTest();
+    const bool pigmentBasisOk = !wanted("runPigmentBasisTest") || np::runPigmentBasisTest();
     // Phase 5 step 4 ("Layer masks -- single-channel tile store, the same
     // machinery"; PRD C4 (P0), C3 (P0), C2, I4, I11): the 32 KiB
     // single-channel f16 mask tile whose default is REVEAL, its derived 2^-12
@@ -3770,7 +3796,7 @@ int main(int argc, char** argv) {
     // that also proves a mask-free document's bytes are unchanged. Runs, and
     // asserts the correct answers, in BOTH NP_USE_OIIO configurations.
     // Headless and GPU-free; writes and removes three `.npaint` files.
-    const bool layerMaskOk = np::runLayerMaskTest();
+    const bool layerMaskOk = !wanted("runLayerMaskTest") || np::runLayerMaskTest();
     // Phase 5 step 5 ("Adjustment layers -- op stack against the composite
     // below"; PRD C5, C1, C3, C4, D13, D18, I10, I11): the one layer kind that
     // transforms what is accumulated beneath it instead of contributing to it,
@@ -3786,7 +3812,7 @@ int main(int argc, char** argv) {
     // through a `.npaint` verbatim. Runs, and asserts the correct answers, in
     // BOTH NP_USE_OIIO configurations. Headless and GPU-free; writes and
     // removes three `.npaint` files.
-    const bool adjustmentLayerOk = np::runAdjustmentLayerTest();
+    const bool adjustmentLayerOk = !wanted("runAdjustmentLayerTest") || np::runAdjustmentLayerTest();
     // Phase 5 step 6 ("COW tiles -- copy-on-write with reference-counted
     // history"; PRD A9, O1, O4, C2): a `TileStoreOf<T>` slot is now a
     // `std::shared_ptr<T>`, so copying a store shares its tiles and the first
@@ -3799,7 +3825,7 @@ int main(int argc, char** argv) {
     // shared tiles, and the cost measurements the step is justified by. Runs,
     // and asserts the correct answers, in BOTH NP_USE_OIIO configurations.
     // Headless and GPU-free; writes and removes two `.npaint` files.
-    const bool cowTileOk = np::runCowTileTest();
+    const bool cowTileOk = !wanted("runCowTileTest") || np::runCowTileTest();
     // Phase 5 step 7 ("`core/History` -- a linear list with a cursor, not a
     // stack: undo moves it back, redo moves it forward, and a new edit at a
     // non-end cursor truncates the tail. Undo bounded in bytes"; PRD O1, A9,
@@ -3816,7 +3842,7 @@ int main(int argc, char** argv) {
     // truncation. Runs, and asserts the correct answers, in BOTH NP_USE_OIIO
     // configurations. Headless and GPU-free; writes and removes two `.npaint`
     // files.
-    const bool historyOk = np::runHistoryTest();
+    const bool historyOk = !wanted("runHistoryTest") || np::runHistoryTest();
     // Phase 5 step 8 ("History panel listing entries by originating tool or
     // op; clicking one moves the cursor there in a single replay, not N"; PRD
     // O2, O3, with O1's redo and O4's snapshots made visible): app/HistoryPanel
@@ -3835,7 +3861,7 @@ int main(int argc, char** argv) {
     // the branch the next edit destroys is legible without a screenshot. Runs,
     // and asserts the correct answers, in BOTH NP_USE_OIIO configurations.
     // Headless and GPU-free; writes no files.
-    const bool historyPanelOk = np::runHistoryPanelTest();
+    const bool historyPanelOk = !wanted("runHistoryPanelTest") || np::runHistoryPanelTest();
     // Phase 5 step 9 ("Clipping masks -- a layer or group clipped by the alpha
     // of the layer below"; PRD C9): one bool on core::Layer, one clipRuns()
     // pass, and a three-function bracket that folds a clipping group per texel
@@ -3856,7 +3882,7 @@ int main(int argc, char** argv) {
     // makes it hold is proven necessary rather than asserted. Runs, and
     // asserts the correct answers, in BOTH NP_USE_OIIO configurations.
     // Headless and GPU-free; writes and removes three `.npaint` files.
-    const bool clippingMaskOk = np::runClippingMaskTest();
+    const bool clippingMaskOk = !wanted("runClippingMaskTest") || np::runClippingMaskTest();
     // UI detour step 2 ("the document, on screen"): ui/DocumentTexture, the
     // edge that makes all nine of Phase 5's steps visible, plus core/Premultiply
     // -- the `a <= 0 -> {0,0,0,0}` guard promoted out of four retyped copies and
@@ -3867,10 +3893,10 @@ int main(int argc, char** argv) {
     // stride the readback direction refuses and reads it back through a padded
     // staging buffer. Runs, and asserts the correct answers, in BOTH NP_USE_OIIO
     // configurations. Writes no files.
-    const bool documentTextureOk = np::runDocumentTextureTest(gpu);
+    const bool documentTextureOk = !wanted("runDocumentTextureTest") || np::runDocumentTextureTest(gpu);
     // Phase 5 step 14 / PRD A5 + A6: the two-tab split's geometry and pane
     // rule, and the residency cap -- twenty tabs, two textures, measured.
-    const bool documentResidencyOk = np::runDocumentResidencyTest(gpu);
+    const bool documentResidencyOk = !wanted("runDocumentResidencyTest") || np::runDocumentResidencyTest(gpu);
     // UI detour step 3 ("the layer editor, and making it reachable"):
     // app/LayerEditor is the one surface the `Layer` menu and the LAYERS panel
     // buttons share, so this covers what every one of those controls does --
@@ -3879,13 +3905,13 @@ int main(int argc, char** argv) {
     // moves the revision exactly once and appends one history entry, while a
     // refusal moves neither. Runs, and asserts the correct answers, in BOTH
     // NP_USE_OIIO configurations. Headless and GPU-free; writes no files.
-    const bool layerEditorOk = np::runLayerEditorTest();
+    const bool layerEditorOk = !wanted("runLayerEditorTest") || np::runLayerEditorTest();
     // The same step's other half: app/ControlsLayout, the right-hand column's
     // order, its default-open set and the label column that stops a slider's
     // name being clipped by the panel edge, with ImGui's own
     // label-on-the-right run beside it and both clip counts printed. Headless
     // and GPU-free; writes no files.
-    const bool controlsLayoutOk = np::runControlsLayoutTest();
+    const bool controlsLayoutOk = !wanted("runControlsLayoutTest") || np::runControlsLayoutTest();
     // app/PanelLayout: the headless model behind the dockable panel system --
     // where every panel is (one of four docks, a flyout, or put away), in
     // what order, at what size, and that it survives a relaunch. The
@@ -3893,29 +3919,29 @@ int main(int argc, char** argv) {
     // rules, a version 1 file from the single-column build still reading
     // correctly, and a real save/load round trip under $NP_PANEL_LAYOUT.
     // Headless, GPU-free and ImGui-free.
-    const bool panelLayoutOk = np::runPanelLayoutTest();
+    const bool panelLayoutOk = !wanted("runPanelLayoutTest") || np::runPanelLayoutTest();
     // ui/DockLayout: the geometric half of the same feature -- that the slots
     // and splitters tile a dock exactly on all four sides, that a collapsed
     // panel hands its space to its neighbours, that the minimum-extent floor
     // holds without the slots overrunning the dock, that the overflow case is
     // disclosed rather than hidden, and that a splitter drag moves exactly
     // the boundary it grabbed. Headless, GPU-free and ImGui-free.
-    const bool dockLayoutOk = np::runDockLayoutTest();
+    const bool dockLayoutOk = !wanted("runDockLayoutTest") || np::runDockLayoutTest();
     // Track panelgear: the panel grip's gear settings button beside the "?"
     // -- COLOR is the only section that declares one, its Lucide codepoint
     // reaches the real face drawToolGlyph() reads, and panelGripFor()'s
     // title-fit predicate (re-derived independently; that function is
     // file-local to ui/MacPaintUI.cpp) flips exactly at the two-button
     // threshold a section with both a help button and a gear needs. GPU-free.
-    const bool panelSettingsOk = np::runPanelSettingsTest();
+    const bool panelSettingsOk = !wanted("runPanelSettingsTest") || np::runPanelSettingsTest();
     // The incremental composite (core/DirtyTiles + core/Composite's region
     // walk + ui/DocumentTexture's sub-rectangle upload): that the dirty set is
     // complete, that a non-tile-local change is classified as one, and that
     // ten kinds of edit composite bit-identically to a full recomposite.
-    const bool incrementalCompositeOk = np::runIncrementalCompositeTest(gpu);
+    const bool incrementalCompositeOk = !wanted("runIncrementalCompositeTest") || np::runIncrementalCompositeTest(gpu);
     // Phase 5 step 10 / PRD C10, C11: core/Merge's five operations, checked
     // against the composite they must preserve at a bound derived from f16.
-    const bool mergeFamilyOk = np::runMergeFamilyTest();
+    const bool mergeFamilyOk = !wanted("runMergeFamilyTest") || np::runMergeFamilyTest();
     // Phase 5 step 12 ("Layer comps -- named sets of visibility, position and
     // properties, restorable in one click and persisted in the document"; PRD
     // C14): the comp model, the id-keyed restore and its refusals, io/CompSerial's
@@ -3924,7 +3950,7 @@ int main(int argc, char** argv) {
     // not applicable, because core::Layer has none. Runs, and asserts the
     // correct answers, in BOTH NP_USE_OIIO configurations. Headless and
     // GPU-free; writes and removes five `.npaint` files.
-    const bool layerCompOk = np::runLayerCompTest();
+    const bool layerCompOk = !wanted("runLayerCompTest") || np::runLayerCompTest();
     // PLAN.md Phase 5's C7/C12 follow-on (PRD C7, P0): layer groups. The
     // model, core/LayerSetOps' span-splice Group/Ungroup commands and their
     // order-preservation proof, core/Composite's pass-through coverage fold
@@ -3932,13 +3958,13 @@ int main(int argc, char** argv) {
     // through the existing command funnel, and the `.npaint` round trip with
     // its older-build degradation. Headless and GPU-free; writes and removes
     // six `.npaint` files.
-    const bool layerGroupOk = np::runLayerGroupTest();
+    const bool layerGroupOk = !wanted("runLayerGroupTest") || np::runLayerGroupTest();
     // task/group-ui: the LAYERS panel's own half of PRD C7 -- the row-depth,
     // ancestry-ordering and collapsed-row predicate app/LayerPanel's pure
     // half adds, plus the CLI-provable finding that the command-issuing half
     // (a LAYERS gesture / a menu item) already existed before this step,
     // through ui/MacPaintUI.cpp's pre-existing generic command walk.
-    const bool layerGroupPanelOk = np::runLayerGroupPanelTest();
+    const bool layerGroupPanelOk = !wanted("runLayerGroupPanelTest") || np::runLayerGroupPanelTest();
     // Phase 5 step 13 ("Export comps to files, and layers to files -- one
     // shared loop"; PRD I16, I17): io/ExportStates' name template and its
     // path refusals, the pre-flight that decides collisions and overwrites
@@ -3953,57 +3979,57 @@ int main(int argc, char** argv) {
     // and (next) the action format all read through. See app/SelfTest.hpp.
     // app/Command: the recordable-command table and its one door. See
     // app/SelfTest.hpp.
-    const bool commandOk = np::runCommandTest();
+    const bool commandOk = !wanted("runCommandTest") || np::runCommandTest();
     // app/CommandsLayers: the three layer vocabularies as rows in that table
     // -- the exhaustiveness gate over LayerCommand and LayerSetCommand, the
     // by-name set resolution that refuses rather than narrowing, and the
     // lock's two directions. See app/SelfTest.hpp.
-    const bool commandsLayersOk = np::runCommandsLayersTest();
+    const bool commandsLayersOk = !wanted("runCommandsLayersTest") || np::runCommandsLayersTest();
     // app/Recorder: what `applyCommand()` writes down while a recording is
     // armed, and the two things it refuses to be quietly wrong about -- a
     // moved active layer, and a live marquee no channel names. See
     // app/SelfTest.hpp.
-    const bool recorderOk = np::runRecorderTest();
-    const bool actionFileOk = np::runActionFileTest();
-    const bool replayOk = np::runReplayTest();
+    const bool recorderOk = !wanted("runRecorderTest") || np::runRecorderTest();
+    const bool actionFileOk = !wanted("runActionFileTest") || np::runActionFileTest();
+    const bool replayOk = !wanted("runReplayTest") || np::runReplayTest();
     // app/Batch: one action over many files, and the pre-flight that makes PRD
     // P4 -- "never partially overwrites an input" -- a property of the module
     // rather than a promise about it. A thirty-file run, headless, into a temp
     // directory, with every input hashed on both sides. See app/SelfTest.hpp.
-    const bool batchOk = np::runBatchTest();
-    const bool batchDialogOk = np::runBatchDialogTest();
+    const bool batchOk = !wanted("runBatchTest") || np::runBatchTest();
+    const bool batchDialogOk = !wanted("runBatchDialogTest") || np::runBatchDialogTest();
     // app/ActionsPanel: the ACTIONS panel's model -- which buttons are live
     // when, what a step row reads, the two row verbs, and the arm/stop
     // lifecycle that keeps a process-wide recorder from being left armed.
     // See app/SelfTest.hpp.
-    const bool actionsPanelOk = np::runActionsPanelTest();
+    const bool actionsPanelOk = !wanted("runActionsPanelTest") || np::runActionsPanelTest();
     // app/CommandsOpStack: the rows that carry an op as a parameter, keyed by
     // kind NAME, and the selection rows that cross the session/document line.
     // See app/SelfTest.hpp.
-    const bool commandsOpStackOk = np::runCommandsOpStackTest();
+    const bool commandsOpStackOk = !wanted("runCommandsOpStackTest") || np::runCommandsOpStackTest();
     // app/ChannelsPanel: the CHANNELS dock tab's pure row mapping. See
     // app/SelfTest.hpp.
-    const bool channelsPanelOk = np::runChannelsPanelTest();
+    const bool channelsPanelOk = !wanted("runChannelsPanelTest") || np::runChannelsPanelTest();
     // PRD E12's app-level half: toggleQuickMask() and brush/QuickMaskPaint's
     // dab arithmetic. See app/SelfTest.hpp.
-    const bool quickMaskPaintOk = np::runQuickMaskPaintTest();
+    const bool quickMaskPaintOk = !wanted("runQuickMaskPaintTest") || np::runQuickMaskPaintTest();
     // app/CommandsImage: the thirty rows that change pixels or the document's
     // geometry, and the adapter layer between a JSON object and the appliers
     // they drive. See app/SelfTest.hpp for the four ways an adapter can be
     // wrong while looking right, which is what this section is for.
-    const bool commandsImageOk = np::runCommandsImageTest();
+    const bool commandsImageOk = !wanted("runCommandsImageTest") || np::runCommandsImageTest();
     // app/CommandsPatterns + ops/Lens + ops/Pattern: PLAN.md Phase 19 step 5's
     // two parked P2 image ops, asserted as arithmetic -- a bit-exact identity
     // pass, a corrected ramp against the published radial model, and a
     // pattern's own seams. See app/SelfTest.hpp.
-    const bool commandsPatternsOk = np::runCommandsPatternsTest();
+    const bool commandsPatternsOk = !wanted("runCommandsPatternsTest") || np::runCommandsPatternsTest();
     // The UI -> command-layer reroute (docs/automation-plan.md step 2): that
     // every migrated menu item, dialog and panel control reaches
     // `applyCommand()` and therefore the recorder, and that reaching it left
     // the pixels bit-identical. See app/SelfTest.hpp.
-    const bool commandCallsitesOk = np::runCommandCallsitesTest();
-    const bool jsonOk = np::runJsonTest();
-    const bool exportStatesOk = np::runExportStatesTest();
+    const bool commandCallsitesOk = !wanted("runCommandCallsitesTest") || np::runCommandCallsitesTest();
+    const bool jsonOk = !wanted("runJsonTest") || np::runJsonTest();
+    const bool exportStatesOk = !wanted("runExportStatesTest") || np::runExportStatesTest();
     // app/ExportDialog: the decisions BOTH export dialogs make -- which
     // control is live, what sentence goes beside a greyed Export button, and
     // which rows a Format menu has. Lifted out of ui/MacPaintUI.cpp in answer
@@ -4014,24 +4040,24 @@ int main(int argc, char** argv) {
     // the golden harness's new `export_as` / `export_as_blocked` /
     // `export_states` views, which are the first coverage either dialog has
     // ever had.
-    const bool exportDialogOk = np::runExportDialogTest();
+    const bool exportDialogOk = !wanted("runExportDialogTest") || np::runExportDialogTest();
     // Phase 5 -- the CPU Pigment deposit (brush/Deposit + app/StrokeSession):
     // what one dab does to one texel, that a stroke's tile set is complete and
     // tight, that N dabs are one undo step, and `Mix` witnessed from a stroke.
-    const bool pigmentDepositOk = np::runPigmentDepositTest();
+    const bool pigmentDepositOk = !wanted("runPigmentDepositTest") || np::runPigmentDepositTest();
     // Phase 5 -- painting on a plain RGB layer (brush/RgbDeposit), and the
     // routing fix that made it reachable: the premultiplied and linear
     // conventions established rather than assumed, the per-stroke opacity
     // ceiling with the rejected per-dab model measured beside it, speed
     // independence at zero tolerance, the selection as a bound rather than a
     // speed limit, and paint landing on the active layer and on no other.
-    const bool rgbDepositOk = np::runRgbDepositTest();
+    const bool rgbDepositOk = !wanted("runRgbDepositTest") || np::runRgbDepositTest();
     // brush/RgbDeposit.hpp §2a -- the brush's own blend mode (Photoshop's
     // `Md `) reaching an RGB layer, STROKE-level against the texel latched
     // before the stroke began, never per-dab against the live layer. Normal
     // bit-identical to the pre-existing path, Multiply/Darken hand-checked,
     // no compounding across overlapping dabs, alpha lock's freeze re-derived.
-    const bool brushBlendModeOk = np::runBrushBlendModeTest();
+    const bool brushBlendModeOk = !wanted("runBrushBlendModeTest") || np::runBrushBlendModeTest();
     // PRD F9/F10 (both P0), ADR-0007 -- the eraser on a plain RGB layer, which
     // until this step did NOTHING: Tool::Eraser sat in the not-built routing
     // list, so a drag with it reached no layer and said nothing about why.
@@ -4039,7 +4065,7 @@ int main(int argc, char** argv) {
     // per-stroke FLOOR with the rejected per-dab model measured beside it, the
     // selection as a bound rather than a speed limit, and an erase that costs
     // nothing on blank canvas.
-    const bool rgbEraseOk = np::runRgbEraseTest();
+    const bool rgbEraseOk = !wanted("runRgbEraseTest") || np::runRgbEraseTest();
     // brush/PencilDeposit -- the pencil, which until this step sat in the
     // not-built routing list and did nothing at all. The section's own subject
     // is the design question the tool had to answer: "aliased" alone is not a
@@ -4049,7 +4075,7 @@ int main(int argc, char** argv) {
     // pencil thresholds its coverage AND reads no flow, and the load-bearing
     // assertion runs both engines at hardness 1 and counts the distinct alphas
     // each stroke leaves: one for the pencil, many for the brush.
-    const bool pencilDepositOk = np::runPencilDepositTest();
+    const bool pencilDepositOk = !wanted("runPencilDepositTest") || np::runPencilDepositTest();
     // Dodge and Burn, which until this step did NOTHING: both sat in
     // strokeRouteFor()'s not-built routing list, so a drag with either reached
     // no layer and said nothing about why. One engine with a direction latched
@@ -4058,7 +4084,7 @@ int main(int argc, char** argv) {
     // decision asserted by its consequences; the per-stroke ceiling that makes a
     // self-crossing stroke apply its shift once, with the rejected per-dab model
     // measured beside it; and a Pigment layer refusing by name.
-    const bool tonalBrushOk = np::runTonalBrushTest();
+    const bool tonalBrushOk = !wanted("runTonalBrushTest") || np::runTonalBrushTest();
     // brush/Smudge -- the smudge tool, which until this step sat in the
     // not-built routing list and did nothing at all. The first route whose dabs
     // are not independent: it carries a colour from dab to dab, so the section's
@@ -4067,7 +4093,7 @@ int main(int argc, char** argv) {
     // backwards leaving that region bit-identically empty. Both endpoints of
     // strength are exact: 0 is a byte-identical no-op with the rejected blur
     // measured beside it, 1 carries one colour the whole length of the stroke.
-    const bool smudgeOk = np::runSmudgeTest();
+    const bool smudgeOk = !wanted("runSmudgeTest") || np::runSmudgeTest();
     // brush/Smudge §3b -- the smudge's own parameter block, and the section
     // that exists because the one directly above it was green while the tool
     // was unusable. Strength was the OPACITY slider, which defaults to 1, and 1
@@ -4076,7 +4102,7 @@ int main(int argc, char** argv) {
     // the default does. This one runs the tip the app itself builds out of an
     // unconfigured AppState and requires the fade, with the identical drag at
     // strength 1 measured beside it as the negative.
-    const bool smudgeOptionsOk = np::runSmudgeOptionsTest();
+    const bool smudgeOptionsOk = !wanted("runSmudgeOptionsTest") || np::runSmudgeOptionsTest();
     // brush/PigmentSmudge -- the smudge on a Pigment layer, which the routing
     // table refused by name until the mass-weighted mean of a footprint of
     // latents was decided and asserted. Asserted three ways: one pigment in is
@@ -4084,7 +4110,7 @@ int main(int argc, char** argv) {
     // texel thins the finger without bleaching it (the rejected arithmetic mean
     // measured beside it), and a mixed footprint picks up exactly what
     // depositTexel() makes of the same two paints.
-    const bool pigmentSmudgeOk = np::runPigmentSmudgeTest();
+    const bool pigmentSmudgeOk = !wanted("runPigmentSmudgeTest") || np::runPigmentSmudgeTest();
     // PRD E1 (P0) on the layer kind that never had it, and ADR-0007's Pigment
     // eraser row that gate unblocked. brush/Deposit.hpp did not contain the word
     // "Selection", so a natural-media stroke on a Pigment layer painted straight
@@ -4095,7 +4121,7 @@ int main(int argc, char** argv) {
     // that gate as its single blocker: the floor at zero tolerance, the latent
     // bit-identical, and an emptied texel proven well-formed by the rule a
     // straight-latent storage actually has rather than by the premultiplied one.
-    const bool pigmentSelectionOk = np::runPigmentSelectionTest();
+    const bool pigmentSelectionOk = !wanted("runPigmentSelectionTest") || np::runPigmentSelectionTest();
     // brush/CloneStamp and app/StrokeSession §1b -- the clone stamp, which
     // until this step sat in the not-built routing list and did nothing at
     // all. The source is snapshotted at pen-down, so an overlapping source and
@@ -4103,7 +4129,7 @@ int main(int argc, char** argv) {
     // result that depends on which way the tile and texel loops happen to run;
     // an unset source refuses out loud rather than stamping the layer onto
     // itself, which is a perfect no-op and therefore invisible.
-    const bool cloneStampOk = np::runCloneStampTest();
+    const bool cloneStampOk = !wanted("runCloneStampTest") || np::runCloneStampTest();
     // ops/Poisson, brush/Heal and app/StrokeSession §1c -- PRD D6's heal, the
     // tenth stroke tool and the first route whose answer is the solution to an
     // equation rather than a composite of samples. Everything it shares with
@@ -4114,7 +4140,7 @@ int main(int argc, char** argv) {
     // Laplacian inside), the two exactness cases at zero tolerance, and one dab
     // over a ramp that a heal must leave bit-identical while the clone stamp,
     // on the identical fixture at the identical offset, moves every texel.
-    const bool healOk = np::runHealTest();
+    const bool healOk = !wanted("runHealTest") || np::runHealTest();
     // PRD D25/D26 -- the paint bucket's refusals. ops/FloodFill was never
     // wrong; the gate in front of it was inside the click condition, so a
     // bucket click on the layer kind a new layer defaults to disappeared with
@@ -4123,7 +4149,7 @@ int main(int argc, char** argv) {
     // locked told apart from no-RGB-store, the options bar's two tables read at
     // once, PRD E1's selection bound at exact zero -- and the live recomposite
     // the Layer Properties dialog's undimmed modal depends on.
-    const bool bucketRefusalOk = np::runBucketRefusalTest();
+    const bool bucketRefusalOk = !wanted("runBucketRefusalTest") || np::runBucketRefusalTest();
     // ui/ToolCursor -- the pointer, which until now was the OS arrow over every
     // tool because the build made no cursor call at all. The table is total and
     // no tool answers the fallback; the brush is a real crosshair, which needed
@@ -4135,23 +4161,23 @@ int main(int argc, char** argv) {
     // over a locked layer and a bucket over a Pigment layer are slashed before
     // the gesture is spent -- with the successes asserted beside them so a
     // function that always answers "not allowed" cannot pass.
-    const bool toolCursorOk = np::runToolCursorTest();
+    const bool toolCursorOk = !wanted("runToolCursorTest") || np::runToolCursorTest();
     // Phase 5 step 11 / PRD C12, C13, C15: the multi-selection's ordering and
     // all-or-nothing rules, the integer-pixel translate align is built on
     // (asserted bit-identical), links, colour labels and the panel filter.
-    const bool layerMultiSelectOk = np::runLayerMultiSelectTest();
+    const bool layerMultiSelectOk = !wanted("runLayerMultiSelectTest") || np::runLayerMultiSelectTest();
     // The LAYERS panel as design "naturalPaint Panels" turn 2 option 2a
     // specifies it: the kind rail, the NEW popup's seven kinds, the row
     // metadata line against the design's own examples -- and the three pieces
     // of 2a that are deliberately NOT drawn, each pinned so a later revision
     // cannot quietly invent the number behind it.
-    const bool layerPanel2aOk = np::runLayerPanel2aTest();
+    const bool layerPanel2aOk = !wanted("runLayerPanel2aTest") || np::runLayerPanel2aTest();
     // The same panel's list box: fixed to the dock's height, so the command
     // row below it does not walk up and down as layers are added and deleted.
-    const bool layerListHeightOk = np::runLayerListHeightTest();
+    const bool layerListHeightOk = !wanted("runLayerListHeightTest") || np::runLayerListHeightTest();
     // Phase 12 / PRD G7, G9: io/Descriptor, the Action Descriptor reader, against
     // synthetic fixtures parsed out of guard-paged mappings.
-    const bool descriptorOk = np::runDescriptorTest();
+    const bool descriptorOk = !wanted("runDescriptorTest") || np::runDescriptorTest();
     // app/CloseDecision: closing a document that holds unsaved work. PRD I11's
     // refusal was correct and invisible -- it went to a line of dim grey beside
     // the menus, so the tab's close box read as a dead control. This is the
@@ -4161,13 +4187,13 @@ int main(int argc, char** argv) {
     // *different* document, so an index-keyed version discards the wrong one
     // successfully instead of failing. Headless, GPU-free, writes no files, and
     // asserts the same answers in BOTH NP_USE_OIIO configurations.
-    const bool closeDecisionOk = np::runCloseDecisionTest();
+    const bool closeDecisionOk = !wanted("runCloseDecisionTest") || np::runCloseDecisionTest();
     // app/ImportImage and app/QuitSequence: the way an image gets into the open
     // document, and the way the application gets out without discarding it.
     // Both were features that existed and could not be reached -- an importer
     // with no caller outside this suite, and a quit that never asked a single
     // document whether it was dirty.
-    const bool quitGuardOk = np::runQuitGuardTest();
+    const bool quitGuardOk = !wanted("runQuitGuardTest") || np::runQuitGuardTest();
     // docs/reachability-audit.md D1, D2, D4, A4: undo/redo reachable by
     // keyboard and menu (not mouse-only), the Edit menu's nine
     // clipboard/selection commands correctly wired and correctly
@@ -4176,7 +4202,7 @@ int main(int argc, char** argv) {
     // a document. Headless; deliberately does not call
     // menuContextFromState() itself, so it never touches the user's real
     // recent-documents file.
-    const bool menuBasicsOk = np::runMenuBasicsTest();
+    const bool menuBasicsOk = !wanted("runMenuBasicsTest") || np::runMenuBasicsTest();
     // ui/MenuModel: the menu bar as data, so that a native macOS menu and the
     // ImGui one can be two renderings of ONE set of actions rather than two
     // copies of them. Headless -- no window, no GPU, no ImGui context, no
@@ -4184,18 +4210,18 @@ int main(int argc, char** argv) {
     // performing the model's Quit sets `requestQuit` and leaves `quit` alone,
     // so a backend wired to Cocoa's `terminate:` -- which would route straight
     // past the guard runQuitGuardTest() covers -- cannot pass.
-    const bool menuModelOk = np::runMenuModelTest();
+    const bool menuModelOk = !wanted("runMenuModelTest") || np::runMenuModelTest();
     // A real, opt-in PIGMENT panel: the Hidden-by-default placement table,
     // the Window > Pigment check item, and the session override
     // (`AppState::pigmentOverride`, `effectivePigmentConstants()`,
     // `selectPigment()`) it turns live. Headless, GPU-free and ImGui-free.
-    const bool pigmentPanelOk = np::runPigmentPanelTest();
+    const bool pigmentPanelOk = !wanted("runPigmentPanelTest") || np::runPigmentPanelTest();
     // The Select menu (docs/reachability-audit.md C5; PRD E4/E8/E9): the
     // dialog-to-engine wiring for grow, shrink, feather, colour range and
     // luminance range, plus the dedicated undo stack a pure-selection change
     // needs because core::History cannot hold one. Headless -- no window, no
     // GPU, no ImGui context.
-    const bool selectMenuOk = np::runSelectMenuTest();
+    const bool selectMenuOk = !wanted("runSelectMenuTest") || np::runSelectMenuTest();
     // app/OpenAnyFile and io/FileKind: File > Open takes any file this build
     // reads, and which reader it goes to is decided from the file's **bytes**
     // rather than its extension -- a `.npaint` is an OpenEXR carrying
@@ -4203,7 +4229,7 @@ int main(int argc, char** argv) {
     // `sketch.npaint` is still a picture. Plus the drag-and-drop routing rule,
     // asserted as a pure function so it needs no window, and what a drop of
     // twelve files at once resolves to.
-    const bool openAnyFileOk = np::runOpenAnyFileTest();
+    const bool openAnyFileOk = !wanted("runOpenAnyFileTest") || np::runOpenAnyFileTest();
     // io/PsdImport: a hand-written, dependency-free reader for LAYERED PSD
     // files, and the app/OpenAnyFile.cpp seam that section's own header
     // named before this module existed -- "a decoder returning a Document
@@ -4211,26 +4237,26 @@ int main(int argc, char** argv) {
     // function". No genuine Photoshop file was available to test against;
     // this section's own doc comment states exactly what that leaves
     // unverified.
-    const bool psdImportOk = np::runPsdImportTest();
+    const bool psdImportOk = !wanted("runPsdImportTest") || np::runPsdImportTest();
     // io/PsdVectorPath: step 1 of docs/psd-vector-shapes.md -- decoding a
     // `vsms`/`vmsk` path-record block into `core::Path` geometry, checked
     // against known-answer fixtures dumped from real Photoshop files.
-    const bool psdVectorPathOk = np::runPsdVectorPathTest();
+    const bool psdVectorPathOk = !wanted("runPsdVectorPathTest") || np::runPsdVectorPathTest();
     // io/PsdVectorCompose: step 2 of docs/psd-vector-shapes.md, folding a
     // decoded shape layer's boolean path operations into one compound Path
     // and fill rule -- refusing Intersect and mixed-Exclude layers by name
     // rather than guessing.
-    const bool psdVectorComposeOk = np::runPsdVectorComposeTest();
+    const bool psdVectorComposeOk = !wanted("runPsdVectorComposeTest") || np::runPsdVectorComposeTest();
     // io/PsdVectorStyle: step 3 -- the fill and stroke descriptors, and the
     // first real Photoshop bytes this tree has fed to io/Descriptor.
-    const bool psdVectorStyleOk = np::runPsdVectorStyleTest();
+    const bool psdVectorStyleOk = !wanted("runPsdVectorStyleTest") || np::runPsdVectorStyleTest();
     // docs/psd-vector-shapes.md S2's PSD half: `GdFl` in and `GdFl` out. Read
     // app/SelfTest.hpp on what this section can and cannot prove -- no file on
     // this machine carries a real `GdFl` to check against.
-    const bool psdVectorGradientOk = np::runPsdVectorGradientTest();
+    const bool psdVectorGradientOk = !wanted("runPsdVectorGradientTest") || np::runPsdVectorGradientTest();
     // The three of them in order on one real layer -- the seam no per-module
     // section can see.
-    const bool psdVectorChainOk = np::runPsdVectorChainTest();
+    const bool psdVectorChainOk = !wanted("runPsdVectorChainTest") || np::runPsdVectorChainTest();
     // app/FilterOps, ui/MenuModel's Filter and Image menus (docs/
     // reachability-audit.md C1): six of ops/Blur's, ops/Filters' and ops/
     // DocumentTransform's ~93 tested-but-unreachable entry points, wired to
@@ -4241,13 +4267,13 @@ int main(int argc, char** argv) {
     // history entry per confirmed dialog with an exact undo, and a layer
     // PixelOpRefusal cannot touch refuses by the SAME message the paint
     // bucket already uses.
-    const bool filterMenuOk = np::runFilterMenuTest();
+    const bool filterMenuOk = !wanted("runFilterMenuTest") || np::runFilterMenuTest();
     // Image > Adjustments (app/AdjustmentOps, ops/PointOpTiles): the tile-level
     // runner for ops/PointOps' pure rgb->rgb functions, the bridge that aims
     // one at the active layer through the selection, and the five menu items.
     // See SelfTest.hpp for why this section deliberately re-tests neither the
     // maths nor the selection blend. Headless and GPU-free.
-    const bool adjustmentMenuOk = np::runAdjustmentMenuTest();
+    const bool adjustmentMenuOk = !wanted("runAdjustmentMenuTest") || np::runAdjustmentMenuTest();
     // PRD D8 / PLAN.md phase 9: lighting-gradient removal and offset with
     // wrap, the two make-tileable pixel ops, through the same
     // app/PixelOpBridge.hpp templates the Filter menu already runs on. Proves
@@ -4255,107 +4281,107 @@ int main(int argc, char** argv) {
     // that the mean's rectangle is not the request's, that an offset copies
     // rather than filters, and that an offset refuses a selection out loud.
     // Headless and GPU-free.
-    const bool tileableOk = np::runTileableTest();
+    const bool tileableOk = !wanted("runTileableTest") || np::runTileableTest();
     // Reachability audit A5/B2/B3: the BRUSH panel's shared-field ranges, the
     // WET slider's route-dependent disabled state, and the loaded pigment's
     // ownership of Density/Staining/Granulation. Headless -- no ImGui frame,
     // no window; see the section's own doc comment for what that leaves
     // unverified.
-    const bool chromeConsistencyOk = np::runChromeConsistencyTest();
+    const bool chromeConsistencyOk = !wanted("runChromeConsistencyTest") || np::runChromeConsistencyTest();
     // Reachability audit D5 / PRD I13: a save is now read back through the
     // same reader File > Open uses and structurally verified before the
     // original file is replaced, closing the in-place-write hazard the step
     // found alongside the missing readback.
-    const bool saveReadbackOk = np::runSaveReadbackTest();
+    const bool saveReadbackOk = !wanted("runSaveReadbackTest") || np::runSaveReadbackTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
-    const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
+    const bool strokeSpeedOk = !wanted("runStrokeSpeedTest") || np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
     // any other) ever constructed a PaintSim.
-    const bool idleMemOk = np::runIdleMemoryTest(idleRssBytes, idleFootprintBytes);
+    const bool idleMemOk = !wanted("runIdleMemoryTest") || np::runIdleMemoryTest(idleRssBytes, idleFootprintBytes);
     // track8/zoom (PRD Q1, R5): the Zoom tool's click/Alt-click/scrubby-drag
     // anchor math and the brush-size gesture/bracket-key range, both as pure
     // functions -- app/ZoomAndSize.hpp. Headless and GPU-free.
-    const bool zoomAndSizeOk = np::runZoomAndSizeTest();
+    const bool zoomAndSizeOk = !wanted("runZoomAndSizeTest") || np::runZoomAndSizeTest();
     // PRD D8 / PLAN.md Phase 9: the 3x3 repeat preview -- where the nine
     // copies go, that they abut through the real ViewTransform, and that
     // entering and leaving give the user's view back (app/TilePreview.hpp).
     // Headless and GPU-free.
-    const bool tilePreviewOk = np::runTilePreviewTest();
+    const bool tilePreviewOk = !wanted("runTilePreviewTest") || np::runTilePreviewTest();
     // naturalPaint canvasdim bug fix: `canvasDimensionsFor()` (app/
     // ZoomAndSize.hpp section 4) -- the active document's own size is now
     // `ui/MacPaintUI.cpp`'s canvas block's one source of truth for its
     // on-screen `texW`/`texH`, closing "a non-square document displays
     // square". Headless and GPU-free.
-    const bool canvasDimensionsOk = np::runCanvasDimensionsTest();
+    const bool canvasDimensionsOk = !wanted("runCanvasDimensionsTest") || np::runCanvasDimensionsTest();
     // track10/input ("make Mac trackpad input feel right"): the notch-vs-
     // precise wheel classifier, the panel scroll's discount/smoothing, and
     // the pinch-to-zoom path's arithmetic -- app/WheelInput.hpp. Headless;
     // the SDL/ImGui dispatch sites this feeds are unreachable from here (F4).
-    const bool wheelInputOk = np::runWheelInputTest();
+    const bool wheelInputOk = !wanted("runWheelInputTest") || np::runWheelInputTest();
     // item 4 ("trackpad interactions feel unnatural"): app/TouchGesture.hpp's
     // pure two-touch pan+zoom+rotate geometry, the half of the raw-touch
     // capture --selftest can reach (the NSTouch/AppKit dispatch itself is
     // unreachable from here, F4, the same as every other native trackpad path).
-    const bool touchGestureOk = np::runTouchGestureTest();
+    const bool touchGestureOk = !wanted("runTouchGestureTest") || np::runTouchGestureTest();
     // item 4 continued: app/TouchGestureSession's gesture-start-baseline
     // half, the part computeTwoTouchDelta() alone (just tested above)
     // cannot exercise since it is stateless.
-    const bool touchGestureSessionOk = np::runTouchGestureSessionTest();
+    const bool touchGestureSessionOk = !wanted("runTouchGestureSessionTest") || np::runTouchGestureSessionTest();
     // track10/feel (PaintCopilot §3.2, arXiv:2605.20941): the log/power
     // pressure-response curves and the pressure EMA's per-stroke reset.
-    const bool pressureFeelOk = np::runPressureFeelTest();
+    const bool pressureFeelOk = !wanted("runPressureFeelTest") || np::runPressureFeelTest();
     // Phase C Part 2: Transfer Opacity/Flow, latched once at pen-down and
     // (for Flow) applied fresh every dab. Headless and GPU-free.
-    const bool transferDynamicsOk = np::runTransferDynamicsTest();
+    const bool transferDynamicsOk = !wanted("runTransferDynamicsTest") || np::runTransferDynamicsTest();
     // Phase C Part 3 (bounded): the `Md ` blend id mapping and its one call
     // site -- groundwork only, no route wired. Headless and GPU-free.
-    const bool toolOptionsBlendOk = np::runToolOptionsBlendTest();
-  const bool strokePreviewOk = np::runStrokePreviewTest();
+    const bool toolOptionsBlendOk = !wanted("runToolOptionsBlendTest") || np::runToolOptionsBlendTest();
+  const bool strokePreviewOk = !wanted("runStrokePreviewTest") || np::runStrokePreviewTest();
     // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp), US 5,347,620:
     // the tiled grain field, `F = clamp(P*S*O1 - G, 0, 1)`, grain OFF as a
     // bit-exact no-op, `app/DabPreview` agreeing with a real `depositDab()`
     // on a grained dab, and the field keyed on absolute document position
     // rather than dab-local offset -- the assertion a grain that moved with
     // the brush would fail.
-    const bool grainOk = np::runGrainTest();
+    const bool grainOk = !wanted("runGrainTest") || np::runGrainTest();
     // The OS file panel (ui/FileDialog.hpp): SDL's own validator on every
     // filter pattern this build ships, the filter lists derived from
     // io/Capabilities rather than hard-coded, and the cross-thread mailbox
     // that carries the chosen path back from SDL's callback.
-    const bool fileDialogOk = np::runFileDialogTest();
+    const bool fileDialogOk = !wanted("runFileDialogTest") || np::runFileDialogTest();
     // app/DocumentPresets (docs/testing-issues.md T9, piece 1): the sizes
     // File > New offers, the built-in set, and user-defined presets --
     // add/rename/remove, persisted, atomically. Headless and GPU-free.
-    const bool documentPresetsOk = np::runDocumentPresetsTest();
+    const bool documentPresetsOk = !wanted("runDocumentPresetsTest") || np::runDocumentPresetsTest();
     // io/ClipboardImage (docs/testing-issues.md T9, piece 2): the system-
     // pasteboard bridge the "New from Clipboard" preset needs. Runs after
     // SDL_Init(SDL_INIT_VIDEO) above, so the live pasteboard queries this
     // section makes are real, not stubbed.
-    const bool clipboardImageOk = np::runClipboardImageTest();
+    const bool clipboardImageOk = !wanted("runClipboardImageTest") || np::runClipboardImageTest();
     // docs/architecture-review.md P0-3: core/Parallel (the threading layer)
     // and its two consumers, ops/Blur.cpp's blurTiles() and ops/Filters.cpp's
     // scatterAligned()/gatherBlurredPlane(). Headless and GPU-free -- pure
     // CPU tile arithmetic, no PaintSim involvement.
-    const bool parallelOk = np::runParallelTest();
+    const bool parallelOk = !wanted("runParallelTest") || np::runParallelTest();
     // docs/architecture-review.md P0-4: the premise check for "the full
     // composite is layer-major over a 256 MB accumulator" -- composite cost
     // vs. layer count at 2048x2048, and the zero-fill's own share of it,
     // measured before any loop-order change is made on the strength of the
     // finding alone. Headless and GPU-free.
-    const bool compositeCostOk = np::runCompositeCostTest();
+    const bool compositeCostOk = !wanted("runCompositeCostTest") || np::runCompositeCostTest();
     // Step 0 of the ops/Resample + ops/Transform performance task: whether
     // those two per-texel walks are worth threading/vectorising, measured
     // rather than assumed. Headless and GPU-free -- pure CPU resampling,
     // same as runTransformTest().
-    const bool resamplePerfOk = np::runResamplePerfTest();
+    const bool resamplePerfOk = !wanted("runResamplePerfTest") || np::runResamplePerfTest();
     // docs/architecture-review.md P1-2: core/ResourcePaths -- the resolver
     // this task added so the binary can leave the machine that built it.
     // Headless and GPU-free -- pure filesystem, no PaintSim involvement.
-    const bool resourcePathsOk = np::runResourcePathsTest();
+    const bool resourcePathsOk = !wanted("runResourcePathsTest") || np::runResourcePathsTest();
     // ADR-0010: no bare BeginPopupModal() in src/ui outside ui/Dialog.cpp.
     // A source scan, because the rule is invisible to the compiler and to
     // every runtime assertion in this suite. Headless and GPU-free.
-    const bool dialogModuleOk = np::runDialogModuleTest();
+    const bool dialogModuleOk = !wanted("runDialogModuleTest") || np::runDialogModuleTest();
     // core/Composite.cpp's opaque-floor early exit: a layer, clip base, or
     // Mix pair whose own effective alpha is exactly 1.0 everywhere in a
     // tile makes everything strictly below it in that tile provably
@@ -4363,7 +4389,7 @@ int main(int argc, char** argv) {
     // every qualifying and disqualifying case, a document-surgery sabotage
     // proof, a stale-cache invalidation proof, and a printed (not asserted)
     // performance sanity check. Headless and GPU-free.
-    const bool opaqueFloorOk = np::runOpaqueFloorTest();
+    const bool opaqueFloorOk = !wanted("runOpaqueFloorTest") || np::runOpaqueFloorTest();
     // core/Composite.cpp's tile-parallel walk: the four tile loops now
     // dispatch through core::parallelFor() instead of a plain range-for.
     // Bit-identical serial-vs-parallel for a rich fixture (full and
@@ -4371,7 +4397,7 @@ int main(int argc, char** argv) {
     // of the exact shared-mutable-state hazard the fix rules out, and a
     // printed (not asserted) performance comparison. Headless and
     // GPU-free.
-    const bool compositeParallelOk = np::runCompositeParallelTest();
+    const bool compositeParallelOk = !wanted("runCompositeParallelTest") || np::runCompositeParallelTest();
     // ui/DocumentTexture.hpp decision 6: viewFor()'s optional
     // DocumentTextureViewport -- tiles outside it may be deferred and
     // caught up over later calls instead of every dirty tile always being
@@ -4380,61 +4406,71 @@ int main(int argc, char** argv) {
     // deferral, the snapshot-overwrite trap proven directly, convergence of
     // a parked backlog, prompt catch-up on scroll-into-view, and a printed
     // (not asserted) per-tile cost measurement.
-    const bool viewportDeferredCompositeOk = np::runViewportDeferredCompositeTest(gpu);
+    const bool viewportDeferredCompositeOk = !wanted("runViewportDeferredCompositeTest") || np::runViewportDeferredCompositeTest(gpu);
     // PLAN.md phase 16 (ADR-0009): the flatting library absorbed from
     // autoFlats, bit-exact against its reference on the shared fixtures.
-    const bool flatsOk = np::runFlatsTest();
+    const bool flatsOk = !wanted("runFlatsTest") || np::runFlatsTest();
     // docs/ui.md §4a: Tool::Shape's headless geometry and commit --
     // app/ShapeTool. Appended at the end of the chain per this wave's own
     // convention for a new section.
-    const bool shapeToolOk = np::runShapeToolTest();
+    const bool shapeToolOk = !wanted("runShapeToolTest") || np::runShapeToolTest();
     // Track `xform` (PRD C12): a multi-layer selection transformed together
     // as one set, through app/TransformSession's `TransformTarget::LayerSet`.
     // Appended at the end of the chain, per this wave's own convention.
-    const bool transformLayerSetOk = np::runTransformLayerSetTest();
+    const bool transformLayerSetOk = !wanted("runTransformLayerSetTest") || np::runTransformLayerSetTest();
     // PLAN.md gap-closing wave, track `region`: core::Region, the Frame and
     // Slice tools' shared gesture, np:regions persistence, the geometry-edit
     // hookup in ops/DocumentTransform, and io/ExportRegions. Headless and
     // GPU-free.
-    const bool regionOk = np::runRegionTest();
+    const bool regionOk = !wanted("runRegionTest") || np::runRegionTest();
     // Track B / B1+B2: `BrushTip::edgePx`'s pixel-wide antialiasing floor on
     // the procedural falloff, and `BrushTipBitmap::mips`' box-filter chain
     // for a minified sampled tip. Headless and GPU-free.
-    const bool tipEdgeOk = np::runTipEdgeTest();
+    const bool tipEdgeOk = !wanted("runTipEdgeTest") || np::runTipEdgeTest();
     // brush/NativeBrush: naturalPaint's own brush section (load, wetness,
     // grain), beside BrushModel. nativeBrushEqual()'s
     // discrimination, BrushModel's leaf count dropping to 149,
     // applyPresetToBrush()/presetFromBrush()'s round trip, a legacy
     // user-presets.txt fixture, and brushTipFor()'s exact reads. Headless and
     // GPU-free.
-    const bool nativeBrushOk = np::runNativeBrushTest();
+    const bool nativeBrushOk = !wanted("runNativeBrushTest") || np::runNativeBrushTest();
     // Track A: full-rate pointer input and per-dab axis interpolation --
     // StrokePath's axis-carrying StrokeSample/StrokeDab, distance-keyed
     // pressure smoothing, and depositPending() resolving Pressure/Tilt/
     // Azimuth/Barrel from each dab rather than from one frame-latched
     // reading. Headless and GPU-free (app/SelfTest.hpp's own comment on it).
-    const bool strokeInputOk = np::runStrokeInputTest();
-    const bool pointerQueueOk = np::runPointerQueueTest();
-    const bool appIconOk = np::runAppIconTest();
+    const bool strokeInputOk = !wanted("runStrokeInputTest") || np::runStrokeInputTest();
+    const bool pointerQueueOk = !wanted("runPointerQueueTest") || np::runPointerQueueTest();
+    const bool appIconOk = !wanted("runAppIconTest") || np::runAppIconTest();
+    // The stabiliser and entry taper/origin dab. Headless and GPU-free
+    // (app/SelfTest.hpp's own comment on each).
+    const bool stabiliserOk = !wanted("runStabiliserTest") || np::runStabiliserTest();
+    const bool brushTaperOk = !wanted("runBrushTaperTest") || np::runBrushTaperTest();
+    const bool pigmentBuildupOk =
+        !wanted("runPigmentBuildupTest") || np::runPigmentBuildupTest();
+    const bool airbrushBuildUpOk = !wanted("runAirbrushBuildUpTest") || np::runAirbrushBuildUpTest();
+    const bool brushPanelsLiveOk = !wanted("runBrushPanelsLiveTest") || np::runBrushPanelsLiveTest();
+    const bool patternLibraryOk = !wanted("runPatternLibraryTest") || np::runPatternLibraryTest();
     // PRD M9: Paste Into and Paste as New Document. Headless and GPU-free.
-    const bool pasteCommandsOk = np::runPasteCommandsTest();
+    const bool pasteCommandsOk = !wanted("runPasteCommandsTest") || np::runPasteCommandsTest();
     // PRD D26: `fill` and `stroke`.
-    const bool commandsFillOk = np::runCommandsFillTest();
+    const bool commandsFillOk = !wanted("runCommandsFillTest") || np::runCommandsFillTest();
     // PRD Q1 (P0): View > Zoom to Selection.
-    const bool zoomToSelectionOk = np::runZoomToSelectionTest();
+    const bool zoomToSelectionOk = !wanted("runZoomToSelectionTest") || np::runZoomToSelectionTest();
     // PRD D23: app/WarpMesh's bicubic lattice and app/TransformSession's Warp
     // mode built on it. Headless and GPU-free.
-    const bool warpMeshOk = np::runWarpMeshTest();
-    const bool splitViewOk = np::runSplitViewTest();
-    const bool radialBlurHandlesOk = np::runRadialBlurHandlesTest();
-    const bool radialBlurRetargetOk = np::runRadialBlurRetargetTest();
-    const bool vectorTransformOk = np::runVectorTransformTest();
-    const bool selectDialogPreviewOk = np::runSelectDialogPreviewTest();
-    const bool fillStrokePreviewOk = np::runFillStrokePreviewTest();
-    const bool dustScratchesOk = np::runDustScratchesTest();
-    const bool shadowsHighlightsOk = np::runShadowsHighlightsTest();
-    const bool versionOk = np::runVersionTest();
-    const bool flatsKeysOk = np::runFlatsKeysTest();
+    const bool warpMeshOk = !wanted("runWarpMeshTest") || np::runWarpMeshTest();
+    const bool splitViewOk = !wanted("runSplitViewTest") || np::runSplitViewTest();
+    const bool radialBlurHandlesOk = !wanted("runRadialBlurHandlesTest") || np::runRadialBlurHandlesTest();
+    const bool radialBlurRetargetOk = !wanted("runRadialBlurRetargetTest") || np::runRadialBlurRetargetTest();
+    const bool vectorTransformOk = !wanted("runVectorTransformTest") || np::runVectorTransformTest();
+    const bool selectDialogPreviewOk =
+        !wanted("runSelectDialogPreviewTest") || np::runSelectDialogPreviewTest();
+    const bool fillStrokePreviewOk = !wanted("runFillStrokePreviewTest") || np::runFillStrokePreviewTest();
+    const bool dustScratchesOk = !wanted("runDustScratchesTest") || np::runDustScratchesTest();
+    const bool shadowsHighlightsOk = !wanted("runShadowsHighlightsTest") || np::runShadowsHighlightsTest();
+    const bool versionOk = !wanted("runVersionTest") || np::runVersionTest();
+    const bool flatsKeysOk = !wanted("runFlatsKeysTest") || np::runFlatsKeysTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -4508,10 +4544,16 @@ int main(int argc, char** argv) {
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
                     nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
+                    stabiliserOk && brushTaperOk && pigmentBuildupOk && airbrushBuildUpOk && brushPanelsLiveOk && patternLibraryOk &&
                     pasteCommandsOk && commandsFillOk && zoomToSelectionOk && warpMeshOk &&
                     splitViewOk && radialBlurHandlesOk && radialBlurRetargetOk && vectorTransformOk &&
                     selectDialogPreviewOk && fillStrokePreviewOk && dustScratchesOk && shadowsHighlightsOk && versionOk &&
                     flatsKeysOk;
+    if (!selfTestOnly.empty()) {
+      std::printf("[selftest] --selftest-only \"%s\": %d section(s) run\n", selfTestOnly.c_str(),
+                  selfTestSelected);
+      if (selfTestSelected == 0) return 2;  // a typo must not read as a pass
+    }
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -4726,6 +4768,9 @@ int main(int argc, char** argv) {
     if (np::OpenDocument* od = st.documents.active())
       buildPigmentStrokeDemo(*od, pigmentStrokeDemoMix);
   }
+  if (brushStrokeDemo) {
+    if (np::OpenDocument* od = st.documents.active()) np::buildBrushStrokeDemo(*od, lut);
+  }
   if (penDemo) {
     if (np::OpenDocument* od = st.documents.active()) preparePenDemo(*od);
   }
@@ -4764,7 +4809,7 @@ int main(int argc, char** argv) {
   if (dabDemoId != nullptr) st.dabDemoId = dabDemoId;
   if (brushSettingsDemo) {
     st.showBrushSettings = true;
-    st.brushSettingsDemoTab = brushSettingsDemoTab;
+    st.brushSettingsPanel = brushSettingsPanel;
   }
   st.openExportStatesDialog = openExportStates;
   st.actionsDemo = actionsDemo;

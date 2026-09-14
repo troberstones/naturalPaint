@@ -47,13 +47,15 @@ namespace np {
 // selftest. The two are fed by the same events and cannot drift in value:
 // both take the event's own number (pressure clamped to [0,1] in both).
 //
-// **Timestamps are used ONLY to associate events with each other, never in
-// painting** (ADR-0003: deposition depends on distance, never on time or
-// event count). `PointerSample::timestamp` exists so a PEN_AXIS event can find
-// the position it belongs to (section 2); nothing downstream of
-// `takeForStroke()` reads it, and `ui/MacPaintUI.cpp`'s conversion to a
-// `StrokeSample` drops it. The UI sequence numbers of section 3 are not time
-// at all -- they are positions in ImGui's input stream.
+// **Timestamps are used to associate events with each other, and in one
+// further place: `brush/Stabiliser`'s weighted-average mode, which
+// `strokeSampleFromPointer()` carries `PointerSample::timestamp` into
+// `StrokeSample::timestamp` for.** Deposition itself still depends on
+// distance alone, never on time or event count (ADR-0003) -- the stabiliser
+// sits upstream of `StrokePath` and only ever reshapes the PATH a stroke's
+// distance is measured along, never the spacing rule itself. The UI sequence
+// numbers of section 3 are not time at all -- they are positions in ImGui's
+// input stream.
 
 // One queued pointer sample. Window space (ImGui screen coordinates -- the
 // space the canvas block reads `mouse` in, just above `xform.toCanvas()`),
@@ -78,7 +80,7 @@ struct PointerSample {
   float rotationDeg = 0.0f;
   bool isPen = false;
   // SDL's `e.common.timestamp` of the event that queued this sample, in
-  // nanoseconds. Association only -- see the header above.
+  // nanoseconds. See the header above for what it is (and is not) used for.
   uint64_t timestamp = 0;
   // Which gesture (section 3) this sample belongs to. Never 0 for a queued
   // sample.

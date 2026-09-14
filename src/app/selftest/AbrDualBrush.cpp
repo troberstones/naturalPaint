@@ -7,6 +7,11 @@
 #include "app/selftest/DescFixture.hpp"
 #include "app/StrokeSession.hpp"
 #include "brush/Deposit.hpp"
+#include "brush/RgbDeposit.hpp"
+#include "app/DocumentLifecycle.hpp"
+#include "app/LayerEditor.hpp"
+#include "core/LayerOps.hpp"
+#include "paint/Palette.hpp"
 #include "io/AbrBrushes.hpp"
 
 namespace np {
@@ -671,7 +676,7 @@ bool runAbrDualBrushTest() {
           "the cadence counter fires");
     bool sawCadenceNote = false;
     for (const AbrImportNote& n : rc.notes)
-      if (n.what.find("spacing, scatter and count are not honoured") != std::string::npos)
+      if (n.what.find("spacing, scatter and count are honoured by the brush") != std::string::npos)
         sawCadenceNote = true;
     check(sawCadenceNote, "abr-dual: ...and says so by name");
 
@@ -848,6 +853,313 @@ bool runAbrDualBrushTest() {
     check(cache.rasterisations() == 2 && cache.hits() == 0,
           "abr-dual/preview: DabPreviewCache does NOT hit across two tips differing only in their "
           "dual tip");
+  }
+
+  // ==========================================================================
+  std::printf("  -- E. the two tips combine as STROKES (brush/Deposit.hpp dualStrokeCoverage) --\n");
+  // ==========================================================================
+  {
+    // "Rough Rowdy" in miniature: a sampled primary scanned short of full
+    // opacity (230 of 255; the real one peaks at 243), Hard Mix, and a second
+    // tip under a pixel wide. Per dab that combines to nothing away from the
+    // centre line; a stroke of overlapping dabs saturates the primary and paints.
+    auto scanned = std::make_shared<BrushTipBitmap>();
+    scanned->width = 16;
+    scanned->height = 16;
+    scanned->alpha.assign(16 * 16, 230);
+    BrushTip rowdy;
+    rowdy.radius = 10.0f;
+    rowdy.bitmap = scanned;
+    rowdy.flow = 1.0f;
+    auto speck = std::make_shared<BrushTip>();
+    speck->radius = 0.6f;
+    speck->hardness = 1.0f;
+    rowdy.dualTip = speck;
+    rowdy.dualBlend = DualBrushBlend::HardMix;
+
+    const auto massAt = [](const PigmentTileStore& store, int32_t x, int32_t y) {
+      const PigmentTile* t = store.find(tileCoordAt(PixelCoord{x, y}));
+      return t != nullptr ? t->readTexel(tileLocalOffset(PixelCoord{x, y})).mass : 0.0f;
+    };
+    const auto pigmentStroke = [&](const BrushTip& t, bool asStroke) {
+      PigmentTileStore store;
+      DualStroke dual;
+      for (int32_t i = 20; i <= 108; ++i) {
+        const Vec2 centre{static_cast<float>(i), 64.0f};
+        if (asStroke) stampDualMask(dual, *t.dualTip, centre, 128, 128);
+        depositDab(store, t, centre, 128, 128, nullptr, nullptr, PigmentBuildup{}, nullptr, Vec2{},
+                   asStroke ? &dual : nullptr);
+      }
+      return store;
+    };
+    const PigmentTileStore perDab = pigmentStroke(rowdy, false);
+    const PigmentTileStore stroked = pigmentStroke(rowdy, true);
+    std::printf("    [measured] 5 px off the centre line: per dab %.4f, as a stroke %.4f\n",
+                massAt(perDab, 64, 69), massAt(stroked, 64, 69));
+    check(dabCoverage(rowdy, 0.0f, 5.0f) == 0.0f && massAt(perDab, 64, 69) == 0.0f,
+          "dual-stroke: per dab, Hard Mix against a sub-pixel second tip paints nothing off "
+          "the centre line");
+    check(massAt(stroked, 64, 69) > 0.5f * massAt(stroked, 64, 64),
+          "dual-stroke: as a stroke the saturated primary paints across the width");
+
+    // The cookie cutter: a second tip far wider than the first, Hard Mix
+    // (which is 1 for an empty primary against a full second tip), still paints
+    // nothing the primary does not reach.
+    BrushTip wide = rowdy;
+    auto big = std::make_shared<BrushTip>();
+    big->radius = 40.0f;
+    big->hardness = 1.0f;
+    wide.dualTip = big;
+    const PigmentTileStore cut = pigmentStroke(wide, true);
+    check(massAt(cut, 64, 75) == 0.0f && massAt(cut, 64, 64) > 0.0f,
+          "dual-stroke: nothing outside the primary tip, however large the second");
+
+    // The cookie cutter holds at the mask's own resolution too: a primary too
+    // faint to register in 8 bits paints nothing, where `dabCoverage()`'s
+    // per-dab Hard Mix paints a full texel there.
+    {
+      BrushTip faint;
+      faint.radius = 10.0f;
+      faint.hardness = 0.0f;
+      faint.flow = 1.0f;
+      float edge = -1.0f;
+      for (float d = 9.0f; d < 10.0f; d += 0.005f) {
+        const float c = dabCoverage(faint, d, 0.0f);
+        if (c > 0.0f && c < 0.5f / 255.0f) {
+          edge = d;
+          break;
+        }
+      }
+      faint.dualTip = big;
+      faint.dualBlend = DualBrushBlend::HardMix;
+      DualStroke ds;
+      stampDualMask(ds, *big, Vec2{64.0f, 64.0f}, 128, 128);
+      DualStrokeTile at;
+      const PixelCoord pc{64, 64};
+      check(edge > 0.0f && dabCoverage(faint, edge, 0.0f) == 1.0f &&
+                dualStrokeCoverage(faint, ds, at, tileCoordAt(pc), tileLocalOffset(pc), edge,
+                                   0.0f) == 0.0f,
+            "dual-stroke: a primary too faint for its 8-bit mask paints nothing under Hard Mix");
+    }
+
+    // One dab of a fresh stroke draws as `dabCoverage()` does, to the 8 bits
+    // the masks are read at -- for the continuous blends. Color Burn and Hard
+    // Mix are thresholds, so an 8-bit mask can land them either side.
+    float worstContinuous = 0.0f;
+    float worstThreshold = 0.0f;
+    for (const DualBrushBlend blend : {DualBrushBlend::Multiply, DualBrushBlend::Overlay,
+                                       DualBrushBlend::ColorBurn}) {
+      BrushTip t = rowdy;
+      auto second = std::make_shared<BrushTip>();
+      second->radius = 7.0f;
+      second->hardness = 0.3f;
+      t.dualTip = second;
+      t.dualBlend = blend;
+      DualStroke dual;
+      stampDualMask(dual, *second, Vec2{64.0f, 64.0f}, 128, 128);
+      for (int32_t y = -11; y <= 11; ++y)
+        for (int32_t x = -11; x <= 11; ++x) {
+          DualStrokeTile at;
+          const PixelCoord pc{64 + x, 64 + y};
+          const float fx = static_cast<float>(x) + 0.5f, fy = static_cast<float>(y) + 0.5f;
+          const float diff = std::fabs(
+              dualStrokeCoverage(t, dual, at, tileCoordAt(pc), tileLocalOffset(pc), fx, fy) -
+              dabCoverage(t, fx, fy));
+          float& worst = blend == DualBrushBlend::ColorBurn ? worstThreshold : worstContinuous;
+          worst = std::max(worst, diff);
+        }
+    }
+    std::printf("    [measured] first dab vs dabCoverage(): Multiply/Overlay %.5f, Color Burn %.5f\n",
+                worstContinuous, worstThreshold);
+    check(worstContinuous <= 2.01f / 255.0f,
+          "dual-stroke: a stroke's first dab draws as dabCoverage() does, to 8 bits");
+
+    // Why the masks are read at 8 bits: a primary at half opacity unions to
+    // 0.9999993 over this stroke -- short of 1 in float, so Hard Mix would
+    // never paint it, and 255 of 255 as a stored mask.
+    BrushTip half = rowdy;
+    auto halfScan = std::make_shared<BrushTipBitmap>(*scanned);
+    halfScan->alpha.assign(16 * 16, 128);
+    half.bitmap = halfScan;
+    const PigmentTileStore halfStroke = pigmentStroke(half, true);
+    check(massAt(halfStroke, 64, 69) > 0.0f,
+          "dual-stroke: a half-opacity primary saturates as a stored 8-bit mask does");
+
+    // The RGB route, which is most layers.
+    const auto rgbStroke = [&](bool asStroke) {
+      TileStore store;
+      RgbStroke rgb;
+      rgb.begin({1.0f, 1.0f, 1.0f}, 1.0f, false);
+      DualStroke dual;
+      for (int32_t i = 20; i <= 108; ++i) {
+        const Vec2 centre{static_cast<float>(i), 64.0f};
+        if (asStroke) stampDualMask(dual, *rowdy.dualTip, centre, 128, 128);
+        rgb.depositDab(store, rowdy, centre, 128, 128, nullptr, nullptr, Vec2{},
+                       asStroke ? &dual : nullptr);
+      }
+      const Tile* t = store.find(tileCoordAt(PixelCoord{64, 69}));
+      return t != nullptr ? t->readPixel(tileLocalOffset(PixelCoord{64, 69}))[3] : 0.0f;
+    };
+    check(rgbStroke(false) == 0.0f && rgbStroke(true) > 0.3f,
+          "dual-stroke: the RGB deposit combines the strokes too");
+
+    // Each stroke starts with empty masks: the same stroke through a reused
+    // session lays exactly what it lays through a fresh one.
+    {
+      const auto sameStroke = [&](StrokeSession& session) {
+        OpenDocument od = makeBlankOpenDocument(128, 128, WorkingSpace{}, "dual-reset");
+        recordLayerEdit(od, addLayer(od.document, od.document.layers.size(),
+                                     makePigmentLayer("Pigment")));
+        BrushState brush;
+        brush.model.tip.diameterPx = 20.0f;
+        brush.model.tip.spacingPercent = 5.0f;
+        brush.native.load = 0.05f;
+        brush.tipBitmap = scanned;
+        brush.dualTip = speck;
+        brush.dualBlend = DualBrushBlend::HardMix;
+        MixboxLut noLut;
+        std::string error;
+        session.begin(od, 1, brushTipFor(brush, noLut, 1.0f), Tool::Brush, &error, nullptr,
+                      DynamicInputs{}, nullptr, StabiliserParams{}, 1.0f, &brush.native);
+        for (int32_t i = 56; i <= 72; i += 4) session.addPoint(static_cast<float>(i), 64.0f);
+        session.end();
+        return massAt(*od.document.layers[1].pigmentTiles, 64, 69);
+      };
+      StrokeSession fresh;
+      const float once = sameStroke(fresh);
+      StrokeSession reused;
+      (void)sameStroke(reused);
+      const float again = sameStroke(reused);
+      std::printf("    [measured] the same stroke, fresh session / reused session: %.5f / %.5f\n",
+                  once, again);
+      check(once > 0.0f && again == once,
+            "dual-stroke: each stroke starts with empty masks");
+    }
+
+    // The second tip's own cadence, from the model (brush/Deposit.hpp §2d).
+    {
+      const auto cadenceStroke = [&](StrokeSession& session, const std::shared_ptr<BrushTip>& second,
+                                     const PsScatter& scatter, bool cadence) {
+        OpenDocument od = makeBlankOpenDocument(160, 128, WorkingSpace{}, "dual-cadence");
+        recordLayerEdit(od, addLayer(od.document, od.document.layers.size(),
+                                     makePigmentLayer("Pigment")));
+        BrushState brush;
+        brush.model.tip.diameterPx = 40.0f;
+        brush.model.tip.spacingPercent = 5.0f;
+        brush.native.load = 1.0f;
+        brush.tipBitmap = scanned;
+        brush.dualTip = second;
+        brush.dualBlend = DualBrushBlend::Multiply;
+        brush.model.dual.enabled = cadence;
+        brush.model.dual.scatter = scatter;
+        MixboxLut noLut;
+        std::string error;
+        session.begin(od, 1, brushTipFor(brush, noLut, 1.0f), Tool::Brush, &error, &brush.model,
+                      DynamicInputs{}, nullptr, StabiliserParams{}, 1.0f, &brush.native);
+        for (int32_t i = 30; i <= 130; i += 4) session.addPoint(static_cast<float>(i), 64.0f);
+        session.end();
+        std::vector<float> mass(160 * 128, 0.0f);
+        for (int32_t y = 0; y < 128; ++y)
+          for (int32_t x = 0; x < 160; ++x)
+            mass[static_cast<size_t>(y * 160 + x)] = massAt(*od.document.layers[1].pigmentTiles, x, y);
+        return mass;
+      };
+      const auto at = [](const std::vector<float>& m, int32_t x, int32_t y) {
+        return m[static_cast<size_t>(y * 160 + x)];
+      };
+
+      // Spacing: a 4 px second tip every 20 px leaves gaps along the centre line
+      // that one stamp per primary dab (every 2 px) fills.
+      auto sparse = std::make_shared<BrushTip>();
+      sparse->radius = 2.0f;
+      sparse->hardness = 1.0f;
+      sparse->spacing = 10.0f;
+      const PsScatter none;
+      StrokeSession s1, s2;
+      const std::vector<float> cadenced = cadenceStroke(s1, sparse, none, true);
+      const std::vector<float> perDab = cadenceStroke(s2, sparse, none, false);
+      int gapsCadenced = 0, paintedCadenced = 0, gapsPerDab = 0;
+      for (int32_t x = 50; x <= 110; ++x) {
+        gapsCadenced += at(cadenced, x, 64) == 0.0f;
+        paintedCadenced += at(cadenced, x, 64) > 0.0f;
+        gapsPerDab += at(perDab, x, 64) == 0.0f;
+      }
+      std::printf("    [measured] centre line x 50-110: %d gaps at the second tip's spacing, %d "
+                  "stamped per primary dab\n", gapsCadenced, gapsPerDab);
+      check(gapsCadenced > 20 && paintedCadenced > 6 && gapsPerDab == 0,
+            "dual-cadence: the second tip is stamped at its own spacing, not per primary dab");
+
+      // Scatter spreads the stamps across the primary's width; Count adds more.
+      auto dense = std::make_shared<BrushTip>(*sparse);
+      dense->spacing = 1.0f;
+      PsScatter scattered;
+      scattered.enabled = true;
+      scattered.bothAxes = true;
+      scattered.scatter.present = true;
+      scattered.scatter.jitter = 0.5f;
+      const auto offCentre = [&](const std::vector<float>& m) {
+        int n = 0;
+        for (int32_t y = 0; y < 128; ++y)
+          for (int32_t x = 0; x < 160; ++x)
+            n += std::abs(y - 64) > 5 && at(m, x, y) > 0.0f;
+        return n;
+      };
+      const auto painted = [&](const std::vector<float>& m) {
+        int n = 0;
+        for (const float v : m) n += v > 0.0f;
+        return n;
+      };
+      StrokeSession s3, s4, s5;
+      const std::vector<float> straight = cadenceStroke(s3, dense, none, true);
+      const std::vector<float> spread = cadenceStroke(s4, dense, scattered, true);
+      PsScatter tripled = scattered;
+      tripled.count = 3;
+      const std::vector<float> three = cadenceStroke(s5, dense, tripled, true);
+      std::printf("    [measured] texels painted more than 5 px off the line: %d unscattered, %d "
+                  "scattered; painted in all: %d at Count 1, %d at Count 3\n",
+                  offCentre(straight), offCentre(spread), painted(spread), painted(three));
+      check(offCentre(straight) == 0 && offCentre(spread) > 50,
+            "dual-cadence: Scatter spreads the second tip's stamps across the primary's width");
+      check(painted(three) > painted(spread),
+            "dual-cadence: Count stamps the second tip more times at each position");
+
+      // A reused session starts the cadence afresh.
+      StrokeSession reused;
+      (void)cadenceStroke(reused, dense, scattered, true);
+      check(cadenceStroke(reused, dense, scattered, true) == spread,
+            "dual-cadence: each stroke starts its own cadence");
+    }
+
+    // And the session hands both routes its stroke.
+    for (const bool rgbLayer : {false, true}) {
+      OpenDocument od = makeBlankOpenDocument(128, 128, WorkingSpace{}, "dual-stroke");
+      recordLayerEdit(od, addLayer(od.document, od.document.layers.size(),
+                                   rgbLayer ? makeRgbLayer("RGB") : makePigmentLayer("Pigment")));
+      BrushState brush;
+      brush.model.tip.diameterPx = 20.0f;
+      brush.model.tip.spacingPercent = 5.0f;
+      brush.tipBitmap = scanned;
+      brush.native.load = 1.0f;
+      brush.dualTip = speck;
+      brush.dualBlend = DualBrushBlend::HardMix;
+      MixboxLut noLut;
+      std::string error;
+      StrokeSession session;
+      session.begin(od, 1, brushTipFor(brush, noLut, 1.0f), Tool::Brush, &error, nullptr,
+                    DynamicInputs{}, nullptr, StabiliserParams{}, 1.0f, &brush.native);
+      for (int32_t i = 20; i <= 108; i += 4) session.addPoint(static_cast<float>(i), 64.0f);
+      session.end();
+      const Layer& layer = od.document.layers[1];
+      const PixelCoord pc{64, 69};
+      float cover = 0.0f;
+      if (layer.pigmentTiles.has_value()) {
+        cover = massAt(*layer.pigmentTiles, pc.x, pc.y);
+      } else if (const Tile* t = layer.rgbTiles->find(tileCoordAt(pc))) {
+        cover = t->readPixel(tileLocalOffset(pc))[3];
+      }
+      check(cover > 0.0f, rgbLayer ? "dual-stroke: a session on an RGB layer paints off the centre line"
+                                   : "dual-stroke: a session on a Pigment layer paints off the centre line");
+    }
   }
 
   std::printf("[selftest] abr dual brush %s\n", ok ? "PASS" : "FAIL");

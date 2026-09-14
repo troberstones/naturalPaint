@@ -413,13 +413,8 @@ int runDabImport(const char* path);
 // for why that costs the paper nothing a brush stroke would show. Downsampled
 // this way, the same seventeen patterns total ~9.3 MB.
 //
-// **Deliberately not a `PatternLibrary`.** This writes files; it does not
-// scan a folder, keep an index, or resolve an id back into pixels for a
-// picker to draw -- that is a real, larger piece of work with no caller yet
-// (see `PatternRef`'s own comment), and building it ahead of that caller is
-// exactly the kind of unused machinery this codebase's own convention argues
-// against. `patternsImportedRootPath() + "/" + id + ".png"` is the whole
-// resolution rule, stated once here for whenever that caller arrives.
+// Reading the papers back -- listing, decoding, resolving an id for the
+// Texture panel's picker -- is app/PatternLibrary.
 //
 // A pattern whose larger dimension exceeds this is halved (`extractAbrPatterns()`'s
 // own comment above has the measurement) before being written.

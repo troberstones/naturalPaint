@@ -294,6 +294,10 @@ bool runNativeBrushTest() {
                           // native, not pigment (app/selftest/UserBrushLibrary.cpp's own note).
     const BrushTip tip = brushTipFor(brush, lut, /*pressure=*/1.0f);
     check(tip.flow == brush.native.load, "brushTipFor: tip.flow == native.load, exactly");
+    BrushState atFlow = brush;
+    atFlow.model.options.flow = 0.25f;
+    check(brushTipFor(atFlow, lut, 1.0f).flow == brush.native.load * 0.25f,
+          "brushTipFor: an imported preset's Photoshop Flow scales the load");
     check(tip.opacity == brush.opacity,
           "brushTipFor: tip.opacity == BrushState::opacity, exactly (as at base)");
     check(grainParamsEqual(tip.grain, brush.native.grain),

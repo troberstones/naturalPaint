@@ -489,6 +489,7 @@ bool runDynamicsSourcesTest() {
       scatterBrush.model.tip.diameterPx = 40.0f;
       scatterBrush.model.tip.hardness = 0.4f;
       scatterBrush.native.load = 0.5f;
+      scatterBrush.model.scatter.enabled = true;
       scatterBrush.model.scatter.scatter.jitter = 0.9f;  // most of a radius,
                                                           // so the effect is
                                                           // not lost in noise
@@ -593,6 +594,8 @@ bool runDynamicsSourcesTest() {
       brush.model.tip.hardness = 0.35f;
       brush.native.load = 0.4f;
       if (withVariance) {
+        brush.model.shape.enabled = true;
+        brush.model.scatter.enabled = true;
         brush.model.shape.size.jitter = 0.4f;
         brush.model.shape.angle.jitter = 0.6f;
         brush.model.shape.roundness.jitter = 0.5f;
@@ -951,6 +954,7 @@ bool runDynamicsSourcesTest() {
         // round-tip stroke bit-identical), so this is the one setting that
         // makes this section able to see anything at all.
         brush.model.tip.roundness = 0.35f;
+        brush.model.shape.enabled = true;
         brush.model.shape.angle.control = angleControl;
         return brush;
       };
@@ -1042,6 +1046,7 @@ bool runDynamicsSourcesTest() {
       // from the hardware path would move this measurably away from 15,
       // not merely away from a suspicious 0.
       withDir.model.tip.angleDeg = 15.0f;
+      withDir.model.shape.enabled = true;
       withDir.model.shape.angle.control = VarianceControl::Direction;
 
       const MixboxLut noLut;
@@ -1097,6 +1102,7 @@ bool runDynamicsSourcesTest() {
       // own round-tip branch skips the rotation arithmetic outright) --
       // section 9e's own reasoning, restated for this section's own tip.
       brush.model.tip.roundness = 0.35f;
+      brush.model.shape.enabled = true;
       brush.model.shape.angle.control = angleControl;
       return brush;
     };
@@ -1274,6 +1280,7 @@ bool runDynamicsSourcesTest() {
       // from the hardware path would move this measurably away from 15,
       // not merely away from a suspicious 0.
       withInit.model.tip.angleDeg = 15.0f;
+      withInit.model.shape.enabled = true;
       withInit.model.shape.angle.control = VarianceControl::InitialDirection;
 
       const MixboxLut noLut;

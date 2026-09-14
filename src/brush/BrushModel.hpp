@@ -64,24 +64,13 @@ struct DabRef {
 // puts in `Idnt` -- verified against real packs, so the join needs nothing
 // invented in between.
 //
-// **No file-path field, and that is a decision, not an omission.** A `.abr`'s
-// `patt` block is now extracted to `patterns-imported/<id>.png`
-// (app/DabLibrary's `extractAbrPatterns()`, `patternsImportedRootPath()`) the
-// same way `DabRef` extracts sampled tips to `dabs-imported/`, and `id` here
-// is ALREADY the bare uuid that names that file -- it is the record's own id,
-// carried through unprefixed (unlike `DabRef::id`, which needs a `abr:`/
-// `file:`/`gbr:`/`gih:` tag because ONE folder mixes four kinds of source; a
-// pattern has exactly one). A future picker resolves it with nothing more
-// than `patternsImportedRootPath() + "/" + id + ".png"`, so adding a second
-// field to hold that same string here would be one more thing that could
-// disagree with the id it is derived from, for no new information. What is
-// deliberately NOT here is a `PatternLibrary` class that scans, indexes and
-// resolves that path the way `DabLibrary` does for dabs -- the picker that
-// would need it does not exist yet, and building the index ahead of its only
-// caller is exactly the machinery this comment is explaining why to skip.
+// **No file-path field.** `id` already names the file: an extracted paper is
+// `patterns-imported/<id>.png`, a user's own is `file:<relpath>` under
+// `patterns/` (app/PatternLibrary), so a path here could only disagree with it.
 struct PatternRef {
   std::string id;
   std::string name;  // carried so a missing pattern can be named, not just missed
+  std::shared_ptr<const PaperField> field;  // resolved; never persisted
 
   bool empty() const noexcept { return id.empty(); }
 };
@@ -215,17 +204,15 @@ struct BrushModel {
   PsTransfer transfer;
   PsToolOptions options;
 
-  // The checkbox tail of Photoshop's panel. All four are parsed and none is
-  // applied; each is refused for its own stated reason in io/AbrBrushes.cpp.
+  // The checkbox tail of Photoshop's panel. All four are parsed; Build-up is
+  // applied and the rest are refused for their own stated reasons in
+  // io/AbrBrushes.cpp.
   bool noise = false;     // `Nose`, on for 14 of 101
   bool wetEdges = false;  // `Wtdg`, on for 0 of 101
-  // `Rpt `, on for 50 of 101. **Believed to be Build-up (airbrush) by
-  // elimination** against Photoshop's checkbox tail -- `Nose` is Noise, `Wtdg`
-  // is Wet Edges, `protectTexture` is Protect Texture and `smoothing` lives in
-  // `toolOptions`, which leaves Build-up as the one unaccounted for. That is
-  // inference, not a reading, and it is exactly the shape of guess that
-  // produced the `AbrControl` 6/7 defect. Do not ship a behaviour change on
-  // it: open a named brush in Photoshop and read the panel first.
+  // `Rpt `, on for 50 of 101: Build-up (airbrush). Named by elimination against
+  // Photoshop's checkbox tail, then read off a named brush: Kyle's Soft Pastel
+  // shows Build-up on in Photoshop's panel and carries `Rpt ` true. Applied by
+  // `StrokeSession::airbrushTick()`.
   bool airbrush = false;
   bool brushPose = false;  // `useBrushPose`, on for 0 of 101
 
@@ -240,5 +227,18 @@ struct BrushModel {
   // home for what naturalPaint adds to a brush that this file must keep
   // refusing, rather than a second apology every time the list grows.
 };
+
+// The second tip a Dual Brush stamps, built from its panel. Null when the panel
+// is off or names a blend with no formula, so the primary tip paints alone.
+//
+// The one way a second tip is made: the importer, the Brush Settings pickers and
+// a saved preset reloading all call this, so an edit in the panel and a freshly
+// imported brush cannot build the tip two different ways.
+std::shared_ptr<const BrushTip> dualTipFromModel(const PsDualBrush& dual);
+
+// Photoshop's Texture panel as paper tooth. False, with `grain` untouched, when
+// the panel is off, its paper did not resolve, or its blend has no formula;
+// `why` then says which.
+bool grainFromTexture(const PsTexture& texture, GrainParams& grain, std::string* why = nullptr);
 
 }  // namespace np

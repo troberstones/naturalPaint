@@ -481,21 +481,17 @@
 // dual brush loads no colour of its own in Photoshop, it only reshapes the
 // mark) and not `spacing`/`scatter` (see below).
 //
-// **The two tips are sampled at the SAME offset, `(dx, dy)` from one shared
-// dab centre.** That is exact for `Cnt 1` with no scatter -- Photoshop stamps
-// the second tip once, centred on the first, in that configuration, and this
-// is the identical answer. It is an approximation for anything else: a real
-// Dual Brush also has its OWN spacing, its own scatter and its own count
-// (`useScatter`/`Cnt `/`bothAxes`/`countDynamics`/`scatterDynamics` on the
-// descriptor), which would stamp the second tip several times per dab of the
-// first, jittered around it. None of that reaches this function -- there is
-// no per-dab loop here to multiply, `depositDab()` calls `dabCoverage()`
-// exactly once per texel per dab regardless of what the tip carries -- so
-// `io/AbrBrushes.cpp` reads those five keys only far enough to say, per
-// brush, that this gap exists (`AbrImportResult::dualBrushCadenceNotHonoured`)
-// rather than silently painting a smoother mark than Photoshop's Count and
-// Scatter would. Landing shape compositing correctly and saying plainly what
-// is not yet landed was chosen over landing all four pieces half working.
+// **Per dab, the two tips are sampled at the SAME offset** from one shared dab
+// centre -- `dabCoverage()`, which the preview, the erasers and smudge read.
+// The paint routes instead combine two STROKE masks (`dualStrokeCoverage()`),
+// and `app/StrokeSession` lays the second tip's stamps along the path at its
+// OWN spacing (`dualTip->spacing`), scatter (`useScatter`/`scatterDynamics`/
+// `bothAxes`) and count (`Cnt `). **Scatter is measured in the PRIMARY tip's
+// diameter** -- INFERRED: Photoshop describes it as spreading the second tips
+// "inside the shape of the initial brush", and Kyle's 1-2 px second tips at
+// 100% scatter would otherwise be a hairline down the middle of a 90 px mark.
+// Count jitter and a scatter Control are not read: 0 and Off on every one of
+// the 66 dual brushes in the four packs measured.
 //
 // **Combining is per-texel, on the coverage SCALAR, not on any RGBA notion of
 // blending.** A coverage value is already the one number `depositDab()` folds
@@ -726,6 +722,130 @@ namespace np {
 // one reader of it -- and it is the same discipline `MaskTile::readCoverage()`
 // already applies at its own boundary.
 inline constexpr float kMaxMass = 1.0f;
+
+// ==========================================================================
+// 1a. How a deposit builds up where a stroke overlaps ITSELF
+// ==========================================================================
+//
+// §1's rule adds mass **linearly** and every dab mixes into what the last one
+// left. Next to Photoshop or Krita that reads wrong: a single pass has a dark
+// core and light rims (a texel under the middle is covered by more dabs than
+// one under its edge), a self-crossing is disproportionately darker, and a
+// stroke over existing paint re-mixes its colour once per dab. A hard
+// per-stroke clamp was tried and felt unnatural -- it flattens a soft tip into
+// a plateau with a cliff at its edge. So there are two modes:
+//
+//   * **`BuildUp`** -- §1's rule, every dab straight into the layer. The
+//     default, and bit for bit the arithmetic this route had before §1a.
+//
+//   * **`Wash`** -- a per-stroke buffer, `s` per texel, that keeps the
+//     STRONGEST dab the stroke has laid there rather than a total:
+//
+//         s' = max(s, min(dm, 1) * opacity)
+//
+//     So a stroke is exactly as dark where it crosses or turns back on itself
+//     as where it passes once, and a soft tip's own profile is the stroke's --
+//     Procreate's glazes, and Krita's Alpha Darken at full flow. Easing `s`
+//     toward opacity instead (Krita at partial flow) still darkens a crossing,
+//     which simply receives more dabs. `max` is order-independent and
+//     idempotent. Load and opacity together set how dark one stroke is.
+//
+//     A Wash dab covers the path back to the previous dab, not only its own
+//     disc (`sweptDabCoverage()`): the strongest of a row of discs has a
+//     scalloped edge, one scallop per spacing, that a sum fills in and `max`
+//     does not.
+//
+//     The layer texel is then recomputed from the texel as it was at PEN-DOWN,
+//     as one deposit of `s`: `depositTexel(before, pigment, s, sel)`. The
+//     stroke meets existing paint once -- one hue mix, one paper cap, one
+//     selection cap -- and glazes on top of it up to the paper's limit. The
+//     layer holds the result throughout, so nothing is merged at pen-up and a
+//     tool that reads the layer mid-stroke reads what is shown.
+//
+// Wash needs two things only the caller has, carried together in `WashStroke`:
+// the buffer, and the layer's store as it was at pen-down. Without the second,
+// `depositDab()` falls back to `BuildUp`: washing against the LIVE layer would
+// mix every dab in again, which is the defect Wash exists to remove.
+enum class PigmentBuildupMode : uint8_t { BuildUp, Wash };
+
+struct PigmentBuildup {
+  PigmentBuildupMode mode = PigmentBuildupMode::BuildUp;
+  // Wash's ceiling, a fraction of `kMaxMass`, latched by the caller at pen-down
+  // for the reason every route latches its own (`brush/RgbDeposit.hpp` §2: a
+  // ceiling that moves half way through a stroke has no defined meaning).
+  // `app/StrokeSession` passes its `resolvedOpacity_`. Unread by `BuildUp`.
+  float opacity = 1.0f;
+};
+
+// §1a's per-texel rule, on its own so it can be tested on its own.
+float washAmount(float laid, float rate, float ceiling) noexcept;
+
+// One tile of a Wash stroke's buffer (§1a): how much that stroke has laid.
+//
+// Nothing but its buffer, the discipline `core::PigmentTile` and
+// `brush/RgbDeposit`'s `StrokeAlphaTile` each keep. It is deliberately NOT
+// that type reused: the dependency runs `RgbDeposit -> Deposit` and would have
+// to be reversed, and the two hold different quantities (an alpha that
+// composites, a mass that is also this layer's alpha), so a shared name would
+// claim an interchangeability that is not there.
+struct StrokeMassTile {
+  static constexpr size_t kTexelCount =
+      static_cast<size_t>(kTileSize) * static_cast<size_t>(kTileSize);
+
+  // Zero -- "this stroke has laid nothing here yet" -- which is both the right
+  // content for a tile the stroke has not reached and what an ABSENT tile
+  // means, so a miss needs no allocation.
+  std::array<float, kTexelCount> mass{};
+
+  float at(PixelCoord local) const noexcept { return mass[index(local)]; }
+  void set(PixelCoord local, float v) noexcept { mass[index(local)] = v; }
+
+ private:
+  static size_t index(PixelCoord local) noexcept {
+    return static_cast<size_t>(local.y) * static_cast<size_t>(kTileSize) +
+           static_cast<size_t>(local.x);
+  }
+};
+
+static_assert(sizeof(StrokeMassTile) == 64 * 1024,
+              "one 128x128 float stroke-mass tile must be exactly 64 KiB -- the same size as "
+              "brush/RgbDeposit's StrokeAlphaTile, for the same reason (float, not f16: it is "
+              "accumulated into hundreds of times, so its rounding error compounds)");
+
+using StrokeMassStore = TileStoreOf<StrokeMassTile>;
+
+// A Wash stroke's state (§1a), owned by the caller for the whole stroke.
+struct WashStroke {
+  StrokeMassStore laid;
+  // The layer's pigment store as it was at pen-down. Borrowed.
+  const PigmentTileStore* before = nullptr;
+};
+
+// A Dual Brush stroke (§2d): each tip's coverage accumulated over every dab so
+// far, owned by the caller for the whole stroke.
+struct DualStroke {
+  StrokeMassStore primary;
+  StrokeMassStore second;
+};
+// A Build-up stroke textured once rather than per dab (`GrainParams::eachTip`
+// off): `weight` is each dab's `flow * coverage` unioned (`m + w(1 - m)`), and
+// the texel's stroke amount is `grainCoverageAt()` of that -- the paper cut
+// from the stroke, so no amount of overlap fills a hollow deeper than the
+// stroke's weight. `laid` is what the Pigment route has deposited towards it;
+// the RGB route reads its own stroke alpha instead. Wash needs neither: it keeps
+// the strongest dab, and every texture blend rises with coverage, so texturing
+// the strongest dab IS texturing the stroke.
+struct StrokeTexture {
+  StrokeMassStore weight;
+  StrokeMassStore laid;
+};
+
+// One tile of each, fetched lazily by `dualStrokeCoverage()`.
+struct DualStrokeTile {
+  StrokeMassTile* primary = nullptr;
+  const StrokeMassTile* second = nullptr;
+  bool fetched = false;
+};
 
 // The narrowest tip §2b will draw. `io/AbrBrushes.cpp`'s own clamp on an
 // imported `Rndn`, restated here so the deposit is defended at the point of
@@ -973,8 +1093,8 @@ struct BrushTip {
   //
   // **Applied on RGB layers and when stroking a path; not yet on Strokes
   // layers or Pigment layers.** That sentence is the whole user-visible
-  // contract, and the Tool Options banner (`ui/MacPaintUI.cpp`'s
-  // `drawBrushToolOptionsGroup()`) says it in the same words.
+  // contract, and the Brush Settings window's Tool Options page
+  // (`ui/BrushSettingsWindow.cpp`) says it in the same words.
   //
   // **Set by `brushTipFor()`. Read by exactly ONE downstream consumer,
   // `brush/RgbDeposit`'s `RgbStroke`, reached from two places:**
@@ -1098,6 +1218,35 @@ bool brushTipEqual(const BrushTip& a, const BrushTip& b) noexcept;
 // user who cannot trust it has to paint to find out anyway.
 float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept;
 
+// §2d, painted as a stroke: a dab's coverage when `tip.dualTip` is set and the
+// caller keeps a `DualStroke`. **Photoshop combines the two brushSTROKES, not
+// each pair of dabs.** Per dab, Hard Mix and Color Burn paint only where the
+// primary tip is fully opaque -- which a sampled tip scanned at 204-243 of 255
+// never is -- so against a 1-2 px second tip ("Rough Rowdy", "Bone Dry
+// Brush") every dab combined to nothing. The stroke's primary mask saturates
+// after a few overlapping dabs, and that is what Photoshop's threshold sees.
+//
+// The primary tip's coverage is unioned into `dual.primary` here; the second
+// tip's mask is whatever `stampDualMask()` has laid. Both are read at 8 bits,
+// as Photoshop's stroke masks are INFERRED to be (a union that only approaches
+// 1 would never cross those thresholds); the dab lays its own share
+// `c / primary` of the combined mask. Requires `tip.dualTip != nullptr`.
+float dualStrokeCoverage(const BrushTip& tip, DualStroke& dual, DualStrokeTile& at,
+                         TileCoord coord, PixelCoord local, float dx, float dy);
+
+// Lays one stamp of the second tip into `dual.second`, unioned (`m + d(1 - m)`).
+// The caller places the stamps -- `app/StrokeSession` at the Dual Brush's own
+// spacing, scatter and count.
+void stampDualMask(DualStroke& dual, const BrushTip& second, Vec2 centre, int32_t canvasW,
+                   int32_t canvasH);
+
+// §1a: `dabCoverage()` for the tip swept from its centre to `centre + sweep`
+// -- at every texel, the coverage of the nearest position along that segment,
+// which for a round or elliptical tip is exact. `sweep == {0, 0}` is
+// `dabCoverage()` bit for bit, and so is a bitmap or dual tip, whose coverage
+// has no nearest position to find.
+float sweptDabCoverage(const BrushTip& tip, float dx, float dy, Vec2 sweep) noexcept;
+
 // The rule of §1, as a pure function of one texel, for the one reason a pure
 // function earns its keep here: the invariants are about *this arithmetic*,
 // so `--selftest` asserts them on this and not on a tile of it.
@@ -1201,9 +1350,20 @@ struct DepositCount {
 // even evaluated, so grain can thin or empty a texel already inside the
 // footprint, and never add one outside it -- §3's containment fact is
 // unaffected by whether a brush has grain on.
+// `buildup`/`wash`/`sweep` are §1a's mode, a Wash stroke's state and the
+// swept dab (`sweptDabCoverage()`). Defaulted to Build-up, null and no sweep,
+// bit for bit the rule this function had before §1a -- `app/DabPreview`,
+// `depositDabs()` below and every texel selftest take that.
+// `dabPixelBounds()` of both ends of a sweep, joined -- which contains the
+// whole swept tip, each end's box containing its disc.
+PixelBounds sweptDabBounds(const BrushTip& tip, Vec2 centre, Vec2 sweep, int32_t canvasW,
+                           int32_t canvasH) noexcept;
+
 DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centre,
                         int32_t canvasW, int32_t canvasH, const Selection* selection,
-                        std::vector<TileCoord>* touchedOut);
+                        std::vector<TileCoord>* touchedOut, PigmentBuildup buildup = {},
+                        WashStroke* wash = nullptr, Vec2 sweep = {},
+                        DualStroke* dual = nullptr, StrokeTexture* texture = nullptr);
 
 // Sorts ascending by (y, x) and removes duplicates, in place.
 //

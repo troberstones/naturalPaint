@@ -236,8 +236,12 @@ int runBrushSheet(const char* abrPath, const char* outPath, const char* experime
     StrokeSession stroke;
     std::string refusal;
     DynamicInputs beginInputs;
+    // `&brush.native`: entry taper reaches the sheet's own preview stroke the
+    // identical way it reaches a real one -- StrokePreview.cpp's comment on
+    // the same call is the full argument.
     if (!stroke.begin(od, 0, brushTipFor(brush, lut, beginInputs), brush.tool, &refusal,
-                      &brush.model, beginInputs)) {
+                      &brush.model, beginInputs, /*clone=*/nullptr,
+                      /*stabiliser=*/StabiliserParams{}, /*viewZoom=*/1.0f, &brush.native)) {
       std::fprintf(stderr, "brush-sheet: %s refused: %s\n", preset.name.c_str(), refusal.c_str());
       continue;
     }

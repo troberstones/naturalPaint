@@ -103,8 +103,12 @@ Vec2 evalCentripetalCatmullRom(Vec2 P0, Vec2 P1, Vec2 P2, Vec2 P3, float u) {
 // the pen that wobbles slightly during a click. That would have made a
 // deliberate short drag under the slop distance emit a dab it does not emit
 // today, i.e. it would have changed moving strokes, which is exactly what this
-// change is not allowed to do. The wobbly-pen click therefore still deposits
-// nothing; that gap is real and is left open on purpose.
+// change is not allowed to do. **A short drag or wobbly click that crosses
+// this threshold is not left depositing nothing, though**: the origin dab
+// (`addPoint()`'s own comment) fires the instant `movedPx_` passes it, so any
+// real movement, however small, now lays at least that one dab; only a
+// stroke whose samples never cross this threshold at all still reaches
+// flush()'s click branch and its own single dab.
 constexpr float kStationaryPx = 1e-3f;
 
 }  // namespace
@@ -113,6 +117,8 @@ void StrokePath::reset() {
   numPts_ = 0;
   leftover_ = 0.0f;
   movedPx_ = 0.0f;
+  haveOrigin_ = false;
+  originEmitted_ = false;
 }
 
 void StrokePath::emitAlongSegment(const StrokeSample& S0, const StrokeSample& S1,
@@ -170,11 +176,23 @@ void StrokePath::emitAlongSegment(const StrokeSample& S0, const StrokeSample& S1
 
 void StrokePath::addPoint(const StrokeSample& sample, float spacingPx,
                           std::vector<StrokeDab>& out) {
+  if (numPts_ == 0) {
+    origin_ = sample;
+    haveOrigin_ = true;
+  }
   // Measured against the point this one displaces as newest, before the
   // shift below overwrites it. A stroke's whole travel is accumulated here
   // because flush() needs the answer for the stroke as a WHOLE, and pts_ only
   // remembers the last four samples.
   if (numPts_ > 0) movedPx_ += distanceOf(pts_[numPts_ - 1].pos, sample.pos);
+  // A moving stroke's first dab is its own (stabilised) origin, not one
+  // spacing along the curve. Emitted the moment `movedPx_` proves this is
+  // not the stationary-click case flush() handles below, so exactly one of
+  // the two ever fires for a given stroke.
+  if (haveOrigin_ && !originEmitted_ && movedPx_ > kStationaryPx) {
+    out.push_back(origin_);
+    originEmitted_ = true;
+  }
   if (numPts_ < 4) {
     pts_[numPts_++] = sample;
   } else {
@@ -230,21 +248,22 @@ void StrokePath::flush(float spacingPx, std::vector<StrokeDab>& out) {
     // hardware axes had before the sample queue existed).
     out.push_back(pts_[numPts_ - 1]);
     numPts_ = 0; leftover_ = 0.0f; movedPx_ = 0.0f;
+    haveOrigin_ = false; originEmitted_ = false;
     return;
   }
 
   // Only a stroke with ZERO samples can still be here: one sample means
   // `movedPx_ == 0` exactly, which the branch above already took.
-  if (numPts_ < 2) { numPts_ = 0; leftover_ = 0.0f; movedPx_ = 0.0f; return; }
+  if (numPts_ < 2) {
+    numPts_ = 0; leftover_ = 0.0f; movedPx_ = 0.0f;
+    haveOrigin_ = false; originEmitted_ = false;
+    return;
+  }
 
-  // NOT DONE HERE, deliberately: a moving stroke still never stamps its own
-  // origin texel. `leftover_` starts at 0, so the first dab of a drag lands a
-  // full `spacingPx` along the path rather than at the first sample. Seeding
-  // `leftover_ = spacingPx` in reset() would fix that and make every stroke
-  // stamp its start -- but it also shifts every dab of every existing stroke,
-  // which is a change to drawing this one is not: the brief here was "single
-  // click draws dab, moving stroke will do what it currently does". Recorded
-  // so whoever weighs that change later starts from a measured fact.
+  // The origin dab, if this stroke has one, is already in `out` -- pushed
+  // by `addPoint()` the moment `movedPx_` first passed `kStationaryPx`
+  // above, which is guaranteed to have happened by now: the click branch
+  // above already returned for every stroke that never got there.
 
   // The segment addPoint() never got to: between the last two real samples,
   // with no real point beyond them to confirm its shape, so the far control
@@ -259,6 +278,8 @@ void StrokePath::flush(float spacingPx, std::vector<StrokeDab>& out) {
   numPts_ = 0;
   leftover_ = 0.0f;
   movedPx_ = 0.0f;
+  haveOrigin_ = false;
+  originEmitted_ = false;
 }
 
 // --- back-compatible overloads: position only, neutral axes ---------------

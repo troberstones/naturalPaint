@@ -6,7 +6,7 @@ namespace np {
 
 RgbDepositStep depositRgbTexel(const std::array<float, 4>& dst,
                                const std::array<float, 3>& straightLinearRgb, float strokeAlpha,
-                               float weight, float opacity, bool alphaLocked) noexcept {
+                               float weight, float opacity, bool alphaLocked, bool wash) noexcept {
   RgbDepositStep out;
   // The no-op answer, returned by every one of the four refusals below. `dst`
   // rather than something recomputed from it: a texel this dab does not change
@@ -32,8 +32,9 @@ RgbDepositStep depositRgbTexel(const std::array<float, 4>& dst,
   // Header §2. `a1` is the stroke's total after this dab, capped; `a` is the
   // composite alpha for which one source-over lands the total exactly there,
   // from the identity `1 - a1 = (1 - a0)(1 - a)`.
-  float a1 = a0 + weight * headroom;
+  float a1 = wash ? std::min(weight, 1.0f) * cap : a0 + weight * headroom;
   if (a1 > cap) a1 = cap;
+  if (wash && !(a1 > a0)) return out;  // no stronger than a dab already laid here
   float a = (a1 - a0) / headroom;
   // Algebraically `a <= 1` always, since `a1 <= 1`. Clamped anyway because the
   // subtraction and the division are each rounded and the *only* thing standing
@@ -73,7 +74,7 @@ RgbDepositStep depositRgbTexel(const std::array<float, 4>& dst,
 RgbDepositStep depositRgbTexelBlended(const std::array<float, 4>& dst0,
                                       const std::array<float, 3>& straightLinearRgb,
                                       BlendMode blend, float strokeAlpha, float weight,
-                                      float opacity, bool alphaLocked) noexcept {
+                                      float opacity, bool alphaLocked, bool wash) noexcept {
   RgbDepositStep out;
   // The no-op answer -- `dst0`, for the identical reason `depositRgbTexel()`
   // returns `dst` unchanged: a refused dab must be indistinguishable from one
@@ -95,8 +96,9 @@ RgbDepositStep depositRgbTexelBlended(const std::array<float, 4>& dst0,
   if (!(headroom > 0.0f)) return out;
   if (!(a0 < cap)) return out;
 
-  float a1 = a0 + weight * headroom;
+  float a1 = wash ? std::min(weight, 1.0f) * cap : a0 + weight * headroom;
   if (a1 > cap) a1 = cap;
+  if (wash && !(a1 > a0)) return out;  // no stronger than a dab already laid here
   float a = (a1 - a0) / headroom;
   if (a > 1.0f) a = 1.0f;
 
@@ -136,11 +138,12 @@ RgbDepositStep depositRgbTexelBlended(const std::array<float, 4>& dst0,
 }
 
 void RgbStroke::begin(const std::array<float, 3>& straightLinearRgb, float opacity,
-                      bool alphaLocked, BlendMode blend) noexcept {
+                      bool alphaLocked, BlendMode blend, bool wash) noexcept {
   ink_ = straightLinearRgb;
   opacity_ = std::clamp(opacity, 0.0f, 1.0f);
   alphaLocked_ = alphaLocked;
   blend_ = blend;
+  wash_ = wash;
   // A fresh accumulator, not a cleared one: assigning a default-constructed
   // store drops every `shared_ptr` slot and therefore every tile the previous
   // stroke held, which is `end()`'s free as well as this one's.
@@ -165,8 +168,14 @@ float RgbStroke::strokeAlphaAt(PixelCoord doc) const noexcept {
 
 DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 centre,
                                    int32_t canvasW, int32_t canvasH, const Selection* selection,
-                                   std::vector<TileCoord>* touchedOut) {
+                                   std::vector<TileCoord>* touchedOut, Vec2 sweep,
+                                   DualStroke* dual, StrokeTexture* texture) {
   DepositCount count;
+  const bool dualStroke = dual != nullptr && tip.dualTip != nullptr;
+  // brush/Deposit.hpp's `StrokeTexture`: the target is the stroke's alpha, so
+  // the weight is whatever brings this stroke's own alpha to it.
+  const bool strokeTextured =
+      texture != nullptr && tip.grain.enabled && !tip.grain.eachTip && !wash_;
   if (!(tip.flow > 0.0f)) return count;
   if (!(opacity_ > 0.0f)) return count;
 
@@ -174,7 +183,7 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
   // the shape of a dab is not a property of what it is made of, and a second
   // falloff here would be a second place for the two routes to disagree about
   // where a brush ends.
-  const PixelBounds b = dabPixelBounds(tip, centre, canvasW, canvasH);
+  const PixelBounds b = sweptDabBounds(tip, centre, sweep, canvasW, canvasH);
   if (b.empty()) return count;
 
   const TileCoord first = tileCoordAt(PixelCoord{b.x0, b.y0});
@@ -244,6 +253,8 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
       const bool blending = blend_ != BlendMode::Normal;
       const Tile* dst0Read = blending ? dst0_.find(coord) : nullptr;
       Tile* dst0Write = nullptr;
+      DualStrokeTile dualTile;
+      StrokeMassTile* texWeight = nullptr;
 
       for (int32_t y = y0; y <= y1; ++y) {
         const float dy = (static_cast<float>(y) + 0.5f) - centre.y;
@@ -251,7 +262,9 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
           const float dx = (static_cast<float>(x) + 0.5f) - centre.x;
           const PixelCoord local = tileLocalOffset(PixelCoord{x, y});
 
-          const float rawCov = dabCoverage(tip, dx, dy);
+          const float rawCov =
+              dualStroke ? dualStrokeCoverage(tip, *dual, dualTile, coord, local, dx, dy)
+                         : sweptDabCoverage(tip, dx, dy, sweep);
           if (!(rawCov > 0.0f)) continue;
 
           // Paper tooth, at this texel's ABSOLUTE canvas position -- `x`/`y`,
@@ -265,7 +278,19 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
           // control disabled and nothing said. `grainCoverageAt()` returns its
           // input bit-identical when grain is off, so adding it changes
           // nothing for a brush that has not turned it on.
-          const float cov = grainCoverageAt(tip.grain, rawCov, x, y);
+          // Flow included (brush/Grain.hpp's `grainWeightAt()`).
+          float cov = 0.0f;
+          if (strokeTextured) {
+            if (texWeight == nullptr) texWeight = &texture->weight.getOrCreate(coord);
+            const float w = std::clamp(tip.flow * rawCov, 0.0f, 1.0f);
+            const float m0 = texWeight->at(local);
+            const float m = m0 + w * (1.0f - m0);
+            texWeight->set(local, m);
+            cov = grainCoverageAt(tip.grain, m, x, y);
+          } else {
+            cov = wash_ ? grainWashWeightAt(tip.grain, rawCov, tip.flow, x, y)
+                        : grainWeightAt(tip.grain, rawCov, tip.flow, x, y);
+          }
           if (!(cov > 0.0f)) continue;  // a grain peak too tall for this pressure
           const float sel = selection != nullptr ? selectionTileCoverage(cover, local) : 1.0f;
           if (!(sel > 0.0f)) continue;
@@ -288,6 +313,14 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
           // signal, the same one `depositRgbTexel()`'s own `a0 < cap` refusal
           // already reads as "this stroke has not reached it yet" -- and read
           // back from `dst0Read` every dab after, never from the live tile.
+          // Textured at the stroke, `cov` is the stroke alpha to reach: the dab
+          // lays `(target - A) / (1 - A)`, which `depositRgbTexel()` composites
+          // to exactly the target.
+          const float weight =
+              !strokeTextured ? cov * sel
+              : accumulated < 1.0f
+                  ? std::max(0.0f, (cov * sel - accumulated) / (1.0f - accumulated))
+                  : 0.0f;
           RgbDepositStep step;
           std::array<float, 4> dst0Val{};
           const bool firstTouch = blending && !(accumulated > 0.0f);
@@ -297,10 +330,10 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
                                                         : std::array<float, 4>{0.0f, 0.0f, 0.0f,
                                                                                0.0f});
             step = depositRgbTexelBlended(dst0Val, ink_, blend_, accumulated,
-                                          tip.flow * cov * sel, opacity_ * sel, alphaLocked_);
+                                          weight, opacity_ * sel, alphaLocked_, wash_);
           } else {
-            step = depositRgbTexel(before, ink_, accumulated, tip.flow * cov * sel,
-                                   opacity_ * sel, alphaLocked_);
+            step = depositRgbTexel(before, ink_, accumulated, weight,
+                                   opacity_ * sel, alphaLocked_, wash_);
           }
           // The ceiling, the transparent tail of the falloff, and a texel the
           // selection excluded all arrive here as `dabAlpha == 0`, and all three

@@ -205,7 +205,7 @@
 // than hidden**: OPACITY and WET are drawn disabled on the routes that ignore
 // them (`ui/MacPaintUI.cpp`'s `drawBrushPaintGroup()`, via
 // `wetnessReachesSolver()`), but FLOW has no bespoke control to disable -- it
-// is drawn by `ui/BrushFieldPresentation.cpp`'s generic field table, which has
+// is a row of `ui/BrushPanelLayout.cpp`'s Tool Options table, which has
 // no route-aware disable mechanism at all. A `flowReachesRoute()` predicate
 // with no reader would be worse than none (`app/StrokeSession.hpp`'s own note
 // on why `grainReachesRoute()` earned its name: two call sites already asking

@@ -176,13 +176,11 @@ struct BrushPreset {
   // composite (`io/AbrBrushes.hpp`'s `dualBrushes`/`dualBrushUnsupportedBlend`
   // counters).
   //
-  // Threaded exactly like `tipBitmap` above -- set once by `io/AbrBrushes.cpp`,
-  // carried by pointer through `applyPresetToBrush()`/`presetFromBrush()`/
-  // `brushTipFor()`, never deep-copied -- and not persisted by
-  // `UserBrushLibraryStore` for the identical reason: `.abr`-derived,
-  // reproducible for free by re-reading the file, and a duplicate of a
-  // dual-brush preset therefore reloads next launch with its second tip gone,
-  // exactly as a duplicate sampled-tip preset reloads with its bitmap gone.
+  // Always built from `model.dual` by `dualTipFromModel()` (brush/BrushModel.hpp):
+  // by the importer, by the Brush Settings Dual Brush panel after an edit, and
+  // by `resolveDabIds()` when a saved preset reloads. It is a cache of that
+  // panel, carried by pointer through `applyPresetToBrush()`/`presetFromBrush()`/
+  // `brushTipFor()`, never deep-copied, and never persisted: the panel is.
   std::shared_ptr<const BrushTip> dualTip;
   // Only meaningful when `dualTip` is set.
   DualBrushBlend dualBlend = DualBrushBlend::Multiply;

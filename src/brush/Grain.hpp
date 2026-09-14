@@ -266,7 +266,8 @@ struct GrainParams {
   // Photoshop's Invert checkbox, on for 40 of the 84 textured presets
   // measured. Applied to the SAMPLED height before `depth` scales it, so
   // inverting a paper swaps which parts of it resist paint rather than
-  // changing how deep the tooth is.
+  // changing how deep the tooth is. Off, the lightest texels take the most
+  // paint (Adobe's Texture help); on, the darkest do.
   bool invert = false;
 
   // Photoshop's Brightness and Contrast, both in the panel's own -150..150
@@ -283,6 +284,13 @@ struct GrainParams {
   // other modes arrive with the Texture panel, whose `textureBlendMode` names
   // seven across the packs measured.
   CoverageBlend blend = CoverageBlend::Subtract;
+
+  // Photoshop's "Texture Each Tip". On (the default, and every brush that is
+  // not an imported texture with it unticked): the paper is applied to each
+  // dab. Off: to the stroke's accumulated weight, once (`StrokeTexture`,
+  // brush/Deposit.hpp) -- so overlapping dabs cannot fill the paper's hollows
+  // one subtraction at a time. Read by the Pigment and RGB deposit routes only.
+  bool eachTip = true;
 };
 
 // G: the grain surface height at absolute document texel `(x, y)`, in
@@ -320,7 +328,42 @@ float grainOverlayFraction(float P, float S, float O1, float G) noexcept;
 // (§ GrainParams::enabled's own comment).
 //
 // `O1` (§0) is fixed at 1.0 here; `params.strength` plays `S`.
+//
+// **Height reaches further into the paper than Subtract** for the same `depth`,
+// by `heightDepthGain()`: ten times as far for a shallow paper, easing to the
+// same at depth 1. Photoshop's Height formula is unpublished. The anchors:
+// Krita's manual gives its Photoshop-matching Height a tenfold strength range;
+// Adobe's says Depth 100% leaves only the LOWEST points unpainted, which a flat
+// x10 breaks (at Kyle's depths 0.2-0.36 it emptied most of the paper at full
+// flow, and five dry-media presets vanished). At Subtract's scale a Height
+// preset's Depth (mostly 0.05-0.2) never empties a hollow, so its texture
+// survived only at the stroke's soft edges.
+inline constexpr float kHeightDepthGain = 10.0f;
+// `kHeightDepthGain / (1 + (kHeightDepthGain - 1) * depth)`: 10 at depth 0, 1 at
+// depth 1, and `depth * gain` never above 1.
+float heightDepthGain(float depth) noexcept;
 float grainCoverageAt(const GrainParams& params, float coverage, int32_t x, int32_t y) noexcept;
+
+// `flow * grainCoverageAt()` -- except for Height, where the paper is subtracted
+// from flow alone (`P` in the overlay fraction is how hard the stroke presses
+// into the tooth) and the tip's coverage then scales what gets through. So
+// lowering flow opens more of the paper -- dense to grainy, not merely paler --
+// while a faint scanned tip (Kyle's Soft Pastel peaks at 0.67) still builds to
+// solid wherever its flow clears the paper. Subtracting from `flow * coverage`
+// erased such a tip almost everywhere.
+float grainWeightAt(const GrainParams& params, float coverage, float flow, int32_t x,
+                    int32_t y) noexcept;
+
+// The weight a Wash stroke keeps (brush/Deposit.hpp §1a). For Height textured
+// at each tip, flow only decides how far into the paper the tip reaches and the
+// kept strength is the tip's own: `grainWeightAt() / flow`. Textured at the
+// stroke (`eachTip` off) the paper cuts the stroke's own amount, which Wash
+// holds at flow, so the stroke stays as light as its flow. Wash keeps the strongest dab rather than
+// summing, so a flow-scaled weight left low-flow grain as a faint glaze that
+// never builds to the specks a Photoshop stroke shows. Every other blend, and
+// Build-up, keeps `grainWeightAt()`.
+float grainWashWeightAt(const GrainParams& params, float coverage, float flow, int32_t x,
+                        int32_t y) noexcept;
 
 // Whether two `GrainParams` describe the same paper. Bit equality throughout,
 // not a tolerance -- `brush/Library.hpp`'s `presetMatches()` convention

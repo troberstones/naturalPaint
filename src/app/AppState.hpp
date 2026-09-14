@@ -12,6 +12,7 @@
 #include "brush/Library.hpp"
 #include "brush/NativeBrush.hpp"
 #include "app/DabLibrary.hpp"
+#include "app/PatternLibrary.hpp"
 #include "app/BrushLibraryFile.hpp"
 #include "app/CloseDecision.hpp"
 #include "app/CropTool.hpp"
@@ -32,6 +33,7 @@
 #include "app/QuitSequence.hpp"
 #include "app/SelectionDrag.hpp"
 #include "app/StrokeBake.hpp"
+#include "app/StrokePreferences.hpp"
 #include "app/TransformSession.hpp"
 #include "app/UserBrushLibrary.hpp"
 #include "app/VectorStyle.hpp"
@@ -1968,6 +1970,19 @@ struct AppState {
   UserBrushLibraryStore userBrushLibrary;
   bool userBrushLibraryLoaded = false;
 
+  // The global stabiliser setting (app/StrokePreferences.hpp), the same
+  // lazy-load-on-first-need shape as `userBrushLibrary` above --
+  // `ensureStrokePreferencesLoaded()` is the gate.
+  StabiliserParams stabiliserPrefs;
+  // How a pigment deposit builds up where a stroke overlaps itself
+  // (brush/Deposit.hpp §1a), persisted in the same record as the stabiliser
+  // and loaded by the same gate. Global rather than per-brush: both rules are
+  // being judged by feel against other applications, which a painter settles
+  // once for the tool rather than brush by brush.
+  PigmentBuildup pigmentBuildup;
+  StrokePreferencesStore strokePreferences;
+  bool strokePreferencesLoaded = false;
+
   // The dab library: a folder of brush tips, where dropping a file in IS the
   // import (app/DabLibrary.hpp). A sibling of the two stores above, for their
   // reason -- it is session state that belongs to the process rather than to a
@@ -1979,6 +1994,13 @@ struct AppState {
   // sampled-tip brush still has its tip after a relaunch.
   DabLibrary dabLibrary;
   bool dabLibraryScanned = false;
+
+  // The papers a Texture panel can use (app/PatternLibrary), and the brush
+  // library's size at the last scan: an import extracts papers, so a grown
+  // library is the cue to look again (ui/PatternPicker).
+  PatternLibrary patternLibrary;
+  bool patternLibraryScanned = false;
+  size_t patternScanPresetCount = 0;
 
   // `--brush-dab-demo <id>`: the dab to put on the brush before the first
   // frame, so `--screenshot` can photograph the BRUSH EDITOR painting with a
@@ -2042,15 +2064,10 @@ struct AppState {
   // flag is only step (a).
   bool showAdvancedDynamics = false;
 
-  // `--brush-settings-demo [tab]`: which tab to open on, as a
-  // `BrushSettingsTab` ordinal, or -1 for "leave it alone". **Consumed on the
-  // frame it is applied** and reset to -1, so it selects a tab once rather
-  // than pinning it -- a value re-applied every frame would make the tab strip
-  // unclickable, which is a strange way for a screenshot flag to break an
-  // interactive session. Same purpose as `dabDemoId` above: the window is
-  // opened from a menu and switched with a click, and `--screenshot` has
-  // neither.
-  int brushSettingsDemoTab = -1;
+  // The Brush Settings page on show, as a `BrushPanel` ordinal. Kept here rather
+  // than in the window so `--brush-settings-demo <panel>` can choose it before
+  // the first frame; `--screenshot` has no pointer to click the list with.
+  int brushSettingsPanel = 0;
   bool showGuides = true;
   bool showGrid = false;
   // View > Show Frames and Slices (brief item 2). Drawn whenever true, in

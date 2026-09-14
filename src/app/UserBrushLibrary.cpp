@@ -3,6 +3,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -370,6 +372,92 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
       continue;
     }
 
+    if (key == "taper" || key == "taperin" || key == "taperout") {
+      // The two tapers (brush/Taper.hpp). `taper` is the ENTRY taper's older
+      // three-number spelling, kept readable for files written before the
+      // exit taper existed -- an explicit on/off did not exist then either,
+      // so a length above zero is what "on" meant. A separate keyword for
+      // `scalars`'s own reason: growing that line's required count would
+      // fail `takeFloats(rest, 7, ...)` for a file written before this
+      // field existed.
+      //
+      // **Rejected (bad count, NaN/infinity, or -- once clamped -- nothing
+      // left to reject) preserves the line rather than dropping it.** This
+      // used to fall through to `pointMode = PointMode::None;` with nothing
+      // pushed to `pendingUnknown` on a parse failure -- silently DROPPING a
+      // line a future build understands but this one cannot parse, on the
+      // very next save. `grain`'s neighbouring block still does that (a
+      // malformed one just leaves the default, always a legal brush), but a
+      // rejected `taper`/`stabiliser` line has no safe default to fall back
+      // to that also protects a value this build cannot make sense of.
+      const bool legacy = key == "taper";
+      const int count = legacy ? 3 : 4;
+      float n[4];
+      if (takeFloats(rest, count, n) && std::isfinite(n[0]) && std::isfinite(n[1]) &&
+          std::isfinite(n[2]) && (legacy || std::isfinite(n[3]))) {
+        BrushTaper& t = key == "taperout" ? pending.native.taperOut : pending.native.taperIn;
+        t.lengthPx = std::clamp(n[legacy ? 0 : 1], 0.0f, 500.0f);
+        t.minSizePct = std::clamp(n[legacy ? 1 : 2], 0.0f, 100.0f);
+        t.flow = n[legacy ? 2 : 3] != 0.0f;
+        t.on = legacy ? t.lengthPx > 0.0f : n[0] != 0.0f;
+      } else {
+        pendingUnknown.push_back(line);
+      }
+      pointMode = PointMode::None;
+      continue;
+    }
+
+    if (key == "stabiliserCatchUpMs") {
+      // `own.catchUpMs` (brush/Stabiliser.hpp), a separate key rather than a
+      // 7th field on `stabiliser` below -- `taper`'s own comment on why:
+      // growing that line's required count would fail `takeFloats(rest, 6,
+      // ...)` for every `stabiliser` line a file already has, silently
+      // losing the brush's mode/amount/own on the very next save. An older
+      // build that does not know this key falls through to the generic
+      // "unrecognised key, preserve the line verbatim" case at the end of
+      // this loop, same as any other key it predates.
+      float n;
+      if (takeFloats(rest, 1, &n) && std::isfinite(n)) {
+        pending.native.stabiliser.own.catchUpMs = std::clamp(n, 0.0f, 2000.0f);
+      } else {
+        pendingUnknown.push_back(line);
+      }
+      pointMode = PointMode::None;
+      continue;
+    }
+
+    if (key == "stabiliser") {
+      // This brush's own stabiliser choice (brush/Stabiliser.hpp).
+      // `<brushMode> <amountPct> <ownMode> <ownStringPx> <ownStrength>
+      // <ownResponsiveness>` -- the ordinals are `StabiliserBrushMode`'s and
+      // `StabiliserMode`'s own, the same "write the enum's ordinal" `link`'s
+      // format above uses.
+      //
+      // Rejected (bad count, non-finite, or an ordinal this build's enum
+      // does not reach -- a future `StabiliserBrushMode`/`StabiliserMode`
+      // member) preserves the line verbatim, `taper`'s own reason just
+      // above: an ordinal from the future is exactly the case a build that
+      // does not know this key already protects with the fallthrough at the
+      // end of this loop, and a REJECTED line inside a key this build DOES
+      // recognise deserves the identical protection.
+      float n[6];
+      const bool allFinite = takeFloats(rest, 6, n) && std::isfinite(n[0]) && std::isfinite(n[1]) &&
+                             std::isfinite(n[2]) && std::isfinite(n[3]) && std::isfinite(n[4]) &&
+                             std::isfinite(n[5]);
+      if (allFinite && n[0] >= 0.0f && n[0] <= 2.0f && n[2] >= 0.0f && n[2] <= 2.0f) {
+        pending.native.stabiliser.mode = static_cast<StabiliserBrushMode>(static_cast<int>(n[0]));
+        pending.native.stabiliser.amountPct = std::clamp(n[1], 0.0f, 300.0f);
+        pending.native.stabiliser.own.mode = static_cast<StabiliserMode>(static_cast<int>(n[2]));
+        pending.native.stabiliser.own.stringPx = std::clamp(n[3], 0.0f, 200.0f);
+        pending.native.stabiliser.own.strength = std::clamp(n[4], 0.0f, 100.0f);
+        pending.native.stabiliser.own.responsiveness = std::clamp(n[5], 0.0f, 100.0f);
+      } else {
+        pendingUnknown.push_back(line);
+      }
+      pointMode = PointMode::None;
+      continue;
+    }
+
     if (key == "opacity") {
       // **Accepted and DROPPED, never applied.** An interim build of the
       // `NativeBrush` migration briefly put `opacity` in `native` and wrote
@@ -572,6 +660,40 @@ std::string UserBrushLibraryStore::serialize(const BrushLibrary& lib) const {
       // off link's shape would make the toggle destructive.
       for (const CurvePoint& pt : link.curve) out += "point " + f9(pt.x) + " " + f9(pt.y) + "\n";
     }
+    // `taperin`/`taperout`/`stabiliser`, written only when non-default -- so a
+    // preset nobody has touched either on round-trips byte-identical to a
+    // file written before any of these keys existed. The older `taper` key is
+    // still READ (above) and never written back: a file saved by this build
+    // loses its entry taper in an older one, which is the same one-way step
+    // every added key here has taken.
+    const auto writeTaper = [&](const char* key, const BrushTaper& t) {
+      if (brushTaperEqual(t, BrushTaper{})) return;
+      out += std::string(key) + " " + (t.on ? "1" : "0") + " " + f9(t.lengthPx) + " " +
+             f9(t.minSizePct) + " " + (t.flow ? "1" : "0") + "\n";
+    };
+    writeTaper("taperin", p.native.taperIn);
+    writeTaper("taperout", p.native.taperOut);
+    const BrushStabiliserSetting& s = p.native.stabiliser;
+    // **`own` is checked against ITS OWN default regardless of `mode`.** A
+    // painter can tune `own` under `Own`, then switch back to `Follow
+    // global` without resetting it -- `mode`/`amountPct` alone being back at
+    // their defaults would otherwise skip this whole line and the tuned
+    // `own` values would not survive the save, silently losing them the
+    // moment `Own` is picked again.
+    const StabiliserParams ownDefault{};
+    const bool ownDiffers = s.own.mode != ownDefault.mode || s.own.stringPx != ownDefault.stringPx ||
+                            s.own.strength != ownDefault.strength ||
+                            s.own.responsiveness != ownDefault.responsiveness;
+    if (s.mode != StabiliserBrushMode::FollowGlobal || s.amountPct != 100.0f || ownDiffers) {
+      out += "stabiliser " + std::to_string(static_cast<int>(s.mode)) + " " + f9(s.amountPct) +
+             " " + std::to_string(static_cast<int>(s.own.mode)) + " " + f9(s.own.stringPx) +
+             " " + f9(s.own.strength) + " " + f9(s.own.responsiveness) + "\n";
+    }
+    // Own key, own default check (same "own is checked regardless of mode"
+    // reasoning as `ownDiffers` just above): a value tuned under `Own` must
+    // survive switching back to `Follow global` without being touched again.
+    if (s.own.catchUpMs != ownDefault.catchUpMs)
+      out += "stabiliserCatchUpMs " + f9(s.own.catchUpMs) + "\n";
     const auto it = presetUnknownLines_.find(p.name);
     if (it != presetUnknownLines_.end())
       for (const std::string& line : it->second) out += sanitizeOneLine(line) + "\n";

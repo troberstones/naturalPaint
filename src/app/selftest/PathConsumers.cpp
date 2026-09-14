@@ -866,6 +866,36 @@ bool runPathConsumersTest() {
   }
 
   {
+    // Fix 9: closed-contour seam double stamp. The origin dab (`StrokePath::
+    // addPoint()`) lands at the contour's own first point; re-feeding that
+    // same point to close the loop can lay a SECOND dab within a fraction of
+    // a spacing of it -- a double stamp at the seam, on top of the count the
+    // rectangle test just above already tolerates within +-2. A square side
+    // chosen as an exact multiple of the tip's own spacing (perimeter %
+    // spacing == 0, the case `strokePathWithBrush()`'s own comment on the
+    // fix names) makes the walk land a dab EXACTLY back on the seam, so this
+    // is the tightest case to catch a regression in -- +-0.5, not the file's
+    // usual +-2 (or even +-1), is what actually distinguishes "the duplicate
+    // is dropped" (80 dabs) from "it is still there" (81 dabs).
+    const BrushTip tip = testTip();
+    const float spacingPx = tip.spacingPx();
+    const float side = spacingPx * 20.0f;  // perimeter = 4*side = 80*spacingPx, exactly divisible
+    Layer target = makeRgb("fix 9 seam", W, H);
+    const std::vector<VectorShape> square = {filledShape(
+        polygonPath({{20, 20}, {20 + side, 20}, {20 + side, 20 + side}, {20, 20 + side}}),
+        {1, 1, 1, 1})};
+    const PathStrokeResult s = strokePathWithBrush(target, square, tip, nullptr, W, H);
+    const double perimeter = 4.0 * static_cast<double>(side);
+    const double expectedDabs = perimeter / static_cast<double>(spacingPx);
+    std::printf("  [measured] fix 9 closed square side %.2f (spacing %.3f, perimeter/spacing "
+               "%.2f exactly divisible): %zu dabs\n",
+               side, spacingPx, expectedDabs, s.dabs);
+    check(s.ok && std::fabs(static_cast<double>(s.dabs) - expectedDabs) <= 0.5,
+          "fix 9: a closed contour whose perimeter divides evenly by spacing no longer "
+          "double-stamps the seam -- dab count matches perimeter/spacing within +-0.5");
+  }
+
+  {
     // Curvature is walked, not chorded. A semicircle bulges well away from the
     // straight line between its endpoints, so an emitter fed only the anchors
     // would lay far fewer dabs and would paint the chord instead of the arc.

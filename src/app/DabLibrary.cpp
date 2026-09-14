@@ -843,6 +843,20 @@ std::vector<std::string> extractAbrPatterns(
 size_t resolveDabIds(BrushLibrary& lib, DabLibrary& dabs, std::vector<std::string>* notesOut) {
   size_t resolved = 0;
   for (BrushPreset& p : lib.presets) {
+    // The Dual Brush's second tip. A saved preset stores the panel, not the tip,
+    // so the tip is rebuilt from the panel once its bitmap is back.
+    DabRef& dualDab = p.model.dual.tip.dab;
+    if (!dualDab.id.empty() && dualDab.bitmap == nullptr) {
+      dualDab.bitmap = dabs.resolve(dualDab.id);
+      if (dualDab.bitmap == nullptr && notesOut)
+        notesOut->push_back("'" + p.name + "': the Dual Brush tip '" + dualDab.id +
+                            "' is no longer in the dab library -- its second tip will be round");
+    }
+    if (p.dualTip == nullptr && p.model.dual.enabled) {
+      p.dualTip = dualTipFromModel(p.model.dual);
+      p.dualBlend = p.model.dual.blend;
+    }
+
     if (p.dabId.empty()) continue;
     // A preset that already HAS its bitmap is left alone: it came straight
     // out of a loaded `.abr` this session, and re-resolving would swap a tip

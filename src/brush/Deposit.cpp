@@ -129,6 +129,47 @@ float bitmapDabCoverage(const BrushTipBitmap& bmp, const BrushTip& tip, float dx
 // and because this function never looks past the tip it is handed, a second
 // (or third) level of nesting on that inner tip is never visited, regardless
 // of what is stored there.
+// The tip's radial falloff at squared distance `d2` (in the tip's own frame),
+// shared by `singleTipCoverage()` and `sweptDabCoverage()` so a swept dab
+// cannot fall off differently from a plain one.
+float tipFalloff(const BrushTip& tip, float d2) noexcept {
+  const float r = tip.radius;
+  const float r2 = r * r;
+  if (!(d2 < r2)) return 0.0f;
+
+  const float h = std::clamp(tip.hardness, 0.0f, 1.0f);
+
+  // Track B / B1, header §2: the minimum skirt width, in PIXELS, `hardness`
+  // alone cannot express (it is a fraction of `radius`, so a small or hard
+  // tip can specify a skirt under a pixel wide). `hEff <= h` always, so this
+  // can only WIDEN the skirt, never narrow one `hardness` already asked for.
+  //
+  // Bit-identical to plain `h` in the two cases header §2 states and
+  // `app/selftest/TipEdge.cpp` asserts: `tip.edgePx == 0` (the `min` picks
+  // `h` because `1 - 0/r == 1 >= h` always) and `(1 - h) * r >= edgePx` (the
+  // `min` picks `h` because that inequality rearranges to exactly
+  // `h <= 1 - edgePx/r`) -- three of the four built-ins at their default
+  // size (`Round Bristle 03`, `Flat Wash`, `Dry Bristle`), and therefore
+  // `--pigment-stroke-demo` and the `canvas` golden view. NOT `Detail Liner`
+  // (r 5, h 0.95: `hEff` 0.8), which is the tip this floor exists to fix --
+  // header §2 names it as the intended change.
+  //
+  // Applied identically to the round and the elliptical branch above --
+  // `d` is isotropic either way -- and header §2 is the one-line argument for
+  // why the minor axis's narrower physical floor is accepted rather than
+  // corrected.
+  const float hEff = std::clamp(std::min(h, 1.0f - tip.edgePx / r), 0.0f, 1.0f);
+
+  const float d = std::sqrt(d2) / r;  // in [0,1)
+  if (d <= hEff) return 1.0f;
+  // hEff < d < 1 here, so hEff < 1 and the divisor is strictly positive.
+  // Reached even for `hardness == 1` whenever `edgePx > 0`, since `hEff < 1`
+  // there -- the `DryBrush` end of the range no longer skips this division,
+  // on purpose (header §2).
+  const float u = (d - hEff) / (1.0f - hEff);
+  return 1.0f - u * u * (3.0f - 2.0f * u);
+}
+
 float singleTipCoverage(const BrushTip& tip, float dx, float dy) noexcept {
   const float r = tip.radius;
   if (!(r > 0.0f)) return 0.0f;
@@ -182,40 +223,7 @@ float singleTipCoverage(const BrushTip& tip, float dx, float dy) noexcept {
     // put a rounding between the disc and the test.
     d2 = dx * dx + dy * dy;
   }
-  const float r2 = r * r;
-  if (!(d2 < r2)) return 0.0f;
-
-  const float h = std::clamp(tip.hardness, 0.0f, 1.0f);
-
-  // Track B / B1, header §2: the minimum skirt width, in PIXELS, `hardness`
-  // alone cannot express (it is a fraction of `radius`, so a small or hard
-  // tip can specify a skirt under a pixel wide). `hEff <= h` always, so this
-  // can only WIDEN the skirt, never narrow one `hardness` already asked for.
-  //
-  // Bit-identical to plain `h` in the two cases header §2 states and
-  // `app/selftest/TipEdge.cpp` asserts: `tip.edgePx == 0` (the `min` picks
-  // `h` because `1 - 0/r == 1 >= h` always) and `(1 - h) * r >= edgePx` (the
-  // `min` picks `h` because that inequality rearranges to exactly
-  // `h <= 1 - edgePx/r`) -- three of the four built-ins at their default
-  // size (`Round Bristle 03`, `Flat Wash`, `Dry Bristle`), and therefore
-  // `--pigment-stroke-demo` and the `canvas` golden view. NOT `Detail Liner`
-  // (r 5, h 0.95: `hEff` 0.8), which is the tip this floor exists to fix --
-  // header §2 names it as the intended change.
-  //
-  // Applied identically to the round and the elliptical branch above --
-  // `d` is isotropic either way -- and header §2 is the one-line argument for
-  // why the minor axis's narrower physical floor is accepted rather than
-  // corrected.
-  const float hEff = std::clamp(std::min(h, 1.0f - tip.edgePx / r), 0.0f, 1.0f);
-
-  const float d = std::sqrt(d2) / r;  // in [0,1)
-  if (d <= hEff) return 1.0f;
-  // hEff < d < 1 here, so hEff < 1 and the divisor is strictly positive.
-  // Reached even for `hardness == 1` whenever `edgePx > 0`, since `hEff < 1`
-  // there -- the `DryBrush` end of the range no longer skips this division,
-  // on purpose (header §2).
-  const float u = (d - hEff) / (1.0f - hEff);
-  return 1.0f - u * u * (3.0f - 2.0f * u);
+  return tipFalloff(tip, d2);
 }
 
 }  // namespace
@@ -348,6 +356,99 @@ float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept {
   return std::clamp(combineDualCoverage(tip.dualBlend, base, second), 0.0f, 1.0f);
 }
 
+void stampDualMask(DualStroke& dual, const BrushTip& second, Vec2 centre, int32_t canvasW,
+                   int32_t canvasH) {
+  const PixelBounds b = dabPixelBounds(second, centre, canvasW, canvasH);
+  if (b.empty()) return;
+  const TileCoord first = tileCoordAt(PixelCoord{b.x0, b.y0});
+  const TileCoord last = tileCoordAt(PixelCoord{b.x1, b.y1});
+  for (int32_t ty = first.y; ty <= last.y; ++ty) {
+    for (int32_t tx = first.x; tx <= last.x; ++tx) {
+      const TileCoord coord{tx, ty};
+      const PixelCoord org = tileOrigin(coord);
+      const int32_t x0 = std::max(b.x0, org.x);
+      const int32_t x1 = std::min(b.x1, org.x + kTileSize - 1);
+      const int32_t y0 = std::max(b.y0, org.y);
+      const int32_t y1 = std::min(b.y1, org.y + kTileSize - 1);
+      StrokeMassTile* tile = nullptr;
+      for (int32_t y = y0; y <= y1; ++y) {
+        const float dy = (static_cast<float>(y) + 0.5f) - centre.y;
+        for (int32_t x = x0; x <= x1; ++x) {
+          const float d = singleTipCoverage(second, (static_cast<float>(x) + 0.5f) - centre.x, dy);
+          if (!(d > 0.0f)) continue;
+          if (tile == nullptr) tile = &dual.second.getOrCreate(coord);
+          const PixelCoord local = tileLocalOffset(PixelCoord{x, y});
+          const float m = tile->at(local);
+          tile->set(local, m + d * (1.0f - m));
+        }
+      }
+    }
+  }
+}
+
+float dualStrokeCoverage(const BrushTip& tip, DualStroke& dual, DualStrokeTile& at,
+                         TileCoord coord, PixelCoord local, float dx, float dy) {
+  const float c = singleTipCoverage(tip, dx, dy);
+  if (!(c > 0.0f)) return 0.0f;
+  if (!at.fetched) {
+    at.primary = &dual.primary.getOrCreate(coord);
+    at.second = dual.second.find(coord);
+    at.fetched = true;
+  }
+  const float p = at.primary->at(local);
+  const float primary = p + c * (1.0f - p);
+  at.primary->set(local, primary);
+  const float second = at.second != nullptr ? at.second->at(local) : 0.0f;
+
+  const auto to8 = [](float v) { return std::round(std::clamp(v, 0.0f, 1.0f) * 255.0f) / 255.0f; };
+  // `combineDualCoverage()` keeps the cookie cutter: an empty 8-bit primary
+  // combines to 0 under every blend.
+  const float combined =
+      std::clamp(combineDualCoverage(tip.dualBlend, to8(primary), to8(second)), 0.0f, 1.0f);
+  return std::min(1.0f, c * combined / primary);
+}
+
+float sweptDabCoverage(const BrushTip& tip, float dx, float dy, Vec2 sweep) noexcept {
+  if ((sweep.x == 0.0f && sweep.y == 0.0f) || tip.bitmap != nullptr || tip.dualTip != nullptr)
+    return dabCoverage(tip, dx, dy);
+  if (!(tip.radius > 0.0f)) return 0.0f;
+
+  // The texel and the segment's far end in the tip's own frame -- rotated, the
+  // minor axis stretched back to a circle -- where the falloff is radial, so
+  // the segment's nearest point is the position along the sweep that covers
+  // this texel most.
+  float px = dx;
+  float py = dy;
+  float qx = sweep.x;
+  float qy = sweep.y;
+  const float rn = std::clamp(tip.roundness, kMinRoundness, 1.0f);
+  if (rn < 1.0f) {
+    if (tip.angle != 0.0f) {
+      const float t = tip.angle * 0.017453292519943295f;  // pi / 180
+      const float c = std::cos(t);
+      const float sn = std::sin(t);
+      const float pu = px * c + py * sn;
+      const float qu = qx * c + qy * sn;
+      py = -px * sn + py * c;
+      qy = -qx * sn + qy * c;
+      px = pu;
+      qx = qu;
+    }
+    py /= rn;
+    qy /= rn;
+  }
+  const float qq = qx * qx + qy * qy;
+  const float t = qq > 0.0f ? std::clamp((px * qx + py * qy) / qq, 0.0f, 1.0f) : 0.0f;
+  const float ex = px - t * qx;
+  const float ey = py - t * qy;
+  return tipFalloff(tip, ex * ex + ey * ey);
+}
+
+float washAmount(float laid, float rate, float ceiling) noexcept {
+  const float strength = std::min(rate, 1.0f) * ceiling;
+  return strength > laid ? strength : laid;
+}
+
 PigmentTexel depositTexel(const PigmentTexel& dst, const Latent& pigment, float deltaMass,
                           float selection) noexcept {
   const float denom = dst.mass + deltaMass;
@@ -432,13 +533,38 @@ PixelBounds dabPixelBounds(const BrushTip& tip, Vec2 centre, int32_t canvasW,
   return b;
 }
 
+PixelBounds sweptDabBounds(const BrushTip& tip, Vec2 centre, Vec2 sweep, int32_t canvasW,
+                           int32_t canvasH) noexcept {
+  PixelBounds b = dabPixelBounds(tip, centre, canvasW, canvasH);
+  if (sweep.x == 0.0f && sweep.y == 0.0f) return b;
+  const PixelBounds from =
+      dabPixelBounds(tip, Vec2{centre.x + sweep.x, centre.y + sweep.y}, canvasW, canvasH);
+  if (from.empty()) return b;
+  if (b.empty()) return from;
+  b.x0 = std::min(b.x0, from.x0);
+  b.y0 = std::min(b.y0, from.y0);
+  b.x1 = std::max(b.x1, from.x1);
+  b.y1 = std::max(b.y1, from.y1);
+  return b;
+}
+
 DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centre,
                         int32_t canvasW, int32_t canvasH, const Selection* selection,
-                        std::vector<TileCoord>* touchedOut) {
+                        std::vector<TileCoord>* touchedOut, PigmentBuildup buildup,
+                        WashStroke* wash, Vec2 sweep, DualStroke* dual,
+                        StrokeTexture* texture) {
   DepositCount count;
   if (!(tip.flow > 0.0f)) return count;
 
-  const PixelBounds b = dabPixelBounds(tip, centre, canvasW, canvasH);
+  // §1a, hoisted: properties of the stroke, not of a texel.
+  const bool dualStroke = dual != nullptr && tip.dualTip != nullptr;
+  const bool washing =
+      buildup.mode == PigmentBuildupMode::Wash && wash != nullptr && wash->before != nullptr;
+  const float washCeiling = std::clamp(buildup.opacity, 0.0f, 1.0f) * kMaxMass;
+  const bool strokeTextured =
+      texture != nullptr && tip.grain.enabled && !tip.grain.eachTip && !washing;
+
+  const PixelBounds b = sweptDabBounds(tip, centre, sweep, canvasW, canvasH);
   if (b.empty()) return count;
 
   const TileCoord first = tileCoordAt(PixelCoord{b.x0, b.y0});
@@ -478,6 +604,14 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
       // this tile -- header §3, fact 2. A tile the bounding box clipped but
       // the disc missed is never created and never reported.
       PigmentTile* tile = nullptr;
+      // A Wash stroke's buffer and pen-down texels (§1a), fetched beside the
+      // document tile. The buffer is scratch -- no undo, dropped at pen-up --
+      // so creating a tile of it costs a caller nothing.
+      StrokeMassTile* laidTile = nullptr;
+      const PigmentTile* beforeTile = nullptr;
+      DualStrokeTile dualTile;
+      StrokeMassTile* texWeight = nullptr;
+      StrokeMassTile* texLaid = nullptr;
 
       for (int32_t y = y0; y <= y1; ++y) {
         const float dy = (static_cast<float>(y) + 0.5f) - centre.y;
@@ -485,7 +619,9 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
           const float dx = (static_cast<float>(x) + 0.5f) - centre.x;
           const PixelCoord local = tileLocalOffset(PixelCoord{x, y});
 
-          const float rawCov = dabCoverage(tip, dx, dy);
+          const float rawCov =
+              dualStroke ? dualStrokeCoverage(tip, *dual, dualTile, coord, local, dx, dy)
+                         : sweptDabCoverage(tip, dx, dy, sweep);
           if (!(rawCov > 0.0f)) continue;
 
           // §2e: grain modulates the tip's own coverage at this texel's
@@ -497,7 +633,27 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
           // it. `grainCoverageAt()` returns `rawCov` bit-identical when
           // `tip.grain` is off (its own default), which is what keeps this
           // line a no-op for every brush that has not turned grain on.
-          const float cov = grainCoverageAt(tip.grain, rawCov, x, y);
+          // Flow included: `grainWeightAt()` (Height subtracts the paper from
+          // flow, then scales by coverage).
+          float cov = 0.0f;
+          if (strokeTextured) {
+            if (texWeight == nullptr) {
+              texWeight = &texture->weight.getOrCreate(coord);
+              texLaid = &texture->laid.getOrCreate(coord);
+            }
+            const float w = std::clamp(tip.flow * rawCov, 0.0f, 1.0f);
+            const float m0 = texWeight->at(local);
+            const float m = m0 + w * (1.0f - m0);
+            texWeight->set(local, m);
+            const float target = grainCoverageAt(tip.grain, m, x, y);
+            const float laid = texLaid->at(local);
+            if (!(target > laid)) continue;
+            texLaid->set(local, target);
+            cov = target - laid;
+          } else {
+            cov = washing ? grainWashWeightAt(tip.grain, rawCov, tip.flow, x, y)
+                          : grainWeightAt(tip.grain, rawCov, tip.flow, x, y);
+          }
           if (!(cov > 0.0f)) continue;  // a grain peak too tall for this pressure
 
           const float sel = selection != nullptr ? selectionTileCoverage(cover, local) : 1.0f;
@@ -515,7 +671,7 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
           // and at the shipped defaults a half-selected texel walks straight
           // through it in six dabs -- one and a half radii of travel, which is
           // less than one ordinary brush-width of a stroke.
-          const float deltaMass = tip.flow * cov * sel;
+          const float deltaMass = cov * sel;
           if (!(deltaMass > 0.0f)) continue;
 
           if (tile == nullptr) {
@@ -523,8 +679,21 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
             ++count.tiles;
             if (touchedOut != nullptr) touchedOut->push_back(coord);
           }
-          tile->writeTexel(local,
-                           depositTexel(tile->readTexel(local), tip.pigment, deltaMass, sel));
+          if (!washing) {
+            tile->writeTexel(local,
+                             depositTexel(tile->readTexel(local), tip.pigment, deltaMass, sel));
+          } else {
+            if (laidTile == nullptr) {
+              laidTile = &wash->laid.getOrCreate(coord);
+              beforeTile = wash->before->find(coord);
+            }
+            const float s = washAmount(laidTile->at(local), deltaMass, washCeiling);
+            laidTile->set(local, s);
+            // A tile absent at pen-down was bare paper, which a default texel is.
+            const PigmentTexel before =
+                beforeTile != nullptr ? beforeTile->readTexel(local) : PigmentTexel{};
+            tile->writeTexel(local, depositTexel(before, tip.pigment, s, sel));
+          }
           ++count.texels;
         }
       }

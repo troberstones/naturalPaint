@@ -108,3 +108,31 @@ in a pathological case". Both had done the work correctly.
 So: take the file list and the design decisions from the report, and take every
 number from the logs yourself. `gather.sh` does this for the build and the
 suite; the per-track claims are yours to check.
+
+## Cost: what made brush wave 1 expensive, and the rules that follow
+
+Brush wave 1 (four tracks, merged as `26c17d8`) took ~2.3M agent tokens and
+~6.4 agent-hours: tracks 0.87M, gather 0.26M, review 0.41M, fix wave 0.78M.
+About half was rework. Rules for every later wave:
+
+1. **Settle design questions with the user before dispatch.** Two tracks stopped
+   mid-way — one on a design collision that needed a ruling, one on a brief
+   that contradicted itself.
+2. **Make the riskiest path testable first, in the same track.** The worst
+   defect lived in the only path with no test (SDL events → pointer queue); a
+   review found it and a whole fix wave followed.
+3. **Coupled features are one track.** Parallel tracks cost a gather, a merge
+   with main's drift, and more rate-limit exposure.
+4. **Comment budget.** A comment says *why*, in a few lines. Measurements,
+   history and review findings go in the commit message. Fix a header claim a
+   change makes false; do not rewrite the section. (Wave 1 added 453 lines of
+   production code and 1,687 of comments.)
+5. **Iterate fast, verify slow.** A default (RelWithDebInfo) build dir already
+   links without LTO (a `.cpp` edit rebuilds in ~5 s instead of ~29 s); run one
+   section with `--selftest-only <substring>`. The full suite on a
+   `-DCMAKE_BUILD_TYPE=Release` (LTO) build runs once, at the end. Widely-included headers (`StrokePath.hpp`,
+   `Deposit.hpp`, `Dynamics.hpp`, `AppState.hpp` are each in ~60% of 479 TUs)
+   cost ~55 s per edit, comment-only edits included.
+6. **One sabotage per new behaviour**, not per assertion. Every new assertion
+   must still be shown red against the old code.
+7. **Keep one focused review.** It found the wave's worst bug.

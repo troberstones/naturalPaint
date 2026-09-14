@@ -268,6 +268,7 @@ bool runActiveLayerTest() {
     // controlled Size Variance, with `hardwareInputs.pressure` supplied
     // fresh at each `setTip()` call -- still mid-stroke, still reaching the
     // deposit, just through the architecture that replaced the old one.
+    brush.model.shape.enabled = true;
     brush.model.shape.size.control = VarianceControl::PenPressure;
 
     const auto strokeTexels = [&](bool grow) {

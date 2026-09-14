@@ -123,6 +123,7 @@ bool runStrokePreviewTest() {
     // draws its own per-dab spread straight off `jitter`, with no `control`
     // needed at all.
     BrushState scattered = base;
+    scattered.model.scatter.enabled = true;
     scattered.model.scatter.scatter.jitter = 0.9f;
     check(differingBytes(rasteriseStrokePreview(scattered, lut), ref) > 0,
           "a jittered Scatter Variance changes the strip -- scatter displaces dab CENTRES, so "
@@ -142,6 +143,7 @@ bool runStrokePreviewTest() {
     // does not -- Fade replaces it here as this section's stroke-local
     // example.
     BrushState fade = base;
+    fade.model.shape.enabled = true;
     fade.model.shape.size.control = VarianceControl::Fade;
     fade.model.shape.size.jitter = 0.0f;
     fade.model.shape.size.minimum = 0.2f;  // a real floor to fade TOWARD, or
@@ -158,6 +160,7 @@ bool runStrokePreviewTest() {
     BrushState direction = base;
     direction.model.tip.roundness = 0.4f;  // an ellipse, so an angle is visible at all
     BrushState directionRef = direction;
+    direction.model.shape.enabled = true;
     direction.model.shape.angle.control = VarianceControl::Direction;
     check(differingBytes(rasteriseStrokePreview(direction, lut),
                          rasteriseStrokePreview(directionRef, lut)) > 0,
@@ -248,6 +251,7 @@ bool runStrokePreviewTest() {
     BrushState wide = base;
     wide.model.tip.diameterPx = 60.0f;  // radius 30
     BrushState wideScattered = wide;
+    wideScattered.model.scatter.enabled = true;
     wideScattered.model.scatter.scatter.jitter = 1.0f;
     const float wideReach = strokePreviewReach(wide, lut);
     const float scatteredReach = strokePreviewReach(wideScattered, lut);
@@ -397,6 +401,56 @@ bool runStrokePreviewTest() {
     check(img.texels == 0,
           "...and it honestly reports zero texels covered, which is what lets the panel say "
           "something true instead of showing a blank strip that reads as a broken preview");
+  }
+
+  // ======================================================================
+  // Fix 10: entry taper reaches the preview strip. It used to be invisible
+  // there -- `rasteriseStrokePreview()`'s own `stroke.begin()` call left
+  // `native` at its default `nullptr`, so `StrokeSession` never saw
+  // `NativeBrush::taperIn` and every stroke it painted, tapered brush or
+  // not, was the untapered one.
+  // ======================================================================
+  {
+    BrushState tapered = base;
+    tapered.model.tip.diameterPx = 40.0f;
+    tapered.native.taperIn.on = true;
+    tapered.native.taperIn.lengthPx = 200.0f;   // most of the strip's own length
+    tapered.native.taperIn.minSizePct = 0.0f;   // pointed, so the change is stark
+    BrushState untapered = tapered;
+    untapered.native.taperIn.on = false;
+
+    const StrokePreviewImage withTaper = rasteriseStrokePreview(tapered, lut);
+    const StrokePreviewImage withoutTaper = rasteriseStrokePreview(untapered, lut);
+    std::printf("  [measured] fix 10 taper vs no taper: %zu differing byte(s) of %zu\n",
+               differingBytes(withTaper, withoutTaper), withTaper.rgba.size());
+    check(differingBytes(withTaper, withoutTaper) > 0,
+          "fix 10: entry taper changes the preview strip -- a single dab cannot express a "
+          "changing radius along the stroke, so this rules out every route but the real one");
+  }
+
+  // ======================================================================
+  // And the EXIT taper reaches it too -- through `stroke.end()`, the release
+  // of the repaint, which the entry taper never exercises. Asserted here
+  // and not only against `StrokeSession` directly because "the module does
+  // it" and "it reaches a painted strip" are separate claims, and it was the
+  // second one that was false for the entry taper (fix 10 above).
+  // ======================================================================
+  {
+    BrushState tapered = base;
+    tapered.model.tip.diameterPx = 40.0f;
+    tapered.native.taperOut.on = true;
+    tapered.native.taperOut.lengthPx = 200.0f;
+    tapered.native.taperOut.minSizePct = 0.0f;
+    BrushState untapered = tapered;
+    untapered.native.taperOut.on = false;
+
+    const StrokePreviewImage withTaper = rasteriseStrokePreview(tapered, lut);
+    const StrokePreviewImage withoutTaper = rasteriseStrokePreview(untapered, lut);
+    std::printf("  [measured] exit taper vs no taper: %zu differing byte(s) of %zu\n",
+                differingBytes(withTaper, withoutTaper), withTaper.rgba.size());
+    check(differingBytes(withTaper, withoutTaper) > 0,
+          "exit taper changes the preview strip -- the held-back tail really is released and "
+          "tapered by the time a stroke is finished");
   }
 
   std::printf("[selftest] stroke preview %s\n", ok ? "PASS" : "FAIL");
