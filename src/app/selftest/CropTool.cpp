@@ -544,7 +544,15 @@ bool runCropToolTest() {
 
     MenuContext docSel = docNoSel;
     docSel.hasSelection = true;
-    const MenuNode* cropSel = Find::in(buildMenuModel(docSel), MenuAction::CropToSelection);
+    // A NAMED vector, not `Find::in(buildMenuModel(docSel), ...)` inline --
+    // that temporary is destroyed at the end of this statement, so `cropSel`
+    // would dangle by the time `check()` below dereferences it. `closed` and
+    // `open` above already bind for exactly this reason; this one didn't,
+    // and macOS/Simulator's allocator happened to leave the freed block
+    // readable, so it read back a plausible answer anyway -- a real device
+    // build does not, and traps this as an actual FAIL rather than a crash.
+    const std::vector<MenuNode> selected = buildMenuModel(docSel);
+    const MenuNode* cropSel = Find::in(selected, MenuAction::CropToSelection);
     check(cropSel != nullptr && cropSel->enabled,
           "menu: and Crop to Selection goes live the moment there is a selection");
   }

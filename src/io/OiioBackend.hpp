@@ -236,6 +236,19 @@ struct OiioExrReadResult {
 // left behind, per io/NpaintFile's carry-scope rule.
 OiioExrReadResult oiioReadMultiPartExr(const std::string& path);
 
+// Reads ONLY subimage 0 (the composite part) of a multi-part EXR -- never
+// seeks into part 1 onward, so a document with many layers costs exactly one
+// part's worth of pixels rather than every layer's. Written for
+// io/NpaintFile's `loadNpaintPreviewOnly()` (the iOS document gallery's
+// thumbnail path, docs/ios-spike-plan.md): a directory of `.npaint` files
+// each needs one small picture, and `oiioReadMultiPartExr()` above would read
+// and decode every layer of every file just to throw all but part 0 away.
+//
+// Same result shape as `oiioReadMultiPartExr()`'s single-part case so
+// io/NpaintFile can hand it to the same `decodeCompositePart()` it already
+// has, but `result.parts` holds at most one entry.
+OiioExrReadResult oiioReadExrSubimageZero(const std::string& path);
+
 // --- ImageCache, the residency layer --------------------------------------
 //
 // PLAN.md Phase 4 step 5. Same split as the multi-part functions above: these

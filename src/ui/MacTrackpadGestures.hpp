@@ -56,9 +56,11 @@
 // the same shape `ui/MacNativeMenu.hpp` already uses and for the same
 // reason: the one call site in `ui/MacPaintUI.cpp` should not have to know
 // which platform it is running on.
+#include "core/Platform.hpp"
+
 namespace np {
 
-#if defined(__APPLE__)
+#if NP_PLATFORM_MACOS
 
 // Drains and returns the total `NSEvent.magnification` accumulated by
 // pinch gestures since the last call, installing the local event monitor on

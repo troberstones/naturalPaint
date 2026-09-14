@@ -27,7 +27,11 @@
 #include "ui/NewDocumentDialog.hpp"
 #include "ui/StabiliserPanel.hpp"
 #include "ui/TaperPanel.hpp"
+#include "ui/DocumentGallery.hpp"
 
+#include "core/Platform.hpp"
+
+#include <atomic>
 #include <filesystem>
 #include <algorithm>
 #include <cctype>
@@ -62,6 +66,7 @@
 #include "app/Replay.hpp"
 #include "io/ActionFile.hpp"
 #include "app/PanelLayout.hpp"
+#include "core/Platform.hpp"
 #include "app/ControlsLayout.hpp"
 #include "app/CurveEdit.hpp"
 #include "app/DabPreview.hpp"
@@ -7649,6 +7654,39 @@ float exportListHeight(std::size_t rows, std::size_t maxRows, bool framed) {
 // sim::PaintSim owns one dense texture with no layer awareness, so this
 // exports what was opened, not what is on screen. The Source line says which
 // of the two it is looking at rather than leaving it to be inferred.
+#if NP_PLATFORM_IOS
+// iOS-only: where a Save/Save-Copy/Export writes *before* the export picker
+// ever appears -- see ui/FileDialog.hpp's `requestFileDialogForExport()` for
+// why the write has to come first there instead of after, as it does on
+// macOS.
+//
+// `baseName` (no extension) is what the export picker offers the user as the
+// suggested filename -- it copies the *source* file's own name, so this is
+// the one place that name is decided. Each call gets its own numbered
+// subdirectory rather than a numbered filename, so the suggested name stays
+// exactly what the caller asked for (the document's own name, or what the
+// user typed in the Export As field) instead of gaining a disambiguating
+// suffix nobody asked to see -- and two saves in one session cannot collide
+// while the first export picker is still up.
+std::string iosTempExportPath(const std::string& baseName, const std::string& extension) {
+  static std::atomic<int> counter{0};
+  const std::filesystem::path dir =
+      std::filesystem::temp_directory_path() / ("np_export_" + std::to_string(counter.fetch_add(1)));
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  std::string base = baseName.empty() ? std::string("export") : baseName;
+  // Strip a trailing ".<extension>" the caller may already have typed (the
+  // Export As field takes free text), so this does not hand the picker
+  // "sketch.png.png".
+  const std::string suffix = "." + extension;
+  if (base.size() > suffix.size() &&
+      base.compare(base.size() - suffix.size(), suffix.size(), suffix) == 0)
+    base.erase(base.size() - suffix.size());
+  const std::string name = base + "." + extension;
+  return (dir / name).string();
+}
+#endif
+
 void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
   // Session state. Function-local statics, exactly like drawGradeSection()'s
   // newOpKindIdx and the Add Guide popup's fields -- this is UI state, not
@@ -7664,6 +7702,13 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
   static char presetNameBuf[96] = "";
   static char exportPathBuf[512] = "";
   static std::string status;
+  // Whether `status` is a refusal (red) or a note (secondary): "Loaded preset
+  // 'x'" and "could not write x" used to share one white line. Declared this
+  // early (rather than just above `beginDialog()`, where it originally sat)
+  // because the iOS export-write drain below needs to set it too, and that
+  // drain has to run above the early return for the same reason
+  // exportPathPanelInFlight's drain does.
+  static bool statusIsError = false;
   // Whether the OS save panel raised by "Choose..." below is still out.
   //
   // **Drained here, above the early return, and that placement is the whole
@@ -7682,6 +7727,33 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
         status = picked->error;
     }
   }
+#if NP_PLATFORM_IOS
+  // iOS's Export commit (below) writes a temp file and shows the export
+  // picker itself, rather than filling this field the way "Choose..." does
+  // on macOS -- drained here for the same reason exportPathPanelInFlight is:
+  // this popup can close while the picker is still up.
+  static bool exportWritePanelInFlight = false;
+  if (exportWritePanelInFlight) {
+    if (const std::optional<FileDialogOutcome> picked = takeFileDialogOutcome()) {
+      exportWritePanelInFlight = false;
+      if (picked->chose && picked->alreadyWritten) {
+        g_docStatus = std::string("Exported ") + picked->path;
+        status.clear();
+        st.openExportAsDialog = false;
+        ImGui::CloseCurrentPopup();
+      } else if (!picked->error.empty()) {
+        status = picked->error;
+        statusIsError = true;
+      }
+      // Cancelled: quietly back to the dialog with the temp file orphaned in
+      // NSTemporaryDirectory(), which the OS reclaims on its own schedule --
+      // the same non-cleanup this file's Save As/Save a Copy path accepts,
+      // for the same reason (this dialog does not otherwise track temp files
+      // across frames to delete them, and a stale one costs nothing anyone
+      // can see).
+    }
+  }
+#endif
 
   // `--open-export-as`: the same id BeginPopupModal() opens on a click, so the
   // dialog can be photographed. See AppState::openExportAsDialog.
@@ -7698,6 +7770,19 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
     g_exportAsRequested = false;
     if (!st.exportAsPath.empty() && exportPathBuf[0] == '\0')
       std::snprintf(exportPathBuf, sizeof(exportPathBuf), "%s", st.exportAsPath.c_str());
+#if NP_PLATFORM_IOS
+    // iOS has no "Choose..." panel here (see the Output section below) --
+    // there is no meaningful destination *path* to browse to until the
+    // export picker itself appears, which happens only after Export is
+    // pressed. So the field is a bare filename, defaulted from the document's
+    // own name rather than left blank, or exportAsBlockedReason() would grey
+    // Export out on every first open until the user typed something with no
+    // prompt telling them why.
+    if (exportPathBuf[0] == '\0') {
+      if (const OpenDocument* d = st.documents.active())
+        std::snprintf(exportPathBuf, sizeof(exportPathBuf), "%s", documentDisplayName(*d).c_str());
+    }
+#endif
     // Re-read the file on every open. The batch dialog can be opened after a
     // preset was saved here (and vice versa), and a store loaded once per
     // process meant the second dialog showed a list that was already stale.
@@ -7706,9 +7791,6 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
   }
   if (!wantOpen) exportAsOpenLatched = false;
   g_exportAsRequested = false;
-  // Whether `status` is a refusal (red) or a note (secondary): "Loaded preset
-  // 'x'" and "could not write x" used to share one white line.
-  static bool statusIsError = false;
   if (!beginDialog("Export As", DialogWidth::Wide)) return;
 
   // Loaded on first open, never at startup: a preset file nobody asked for
@@ -7801,6 +7883,16 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
   dialogSection("Output");
   {
     float avail = 0.0f;
+#if NP_PLATFORM_IOS
+    // No "Choose..." here: there is no destination *path* to browse to until
+    // the export picker exists, and that picker needs the file already
+    // written (ui/FileDialog.hpp's requestFileDialogForExport()) -- so on
+    // iOS this field is only ever a filename, typed or defaulted above, and
+    // the picker appears when Export is pressed instead of before.
+    dialogLabelRow("File name", &avail);
+    ImGui::SetNextItemWidth(std::max(40.0f, avail));
+    ImGui::InputText("##exportPath", exportPathBuf, sizeof(exportPathBuf));
+#else
     dialogLabelRow("File", &avail);
     const ImGuiStyle& style = ImGui::GetStyle();
     const char* kChoose = "Choose\xe2\x80\xa6";
@@ -7829,6 +7921,7 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
         statusIsError = true;
       }
     }
+#endif
   }
 
   // --- Export -------------------------------------------------------------
@@ -7843,6 +7936,28 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
   footer.commit = "Export";
   footer.commitEnabled = blocked.empty();
   switch (dialogFooter(footer)) {
+#if NP_PLATFORM_IOS
+    case DialogAction::Commit: {
+      // Write to a private temp file first, named from the field above (a
+      // filename here, never a path -- see the Output section), then let the
+      // export picker copy it to wherever the user picks. Mirrors Save
+      // As/Save a Copy's iOS path a few hundred lines up in this file; see
+      // that comment for why the write has to come before the panel here.
+      const std::string ext = imageFormatExtension(request.format);
+      const std::string tempPath = iosTempExportPath(exportPathBuf, ext.empty() ? "dat" : ext);
+      std::string err;
+      if (!exportDocumentWithRequestToFile(activeDoc->document, tempPath, request, &err)) {
+        status = err;
+        statusIsError = true;
+      } else if (requestFileDialogForExport(FileDialogPurpose::ExportImage, tempPath, "")) {
+        exportWritePanelInFlight = true;
+      } else {
+        status = "A file panel is already open; finish or cancel it first.";
+        statusIsError = true;
+      }
+      break;
+    }
+#else
     case DialogAction::Commit: {
       std::string err;
       if (exportDocumentWithRequestToFile(activeDoc->document, exportPathBuf, request, &err)) {
@@ -7858,6 +7973,7 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
       }
       break;
     }
+#endif
     case DialogAction::Cancel:
       st.openExportAsDialog = false;
       ImGui::CloseCurrentPopup();
@@ -9086,6 +9202,41 @@ void drawDocumentDialogs(AppState& st) {
       if (const OpenDocument* d = st.documents.active())
         startDir = fileDialogDirectoryOf(d->path);
     }
+#if NP_PLATFORM_IOS
+    // iOS's export picker needs an already-written file (ui/FileDialog.hpp,
+    // requestFileDialogForExport()), so Save As / Save a Copy write to a
+    // private temp file *now*, before any panel exists, rather than after one
+    // returns a path the way macOS's NSSavePanel flow does two blocks down.
+    // Open/Import are unaffected -- iOS's opening picker is the ordinary
+    // "hand back a path" shape, so they still go through requestFileDialog().
+    if (g_docPathAction == DocPathAction::SaveAs || g_docPathAction == DocPathAction::SaveCopy) {
+      OpenDocument* doc = st.documents.active();
+      if (doc == nullptr) {
+        g_docStatus = "No document to save.";
+      } else {
+        const std::string tempPath = iosTempExportPath(documentDisplayName(*doc), "npaint");
+        // Always saveDocumentCopy() for the pre-write, even for Save As:
+        // that call cannot rebind `doc` or clear its dirty state
+        // (app/DocumentLifecycle.hpp's own signature-enforced guarantee), so
+        // a user who cancels the export picker after this point is left with
+        // the document exactly as dirty and exactly as (un)bound as before
+        // they asked to save. The rebind Save As means happens only once the
+        // outcome below confirms a real destination was chosen.
+        const DocumentOpResult w = saveDocumentCopy(*doc, tempPath);
+        if (!w.ok) {
+          g_docStatus = w.error;
+          g_docPathActionOk = false;
+          g_docPathProblemAction = g_docPathAction;
+          ImGui::OpenPopup(kDocPathProblemPopup);
+        } else if (requestFileDialogForExport(fileDialogPurposeFor(g_docPathAction), tempPath,
+                                              startDir)) {
+          g_docPathInFlight = g_docPathAction;
+        } else {
+          g_docStatus = "A file panel is already open; finish or cancel it first.";
+        }
+      }
+    } else
+#endif
     if (requestFileDialog(fileDialogPurposeFor(g_docPathAction), startDir)) {
       g_docPathInFlight = g_docPathAction;
     } else {
@@ -9103,7 +9254,30 @@ void drawDocumentDialogs(AppState& st) {
     if (const std::optional<FileDialogOutcome> picked = takeFileDialogOutcome()) {
       const DocPathAction action = g_docPathInFlight;
       g_docPathInFlight = DocPathAction::None;
-      if (picked->chose) {
+      if (picked->chose && picked->alreadyWritten) {
+        // iOS Save As / Save a Copy: the export picker has already copied the
+        // verified temp file (written just above, before the panel was
+        // shown) to `picked->path`. There is nothing left to write --
+        // applyDocumentPathAction() would write it a second time, straight
+        // into a destination that may be a security-scoped URL this process
+        // cannot open for writing at all. So this only does the bookkeeping
+        // half of what saveDocumentAs()/saveDocumentCopy() would otherwise
+        // have done.
+        g_docPathActionOk = true;
+        if (action == DocPathAction::SaveAs) {
+          if (OpenDocument* doc = st.documents.active()) {
+            doc->path = picked->path;
+            doc->savedRevision = doc->revision;
+            doc->unsavedEdits.clear();
+            doc->unsavedEditsDropped = 0;
+            std::string addErr;
+            st.recentDocuments.add(picked->path, &addErr);
+            std::string saveErr;
+            st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
+          }
+        }
+        g_docStatus = "OK: " + picked->path;
+      } else if (picked->chose) {
         applyDocumentPathAction(st, action, picked->path);
         if (!g_docPathActionOk) {
           // The typed-path modal kept itself up on a refusal, with the reason
@@ -16477,6 +16651,22 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // prefix for the chrome that implements the design.
     ImGui::TextUnformatted("naturalPaint");
     ImGui::SameLine(0.0f, 14.0f);
+
+#if NP_PLATFORM_IOS
+    // iOS's "back to the gallery" affordance (docs/ios-spike-plan.md). Not a
+    // `MenuAction` -- `app/selftest/MenuModel.cpp` pins `kMenuActionCount` at
+    // an exact literal (121) that this change must not touch, and this is
+    // the one iOS-only control in the whole title bar. Placed right after
+    // the wordmark rather than in the crowded right-aligned PANELS/Undo/
+    // Redo/fps cluster: that cluster's own position is computed by
+    // subtracting each item's measured width from `GetWindowWidth()` with no
+    // slack budgeted for a sixth item, and this avoids re-deriving that
+    // arithmetic for a control the other three platforms never draw.
+    if (ImGui::SmallButton("Gallery")) {
+      st.showDocumentGallery = true;
+    }
+    ImGui::SameLine(0.0f, 14.0f);
+#endif
 
     // ---- the menus, from ui/MenuModel ------------------------------------
     //

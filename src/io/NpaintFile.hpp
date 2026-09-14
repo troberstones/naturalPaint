@@ -908,4 +908,34 @@ struct NpaintLoadResult {
 // which is precisely what PRD I10 forbids.
 NpaintLoadResult loadNpaint(const std::string& path);
 
+// --- Preview only -----------------------------------------------------------
+
+struct NpaintPreviewResult {
+  bool ok = false;
+  std::string error;
+  // Part 0, decoded exactly as `NpaintLoadResult::composite` is -- straight
+  // alpha, linear float RGBA. `valid()` is false for a part this reader does
+  // not understand (see `decodeCompositePart()`'s own contract), which is not
+  // the same as `!ok`: the file opened and part 0 was read, there is simply
+  // no picture to show for it.
+  DecodedImage composite;
+};
+
+// Reads a `.npaint`'s embedded composite thumbnail WITHOUT reconstructing the
+// document -- built for the iOS document gallery (docs/ios-spike-plan.md),
+// which needs a small picture of every file in a directory and must not pay
+// for every layer of every one of them.
+//
+// The saving this buys over `loadNpaint()` is real and structural, not just a
+// skipped step: `loadNpaint()` goes through `oiioReadMultiPartExr()`, which
+// calls `read_image()` on every part in the file, i.e. a full-resolution
+// decode of every layer. This function calls
+// `oiioReadExrSubimageZero()` instead, which never seeks past part 0, so a
+// 40-layer document costs exactly what a 1-layer document does: one part's
+// pixels. What it gives up is everything `loadNpaint()` reconstructs from the
+// *other* parts -- there is no `Document`, no `NpaintCarry`, and this
+// function must never be used to open a document for editing, only to look
+// at it.
+NpaintPreviewResult loadNpaintPreviewOnly(const std::string& path);
+
 }  // namespace np

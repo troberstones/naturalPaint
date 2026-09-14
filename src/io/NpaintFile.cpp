@@ -3185,4 +3185,17 @@ NpaintLoadResult loadNpaint(const std::string& path) {
   return result;
 }
 
+NpaintPreviewResult loadNpaintPreviewOnly(const std::string& path) {
+  NpaintPreviewResult result;
+  const OiioExrReadResult read = oiioReadExrSubimageZero(path);
+  if (!read.ok) {
+    result.error = read.error;
+    return result;
+  }
+  // `oiioReadExrSubimageZero()` guarantees at least one part when `ok`.
+  result.composite = decodeCompositePart(read.parts[0]);
+  result.ok = true;
+  return result;
+}
+
 }  // namespace np

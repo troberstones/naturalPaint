@@ -1,7 +1,12 @@
 #include "ui/FileDialog.hpp"
 
+#include "core/Platform.hpp"
 #include "io/Capabilities.hpp"
 #include "io/NpaintFile.hpp"  // kNpaintExtension
+
+#if NP_PLATFORM_IOS
+#include "ui/FileDialogIOS.hpp"
+#endif
 
 #include <SDL3/SDL_dialog.h>
 #include <SDL3/SDL_error.h>
@@ -142,6 +147,31 @@ bool showDialog(FileDialogPurpose purpose, const std::string& defaultDirectory,
                 const std::vector<FileDialogFilterRow>& rows) {
   if (!g_mailbox.beginRequest(purpose)) return false;
 
+#if NP_PLATFORM_IOS
+  // SDL's `src/dialog/` has cocoa/android/unix/windows/haiku backends and no
+  // UIKit one (docs/ios-spike-plan.md's own survey), so
+  // SDL_ShowFileDialogWithProperties() below has nothing to call into on this
+  // platform. ui/FileDialogIOS.mm is the real backend: a
+  // `UIDocumentPickerViewController` in its opening mode, for the three
+  // purposes that read a file (`OpenDocument`, `ImportImage`,
+  // `ImportBrushes`) -- the three write purposes go through
+  // `requestFileDialogForExport()` below instead, never through here, because
+  // an iOS export picker needs an already-written source file this function
+  // does not have.
+  //
+  // The request has already begun (`beginRequest()` above), so a `false`
+  // return from the picker call -- no window to present from -- still has to
+  // end with a posted outcome, same reasoning as the `g_activeProps == 0`
+  // branch further down: otherwise the mailbox stays pending forever and
+  // every later Open/Save is refused for the rest of the session.
+  if (!showIOSOpenPicker(purpose, rows, g_parentWindow, &g_mailbox)) {
+    FileDialogOutcome failed;
+    failed.error = "No window is available to show the file panel from yet.";
+    g_mailbox.post(std::move(failed));
+  }
+  return true;
+#endif
+
   if (g_activeProps != 0) {
     SDL_DestroyProperties(g_activeProps);
     g_activeProps = 0;
@@ -265,6 +295,29 @@ bool requestFileDialogWithFilter(FileDialogPurpose purpose, const std::string& d
     return showDialog(purpose, defaultDirectory,
                       fileDialogFilters(fileDialogPlanFor(purpose).filters));
   return showDialog(purpose, defaultDirectory, std::vector<FileDialogFilterRow>{row});
+}
+
+bool requestFileDialogForExport(FileDialogPurpose purpose, const std::string& sourcePath,
+                                const std::string& defaultDirectory) {
+#if NP_PLATFORM_IOS
+  // The one place a write purpose does NOT go through showDialog()/SDL: see
+  // ui/FileDialog.hpp's own comment on this function for why iOS's export
+  // picker needs the file already written, unlike NSSavePanel.
+  if (!g_mailbox.beginRequest(purpose)) return false;
+  if (!showIOSExportPicker(sourcePath, g_parentWindow, &g_mailbox)) {
+    FileDialogOutcome failed;
+    failed.error = "No window is available to show the file panel from yet.";
+    g_mailbox.post(std::move(failed));
+  }
+  return true;
+#else
+  // macOS (and any future platform without this asymmetry) does not need a
+  // pre-written source: its normal save flow already writes after the panel
+  // returns a path, so this is exactly requestFileDialog(), and the outcome
+  // it posts has `alreadyWritten` left at its default `false`.
+  (void)sourcePath;
+  return showDialog(purpose, defaultDirectory, fileDialogFilters(fileDialogPlanFor(purpose).filters));
+#endif
 }
 
 bool fileDialogPending() { return g_mailbox.pending(); }

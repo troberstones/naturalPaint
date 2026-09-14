@@ -1,0 +1,31 @@
+Structural iOS blocker found by the naturalPaint iOS spike (docs/ios-spike-plan.md
+Phase 1): upstream OpenColorIO 2.5.2 gates its ICC-profile "which monitor is the
+user looking at" helper on bare __APPLE__, which is also true on iOS/tvOS, and
+unconditionally includes ColorSync/IOGraphicsLib headers that only exist on macOS.
+This is display-color-management UI code, unrelated to headless image I/O, so on
+iOS it now falls back to the same empty monitor list already used on Linux
+(SystemMonitorsImpl::getAllMonitors() no-op), rather than being ported.
+
+
+--- a/src/OpenColorIO/SystemMonitor.cpp
++++ b/src/OpenColorIO/SystemMonitor.cpp
+@@ -2,6 +2,10 @@
+ // Copyright Contributors to the OpenColorIO Project.
+ 
+ 
++#if defined(__APPLE__)
++#include <TargetConditionals.h>
++#endif
++
+ #include <sstream>
+ #include <string>
+ #include <string.h>
+@@ -26,7 +30,7 @@
+ 
+ } // namespace OCIO_NAMESPACE
+ 
+-#elif __APPLE__
++#elif defined(__APPLE__) && TARGET_OS_OSX
+ 
+ #include "SystemMonitor_macos.cpp"
+ 

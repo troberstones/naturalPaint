@@ -5,6 +5,10 @@
 //   Sochorova & Jamriska 2021  Mixbox latent-space pigment mixing
 //
 #include <SDL3/SDL.h>
+// iOS's real entry point is `SDL_UIKitRunApp`, which this header wires
+// `main()` to behind the scenes (see its own `#ifdef __IPHONEOS__`); a no-op
+// include on every other platform this project builds for.
+#include <SDL3/SDL_main.h>
 
 #include <algorithm>
 #include <chrono>
@@ -80,6 +84,13 @@
 #include "ui/AtelierChrome.hpp"
 #include "ui/AtelierLayout.hpp"
 #include "ui/AtelierTheme.hpp"
+#include "ui/DocumentGallery.hpp"
+
+#include "core/Platform.hpp"
+
+#if NP_PLATFORM_IOS
+#include <unistd.h>
+#endif
 
 #include "imgui.h"
 // The one reach into ImGui's internals in this program, for one thing:
@@ -1696,6 +1707,27 @@ bool verifySplitDemoScreenshot(const std::string& path, np::AtelierSplit mode, f
 }  // namespace
 
 int main(int argc, char** argv) {
+#if NP_PLATFORM_IOS
+  // A launched iOS process' working directory is not the writable part of
+  // its own sandbox (it is somewhere under the read-only app bundle) --
+  // unlike macOS, and unlike the Simulator, whose apps are plain host
+  // processes that inherit whatever directory launched them. Dozens of
+  // `--selftest` sections (app/selftest/BrushLibraryFile.cpp and others)
+  // write scratch fixtures to a bare relative path like "selftest_brushlib"
+  // and never check whether `create_directories` on it actually succeeded --
+  // on a real device that silently fails, and the emptied-out state that
+  // leaves behind eventually reads past the end of a vector no test ever
+  // populated (a libc++ hardened-mode trap, SIGTRAP, not a clean FAIL). One
+  // `chdir` into the sandbox's own Documents directory, before any of that
+  // code runs, fixes every one of those call sites at once, so an app that
+  // has never once been run with a chosen working directory gets the same
+  // "relative paths just work" assumption macOS and Linux already give it
+  // for free. `HOME` is set by the OS before `main()` runs (it is what
+  // `NSHomeDirectory()` itself reads), so this needs no Objective-C.
+  if (const char* home = std::getenv("HOME")) {
+    chdir((std::string(home) + "/Documents").c_str());
+  }
+#endif
   // --version / -v : print `versionString()` and exit 0, before SDL, the GPU
   // or a window -- the same posture as --abr-report and the other headless
   // flags below, and the one flag that has to work even in a checkout that
@@ -2743,9 +2775,20 @@ int main(int argc, char** argv) {
   // Before everything else, including the NP_SELFTEST=OFF refusal below:
   // both of these have to work in every build, not only one with the self-
   // test suite compiled in.
+  //
+  // `std::exit`, not `return`, from here down through the --selftest chain:
+  // verified on iOS Simulator that SDL_uikitappdelegate's postFinishLaunch
+  // calls this function's body but its own comment says it deliberately
+  // never calls exit() on the value main() returns ("We don't actually exit
+  // to support applications that do setup ... and then allow the Cocoa
+  // event loop to run") -- so a plain `return` here leaves the process
+  // sitting in UIApplicationMain forever with its stdout still in the libc
+  // buffer, unflushed, and `simctl launch` never sees the process end.
+  // exit() flushes and closes the C streams and, unlike falling out of
+  // main(), actually terminates the process on every platform.
   if (versionFlag) {
     std::printf("%s\n", np::versionString().c_str());
-    return 0;
+    std::exit(0);
   }
   if (helpFlag) {
     // Deliberately not an exhaustive list of every flag this binary reads --
@@ -2766,7 +2809,7 @@ int main(int argc, char** argv) {
         "\n"
         "Run with no arguments to open an empty document.\n",
         np::versionString().c_str());
-    return 0;
+    std::exit(0);
   }
 
 #if !NP_WITH_SELFTEST
@@ -2779,7 +2822,7 @@ int main(int argc, char** argv) {
                  "naturalPaint: built without the self-test suite "
                  "(-DNP_SELFTEST=OFF), so --selftest, --diag and --mode-test "
                  "are unavailable. Reconfigure with -DNP_SELFTEST=ON.\n");
-    return 2;
+    std::exit(2);
   }
 #endif
 
@@ -2944,27 +2987,27 @@ int main(int argc, char** argv) {
 // argument parsing, before SDL.
   if (modeTest) {
     np::PaintSim* s = np::ensurePaintSim(sim, gpu, kCanvasW, kCanvasH, lut);
-    if (!s) return 1;
+    if (!s) std::exit(1);
     np::runModeTest(gpu, *s, lut, "mode");
     s->shutdown(); gpu.shutdown();
     SDL_DestroyWindow(window); SDL_Quit();
-    return 0;
+    std::exit(0);
   }
 
   if (diagSeconds > 0.0f) {
     np::PaintSim* s = np::ensurePaintSim(sim, gpu, kCanvasW, kCanvasH, lut);
-    if (!s) return 1;
+    if (!s) std::exit(1);
     np::runDiagnostic(gpu, *s, lut, diagSeconds, "np");
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
     SDL_Quit();
-    return 0;
+    std::exit(0);
   }
 
   if (selfTest) {
     np::PaintSim* s = np::ensurePaintSim(sim, gpu, kCanvasW, kCanvasH, lut);
-    if (!s) return 1;
+    if (!s) std::exit(1);
     // 1.4 / ADR-0001 bullets 2 and 3: right after init(), still in the
     // default Watercolour mode, confirms the ink lattice / oil brush grid
     // are genuinely absent -- then cycles setMode() through all three media
@@ -4558,7 +4601,7 @@ int main(int argc, char** argv) {
     gpu.shutdown();
     SDL_DestroyWindow(window);
     SDL_Quit();
-    return ok ? 0 : 1;
+    std::exit(ok ? 0 : 1);
   }
 #endif  // NP_WITH_SELFTEST
 
@@ -4752,6 +4795,19 @@ int main(int argc, char** argv) {
   // and there was no way to reach it from a launch at all -- so the palette
   // dimming, the title band's statement and the Goodies menu's disabled rows
   // had no photograph anywhere. See that flag's own comment.
+  // **iOS launches into the document gallery instead** (docs/ios-spike-plan.md,
+  // "a document gallery... like Procreate's Gallery"). This is the one place
+  // that decision is made -- everything else (ui/DocumentGallery.hpp) is
+  // reached only through `st.showDocumentGallery`, and this flag is the only
+  // thing that sets it true. macOS and Linux are unchanged: they still open
+  // straight to the blank canvas below. `noDocumentDemo`/`demoDocument`/etc.
+  // below are CLI test fixtures with no iOS equivalent, so the gallery only
+  // engages on an otherwise-ordinary launch.
+#if NP_PLATFORM_IOS
+  if (!noDocumentDemo && !demoDocument && !pigmentStrokeDemo && !penDemo) {
+    st.showDocumentGallery = true;
+  } else
+#endif
   if (!noDocumentDemo)
     st.documents.add(np::makeBlankOpenDocument(static_cast<int32_t>(kCanvasW),
                                                static_cast<int32_t>(kCanvasH),
@@ -5261,6 +5317,9 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[open] ! %s\n", w.c_str());
       if (opened.ok) {
         st.documents.add(std::move(opened.document));
+        // A document exists now, so iOS's launch gallery (set above, this
+        // file's own comment) has nothing to show instead of.
+        st.showDocumentGallery = false;
         // Same rule as ui/MacPaintUI.cpp's `openFileIntoSession()`: a file's own
         // guides seed the session only if it carried any. With several paths on
         // one command line the last file with guides wins, which is the same
@@ -5368,6 +5427,12 @@ int main(int argc, char** argv) {
   // Frame counter, used only by --screenshot: the first frames are not
   // representative (ImGui lays out docked panels on frame 1).
   uint64_t frameIndex = 0;
+
+  // iOS terminates a process that touches the GPU while backgrounded (the
+  // spike's own "what blocks it" table). Set from SDL_EVENT_WILL_ENTER_
+  // BACKGROUND / DID_ENTER_FOREGROUND below; every platform that never sends
+  // those events leaves this permanently false, so this is a no-op off iOS.
+  bool appBackgrounded = false;
 
   // --frame-trace's marker-circle state: when the last mouse-button-down
   // landed and where, so the circle can keep drawing at that screen position
@@ -5505,6 +5570,14 @@ int main(int argc, char** argv) {
       if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
           e.window.windowID == SDL_GetWindowID(window))
         st.requestQuit = true;
+      // iOS only (see appBackgrounded's own comment): stop touching the GPU
+      // the moment the OS says a suspend is coming, resume once it says the
+      // app is live again. `WILL_ENTER_BACKGROUND` rather than
+      // `DID_ENTER_BACKGROUND` because the latter can arrive after the
+      // process is already suspended, too late to skip a frame already in
+      // flight.
+      if (e.type == SDL_EVENT_WILL_ENTER_BACKGROUND) appBackgrounded = true;
+      if (e.type == SDL_EVENT_DID_ENTER_FOREGROUND) appBackgrounded = false;
       // --- a drop ---------------------------------------------------------
       //
       // The window filter accepts `windowID == 0` as well as ours: SDL's
@@ -5929,6 +6002,13 @@ int main(int argc, char** argv) {
       }
     }
 
+    // See appBackgrounded's own comment: iOS can kill a process that submits
+    // GPU work while suspended, so nothing past this point -- gpu.tick(),
+    // ImGui's per-frame setup, the simulation step, the render pass, the
+    // present -- runs at all until DID_ENTER_FOREGROUND. The event poll above
+    // still ran this iteration, so the transition itself is never missed.
+    if (appBackgrounded) continue;
+
     const auto now = std::chrono::steady_clock::now();
     st.frameMs = std::chrono::duration<float, std::milli>(now - prev).count();
     prev = now;
@@ -6130,7 +6210,17 @@ int main(int argc, char** argv) {
     const uint64_t revisionBeforeUI =
         frameTrace && st.documents.active() ? st.documents.active()->revision : 0;
 
-    np::drawUI(st, sim, gpu, lut, kCanvasW, kCanvasH);
+    // iOS's gallery replaces drawUI() entirely while it is showing -- there
+    // is no document open yet for the canvas/panels drawUI() draws to have
+    // anything to say about. `st.showDocumentGallery` starts true on iOS
+    // (see this file's own comment where it is set) and a tap inside
+    // ui/DocumentGallery.cpp's `drawDocumentGallery()` clears it once a
+    // document exists to switch to.
+    if (st.showDocumentGallery) {
+      np::drawDocumentGallery(st, gpu);
+    } else {
+      np::drawUI(st, sim, gpu, lut, kCanvasW, kCanvasH);
+    }
 
     // The pointer queue's end of frame (app/PointerQueue.hpp section 3): every
     // sample of a press ImGui has already reported that the canvas did not take

@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "app/TouchGesture.hpp"  // TrackpadTouchPoint
+#include "core/Platform.hpp"
 
 struct SDL_Window;
 
@@ -67,7 +68,7 @@ namespace np {
 // self-congratulatory: cheap (`==` and maybe two `-setNextResponder:`
 // calls) against a real, previously-observed failure mode, not a
 // hypothetical one.
-#if defined(__APPLE__)
+#if NP_PLATFORM_MACOS
 
 // Call once, right after `SDL_CreateWindow()` (mirrors
 // `setFileDialogParentWindow()`'s own placement and reasoning in

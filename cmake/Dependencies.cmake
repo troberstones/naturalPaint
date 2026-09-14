@@ -38,7 +38,56 @@ FetchContent_MakeAvailable(SDL3 imgui)
 # when the backend updates.
 set(WGPU_VERSION v25.0.2.2)
 set(WGPU_DIR ${CMAKE_SOURCE_DIR}/third_party/wgpu)
-if(APPLE)
+if(NP_PLATFORM_IOS)
+
+# iOS (device or simulator): fetched at configure time, the same
+# `file(DOWNLOAD ... )` + hash-the-extracted-`.a` shape the non-Apple branch
+# below uses, rather than the vendored-and-hand-fetched macOS branch above --
+# there is no reasonable "vendor it in the repo" answer for two more
+# arm64 slices (device vs. simulator) of the same 13 MB library. Which asset
+# is right depends on CMAKE_OSX_SYSROOT, which the caller sets when they pass
+# `-DCMAKE_OSX_SYSROOT=iphonesimulator` or `iphoneos`
+# (docs/ios-spike-plan.md Phase 0's CMake invocation). Both `.a` hashes below
+# were verified independently twice against wgpu-native ${WGPU_VERSION}'s own
+# release assets, the same way the Apple branch's pin was derived --
+# `shasum -a 256` against the extracted library, not the zip.
+if(CMAKE_OSX_SYSROOT MATCHES "iphonesimulator")
+  set(WGPU_IOS_ASSET wgpu-ios-aarch64-simulator-release.zip)
+  set(WGPU_IOS_A_SHA256 b17d56b8e2e82b9688abfaa873bbd2de0c28bc9838105142470ff2cb68748d7f)
+else()
+  set(WGPU_IOS_ASSET wgpu-ios-aarch64-release.zip)
+  set(WGPU_IOS_A_SHA256 72dc2354c0a141bc59f646ba13eb6166dac45eb7231cd167a74b9d740ee998aa)
+endif()
+set(WGPU_IOS_DIR ${CMAKE_BINARY_DIR}/wgpu-native)
+set(WGPU_IOS_ZIP ${WGPU_IOS_DIR}/${WGPU_IOS_ASSET})
+set(WGPU_NATIVE_A ${WGPU_IOS_DIR}/lib/libwgpu_native.a)
+if(NOT EXISTS ${WGPU_NATIVE_A})
+  file(DOWNLOAD
+    https://github.com/gfx-rs/wgpu-native/releases/download/${WGPU_VERSION}/${WGPU_IOS_ASSET}
+    ${WGPU_IOS_ZIP}
+    TLS_VERIFY ON
+  )
+  file(ARCHIVE_EXTRACT INPUT ${WGPU_IOS_ZIP} DESTINATION ${WGPU_IOS_DIR})
+endif()
+if(NOT EXISTS ${WGPU_NATIVE_A})
+  message(FATAL_ERROR
+    "Extracted ${WGPU_IOS_ZIP} but ${WGPU_NATIVE_A} is not there -- the "
+    "release asset's internal layout changed. Re-check wgpu-native "
+    "${WGPU_VERSION}'s ${WGPU_IOS_ASSET} by hand.")
+endif()
+file(SHA256 ${WGPU_NATIVE_A} WGPU_IOS_A_ACTUAL_SHA256)
+if(NOT WGPU_IOS_A_ACTUAL_SHA256 STREQUAL WGPU_IOS_A_SHA256)
+  message(FATAL_ERROR
+    "${WGPU_NATIVE_A} does not match the pinned SHA-256 for wgpu-native "
+    "${WGPU_VERSION}'s ${WGPU_IOS_ASSET}.\n"
+    "  expected: ${WGPU_IOS_A_SHA256}\n"
+    "  actual:   ${WGPU_IOS_A_ACTUAL_SHA256}\n"
+    "Refused rather than linked, for the same reason the macOS/Linux "
+    "branches refuse: delete ${WGPU_IOS_DIR} and re-fetch instead of "
+    "silencing this.")
+endif()
+
+elseif(APPLE)
 if(NOT EXISTS ${WGPU_DIR}/lib/libwgpu_native.a)
   message(FATAL_ERROR
     "wgpu-native not found at ${WGPU_DIR}.\n"
@@ -146,7 +195,21 @@ set_target_properties(wgpu_native PROPERTIES
   IMPORTED_LOCATION ${WGPU_NATIVE_A}
   INTERFACE_INCLUDE_DIRECTORIES ${WGPU_DIR}/include
 )
-if(APPLE)
+if(NP_PLATFORM_IOS)
+  # Same Metal backend as macOS below, minus AppKit (which does not exist on
+  # iOS) plus UIKit in its place -- verified in Phase 0 of
+  # docs/ios-spike-plan.md. IOKit and IOSurface still apply: both are
+  # available on iOS, and wgpu-native's Metal backend links them there too.
+  target_link_libraries(wgpu_native INTERFACE
+    "-framework Metal"
+    "-framework QuartzCore"
+    "-framework Foundation"
+    "-framework CoreFoundation"
+    "-framework IOKit"
+    "-framework IOSurface"
+    "-framework UIKit"
+  )
+elseif(APPLE)
   # wgpu-native's Metal backend pulls these in; a static lib cannot carry them.
   target_link_libraries(wgpu_native INTERFACE
     "-framework Metal"

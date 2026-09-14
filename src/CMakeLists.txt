@@ -555,6 +555,7 @@ add_executable(naturalPaint
   ui/FillDialog.cpp
   ui/MenuModel.cpp
   ui/NewDocumentDialog.cpp
+  ui/DocumentGallery.cpp
   ui/ToolCursor.cpp
   ui/TransformCompositeSplit.cpp
   ui/TransformPreviewTexture.cpp
@@ -628,6 +629,15 @@ endif()
 if(APPLE)
   set(CMAKE_OBJCXX_STANDARD 20)
   set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+endif()
+
+# NP_PLATFORM_MACOS, not plain APPLE: these three are AppKit specifically
+# (NSMenu, NSEvent trackpad monitors, NSTouch), which iOS does not have. Their
+# headers (ui/MacNativeMenu.hpp etc.) already ship the non-Apple inline-stub
+# fallback the Linux port needed, so excluding the .mm here is enough -- no
+# new stub code, the existing #else branch (now gated on NP_PLATFORM_MACOS
+# via core/Platform.hpp) covers iOS the same way it already covers Linux.
+if(NP_PLATFORM_MACOS)
   target_sources(naturalPaint PRIVATE ui/MacNativeMenu.mm)
   set_source_files_properties(ui/MacNativeMenu.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   target_link_libraries(naturalPaint PRIVATE "-framework Cocoa")
@@ -658,9 +668,34 @@ if(APPLE)
   target_sources(naturalPaint PRIVATE ui/MacTrackpadTouch.mm)
   set_source_files_properties(ui/MacTrackpadTouch.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   message(STATUS "naturalPaint: native raw two-finger touch capture (ui/MacTrackpadTouch.mm)")
+endif()
 
-  # ---- text shaping (text/CoreTextShaper.mm) ---------------------------------
-  #
+# ---- the real iOS file panel (ui/FileDialogIOS.mm) -------------------------
+#
+# Replaces the "could not be shown" stub the iOS spike shipped
+# (docs/ios-spike-plan.md called this "port work, not spike work" and
+# deferred it). `UIDocumentPickerViewController` is UIKit, not AppKit, so this
+# is gated on NP_PLATFORM_IOS rather than living beside the three AppKit files
+# above -- same ARC rationale as those (a delegate object that outlives the
+# call that creates it, ui/FileDialogIOS.mm's own `g_activeDelegate`), and the
+# same "named explicitly rather than inherited from SDL" rationale for the
+# frameworks: this file `#import`s <UIKit/UIKit.h> and
+# <UniformTypeIdentifiers/UniformTypeIdentifiers.h> directly.
+if(NP_PLATFORM_IOS)
+  target_sources(naturalPaint PRIVATE ui/FileDialogIOS.mm)
+  set_source_files_properties(ui/FileDialogIOS.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  target_link_libraries(naturalPaint PRIVATE "-framework UIKit" "-framework UniformTypeIdentifiers")
+  message(STATUS "naturalPaint (iOS): native UIDocumentPickerViewController file panel (ui/FileDialogIOS.mm)")
+endif()
+
+# ---- text shaping (text/CoreTextShaper.mm) ---------------------------------
+#
+# `if(APPLE)`, not `if(NP_PLATFORM_MACOS)`: CoreText/CoreGraphics/
+# CoreFoundation are all present on iOS too (docs/ios-spike-plan.md's survey:
+# "the text shaper is iOS-clean ... imports only CoreText, CoreGraphics and
+# CoreFoundation -- no AppKit"), so this stays available on both Apple
+# platforms, unlike the three AppKit files immediately above.
+if(APPLE)
   # PRD K2: shaping, bidi and font fallback come from the platform, behind an
   # interface (text/Shaper.hpp) that names no CoreText type -- this is the
   # Apple half. Same ARC rationale as the three targets above (Core Foundation
@@ -744,6 +779,69 @@ if(APPLE AND NP_MACOS_APP_BUNDLE)
     MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
     MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}")
   message(STATUS "naturalPaint: building naturalPaint.app (NP_MACOS_APP_BUNDLE=ON)")
+endif()
+
+# ---- iOS: naturalPaint.app (unconditional -- iOS has no bare-executable
+# option the way NP_MACOS_APP_BUNDLE gives macOS; the OS will not launch
+# anything else) --------------------------------------------------------
+#
+# Signing is left to whatever the caller passed at configure time
+# (docs/ios-spike-plan.md Phase 0: `XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "-"`
+# for the simulator, `CODE_SIGN_STYLE Automatic` + `DEVELOPMENT_TEAM` for a
+# device) rather than hard-coded here, since a team ID is machine-specific.
+#
+# `MACOSX_BUNDLE_ICON_FILE` is deliberately NOT set here: that key is
+# `CFBundleIconFile`, the *macOS* Info.plist convention (an .icns named
+# directly). iOS instead reads `CFBundleIconName` from the asset catalog
+# that `XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME` points Xcode's
+# own asset compiler at -- see the asset-catalog block below, which sets
+# that attribute only when the icon set is actually present, rather than
+# silently building an unbadged app when it is not.
+if(NP_PLATFORM_IOS)
+  set_target_properties(naturalPaint PROPERTIES
+    MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/icons/ios/Info.plist.in"
+    MACOSX_BUNDLE_BUNDLE_NAME "naturalPaint"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.troberstones.naturalPaint"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+    XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
+  )
+
+  # icons/ios/AppIcon.appiconset (generated and committed by
+  # icons/make_icons.sh) exists on disk but not inside a `.xcassets` catalog
+  # -- Xcode's asset compiler (actool) only recognises an appiconset when one
+  # wraps it. Rather than restructure the committed icons/ tree for one
+  # platform, a `.xcassets` wrapper is assembled at configure time in the
+  # build directory and that copy is what the target actually references;
+  # `icons/make_icons.sh` itself is unmodified. If the committed appiconset
+  # is ever missing, this reports it instead of silently shipping an
+  # unbadged app.
+  set(NP_IOS_APPICONSET "${CMAKE_SOURCE_DIR}/icons/ios/AppIcon.appiconset")
+  if(EXISTS "${NP_IOS_APPICONSET}")
+    set(NP_IOS_XCASSETS "${CMAKE_CURRENT_BINARY_DIR}/generated/Assets.xcassets")
+    file(COPY "${NP_IOS_APPICONSET}" DESTINATION "${NP_IOS_XCASSETS}")
+    target_sources(naturalPaint PRIVATE "${NP_IOS_XCASSETS}")
+    set_source_files_properties("${NP_IOS_XCASSETS}" PROPERTIES
+      MACOSX_PACKAGE_LOCATION Resources
+    )
+    set_target_properties(naturalPaint PROPERTIES
+      XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
+    )
+    message(STATUS "naturalPaint (iOS): app icon wired from ${NP_IOS_APPICONSET}")
+  else()
+    message(STATUS "naturalPaint (iOS): icons/ios/AppIcon.appiconset not found -- building unbadged")
+  endif()
+
+  # Tier 2 of core/ResourcePaths.hpp (shaders/, keymaps/, the Mixbox LUT,
+  # lucide.ttf, codepoints.json) needs to land where an iOS app can actually
+  # read it: unlike a macOS bundle's Contents/Resources, an iOS `.app` is
+  # flat, and `$<TARGET_FILE_DIR:naturalPaint>` already resolves to that flat
+  # bundle root once MACOSX_BUNDLE is set above -- so the existing POST_BUILD
+  # copy_directory/copy step immediately below this block, unmodified, stages
+  # them inside naturalPaint.app itself rather than beside a bare executable.
+  # This is why the staging step was left as one shared block for every
+  # platform instead of being duplicated here.
 endif()
 
 # third_party is SYSTEM so the -Werror=unused-* guard at the bottom of this
@@ -950,6 +1048,36 @@ target_link_libraries(naturalPaint PRIVATE
   OpenImageIO::OpenImageIO_Util
 )
 message(STATUS "naturalPaint: OpenImageIO ${OpenImageIO_VERSION} (required)")
+
+# vcpkg's `arm64-ios`/`arm64-ios-simulator` triplets build OpenImageIO and its
+# whole chain static (docs/ios-spike-plan.md Phase 1), and several of that
+# chain's own exported targets do not declare a complete
+# INTERFACE_LINK_LIBRARIES -- so unlike the macOS/Linux OpenImageIO builds
+# above, `OpenImageIO::OpenImageIO`/`OpenImageIO::OpenImageIO_Util` alone do
+# not pull in the rest of the archive at link time. This exact list is not
+# guessed: it is every library a real link of this target against the vcpkg
+# build needed, one at a time, until nothing was left undefined (Phase 1's
+# own link-test). `-lcompression`, not `-framework Compression` -- the
+# latter does not exist as a linkable framework on iOS, only
+# `libcompression.tbd`, found the same way.
+if(NP_PLATFORM_IOS)
+  # The plain names below (tiff, jpeg, png16, ...) are bare `.a` files in the
+  # vcpkg triplet's own lib/ directory, not CMake targets -- they need this
+  # target's link line to actually search that directory.
+  if(DEFINED NP_IOS_OIIO_PREFIX)
+    target_link_directories(naturalPaint PRIVATE "${NP_IOS_OIIO_PREFIX}/lib")
+  endif()
+  target_link_libraries(naturalPaint PRIVATE
+    OpenColorIO
+    OpenEXR-3_4 OpenEXRCore-3_4 OpenEXRUtil-3_4
+    Imath-3_2 Iex-3_4 IlmThread-3_4
+    tiff jpeg turbojpeg png16 z zstd lzma bz2 deflate
+    yaml-cpp pystring expat minizip-ng
+    ssl crypto fmt openjph
+    "-framework CoreFoundation"
+    "-lcompression"
+  )
+endif()
 # On the deployment-target link warning, which people hit when they build
 # a probe against this OpenImageIO by hand and then wonder whether the
 # CMake build has the same problem:
@@ -1183,6 +1311,14 @@ else()
   message(STATUS "naturalPaint: link-time optimisation NOT available -- ${np_ipo_why}")
 endif()
 
+# goldentool and flatstest are host-side developer tools with no meaning on
+# iOS (goldentool compares PNGs already on disk for tools/golden/run_golden.sh,
+# which is a macOS-shaped harness never run there per docs/ios-spike-plan.md's
+# own "explicitly out of scope"; flatstest is a GPU-free CLI for a machine
+# with no Metal adapter, which an iOS Simulator build already has). Neither
+# builds an .app, so an Xcode-generator iOS configure has no sensible target
+# to put them in.
+if(NOT NP_PLATFORM_IOS)
 # goldentool -- the comparison half of the golden-image regression harness
 # (see tools/golden/run_golden.sh and src/tools/GoldenTool.cpp). Deliberately
 # its own executable, not folded into `naturalPaint`: it never touches
@@ -1215,3 +1351,4 @@ target_include_directories(flatstest SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/third_pa
 target_include_directories(goldentool SYSTEM PRIVATE
   ${CMAKE_SOURCE_DIR}/third_party
 )
+endif()
