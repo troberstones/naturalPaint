@@ -1438,8 +1438,8 @@ void buildSplitDemo(np::AppState& st, np::AtelierSplit mode) {
 // pixels at 2x on this machine. Getting that backwards samples the wrong pixel
 // and is the likeliest way to write an assertion that passes on the wrong
 // picture. So the assertions that decide the result use **no geometry at
-// all**: they find every pixel matching each field colour and compare the two
-// bounding boxes.
+// all**: they find the largest connected region of each field colour and
+// compare the two bounding boxes.
 //
 //   * `columns-2`: every A pixel is left of every B pixel, and the two boxes
 //     overlap vertically. That is what "side by side, A on the left" means,
@@ -1552,24 +1552,61 @@ bool verifySplitDemoScreenshot(const std::string& path, np::AtelierSplit mode, f
     if (!condition) ok = false;
   };
 
+  // The active document is drawn more than once: its pane, the navigator
+  // thumbnail in that pane's corner, and the LAYERS row thumbnail out in the
+  // right dock. That last copy sits right of (and, stacked, below) the
+  // companion pane, so a box over every matching pixel fails the ordering on
+  // a correct picture. Each field is therefore placed by its largest
+  // 4-connected region -- the pane quad, which the corner notch leaves as one
+  // L-shaped region -- and the smaller copies are ignored.
+  const size_t pixelCount = static_cast<size_t>(img.width) * img.height;
+  std::vector<uint8_t> label(pixelCount, 0);  // 0 none, 1 field A, 2 field B
+  for (size_t i = 0; i < pixelCount; ++i) {
+    const float* px = &img.pixels[i * 4];
+    if (splitDemoMatches(px, kSplitFieldA, 2))
+      label[i] = 1;
+    else if (splitDemoMatches(px, kSplitFieldB, 2))
+      label[i] = 2;
+  }
   SplitDemoBox a, b;
-  for (uint32_t y = 0; y < img.height; ++y) {
-    for (uint32_t x = 0; x < img.width; ++x) {
-      const float* px = &img.pixels[(static_cast<size_t>(y) * img.width + x) * 4];
-      if (splitDemoMatches(px, kSplitFieldA, 2))
-        a.add(static_cast<float>(x), static_cast<float>(y));
-      else if (splitDemoMatches(px, kSplitFieldB, 2))
-        b.add(static_cast<float>(x), static_cast<float>(y));
+  size_t aTotal = 0, bTotal = 0;
+  std::vector<size_t> stack;
+  for (size_t seed = 0; seed < pixelCount; ++seed) {
+    const uint8_t which = label[seed];
+    if (which == 0) continue;
+    SplitDemoBox region;
+    label[seed] = 0;  // consumed, so no pixel is counted twice
+    stack.assign(1, seed);
+    while (!stack.empty()) {
+      const size_t i = stack.back();
+      stack.pop_back();
+      const uint32_t x = static_cast<uint32_t>(i % img.width);
+      const uint32_t y = static_cast<uint32_t>(i / img.width);
+      region.add(static_cast<float>(x), static_cast<float>(y));
+      const auto visit = [&](size_t n) {
+        if (label[n] == which) {
+          label[n] = 0;
+          stack.push_back(n);
+        }
+      };
+      if (x > 0) visit(i - 1);
+      if (x + 1 < img.width) visit(i + 1);
+      if (y > 0) visit(i - img.width);
+      if (y + 1 < img.height) visit(i + img.width);
     }
+    SplitDemoBox& best = which == 1 ? a : b;
+    (which == 1 ? aTotal : bTotal) += region.count;
+    if (region.count > best.count) best = region;
   }
 
-  std::printf("[split-demo] %u x %u framebuffer -- A #%02x%02x%02x, %zu px, box "
-              "(%.0f,%.0f)-(%.0f,%.0f); B #%02x%02x%02x, %zu px, box (%.0f,%.0f)-(%.0f,%.0f)\n",
+  std::printf("[split-demo] %u x %u framebuffer -- A #%02x%02x%02x, largest region %zu of %zu px, "
+              "box (%.0f,%.0f)-(%.0f,%.0f); B #%02x%02x%02x, largest region %zu of %zu px, box "
+              "(%.0f,%.0f)-(%.0f,%.0f)\n",
               img.width, img.height, splitDemoByte(kSplitFieldA[0]),
-              splitDemoByte(kSplitFieldA[1]), splitDemoByte(kSplitFieldA[2]), a.count, a.minX,
-              a.minY, a.maxX, a.maxY, splitDemoByte(kSplitFieldB[0]),
-              splitDemoByte(kSplitFieldB[1]), splitDemoByte(kSplitFieldB[2]), b.count, b.minX,
-              b.minY, b.maxX, b.maxY);
+              splitDemoByte(kSplitFieldA[1]), splitDemoByte(kSplitFieldA[2]), a.count, aTotal,
+              a.minX, a.minY, a.maxX, a.maxY, splitDemoByte(kSplitFieldB[0]),
+              splitDemoByte(kSplitFieldB[1]), splitDemoByte(kSplitFieldB[2]), b.count, bTotal,
+              b.minX, b.minY, b.maxX, b.maxY);
 
   // A pane that drew nothing and a pane that drew the *other* document are
   // indistinguishable from one colour's count, so both counts are required
