@@ -9,6 +9,7 @@
 #include "app/SelfTest.hpp"
 #include "app/StrokeSession.hpp"
 #include "brush/MaskTools.hpp"
+#include "brush/Taper.hpp"
 #include "imgui.h"
 #include "io/PsdExport.hpp"
 #include "io/PsdImport.hpp"
@@ -568,6 +569,35 @@ bool runMaskControlsTest() {
                Vec2{180.0f, 128.0f}, nullptr, &why);
     check(untouched.document.layers[0].mask->occupiedTileCount() == 0,
           "F Burn: coverage 1 is a fixed point, so a blank mask allocates nothing");
+  }
+  {  // Exit taper repaints a mask stroke from the mask it started on
+    auto tapered = [&](bool on) {
+      OpenDocument od = freshMask("taper");
+      maskRect(*od.document.layers[0].mask, 60, 60, 196, 196, 0.5f);
+      od.maskIsEditTarget = true;
+      NativeBrush native;
+      native.taperOut = BrushTaper{on, 40.0f, 10.0f};
+      StrokeSession s;
+      std::string why;
+      s.begin(od, 0, tipOf(16.0f, 1.0f), Tool::Burn, &why, nullptr, DynamicInputs{}, nullptr,
+              StabiliserParams{}, 1.0f, &native);
+      for (int k = 0; k <= 24; ++k) s.addPoint(80.0f + 100.0f * static_cast<float>(k) / 24, 128.0f);
+      s.end();
+      // 12 px off the line: inside the full radius, outside the tapered one.
+      // x=100 is only reached by dabs before the 40 px tail; x=176 by the tail.
+      return std::array<float, 3>{maskAt(*od.document.layers[0].mask, 100, 140),
+                                  maskAt(*od.document.layers[0].mask, 176, 140),
+                                  contentUntouched(od) ? 1.0f : 0.0f};
+    };
+    const auto off = tapered(false);
+    const auto on = tapered(true);
+    std::printf("  [taper] burn head %.4f/%.4f, tail %.4f/%.4f (off/on)\n",
+                static_cast<double>(off[0]), static_cast<double>(on[0]),
+                static_cast<double>(off[1]), static_cast<double>(on[1]));
+    check(on[1] > off[1] + 0.01f, "F exit taper on a mask: the tail burns less -- the fixture discriminates");
+    check(std::fabs(on[0] - off[0]) < 1e-4f,
+          "F exit taper on a mask: the repaint restores the mask, so the head is not burnt twice");
+    check(on[2] == 1.0f, "F exit taper on a mask: the layer's own pixels stay untouched");
   }
   {  // Smudge drags hidden coverage into revealed coverage
     OpenDocument od = freshMask("smudge");
