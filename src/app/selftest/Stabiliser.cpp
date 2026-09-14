@@ -60,7 +60,14 @@ bool runStabiliserTest() {
   // `app/StrokePreferences.hpp`'s `ensureStrokePreferencesLoaded()`).
   // ==========================================================================
   {
-    const std::string path = "/private/tmp/np-scatter/wave2/fix1-stroke-preferences.txt";
+    // Relative, not a hardcoded worktree path -- the previous
+    // "/private/tmp/np-scatter/wave2/..." only ever worked on the one
+    // machine (and one leftover directory) it was written against, and
+    // fails outright, unrunnable, off this repo. iOS cannot see
+    // `/private/tmp` at all (a real device's sandbox, unlike the
+    // Simulator, has no such path), so this is also what main.cpp's
+    // Documents-directory `chdir()` exists to make safe.
+    const std::string path = "selftest_stabiliser_fix1-stroke-preferences.txt";
     StrokePreferencesStore writer;
     StabiliserParams toWrite;
     toWrite.mode = StabiliserMode::WeightedAverage;
@@ -964,7 +971,7 @@ bool runStabiliserTest() {
   // why.
   // ==========================================================================
   {
-    const std::string path = "/private/tmp/np-scatter/wave2/fix-catchupms-stroke-prefs.txt";
+    const std::string path = "selftest_stabiliser_fix-catchupms-stroke-prefs.txt";
     StrokePreferencesStore writer;
     StabiliserParams toWrite;
     toWrite.mode = StabiliserMode::PulledString;

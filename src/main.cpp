@@ -88,6 +88,10 @@
 
 #include "core/Platform.hpp"
 
+#if NP_PLATFORM_IOS
+#include <unistd.h>
+#endif
+
 #include "imgui.h"
 // The one reach into ImGui's internals in this program, for one thing:
 // `ImGuiContext::OpenPopupStack`, so `--screenshot` can report where the open
@@ -1703,6 +1707,27 @@ bool verifySplitDemoScreenshot(const std::string& path, np::AtelierSplit mode, f
 }  // namespace
 
 int main(int argc, char** argv) {
+#if NP_PLATFORM_IOS
+  // A launched iOS process' working directory is not the writable part of
+  // its own sandbox (it is somewhere under the read-only app bundle) --
+  // unlike macOS, and unlike the Simulator, whose apps are plain host
+  // processes that inherit whatever directory launched them. Dozens of
+  // `--selftest` sections (app/selftest/BrushLibraryFile.cpp and others)
+  // write scratch fixtures to a bare relative path like "selftest_brushlib"
+  // and never check whether `create_directories` on it actually succeeded --
+  // on a real device that silently fails, and the emptied-out state that
+  // leaves behind eventually reads past the end of a vector no test ever
+  // populated (a libc++ hardened-mode trap, SIGTRAP, not a clean FAIL). One
+  // `chdir` into the sandbox's own Documents directory, before any of that
+  // code runs, fixes every one of those call sites at once, so an app that
+  // has never once been run with a chosen working directory gets the same
+  // "relative paths just work" assumption macOS and Linux already give it
+  // for free. `HOME` is set by the OS before `main()` runs (it is what
+  // `NSHomeDirectory()` itself reads), so this needs no Objective-C.
+  if (const char* home = std::getenv("HOME")) {
+    chdir((std::string(home) + "/Documents").c_str());
+  }
+#endif
   // --version / -v : print `versionString()` and exit 0, before SDL, the GPU
   // or a window -- the same posture as --abr-report and the other headless
   // flags below, and the one flag that has to work even in a checkout that
