@@ -2100,6 +2100,15 @@ struct AppState {
   // source a golden view could never hold a threshold against, since it is
   // a different string run to run rather than stable glyph-edge noise.
   bool screenshotCliActive = false;
+
+  // iOS only (app/DocumentGallery.hpp): true while the full-screen document
+  // grid is showing instead of the canvas. main.cpp starts iOS builds here
+  // rather than opening a blank document, and flips it false the moment a
+  // thumbnail or "+" is tapped. On every other platform this is set once and
+  // never read, which is why it costs nothing to declare unconditionally
+  // rather than behind `#if NP_PLATFORM_IOS` -- one bool is cheaper than a
+  // platform-shaped hole in this struct.
+  bool showDocumentGallery = false;
 };
 
 // The three floats `effectivePigmentConstants()` below returns -- deliberately

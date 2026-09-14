@@ -27,6 +27,9 @@
 #include "ui/NewDocumentDialog.hpp"
 #include "ui/StabiliserPanel.hpp"
 #include "ui/TaperPanel.hpp"
+#include "ui/DocumentGallery.hpp"
+
+#include "core/Platform.hpp"
 
 #include <atomic>
 #include <filesystem>
@@ -16648,6 +16651,22 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // prefix for the chrome that implements the design.
     ImGui::TextUnformatted("naturalPaint");
     ImGui::SameLine(0.0f, 14.0f);
+
+#if NP_PLATFORM_IOS
+    // iOS's "back to the gallery" affordance (docs/ios-spike-plan.md). Not a
+    // `MenuAction` -- `app/selftest/MenuModel.cpp` pins `kMenuActionCount` at
+    // an exact literal (121) that this change must not touch, and this is
+    // the one iOS-only control in the whole title bar. Placed right after
+    // the wordmark rather than in the crowded right-aligned PANELS/Undo/
+    // Redo/fps cluster: that cluster's own position is computed by
+    // subtracting each item's measured width from `GetWindowWidth()` with no
+    // slack budgeted for a sixth item, and this avoids re-deriving that
+    // arithmetic for a control the other three platforms never draw.
+    if (ImGui::SmallButton("Gallery")) {
+      st.showDocumentGallery = true;
+    }
+    ImGui::SameLine(0.0f, 14.0f);
+#endif
 
     // ---- the menus, from ui/MenuModel ------------------------------------
     //

@@ -555,6 +555,7 @@ add_executable(naturalPaint
   ui/FillDialog.cpp
   ui/MenuModel.cpp
   ui/NewDocumentDialog.cpp
+  ui/DocumentGallery.cpp
   ui/ToolCursor.cpp
   ui/TransformCompositeSplit.cpp
   ui/TransformPreviewTexture.cpp

@@ -694,6 +694,67 @@ OiioExrReadResult oiioReadMultiPartExr(const std::string& path) {
   return result;
 }
 
+OiioExrReadResult oiioReadExrSubimageZero(const std::string& path) {
+  OiioExrReadResult result;
+  auto in = OIIO::ImageInput::open(path);
+  if (!in) {
+    result.error = "load failed: OpenImageIO could not open '" + path + "' (" +
+                   OIIO::geterror() + ").";
+    return result;
+  }
+  // Deliberately no loop and no seek past subimage 0 -- see this function's
+  // header comment. `seek_subimage(0, 0)` is required even for subimage 0:
+  // OpenImageIO's contract is that a freshly-opened ImageInput is already
+  // positioned there, but seeking explicitly costs nothing and removes that
+  // assumption from this function's correctness.
+  if (!in->seek_subimage(0, 0)) {
+    result.error = "load failed: '" + path + "' has no image parts.";
+    in->close();
+    return result;
+  }
+  const OIIO::ImageSpec& spec = in->spec();
+  if (spec.width <= 0 || spec.height <= 0 || spec.nchannels <= 0) {
+    result.error = "load failed: part 0 of '" + path + "' reports no pixels.";
+    in->close();
+    return result;
+  }
+  result.displayWidth = spec.full_width;
+  result.displayHeight = spec.full_height;
+  float chroma[8] = {};
+  if (spec.getattribute("chromaticities", OIIO::TypeDesc(OIIO::TypeDesc::FLOAT, 8), chroma)) {
+    result.hasChromaticities = true;
+    std::copy(chroma, chroma + 8, result.chromaticities.begin());
+  }
+
+  NpaintRawPart part;
+  part.name = spec.get_string_attribute("name");
+  part.x = spec.x;
+  part.y = spec.y;
+  part.width = spec.width;
+  part.height = spec.height;
+  part.tileWidth = spec.tile_width;
+  part.tileHeight = spec.tile_height;
+  part.channelNames.assign(spec.channelnames.begin(), spec.channelnames.end());
+  part.sampleTypeName = spec.format.c_str();
+  // `np:*` attributes are not collected here -- unlike the full reader, this
+  // path exists only to hand pixels to `decodeCompositePart()`, which reads
+  // none of them. A thumbnail has no use for the document's attribute carry.
+
+  const size_t bytes = static_cast<size_t>(spec.width) * static_cast<size_t>(spec.height) *
+                       static_cast<size_t>(spec.nchannels) * spec.format.size();
+  part.rawPixels.resize(bytes);
+  if (!in->read_image(0, 0, 0, spec.nchannels, spec.format, part.rawPixels.data())) {
+    result.error = "load failed: OpenImageIO failed reading part 0 of '" + path + "' (" +
+                   in->geterror() + ").";
+    in->close();
+    return result;
+  }
+  in->close();
+  result.parts.push_back(std::move(part));
+  result.ok = true;
+  return result;
+}
+
 // --- ImageCache -----------------------------------------------------------
 
 namespace {

@@ -84,6 +84,9 @@
 #include "ui/AtelierChrome.hpp"
 #include "ui/AtelierLayout.hpp"
 #include "ui/AtelierTheme.hpp"
+#include "ui/DocumentGallery.hpp"
+
+#include "core/Platform.hpp"
 
 #include "imgui.h"
 // The one reach into ImGui's internals in this program, for one thing:
@@ -4767,6 +4770,19 @@ int main(int argc, char** argv) {
   // and there was no way to reach it from a launch at all -- so the palette
   // dimming, the title band's statement and the Goodies menu's disabled rows
   // had no photograph anywhere. See that flag's own comment.
+  // **iOS launches into the document gallery instead** (docs/ios-spike-plan.md,
+  // "a document gallery... like Procreate's Gallery"). This is the one place
+  // that decision is made -- everything else (ui/DocumentGallery.hpp) is
+  // reached only through `st.showDocumentGallery`, and this flag is the only
+  // thing that sets it true. macOS and Linux are unchanged: they still open
+  // straight to the blank canvas below. `noDocumentDemo`/`demoDocument`/etc.
+  // below are CLI test fixtures with no iOS equivalent, so the gallery only
+  // engages on an otherwise-ordinary launch.
+#if NP_PLATFORM_IOS
+  if (!noDocumentDemo && !demoDocument && !pigmentStrokeDemo && !penDemo) {
+    st.showDocumentGallery = true;
+  } else
+#endif
   if (!noDocumentDemo)
     st.documents.add(np::makeBlankOpenDocument(static_cast<int32_t>(kCanvasW),
                                                static_cast<int32_t>(kCanvasH),
@@ -5276,6 +5292,9 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[open] ! %s\n", w.c_str());
       if (opened.ok) {
         st.documents.add(std::move(opened.document));
+        // A document exists now, so iOS's launch gallery (set above, this
+        // file's own comment) has nothing to show instead of.
+        st.showDocumentGallery = false;
         // Same rule as ui/MacPaintUI.cpp's `openFileIntoSession()`: a file's own
         // guides seed the session only if it carried any. With several paths on
         // one command line the last file with guides wins, which is the same
@@ -6166,7 +6185,17 @@ int main(int argc, char** argv) {
     const uint64_t revisionBeforeUI =
         frameTrace && st.documents.active() ? st.documents.active()->revision : 0;
 
-    np::drawUI(st, sim, gpu, lut, kCanvasW, kCanvasH);
+    // iOS's gallery replaces drawUI() entirely while it is showing -- there
+    // is no document open yet for the canvas/panels drawUI() draws to have
+    // anything to say about. `st.showDocumentGallery` starts true on iOS
+    // (see this file's own comment where it is set) and a tap inside
+    // ui/DocumentGallery.cpp's `drawDocumentGallery()` clears it once a
+    // document exists to switch to.
+    if (st.showDocumentGallery) {
+      np::drawDocumentGallery(st, gpu);
+    } else {
+      np::drawUI(st, sim, gpu, lut, kCanvasW, kCanvasH);
+    }
 
     // The pointer queue's end of frame (app/PointerQueue.hpp section 3): every
     // sample of a press ImGui has already reported that the canvas did not take
