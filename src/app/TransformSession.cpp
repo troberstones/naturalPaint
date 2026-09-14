@@ -141,7 +141,7 @@ std::string layerLabel(const Document& doc, size_t index) {
 }
 
 // One member's admission to a `TransformTarget::LayerSet` session -- header
-// section 8: exactly `beginLayer()`'s own predicate (locked; Text is
+// section 8: exactly `beginLayer()`'s own predicate (locked; Text and Vector are
 // geometry-only and always admitted; every other kind needs RGB or Pigment
 // tiles; the bounds must be non-empty), duplicated here rather than factored
 // out of `beginLayer()` so that function's code is untouched by this feature
