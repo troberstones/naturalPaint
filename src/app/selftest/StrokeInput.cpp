@@ -502,6 +502,7 @@ bool runStrokeInputTest() {
     // so the resolved Size multiplier is EXACTLY `dab.pressure`
     // (brush/Variance.cpp's own formula: m=0, rj=1 since jitter<=0, c =
     // clamp(pressure,0,1) when hasPressure, result = 0 + 1*c = c).
+    model.shape.enabled = true;
     model.shape.size.control = VarianceControl::PenPressure;
 
     BrushTip tip;

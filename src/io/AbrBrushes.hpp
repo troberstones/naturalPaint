@@ -107,14 +107,14 @@ struct AbrSampledTip {
 
 // One decoded pattern from the `patt` block, exposed the same way
 // `AbrSampledTip` exposes a `samp` tip, and for the same reason.
-// `importAbrBrushes()` already resolves a pattern into `BrushPreset::native.grain`
-// for the presets THIS import decoded (via `grainFromTexture()`, below), but
-// that binding lives only as long as this one `AbrImportResult` does --
-// unload the pack and the paper is gone with it. `id` and `field` are exactly
-// what `patternsById`'s map entries hold internally; this is that same data,
-// named and handed to the caller instead of discarded when the map goes out
-// of scope. `field` is the shared_ptr `grainFromTexture()` itself took, not a
-// copy, so exposing it costs nothing extra.
+// `importAbrBrushes()` already resolves a pattern into
+// `BrushPreset::model.texture.pattern.field` for the presets THIS import
+// decoded, but that binding lives only as long as this one `AbrImportResult`
+// does -- unload the pack and the paper is gone with it. `id` and `field` are
+// exactly what `patternsById`'s map entries hold internally; this is that same
+// data, named and handed to the caller instead of discarded when the map goes
+// out of scope. `field` is the same shared_ptr the presets hold, not a copy, so
+// exposing it costs nothing extra.
 struct AbrPatternSample {
   std::string id;
   std::string name;  // the record's own name, for a future picker's label

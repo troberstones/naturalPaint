@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "brush/BrushModel.hpp"
+#include "brush/ToolOptionsBlend.hpp"
 #include "brush/Dynamics.hpp"
 #include "io/AbrBrushes.hpp"
 #include "io/Descriptor.hpp"
@@ -180,13 +181,13 @@ void printPanelCoverage(const AbrImportResult& r) {
   PanelRow rows[] = {
       {"Brush Tip Shape", 0, 0, ""},
       {"Shape Dynamics", 0, 0, ""},
-      {"Scattering", 0, 0, "Count is read but every dab still lands once"},
-      {"  - Count > 1", 0, 0, "dabs per position; not yet stamped"},
+      {"Scattering", 0, 0, ""},
+      {"  - Count > 1", 0, 0, "dabs per position, on Pigment and RGB layers"},
       {"Texture", 0, 0, ""},
       {"Dual Brush", 0, 0, ""},
       {"Color Dynamics", 0, 0, "read; no engine target"},
       {"Transfer", 0, 0, "flow per dab; opacity once per stroke, at pen-down"},
-      {"Blend mode (Md )", 0, 0, "read; the stroke still composites Normal"},
+      {"Blend mode (Md )", 0, 0, "Multiply and Darken on RGB layers; the rest composite Normal"},
       {"Noise", 0, 0, "refused: no published formula"},
       {"Wet Edges", 0, 0, "refused: not implemented"},
       {"Build-up (Rpt )", 0, 0, "dabs keep landing while the pen is held; rate INFERRED"},
@@ -210,13 +211,16 @@ void printPanelCoverage(const AbrImportResult& r) {
     }
     if (m.shape.enabled) { ++rows[kShape].requested; ++rows[kShape].rendered; }
     if (m.scatter.enabled) { ++rows[kScatter].requested; ++rows[kScatter].rendered; }
-    if (m.scatter.count > 1) ++rows[kCount].requested;
+    if (m.scatter.enabled && m.scatter.count > 1) { ++rows[kCount].requested; ++rows[kCount].rendered; }
     if (m.texture.enabled) ++rows[kTexture].requested;
     if (m.dual.enabled) ++rows[kDual].requested;
     if (m.color.enabled) ++rows[kColor].requested;
     if (m.transfer.enabled) { ++rows[kTransfer].requested; ++rows[kTransfer].rendered; }
-    if (!m.options.blendMode.empty() && m.options.blendMode != "Nrml")
+    if (!m.options.blendMode.empty() && m.options.blendMode != "Nrml") {
       ++rows[kBlend].requested;
+      BlendMode mapped = BlendMode::Normal;
+      if (blendModeFromPsToolOptions(m.options.blendMode, mapped)) ++rows[kBlend].rendered;
+    }
     if (m.noise) ++rows[kNoise].requested;
     if (m.wetEdges) ++rows[kWet].requested;
     if (m.airbrush) { ++rows[kAir].requested; ++rows[kAir].rendered; }

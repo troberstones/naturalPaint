@@ -260,6 +260,7 @@ set(NP_SELFTEST_SOURCES
   ui/BuildupPanel.cpp
   app/selftest/AppIcon.cpp
   app/selftest/AirbrushBuildUp.cpp
+  app/selftest/BrushPanelsLive.cpp
 )
 
 add_executable(naturalPaint

@@ -754,11 +754,9 @@ bool runAbrSampledTipsTest() {
     // from (`preset.model`, io/AbrBrushes.cpp), not into a side vector --
     // and it is not left default-constructed for a preset whose Texture
     // panel is on. `model.texture.pattern.name` is the discriminating field:
-    // `preset.native.grain`, filled from this identical `Txtr` block by
-    // `grainFromTexture()` a few lines below where `preset.model` is set,
-    // carries the pattern's PIXELS but never its name -- so this assertion
-    // cannot pass by accident through the grain path, only through the model
-    // itself having made the trip.
+    // the resolved paper (`pattern.field`) carries the pattern's PIXELS but
+    // never its name -- so this assertion cannot pass by accident through the
+    // paper, only through the model itself having made the trip.
     const auto desc = oneTexturedBrushDesc("Textured Inker",
                                            "a1b2c3d4-0000-1111-2222-333333333333",
                                            "Kyle's Rough Watercolor Paper");

@@ -106,6 +106,7 @@ bool runTransferDynamicsTest() {
     model.tip.diameterPx = kRadius * 2.0f;
     model.tip.angleDeg = 0.0f;
     model.tip.roundness = 1.0f;
+    model.transfer.enabled = true;
     model.scatter.count = 1;
     return model;
   };
@@ -238,6 +239,18 @@ bool runTransferDynamicsTest() {
     check(aFull != aHalf,
           "transfer: opacity -- restated as the measured claim this section exists to make: a "
           "real opVr changes painted opacity");
+
+    // Photoshop ignores a switched-off panel, so the same pressure leaves the
+    // ceiling where the tip put it.
+    BrushModel modelOff = modelHalf;
+    modelOff.transfer.enabled = false;
+    auto [odOff, sOff] = paint(tip, &modelOff, halfPressure);
+    const float aOff = maxAlphaInRegion(*odOff.document.layers[1].rgbTiles, kScanX0, kScanY0,
+                                        kScanX1, kScanY1);
+    std::printf("  [measured] Transfer off, PenPressure 0.5 max stored alpha = %.6f\n",
+                static_cast<double>(aOff));
+    check(aOff == 1.0f, "transfer: opacity -- with the Transfer panel off, PenPressure 0.5 leaves "
+                        "the ceiling at tip.opacity");
   }
 
   // ==========================================================================

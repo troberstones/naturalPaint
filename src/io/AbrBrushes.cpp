@@ -616,21 +616,13 @@ BrushPreset presetFromDescriptor(
       // from `primary.radius` (the now-deleted `p.radius = primary.radius;`
       // a few dozen lines up) -- reading `primary.radius` directly here is
       // the identical value, unchanged behaviour.
-      const AbrTipShape second = readAbrTipShape(dualBrsh, primary.radius, /*defaultHardness=*/1.0f,
-                                                 /*readHardness=*/false, p.name, "Dual Brush's ",
-                                                 result, sampledTips);
-      auto dualTip = std::make_shared<BrushTip>();
-      dualTip->radius = second.radius;
-      dualTip->hardness = second.hardness;
-      dualTip->roundness = second.roundness;
-      dualTip->angle = second.angle;
-      dualTip->spacing = second.spacing;  // parsed, but see dualBrushCadenceNotHonoured below
-      dualTip->bitmap = second.bitmap;
-      // `dualTip->dualTip` stays null (its default): `readAbrTipShape()` never
-      // looked for a nested `dualBrush` key to begin with (this function's own
-      // comment), so there is nothing to have carried across even if it had.
-      p.dualTip = dualTip;
-      p.dualBlend = *blend;
+      //
+      // Read here for its notes and its missing-sampled-tip count only. The
+      // tip itself is built from the model by `dualTipFromModel()` once
+      // `importAbrBrushes()` has filled it, so the panel's pickers and a fresh
+      // import make the second tip one way.
+      (void)readAbrTipShape(dualBrsh, primary.radius, /*defaultHardness=*/1.0f,
+                            /*readHardness=*/false, p.name, "Dual Brush's ", result, sampledTips);
 
       // The second tip's OWN spacing/scatter/count -- distinct from the
       // primary tip's (brush/Deposit.hpp §2d) and not honoured by this
@@ -890,59 +882,16 @@ BrushModel brushModelFromDescriptor(
   return m;
 }
 
-
-// The Texture panel, into `GrainParams`.
-//
-// **This is the one place a `.abr`'s own paper reaches the deposit**, and it
-// goes through `BrushPreset::native.grain` rather than waiting for the model to be
-// consumed -- because `grain` already exists, is already persisted by
-// app/UserBrushLibraryStore, and is already sampled by all four deposit
-// routes. 84 of the 101 presets measured switch Texture on; before this every
-// one of them painted on the procedural lattice or on nothing.
-//
-// Returns false, with `grain` untouched, when the brush names a pattern this
-// file's `patt` block does not contain or whose blend mode has no formula --
-// the caller counts those rather than substituting a different paper, for the
-// same reason a missing sampled tip falls back to a round dab loudly.
-bool grainFromTexture(const PsTexture& texture,
-                      const std::unordered_map<std::string, std::shared_ptr<const PaperField>>&
-                          patternsById,
-                      GrainParams& grain, std::string& why) {
-  if (!texture.enabled) return false;
-  if (texture.pattern.id.empty()) {
-    why = "Texture is on but names no pattern";
-    return false;
-  }
-  const auto found = patternsById.find(texture.pattern.id);
-  if (found == patternsById.end() || found->second == nullptr) {
-    why = "Texture names pattern '" + texture.pattern.name +
-          "' which this file's `patt` block does not contain";
-    return false;
-  }
-  if (!coverageBlendIsRenderable(texture.blend)) {
-    why = std::string("Texture's blend mode '") + coverageBlendName(texture.blend) +
-          "' has no per-pixel formula in any source consulted";
-    return false;
-  }
-
-  grain.enabled = true;
-  grain.field = found->second;
-  grain.depth = clampf(texture.depth, 0.0f, 1.0f);
-  // Photoshop's Scale is a percentage of the pattern's own size. Clamped away
-  // from zero because a zero scale is a division, and clamped at the top
-  // because a pattern stretched a hundredfold is a flat colour, not paper.
-  grain.scale = clampf(texture.scalePercent / 100.0f, 0.01f, 16.0f);
-  grain.invert = texture.invert;
-  // Brightness in 8-bit levels: its -150..150 range is Photoshop's Brightness/
-  // Contrast adjustment's (INFERRED for the Texture panel). Read as hundredths,
-  // Brightness -50 blanked Perfect Pencil Basic and Dry Brush Linework.
-  grain.brightness = clampf(texture.brightness / 255.0f, -1.0f, 1.0f);
-  grain.contrast = clampf(texture.contrast / 100.0f, -1.0f, 1.0f);
-  grain.blend = texture.blend;
-  // `strength` stays at its default 1.0: Photoshop's Texture panel has no
-  // second multiplier on the tip's coverage, so inventing one from `depth`
-  // would be this importer's opinion rather than the file's.
-  return true;
+// Whether a Dual Brush is on, names a second tip, and names a blend this build
+// composites. The model keeps its default blend when `BlnM` is missing or
+// unknown, so the model alone cannot tell that case from a real Multiply.
+bool dualBrushReadable(const DescriptorRef& brush) {
+  const DescriptorRef dual = brush.field("dualBrush");
+  if (!dual.valid() || !dual.field("useDualBrush").asBoolean().value_or(false)) return false;
+  const auto blendEnum = dual.field("BlnM").asEnumerated();
+  CoverageBlend parsed = CoverageBlend::Multiply;
+  return blendEnum.has_value() && coverageBlendFromId(blendEnum->valueId, parsed) &&
+         coverageBlendIsRenderable(parsed) && dual.field("Brsh").valid();
 }
 
 }  // namespace
@@ -1323,17 +1272,30 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
     preset.native.stabiliser.mode =
         stabiliserBrushModeFromAbrSmoothing(preset.model.options.smoothing);
 
-    // The Texture panel, resolved against this file's own patterns and
-    // attached to the preset that will paint with it.
-    const BrushModel& model = preset.model;
+    // The Texture panel's paper, resolved against this file's own patterns.
+    // It stays on the model rather than being copied into
+    // `preset.native.grain`: `brushTipFor()` reads the panel live, so an edit
+    // in Brush Settings reaches the stroke, and naturalPaint's own Paper Grain
+    // stays the painter's.
+    BrushModel& model = preset.model;
+    if (const auto found = patternsById.find(model.texture.pattern.id);
+        !model.texture.pattern.id.empty() && found != patternsById.end())
+      model.texture.pattern.field = found->second;
     if (model.texture.enabled) {
       std::string why;
-      if (grainFromTexture(model.texture, patternsById, preset.native.grain, why)) {
+      GrainParams probe;
+      if (grainFromTexture(model.texture, probe, &why)) {
         ++result.texturesApplied;
       } else {
         ++result.texturesNotApplied;
         result.notes.push_back({preset.name, why + " -- painting without paper texture"});
       }
+    }
+
+    // The Dual Brush's second tip, from the same model the panel edits.
+    if (dualBrushReadable(list.child(i))) {
+      preset.dualTip = dualTipFromModel(model.dual);
+      preset.dualBlend = model.dual.blend;
     }
   }
 

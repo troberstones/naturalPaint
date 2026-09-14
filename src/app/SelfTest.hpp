@@ -6646,4 +6646,9 @@ bool runAppIconTest();
 // only for a brush with `BrushModel::airbrush` on.
 bool runAirbrushBuildUpTest();
 
+// Brush Settings panels reach the stroke live: a switched-off panel contributes
+// nothing, Texture is read off the model, and the Dual Brush tip is built from
+// its panel by the importer, the pickers and a reloaded preset alike.
+bool runBrushPanelsLiveTest();
+
 }  // namespace np

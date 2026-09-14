@@ -82,6 +82,7 @@ struct DabRef {
 struct PatternRef {
   std::string id;
   std::string name;  // carried so a missing pattern can be named, not just missed
+  std::shared_ptr<const PaperField> field;  // resolved; never persisted
 
   bool empty() const noexcept { return id.empty(); }
 };
@@ -238,5 +239,18 @@ struct BrushModel {
   // home for what naturalPaint adds to a brush that this file must keep
   // refusing, rather than a second apology every time the list grows.
 };
+
+// The second tip a Dual Brush stamps, built from its panel. Null when the panel
+// is off or names a blend with no formula, so the primary tip paints alone.
+//
+// The one way a second tip is made: the importer, the Brush Settings pickers and
+// a saved preset reloading all call this, so an edit in the panel and a freshly
+// imported brush cannot build the tip two different ways.
+std::shared_ptr<const BrushTip> dualTipFromModel(const PsDualBrush& dual);
+
+// Photoshop's Texture panel as paper tooth. False, with `grain` untouched, when
+// the panel is off, its paper did not resolve, or its blend has no formula;
+// `why` then says which.
+bool grainFromTexture(const PsTexture& texture, GrainParams& grain, std::string* why = nullptr);
 
 }  // namespace np

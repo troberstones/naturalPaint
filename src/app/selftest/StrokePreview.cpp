@@ -123,6 +123,7 @@ bool runStrokePreviewTest() {
     // draws its own per-dab spread straight off `jitter`, with no `control`
     // needed at all.
     BrushState scattered = base;
+    scattered.model.scatter.enabled = true;
     scattered.model.scatter.scatter.jitter = 0.9f;
     check(differingBytes(rasteriseStrokePreview(scattered, lut), ref) > 0,
           "a jittered Scatter Variance changes the strip -- scatter displaces dab CENTRES, so "
@@ -142,6 +143,7 @@ bool runStrokePreviewTest() {
     // does not -- Fade replaces it here as this section's stroke-local
     // example.
     BrushState fade = base;
+    fade.model.shape.enabled = true;
     fade.model.shape.size.control = VarianceControl::Fade;
     fade.model.shape.size.jitter = 0.0f;
     fade.model.shape.size.minimum = 0.2f;  // a real floor to fade TOWARD, or
@@ -158,6 +160,7 @@ bool runStrokePreviewTest() {
     BrushState direction = base;
     direction.model.tip.roundness = 0.4f;  // an ellipse, so an angle is visible at all
     BrushState directionRef = direction;
+    direction.model.shape.enabled = true;
     direction.model.shape.angle.control = VarianceControl::Direction;
     check(differingBytes(rasteriseStrokePreview(direction, lut),
                          rasteriseStrokePreview(directionRef, lut)) > 0,
@@ -248,6 +251,7 @@ bool runStrokePreviewTest() {
     BrushState wide = base;
     wide.model.tip.diameterPx = 60.0f;  // radius 30
     BrushState wideScattered = wide;
+    wideScattered.model.scatter.enabled = true;
     wideScattered.model.scatter.scatter.jitter = 1.0f;
     const float wideReach = strokePreviewReach(wide, lut);
     const float scatteredReach = strokePreviewReach(wideScattered, lut);

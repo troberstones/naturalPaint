@@ -1152,7 +1152,10 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // Straight through, unscaled: there is no per-dab Grain dynamic in either
   // the matrix or the model.
   tip.opacity = brush.opacity;
-  tip.grain = brush.native.grain;
+  // Photoshop's Texture panel, read live so an edit in Brush Settings reaches the
+  // stroke. naturalPaint's own Paper Grain paints whenever the panel does not.
+  GrainParams texture;
+  tip.grain = grainFromTexture(model.texture, texture) ? texture : brush.native.grain;
   // Photoshop's Texture Each Tip, read live off the model so the Brush Settings
   // checkbox takes effect; per dab for every brush without an imported texture.
   tip.grain.eachTip = !model.texture.enabled || model.texture.eachTip;
@@ -1760,7 +1763,7 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // anything in scope that would look like per-stroke variation without being
   // any. Transfer Flow has neither constraint and is resolved per dab in
   // `depositPending()`.
-  const bool haveTransferModel = model != nullptr;
+  const bool haveTransferModel = model != nullptr && model->transfer.enabled;
   constexpr uint64_t kTransferSeed = 0;
   const float resolvedOpacity =
       haveTransferModel
@@ -1839,17 +1842,24 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
     baseDiameterPx_ = model->tip.diameterPx;
     baseAngleDeg_ = model->tip.angleDeg;
     baseRoundness_ = model->tip.roundness;
-    sizeVariance_ = model->shape.size;
-    angleVariance_ = model->shape.angle;
-    roundnessVariance_ = model->shape.roundness;
-    scatterVariance_ = model->scatter.scatter;
+    // A panel that is switched off contributes nothing, as in Photoshop. Its
+    // values stay on the model -- a file writes them whether or not the panel
+    // is on -- so the gate is here, where they are read, and a default
+    // `Variance` is the identity.
+    const Variance none;
+    const bool shape = model->shape.enabled;
+    const bool scatter = model->scatter.enabled;
+    sizeVariance_ = shape ? model->shape.size : none;
+    angleVariance_ = shape ? model->shape.angle : none;
+    roundnessVariance_ = shape ? model->shape.roundness : none;
+    scatterVariance_ = scatter ? model->scatter.scatter : none;
     // Scatter COUNT (Part 1) -- copied out alongside the five above, for the
     // identical reason (`StrokeSession.hpp`'s own member comment: nothing
     // guarantees the `BrushState`/`BrushPreset` `begin()` was called with
     // outlives the stroke).
-    baseCount_ = model->scatter.count;
-    countVariance_ = model->scatter.countJitter;
-    transferFlowVariance_ = model->transfer.flow;
+    baseCount_ = scatter ? model->scatter.count : 1;
+    countVariance_ = scatter ? model->scatter.countJitter : none;
+    transferFlowVariance_ = model->transfer.enabled ? model->transfer.flow : none;
   }
   hardwareInputs_ = hardwareInputs;
   seed_ = 0;
