@@ -264,6 +264,7 @@ bool selectPattern(PsTexture& texture, PatternLibrary& patterns, const std::stri
   texture.pattern.id = id;
   texture.pattern.name = entry != nullptr ? entry->name : id;
   texture.pattern.field = std::move(field);
+  texture.enabled = true;
   return true;
 }
 

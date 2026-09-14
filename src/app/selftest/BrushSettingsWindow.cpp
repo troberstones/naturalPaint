@@ -166,6 +166,16 @@ bool runBrushSettingsWindowTest() {
     const std::vector<std::string> wantPickers = {"tip.dab.id", "dual.tip.dab.id"};
     check(tipPickers == wantPickers,
           "rows: a tip grid for the brush's own tip and one for the Dual Brush's second tip");
+
+    size_t live = 0;
+    bool onlyPattern = true;
+    for (const BrushRowSpec& row : brushPanelRows()) {
+      if (!brushRowLiveWhilePanelOff(row)) continue;
+      ++live;
+      if (row.kind != BrushRowKind::Pattern) onlyPattern = false;
+    }
+    check(live == 1 && onlyPattern,
+          "rows: only the pattern grid stays live while its panel is off -- picking turns it on");
   }
 
   std::printf("  -- C. opening a page does not edit the brush --\n");

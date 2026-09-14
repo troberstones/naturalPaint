@@ -131,15 +131,18 @@ bool runPatternLibraryTest() {
   std::printf("  -- E. picking puts the paper on the Texture panel --\n");
   {
     PsTexture texture;
+    const bool startedOff = !texture.enabled;
     check(selectPattern(texture, lib, uuid) && texture.pattern.id == uuid &&
               texture.pattern.name == "Extra Heavy Canvas" && texture.pattern.field != nullptr &&
               texture.pattern.field->height8 == paper.height8,
           "select: id, name and paper, together");
+    check(startedOff && texture.enabled, "select: picking a paper turns Texture on");
     check(!selectPattern(texture, lib, "file:missing.png") && texture.pattern.id == uuid,
           "select: an id that does not resolve leaves the panel as it was");
     check(selectPattern(texture, lib, "") && texture.pattern.empty() &&
               texture.pattern.field == nullptr,
           "select: None clears the pattern and its paper");
+    check(texture.enabled, "select: None leaves the Texture switch where it was");
   }
 
   std::printf("  -- F. a saved preset gets its paper back --\n");

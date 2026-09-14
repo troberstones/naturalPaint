@@ -365,6 +365,10 @@ const std::vector<BrushToolBlendChoice>& brushToolBlendChoices() {
   return choices;
 }
 
+bool brushRowLiveWhilePanelOff(const BrushRowSpec& row) noexcept {
+  return row.kind == K::Pattern;
+}
+
 float brushRowShown(float stored, float scale) noexcept { return stored * scale; }
 
 bool brushRowStore(float shown, float scale, float& stored) noexcept {

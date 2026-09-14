@@ -325,7 +325,7 @@ bool drawPatternRow(Page& pg, const BrushRowSpec& row) {
 }
 
 // Returns true when the row wrote to the model.
-bool drawRow(Page& pg, const BrushRowSpec& row) {
+bool drawRow(Page& pg, const BrushRowSpec& row, bool panelOn) {
   if (row.kind == K::Separator) {
     ImGui::Spacing();
     ImGui::Separator();
@@ -333,7 +333,7 @@ bool drawRow(Page& pg, const BrushRowSpec& row) {
     return false;
   }
   std::string why;
-  const bool enabled = rowEnabled(pg, row, why);
+  const bool enabled = (panelOn || brushRowLiveWhilePanelOff(row)) && rowEnabled(pg, row, why);
   const ImVec2 rowStart = ImGui::GetCursorScreenPos();
   bool changed = false;
   ImGui::PushID(row.path);
@@ -380,17 +380,23 @@ bool drawModelPage(Page& pg, BrushPanel panel) {
   const bool* on = spec.enablePath[0] != '\0' ? leafAt(pg.ix.bools, spec.enablePath) : nullptr;
   const bool panelOn = on == nullptr || *on;
   if (spec.notPainted != nullptr) warningText(spec.notPainted);
-  if (!panelOn)
-    textDisabledWrapped("%s is off. Tick it in the list to paint with these settings.",
+  if (!panelOn) {
+    bool pickTurnsOn = false;
+    for (const BrushRowSpec& row : brushPanelRows())
+      if (row.panel == panel && brushRowLiveWhilePanelOff(row)) pickTurnsOn = true;
+    textDisabledWrapped(pickTurnsOn ? "%s is off. Tick it in the list, or pick a pattern, to paint "
+                                      "with these settings."
+                                    : "%s is off. Tick it in the list to paint with these settings.",
                         spec.label);
+  }
   resetPageColumn(panel);
   bool changed = false;
-  ImGui::BeginDisabled(!panelOn);
+  // Greyed row by row rather than around the page: ImGui cannot re-enable a
+  // control inside a disabled block, and the pattern grid must stay live.
   ImGui::Indent(kGutter);
   for (const BrushRowSpec& row : brushPanelRows())
-    if (row.panel == panel) changed |= drawRow(pg, row);
+    if (row.panel == panel) changed |= drawRow(pg, row, panelOn);
   ImGui::Unindent(kGutter);
-  ImGui::EndDisabled();
   return changed;
 }
 

@@ -137,6 +137,11 @@ const std::vector<BrushToolBlendChoice>& brushToolBlendChoices();
 // The shown value for a stored one, and the write back. The write back happens
 // only when the shown value moved, so opening a page cannot turn a stored 0.36
 // into 0.35999998 and mark the brush edited.
+// Whether a row stays usable while its panel's switch is off. Only the pattern
+// grid: picking a paper turns Texture on, so greying it would hide the one
+// control that does that.
+bool brushRowLiveWhilePanelOff(const BrushRowSpec& row) noexcept;
+
 float brushRowShown(float stored, float scale) noexcept;
 bool brushRowStore(float shown, float scale, float& stored) noexcept;
 

@@ -86,8 +86,9 @@ PaperField paperFieldFromDecodedImage(uint32_t width, uint32_t height,
 // would show a different paper.
 std::vector<uint8_t> patternThumbnailRgba(const PaperField& field, int cell);
 
-// Puts the paper `id` names on a Texture panel; "" clears it. An id that does
-// not resolve leaves the panel as it was and returns false.
+// Puts the paper `id` names on a Texture panel and turns the panel on, since a
+// paper was asked for. "" clears the pattern and leaves the switch alone. An id
+// that does not resolve leaves the panel as it was and returns false.
 bool selectPattern(PsTexture& texture, PatternLibrary& patterns, const std::string& id);
 
 // For every preset that names a pattern: teaches the library its name, and
