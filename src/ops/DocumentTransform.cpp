@@ -896,6 +896,7 @@ LayerTransformResult transformVectorLayerImpl(Document& doc, size_t index, const
 
 // Every kind through its own entry point, for the document-level walks: the lock
 // is the caller's to lift, and gradients are mapped once for the whole table.
+// Text is resized in type units rather than by matrix (resizeTextLayer()).
 LayerTransformResult transformAnyLayerForDocument(Document& doc, size_t index,
                                                   const Mat3& dstFromSrc,
                                                   const DocumentTransformParams& params) {
@@ -904,12 +905,81 @@ LayerTransformResult transformAnyLayerForDocument(Document& doc, size_t index,
     return transformVectorLayerImpl(doc, index, dstFromSrc, params, GradientPolicy::LeaveTable);
   LayerTransformResult r = transformLayer(doc, index, dstFromSrc, params);
   if (!r.ok || kind != LayerKind::Text) return r;
-  const LayerTransformResult tr = transformTextLayer(doc, index, dstFromSrc);
+  const LayerTransformResult tr = resizeTextLayer(doc, index, dstFromSrc);
   if (!tr.ok) return tr;
   return r;
 }
 
 }  // namespace
+
+LayerTransformResult resizeTextLayer(Document& doc, size_t index, const Mat3& dstFromSrc) {
+  LayerTransformResult r;
+  if (index >= doc.layers.size() || doc.layers[index].kind != LayerKind::Text) {
+    r.error = "resize text refused: index " + std::to_string(index) + " is not a Text layer.";
+    return r;
+  }
+  if (doc.layers[index].locked) {
+    r.error = "resize text refused: " + layerLabelFor(doc, index) + " is locked. Unlock it first.";
+    return r;
+  }
+  if (!mat3IsAffine(dstFromSrc)) {
+    r.error = "resize text refused: " + layerLabelFor(doc, index) +
+              " can only follow an affine transform. Nothing was changed.";
+    return r;
+  }
+  TextContent& t = doc.layers[index].text;
+  const float* a = dstFromSrc.m.data();
+  const float* m = t.transform.m.data();
+
+  // The type scales by the stretch along the block's own vertical axis, M*(0,1),
+  // which is sy for an unrotated block. The drawn result is A*M*(origin + L);
+  // with L scaled by f, M' = A*M with its linear part divided by f and
+  // origin' = f*origin reproduces it exactly.
+  const float vy = std::hypot(m[1], m[4]);
+  const float avy = std::hypot(a[0] * m[1] + a[1] * m[4], a[3] * m[1] + a[4] * m[4]);
+  if (!(vy > 0.0f) || !(avy > 0.0f)) {
+    r.error = "resize text refused: that would flatten " + layerLabelFor(doc, index) +
+              " to zero height. Nothing was changed.";
+    return r;
+  }
+  const float f = avy / vy;
+  Mat3 next = mat3Multiply(dstFromSrc, t.transform);
+  for (int i : {0, 1, 3, 4}) next.m[i] /= f;
+  PathPoint origin{t.origin.x * f, t.origin.y * f};
+
+  // A uniform resize of an unrotated block lands back on the identity: keep the
+  // origin form, so the layer serialises as it did before.
+  const auto near = [](float x, float y) { return std::fabs(x - y) <= 1e-5f; };
+  if (near(next.m[0], 1.0f) && near(next.m[1], 0.0f) && near(next.m[3], 0.0f) &&
+      near(next.m[4], 1.0f) && next.m[6] == 0.0f && next.m[7] == 0.0f && next.m[8] == 1.0f) {
+    origin.x += next.m[2];
+    origin.y += next.m[5];
+    next = mat3Identity();
+  }
+  Mat3 unused;
+  if (!mat3Invert(next, &unused)) {
+    r.error = "resize text refused: that would flatten " + layerLabelFor(doc, index) +
+              " to zero width. Nothing was changed.";
+    return r;
+  }
+
+  t.style.sizePx *= f;
+  t.style.tracking *= f;
+  t.style.leading *= f;
+  t.frame.width *= f;
+  t.frame.height *= f;
+  t.origin = origin;
+  t.transform = next;
+  // A text stroke is applied to the already-mapped outline, in document units.
+  const float s = linearScaleFactor(dstFromSrc);
+  t.strokeStyle.width *= s;
+  for (float& d : t.strokeStyle.dashes) d *= s;
+  t.strokeStyle.dashOffset *= s;
+
+  r.ok = true;
+  r.editLabel = "resize text";
+  return r;
+}
 
 LayerTransformResult transformVectorLayer(Document& doc, size_t index, const Mat3& dstFromSrc,
                                           const DocumentTransformParams& params) {
