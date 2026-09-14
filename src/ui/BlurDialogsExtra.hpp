@@ -32,6 +32,10 @@ void drawRadialBlurDialog(AppState& st);
 // canvas pane (screen rect paneMin..paneMax), dragged with the pointer.
 void drawRadialBlurCanvasHandles(AppState& st, const ViewTransform& view, Vec2 paneMin,
                                  Vec2 paneMax, ImDrawList* dl);
+// While Radial Blur is open, true for a click on the other split pane
+// (paneMin..paneMax). The caller focuses that pane; the dialog re-centres on
+// its document next frame.
+bool radialBlurTakesPaneClick(Vec2 paneMin, Vec2 paneMax);
 
 void requestLensBlurDialog();
 void drawLensBlurDialog(AppState& st);

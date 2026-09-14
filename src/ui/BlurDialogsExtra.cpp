@@ -32,6 +32,8 @@ bool g_radialDialogOpen = false;
 bool g_radialHandleSettled = false;
 RadialBlurHandleDrag g_radialDrag;
 ImVec2 g_radialKeepClear{0.0f, 0.0f};  // the blur centre on screen, for where the dialog opens
+bool g_radialRetarget = false;    // the other split pane took focus
+bool g_radialPlaceAgain = false;  // move the dialog clear of the handles' new pane
 
 void filterExtraFooter(OpenDocument* od, std::string& status, const Command& command,
                        const char* nothingChangedText) {
@@ -74,6 +76,17 @@ void updateExternalPreview(OpenDocument* od, PreviewFn previewFn, const Params& 
   clearExternalFilterPreview();
 }
 
+// `defaultBlurCenter()` is app/FilterOps.hpp's own answer to "what does this
+// canvas look like", the same function `doRadialBlur()` falls back to for a
+// hand-written action that omits the centre.
+void centreOnActiveDocument(AppState& st, RadialBlurParams& params) {
+  if (OpenDocument* od = st.documents.active()) {
+    const PixelCoord c = defaultBlurCenter(*od);
+    params.centerX = static_cast<float>(c.x);
+    params.centerY = static_cast<float>(c.y);
+  }
+}
+
 }  // namespace
 
 void requestRadialBlurDialog() { g_radialBlurRequested = true; }
@@ -87,25 +100,34 @@ void drawRadialBlurDialog(AppState& st) {
   if (g_radialBlurRequested) {
     g_radialBlurRequested = false;
     status.clear();
-    // Re-centred on the document that is active NOW, every time the dialog
-    // opens -- `defaultBlurCenter()` is app/FilterOps.hpp's own answer to
-    // "what does this canvas look like", the same function `doRadialBlur()`
-    // falls back to for a hand-written action that omits the centre.
-    if (OpenDocument* od0 = st.documents.active()) {
-      const PixelCoord c = defaultBlurCenter(*od0);
-      params.centerX = static_cast<float>(c.x);
-      params.centerY = static_cast<float>(c.y);
-    }
+    // Re-centred on the document that is active NOW, every time the dialog opens.
+    centreOnActiveDocument(st, params);
     params.amount = 0.0f;
     ImGui::OpenPopup("Radial Blur");
+  }
+  if (g_radialPlaceAgain) {
+    g_radialPlaceAgain = false;
+    placeDialogAgainThisFrame();
   }
   if (!beginDialogAwayFrom("Radial Blur", g_radialKeepClear)) {
     wasOpen = false;
     g_radialDialogOpen = false;
+    g_radialRetarget = false;
     clearExternalFilterPreview();
     return;
   }
   g_radialDialogOpen = true;
+
+  // Focus moved to the other split pane: blur that document instead, keeping
+  // method, amount and samples. The dialog moves a frame later, once the
+  // handles have drawn in their new pane and g_radialKeepClear says where.
+  if (g_radialRetarget) {
+    g_radialRetarget = false;
+    status.clear();
+    centreOnActiveDocument(st, params);
+    g_radialHandleSettled = true;
+    g_radialPlaceAgain = true;
+  }
 
   OpenDocument* od = st.documents.active();
 
@@ -159,6 +181,18 @@ void drawRadialBlurDialog(AppState& st) {
   filterExtraFooter(od, status, radialBlurCommand(params),
                     "Nothing changed (amount 0, or no selected texels).");
   endDialog();
+}
+
+bool radialBlurTakesPaneClick(Vec2 paneMin, Vec2 paneMax) {
+  // The pane's own focus button never fires under the modal, hence raw input.
+  if (!g_radialDialogOpen || g_radialDrag.handle != RadialBlurHandle::None) return false;
+  if (!ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
+      ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow))
+    return false;
+  const ImVec2 m = ImGui::GetIO().MousePos;
+  if (m.x < paneMin.x || m.x >= paneMax.x || m.y < paneMin.y || m.y >= paneMax.y) return false;
+  g_radialRetarget = true;
+  return true;
 }
 
 void drawRadialBlurCanvasHandles(AppState& st, const ViewTransform& view, Vec2 paneMin,

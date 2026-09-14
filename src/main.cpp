@@ -1862,6 +1862,12 @@ int main(int argc, char** argv) {
   // does with it. See the injection in the frame loop.
   ImGuiKey pressKey = ImGuiKey_None;
   int pressKeyFrame = 10;
+  // --click <x> <y> [frame]: one left click at window point (x, y), through
+  // ImGui's queue only (the canvas paint route reads st.pointerQueue and sees
+  // nothing). The pointer sits there from the first frame.
+  bool clickRequested = false;
+  float clickX = 0.0f, clickY = 0.0f;
+  int clickFrame = 15;
   bool advancedDynamics = false;
   // D4 (docs/reachability-audit.md): `naturalPaint foo.npaint` used to open
   // nothing, because this loop matched only `--flag` strings and fell
@@ -2647,6 +2653,15 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[press-key] needs a key name\n");
         return 2;
       }
+    } else if (a == "--click") {
+      if (i + 2 >= argc) {
+        std::fprintf(stderr, "[click] needs <x> <y> [frame]\n");
+        return 2;
+      }
+      clickRequested = true;
+      clickX = static_cast<float>(std::atof(argv[++i]));
+      clickY = static_cast<float>(std::atof(argv[++i]));
+      if (i + 1 < argc && argv[i + 1][0] != '-') clickFrame = std::atoi(argv[++i]);
     } else if (a == "--open-layer-properties") {
       // The LAYERS panel's own gear-button modal, same justification as
       // --open-export-states one dialog over: it too is opened by a click and
@@ -5955,6 +5970,15 @@ int main(int argc, char** argv) {
                           bands.canvas.y + bands.canvas.h * 0.5f);
     }
 
+    if (clickRequested) {
+      ImGuiIO& io = ImGui::GetIO();
+      io.AddMousePosEvent(clickX, clickY);
+      if (static_cast<int>(frameIndex) == clickFrame)
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+      else if (static_cast<int>(frameIndex) == clickFrame + 1)
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+    }
+
     // --- the screenshot path takes no mouse ---------------------------------
     //
     // **`--screenshot` photographs a real window, and a real window is under
@@ -5988,7 +6012,7 @@ int main(int argc, char** argv) {
     // its subject is a mark whose position is READ from the pointer, so
     // suppressing the pointer does not merely remove a hover tint from the
     // capture, it removes the feature.
-    if (screenshotPath != nullptr && !penDemo && !cloneDemo) {
+    if (screenshotPath != nullptr && !penDemo && !cloneDemo && !clickRequested) {
       ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
     }
 

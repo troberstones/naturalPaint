@@ -1049,7 +1049,12 @@ Two constraints on any restyling this file's design language would drive:
   under it, and the tools stay blocked. It opens in the work-area corner
   farthest from the blur centre (`beginDialogAwayFrom()`) rather than centred,
   so the sheet does not cover its own handles. Geometry and drag maths are
-  `app/RadialBlurHandles`, tested apart from the drawing.
+  `app/RadialBlurHandles`, tested apart from the drawing. In Split View the
+  handles are on the focused pane, the only one showing the document being
+  blurred; clicking the other pane while the dialog is open focuses it, and the
+  blur follows: re-centred on that document with method, amount and samples
+  kept, its preview redrawn, and the dialog moved to the corner away from the
+  new centre (`placeDialogAgainThisFrame()`).
 
 ## 5b. Split View and Match Zoom
 

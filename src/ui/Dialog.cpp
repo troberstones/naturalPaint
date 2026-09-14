@@ -180,6 +180,11 @@ bool beginDialogAwayFrom(const char* title, ImVec2 keepClear, DialogWidth width)
   return beginDialogPlaced(title, width, corner.pos, corner.pivot);
 }
 
+void placeDialogAgainThisFrame() {
+  const int frame = ImGui::GetFrameCount();
+  if (g_centreUntilFrame < frame) g_centreUntilFrame = frame;
+}
+
 void endDialog() {
   endBodyIfOpen();
   ImGui::PopStyleVar();

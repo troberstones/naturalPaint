@@ -87,6 +87,9 @@ struct DialogCorner {
 DialogCorner dialogCornerAwayFrom(ImVec2 workMin, ImVec2 workMax, ImVec2 keepClear, float margin);
 bool beginDialogAwayFrom(const char* title, ImVec2 keepClear,
                          DialogWidth width = DialogWidth::Standard);
+// Applies the next begin's placement even though the dialog is already open,
+// for a dialog whose `keepClear` has moved.
+void placeDialogAgainThisFrame();
 void endDialog();
 
 // --- Content -----------------------------------------------------------------

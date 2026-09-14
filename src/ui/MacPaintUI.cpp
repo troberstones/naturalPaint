@@ -23506,7 +23506,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                    documentDisplayName(*other).c_str());
 
       ImGui::SetCursorScreenPos(ImVec2(r.x, r.y));
-      if (ImGui::InvisibleButton("##focusPane2", ImVec2(r.w, r.h))) {
+      if (ImGui::InvisibleButton("##focusPane2", ImVec2(r.w, r.h)) ||
+          radialBlurTakesPaneClick(Vec2{r.x, r.y}, Vec2{r.right(), r.bottom()})) {
         focusSplitPane(st.documents, g_split, st.view, otherPane, other->id);
       }
     }
