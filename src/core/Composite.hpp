@@ -692,6 +692,12 @@ float layerCoverage(const Layer& layer) noexcept;
 // not thread-safe: `--selftest`'s sections run sequentially on one thread.
 void setOpaqueFloorEnabledForTesting(bool enabled);
 
+// **Test-only.** The sum, over every tile whose floor was searched since the
+// last call, of the floor layer index found (0 = no skip), then reset. A mask
+// gate missing from the floor search changes no pixel -- it only skips less --
+// so this is the one observable that shortcut has.
+size_t takeOpaqueFloorSumForTesting();
+
 // **Test-only.** Overrides the grain `compositeWalk()`'s tile loops hand to
 // `core::parallelFor()`. The only intended caller is
 // app/selftest/CompositeParallel.cpp, which needs to force the walk down
@@ -798,6 +804,11 @@ float layerCoverage(const Document& doc, size_t index) noexcept;
 // `core::maskCoverage()` -- this function's own leaf -- so the two cannot
 // produce different answers.
 float layerMaskCoverageAt(const Layer& layer, PixelCoord at) noexcept;
+
+// The mask store the compositor reads, or null when the layer has no mask or
+// its mask is disabled (`Layer::maskEnabled`). Every leaf that reads a mask for
+// OUTPUT goes through this, so a disabled mask cannot survive in one path.
+const MaskTileStore* layerActiveMask(const Layer& layer) noexcept;
 
 // Whether a layer has an alpha of its own for something to be clipped by --
 // i.e. whether the walk would ever composite a texel *from* it. Exactly the

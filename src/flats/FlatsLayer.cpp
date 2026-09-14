@@ -43,6 +43,7 @@ uint64_t layerSignature(const Layer& l, const GradientTable& gradients) {
   for (const char ch : l.blend) mix(h, static_cast<uint8_t>(ch));
   mix(h, l.clipped);
   mix(h, l.mask.has_value());
+  mix(h, l.maskEnabled);
   if (l.rgbTiles) {
     for (const auto& [coord, tile] : *l.rgbTiles) {
       mix(h, static_cast<uint64_t>(static_cast<uint32_t>(coord.x)) << 32 | static_cast<uint32_t>(coord.y));

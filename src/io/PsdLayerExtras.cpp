@@ -123,7 +123,7 @@ bool psdMaskRect(const Layer& layer, PsdMaskRect& out) {
   return true;
 }
 
-void writePsdMaskBlock(PsdWriter& w, const PsdMaskRect* rect) {
+void writePsdMaskBlock(PsdWriter& w, const PsdMaskRect* rect, bool disabled) {
   if (rect == nullptr) {
     w.u32(0);
     return;
@@ -134,10 +134,8 @@ void writePsdMaskBlock(PsdWriter& w, const PsdMaskRect* rect) {
   w.i32(rect->bottom);
   w.i32(rect->right);
   w.u8(kPsdMaskDefaultReveal);
-  // Flags 0: the rect above is absolute, and this build has no "mask
-  // disabled" state to express in bit 1 (core/Mask.hpp: a mask is one
-  // coverage store and nothing else).
-  w.u8(0);
+  // Bit 0 clear: the rect above is absolute. Bit 1: `Layer::maskEnabled`.
+  w.u8(disabled ? 0x02 : 0x00);
   // Two bytes of padding, and they are what make the record exactly 20 --
   // io/PsdImport.cpp reads them back as `mc.skip(2)` and refuses any other
   // size by name.

@@ -165,6 +165,7 @@ const char* fullRecompositeReasonName(FullRecompositeReason reason) noexcept {
     case FullRecompositeReason::LayerClipChanged: return "layer clip changed";
     case FullRecompositeReason::LayerOpsChanged: return "layer op stack changed";
     case FullRecompositeReason::LayerMaskPresenceChanged: return "layer mask added or removed";
+    case FullRecompositeReason::LayerMaskEnabledChanged: return "layer mask enabled or disabled";
     case FullRecompositeReason::LayerStoragePresenceChanged: return "layer tile store added or "
                                                                     "removed";
     case FullRecompositeReason::VectorGeometryChanged: return "vector layer geometry changed";
@@ -187,6 +188,7 @@ std::string fullRecompositeExplanation(FullRecompositeReason reason, size_t laye
     case FullRecompositeReason::LayerClipChanged:
     case FullRecompositeReason::LayerOpsChanged:
     case FullRecompositeReason::LayerMaskPresenceChanged:
+    case FullRecompositeReason::LayerMaskEnabledChanged:
     case FullRecompositeReason::LayerStoragePresenceChanged:
     case FullRecompositeReason::VectorGeometryChanged:
     case FullRecompositeReason::TextContentChanged:
@@ -236,6 +238,8 @@ DocumentDirtyTiles documentDirtyTiles(const Document& before, const Document& af
     if (!opStacksEqual(a.ops, b.ops)) return whole(FullRecompositeReason::LayerOpsChanged, i);
     if (a.mask.has_value() != b.mask.has_value())
       return whole(FullRecompositeReason::LayerMaskPresenceChanged, i);
+    if (a.mask.has_value() && a.maskEnabled != b.maskEnabled)
+      return whole(FullRecompositeReason::LayerMaskEnabledChanged, i);
     if (a.rgbTiles.has_value() != b.rgbTiles.has_value() ||
         a.pigmentTiles.has_value() != b.pigmentTiles.has_value())
       return whole(FullRecompositeReason::LayerStoragePresenceChanged, i);

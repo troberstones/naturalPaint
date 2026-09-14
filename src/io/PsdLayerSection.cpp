@@ -595,7 +595,7 @@ void attachMask(const Layer& layer, PsdLayerRecord& rec) {
   if (!psdMaskRect(layer, mrect)) return;  // no mask, or a fully-revealed one
 
   PsdWriter mw;
-  writePsdMaskBlock(mw, &mrect);
+  writePsdMaskBlock(mw, &mrect, !layer.maskEnabled);
   const std::vector<uint8_t>& framed = mw.bytes();
   if (!mw.ok() || framed.size() != 24) return;  // 4 length + 20 content
   rec.maskBlock.assign(framed.begin() + 4, framed.end());

@@ -297,6 +297,9 @@ const char* strokeRouteName(StrokeRoute route) noexcept {
     // label, so "Brush -> mask-paint" says the one thing a user needs when a
     // brush stroke is not appearing where they expected it to.
     case StrokeRoute::MaskPaint: return "mask-paint";
+    case StrokeRoute::MaskTonal: return "mask-tonal";
+    case StrokeRoute::MaskSmudge: return "mask-smudge";
+    case StrokeRoute::MaskClone: return "mask-clone";
     // Named for what it writes, like every other row: "Eraser -> strokes-erase"
     // is the one thing a user needs when an eraser drag makes whole marks
     // disappear at once instead of thinning them (PRD F11, and that is the
@@ -741,44 +744,25 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target, LayerEditTarget editT
     case Tool::DryBrush:
       return StrokeRoute::MaskPaint;
 
-    // The refusals, and each is a real question deferred rather than an
-    // oversight. `--selftest` asserts every one of them by name, so opening a
-    // row means answering its question rather than deleting a case label.
-    //
-    //   * **Eraser** -- has no meaning here that is not already spelled "paint
-    //     white" (§1 above). Photoshop's answer is "paints with the background
-    //     colour", which is a decision about the background swatch and not
-    //     about masks; it can be made later without changing this module.
-    //   * **Pencil** -- `brush/PencilDeposit` §1 thresholds its coverage to an
-    //     aliased keep/drop. A hard-edged mask is a legitimate thing to want,
-    //     but the threshold lives inside that module's own texel step against a
-    //     premultiplied RGBA texel, so it is a `brush/MaskPencil` rather than a
-    //     parameter.
-    //   * **Dodge/Burn** -- `brush/TonalBrush` §0 counts a tonal shift of a
-    //     *colour*. Dodging a coverage is either a gamma on it or a different
-    //     ceiling, and those are two different features wearing one name.
-    //   * **Clone Stamp** -- would need a snapshot of a `MaskTileStore`, which
-    //     `brush/CloneStamp`'s snapshot type is not.
-    //   * **Heal** -- the same missing snapshot type, and then a second
-    //     question on top of it: `ops/Poisson` solves four channels of
-    //     premultiplied colour, and a mask sample is one scalar coverage with
-    //     no privileged end (brush/MaskPaint §1). A harmonic correction of a
-    //     coverage is well defined; whether "heal" is what a user would call
-    //     it is not, and this is not the file to decide that in.
-    //   * **Smudge** -- `brush/Smudge` §2's pick-up is a coverage-weighted mean
-    //     of premultiplied RGBA; the scalar analogue is well defined but its
-    //     "finger has no alpha" degenerate case is not the same one, so it is a
-    //     derivation rather than a substitution.
-    //   * **Water** and everything else -- these route nowhere on a content
-    //     store either, and a mask does not give them a destination they were
-    //     otherwise missing.
-    case Tool::Eraser:
+    // Pencil is the same lerp with brush/PencilDeposit's hard edge; Eraser is
+    // Photoshop's "paint the background white", so it always reveals.
     case Tool::Pencil:
+    case Tool::Eraser:
+      return StrokeRoute::MaskPaint;
     case Tool::Dodge:
     case Tool::Burn:
-    case Tool::CloneStamp:
-    case Tool::Heal:
+      return StrokeRoute::MaskTonal;
     case Tool::Smudge:
+      return StrokeRoute::MaskSmudge;
+    case Tool::CloneStamp:
+      return StrokeRoute::MaskClone;
+
+    // Still refused. Heal's Poisson solve (ops/Poisson) is four channels of
+    // premultiplied colour; a harmonic correction of one coverage is well
+    // defined but is not what a user would call healing, so it waits for a
+    // ruling. Water and the non-painting tools have no destination on a
+    // content store either.
+    case Tool::Heal:
     case Tool::Water:
     case Tool::Move:
     case Tool::Marquee:
@@ -1480,7 +1464,7 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // record would reproduce exactly what is already directly beneath it, which
   // is invisible in the picture, permanent in the document and saved to disk.
   if (route == StrokeRoute::CloneStamp || route == StrokeRoute::Heal ||
-      route == StrokeRoute::StrokesRecord) {
+      route == StrokeRoute::StrokesRecord || route == StrokeRoute::MaskClone) {
     const AppState::CloneSourceState empty{};
     const std::string why =
         cloneSourceRefusal(clone != nullptr ? *clone : empty, strokeEditLabel(tool));
@@ -1506,7 +1490,9 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // Not a row in `strokeEditLabel()` itself, because that function is pure in
   // the tool and the target store is not a property of the tool. Decided here,
   // where both are in hand, which is the same place the route was.
-  label_ = route == StrokeRoute::MaskPaint ? "mask stroke" : strokeEditLabel(tool);
+  label_ = !strokeRouteWritesMask(route)                        ? std::string(strokeEditLabel(tool))
+           : (tool == Tool::Brush || tool == Tool::DryBrush) ? std::string("mask stroke")
+                                                            : "mask " + std::string(strokeEditLabel(tool));
 
   // Transfer Opacity/Flow (Part 2, `PsTransfer::opacity`/`.flow`), resolved
   // HERE -- before any of the four `*_.begin()` calls below read
@@ -1733,9 +1719,24 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // took, the rest must be left holding no tiles, and an interrupted drag is
   // exactly the case that reaches here with one of them still live.
   if (route_ == StrokeRoute::MaskPaint)
-    maskPaint_.begin(maskTargetForInk(tip.linearRgb), resolvedOpacity);
+    maskPaint_.begin(tool == Tool::Eraser ? 1.0f : maskTargetForInk(tip.linearRgb),
+                     resolvedOpacity, /*hardEdge=*/tool == Tool::Pencil);
   else
     maskPaint_.end();
+  if (route_ == StrokeRoute::MaskTonal)
+    maskTonal_.begin(resolvedOpacity,
+                     tool == Tool::Burn ? TonalDirection::Burn : TonalDirection::Dodge);
+  else
+    maskTonal_.end();
+  if (route_ == StrokeRoute::MaskSmudge)
+    maskSmudge_.begin(tip.smudgeStrength);
+  else
+    maskSmudge_.end();
+  if (route_ == StrokeRoute::MaskClone)
+    maskClone_.begin(*layer.mask, clone != nullptr ? clone->offset : Vec2{0.0f, 0.0f},
+                     resolvedOpacity);
+  else
+    maskClone_.end();
 
   // The recording route's own latched state (§1d). **Not a `begin()`/`end()`
   // pair like the seven above it**, because there is no accumulator and no
@@ -2161,6 +2162,15 @@ void StrokeSession::depositPending() {
           : route_ == StrokeRoute::MaskPaint
               ? maskPaint_.paintDab(*layer.mask, dabTip, centre, doc.width, doc.height, selection,
                                     &frameTiles_)
+          : route_ == StrokeRoute::MaskTonal
+              ? maskTonal_.toneDab(*layer.mask, dabTip, centre, doc.width, doc.height, selection,
+                                   &frameTiles_)
+          : route_ == StrokeRoute::MaskSmudge
+              ? maskSmudge_.smudgeDab(*layer.mask, dabTip, centre, doc.width, doc.height,
+                                      selection, &frameTiles_)
+          : route_ == StrokeRoute::MaskClone
+              ? maskClone_.cloneDab(*layer.mask, dabTip, centre, doc.width, doc.height, selection,
+                                    &frameTiles_)
           : route_ == StrokeRoute::TonalBrush
               ? tonal_.toneDab(*layer.rgbTiles, dabTip, centre, doc.width, doc.height, selection,
                                &frameTiles_)
@@ -2286,6 +2296,9 @@ const std::vector<TileCoord>& StrokeSession::end() {
   // six above give: exactly one of them was ever live, and asking which at
   // cleanup time is how the others keep their tiles after an interrupted drag.
   maskPaint_.end();
+  maskTonal_.end();
+  maskSmudge_.end();
+  maskClone_.end();
 
   // Exactly one entry, and only for a stroke that put something down --
   // header §2.

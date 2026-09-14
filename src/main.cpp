@@ -388,7 +388,7 @@ void runUiLayerDemo(np::OpenDocument& od, bool clip) {
 // layer's own pixels, which is the comparison shot: the two pictures differ in
 // which square is ringed and in which store the stroke landed, and in nothing
 // else.
-void runMaskDemo(np::OpenDocument& od, bool maskTarget) {
+void runMaskDemo(np::OpenDocument& od, bool maskTarget, bool disableAfter, bool viewAfter) {
   // The topmost layer that has a mask -- named by search rather than by index,
   // so this does not silently aim at the wrong layer if `--demo-document`'s
   // stack ever changes.
@@ -444,6 +444,12 @@ void runMaskDemo(np::OpenDocument& od, bool maskTarget) {
               od.history.entries().empty() ? "(none)"
                                            : od.history.entries().back().label.c_str(),
               static_cast<unsigned long long>(od.revision));
+  if (disableAfter) {
+    const np::DocumentOpResult off =
+        np::recordLayerEdit(od, np::setLayerMaskEnabled(od.document, target, false));
+    std::printf("[mask-demo] disable mask: %s\n", off.ok ? "ok" : off.error.c_str());
+  }
+  if (viewAfter) od.maskViewLayerIndex = target;
   std::printf("[mask-demo] mask store now holds %zu tiles; layer store %zu\n",
               od.document.layers[target].mask->occupiedTileCount(),
               od.document.layers[target].rgbTiles.has_value()
@@ -1807,6 +1813,8 @@ int main(int argc, char** argv) {
   bool smudgeDemo = false;
   bool maskDemo = false;
   bool maskDemoTarget = true;
+  bool maskDemoOff = false;
+  bool maskDemoView = false;
   // --vector-demo [components|anchorpair|marquee|pendraw]: see runVectorDemo().
   bool vectorDemo = false;
   int vectorDemoMode = 0;  // 0 = shape, 1 = components, 2 = marquee, 3 = pendraw,
@@ -2273,9 +2281,13 @@ int main(int argc, char** argv) {
       // `content` is the comparison shot rather than a second view of the same
       // thing.
       maskDemo = true;
-      if (i + 1 < argc && std::string_view(argv[i + 1]) == "content") {
-        maskDemoTarget = false;
-        ++i;
+      // `off` and `view`: the same stroke, then T16's Shift-click (mask
+      // disabled) or Option-click (mask shown alone).
+      if (i + 1 < argc) {
+        const std::string_view k(argv[i + 1]);
+        if (k == "content") { maskDemoTarget = false; ++i; }
+        else if (k == "off") { maskDemoOff = true; ++i; }
+        else if (k == "view") { maskDemoView = true; ++i; }
       }
     } else if (a == "--vector-demo") {
       // Selects `Tool::Pen` and puts a Vector layer under it. See
@@ -3304,6 +3316,7 @@ int main(int argc, char** argv) {
     // thumbnails' two different transfer functions, and the thumbnail cache's
     // invalidation rule. Headless and GPU-free.
     const bool maskTargetOk = np::runMaskTargetTest();
+    const bool maskControlsOk = np::runMaskControlsTest();
     // app/FramePacing: T27's three frame-budget tiers, the --screenshot
     // exemption the golden harness depends on, and the fixed-timestep ceiling
     // that decides how slow the idle tier is allowed to be. Headless and
@@ -4438,7 +4451,7 @@ int main(int argc, char** argv) {
                     selectionBoundaryOk && floodFillOk && floodFillOptionsOk &&
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk &&
-                    documentTransformOk && transformSessionOk && moveToolOk && cropToolOk && maskTargetOk &&
+                    documentTransformOk && transformSessionOk && moveToolOk && cropToolOk && maskTargetOk && maskControlsOk &&
                     framePacingOk &&
                     gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
                     textShaperOk && vectorLayerOk && vectorGradientOk && textContentOk &&
@@ -4848,7 +4861,7 @@ int main(int argc, char** argv) {
   }
   // After --demo-document, which is the fixture it aims at.
   if (maskDemo) {
-    if (np::OpenDocument* od = st.documents.active()) runMaskDemo(*od, maskDemoTarget);
+    if (np::OpenDocument* od = st.documents.active()) runMaskDemo(*od, maskDemoTarget, maskDemoOff, maskDemoView);
   }
   if (vectorDemo) {
     if (np::OpenDocument* od = st.documents.active()) runVectorDemo(st, *od, vectorDemoMode);

@@ -506,6 +506,24 @@ LayerOpResult removeLayerMask(Document& doc, size_t index) {
   return layerOpSucceed("remove mask from " + layerOpDescribe(doc, index), index);
 }
 
+LayerOpResult setLayerMaskEnabled(Document& doc, size_t index, bool enabled) {
+  LayerOpResult refusal;
+  const char* verb = enabled ? "enable layer mask" : "disable layer mask";
+  if (!layerOpInRange(doc, index, verb, &refusal)) return refusal;
+  if (!layerOpNotLocked(doc, index, verb, kLockedLayerFrozen, &refusal)) return refusal;
+  if (!doc.layers[index].mask.has_value())
+    return layerOpFail(std::string(verb) + " refused: " + layerOpDescribe(doc, index) +
+                       " has no mask.");
+  if (doc.layers[index].maskEnabled == enabled)
+    return layerOpFail(std::string(verb) + " refused: the mask on " +
+                       layerOpDescribe(doc, index) + " is already " +
+                       (enabled ? "enabled." : "disabled."));
+  doc.layers[index].maskEnabled = enabled;
+  return layerOpSucceed(std::string(enabled ? "enable mask on " : "disable mask on ") +
+                            layerOpDescribe(doc, index),
+                        index);
+}
+
 LayerOpResult setLayerClipped(Document& doc, size_t index, bool clipped) {
   LayerOpResult refusal;
   if (!layerOpInRange(doc, index, "set layer clipping", &refusal)) return refusal;

@@ -12,6 +12,7 @@
 #include "brush/Deposit.hpp"
 #include "brush/Heal.hpp"
 #include "brush/MaskPaint.hpp"
+#include "brush/MaskTools.hpp"
 #include "brush/PencilDeposit.hpp"
 #include "brush/PigmentErase.hpp"
 #include "brush/PigmentSmudge.hpp"
@@ -832,6 +833,11 @@ enum class StrokeRoute {
                   // the two shapes of computation are selected by that field in
                   // `brush/StrokesLayer`'s evaluator long after this route has
                   // finished (§1d)
+  // T16's other tools on a mask target (brush/MaskTools). Brush, Pencil and
+  // Eraser share `MaskPaint`'s lerp; these three need their own engines.
+  MaskTonal,   // Dodge raises coverage, Burn lowers it
+  MaskSmudge,  // smears coverage along the stroke
+  MaskClone,   // copies coverage from the clone offset within the same mask
 };
 
 // Which of a layer's two writable stores a stroke is aimed at.
@@ -943,13 +949,20 @@ LayerEditTarget resolveLayerEditTarget(bool maskRequested, const Layer* layer) n
 // on the same line of its per-texel loop every other layer-writing route does.
 // `wetnessReachesSolver()`: no, and unchanged -- it names `PaintSim` alone, and
 // a mask stroke does not touch the solver.
+// The routes whose destination is `Layer::mask` rather than a content store.
+inline bool strokeRouteWritesMask(StrokeRoute route) noexcept {
+  return route == StrokeRoute::MaskPaint || route == StrokeRoute::MaskTonal ||
+         route == StrokeRoute::MaskSmudge || route == StrokeRoute::MaskClone;
+}
+
 inline bool strokeRouteWritesLayer(StrokeRoute route) noexcept {
   return route == StrokeRoute::CpuDeposit || route == StrokeRoute::RgbDeposit ||
          route == StrokeRoute::RgbErase || route == StrokeRoute::PigmentErase ||
          route == StrokeRoute::PencilDeposit || route == StrokeRoute::TonalBrush ||
          route == StrokeRoute::CloneStamp || route == StrokeRoute::Heal ||
          route == StrokeRoute::Smudge || route == StrokeRoute::PigmentSmudge ||
-         route == StrokeRoute::MaskPaint ||
+         route == StrokeRoute::MaskPaint || route == StrokeRoute::MaskTonal ||
+         route == StrokeRoute::MaskSmudge || route == StrokeRoute::MaskClone ||
          route == StrokeRoute::StrokesErase || route == StrokeRoute::StrokesRecord;
 }
 
@@ -2061,6 +2074,9 @@ class StrokeSession {
   // does is a *destination* that is not a content store, which is why it is
   // the member `editTarget_` below has to agree with.
   MaskPaintStroke maskPaint_;
+  MaskTonalStroke maskTonal_;
+  MaskSmudgeStroke maskSmudge_;
+  MaskCloneStroke maskClone_;
 
   // --- the recording route's own latched state (§1d) ------------------------
   //

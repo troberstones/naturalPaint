@@ -237,7 +237,10 @@ class MaskPaintStroke {
   // Both arguments are clamped to [0,1]; a non-positive `ceiling` leaves a
   // stroke that changes nothing, which is a legitimate setting and not an
   // error.
-  void begin(float target, float ceiling) noexcept;
+  // `hardEdge`: the Pencil on a mask -- brush/PencilDeposit's aliased tip and
+  // 0.5 coverage threshold, ignoring flow as the pencil does.
+  void begin(float target, float ceiling, bool hardEdge = false) noexcept;
+  bool hardEdge() const noexcept { return hardEdge_; }
 
   bool active() const noexcept { return active_; }
 
@@ -285,6 +288,7 @@ class MaskPaintStroke {
  private:
   float target_ = 0.0f;
   float ceiling_ = 1.0f;
+  bool hardEdge_ = false;
   bool active_ = false;
   StrokeAlphaStore applied_;
 };

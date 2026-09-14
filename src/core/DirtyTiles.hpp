@@ -302,6 +302,7 @@ enum class FullRecompositeReason {
   LayerClipChanged,
   LayerOpsChanged,
   LayerMaskPresenceChanged,
+  LayerMaskEnabledChanged,
   LayerStoragePresenceChanged,
   // PLAN.md phase 13. A `LayerKind::Vector` layer's geometry or paint moved.
   //

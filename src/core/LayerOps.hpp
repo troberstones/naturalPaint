@@ -441,6 +441,12 @@ LayerOpResult addLayerMask(Document& doc, size_t index);
 // not built here and is not what this function does.
 LayerOpResult removeLayerMask(Document& doc, size_t index);
 
+// Enables or disables the layer's mask without touching its texels (Photoshop's
+// shift-click on the mask thumbnail). Refused when there is no mask, when the
+// layer is locked, and when the mask is already in the requested state -- a
+// no-op must not put an entry in the journal.
+LayerOpResult setLayerMaskEnabled(Document& doc, size_t index, bool enabled);
+
 // --- Clipping (PLAN.md Phase 5 step 9; PRD C9) ---------------------------
 
 // Sets `Layer::clipped` -- whether the layer is clipped by the alpha of the

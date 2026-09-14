@@ -23,9 +23,14 @@ bool layerHoldsPixels(const Layer& layer) noexcept {
          (layer.kind == LayerKind::Pigment && layer.pigmentTiles.has_value());
 }
 
+const MaskTileStore* layerActiveMask(const Layer& layer) noexcept {
+  return layer.mask.has_value() && layer.maskEnabled ? &*layer.mask : nullptr;
+}
+
 float layerMaskCoverageAt(const Layer& layer, PixelCoord at) noexcept {
-  if (!layer.mask.has_value()) return 1.0f;
-  return maskCoverage(layer.mask->find(tileCoordAt(at)), tileLocalOffset(at));
+  const MaskTileStore* mask = layerActiveMask(layer);
+  if (mask == nullptr) return 1.0f;
+  return maskCoverage(mask->find(tileCoordAt(at)), tileLocalOffset(at));
 }
 
 float layerCoverage(const Layer& layer) noexcept {
@@ -42,6 +47,7 @@ namespace {
 // against the same document composited with the optimization live. Nothing
 // in the running application ever calls the setter.
 bool g_opaqueFloorEnabledForTesting = true;
+size_t g_opaqueFloorSumForTesting = 0;
 
 // The grain `compositeWalk()`'s own tile loops pass to `core::parallelFor()`
 // (core/Parallel.hpp) -- overridable for app/selftest/CompositeParallel.cpp's
@@ -63,6 +69,12 @@ size_t g_compositeParallelGrain = 4;
 }  // namespace
 
 void setOpaqueFloorEnabledForTesting(bool enabled) { g_opaqueFloorEnabledForTesting = enabled; }
+
+size_t takeOpaqueFloorSumForTesting() {
+  const size_t sum = g_opaqueFloorSumForTesting;
+  g_opaqueFloorSumForTesting = 0;
+  return sum;
+}
 
 void setCompositeParallelGrainForTesting(size_t grain) { g_compositeParallelGrain = grain; }
 
@@ -576,8 +588,8 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
   auto ownAlphaIsOneEverywhere = [&](size_t li, const TileCoord& coord) -> bool {
     const Layer& l = doc.layers[li];
     if (layerCoverage(doc, li) != 1.0f) return false;
-    if (l.mask.has_value()) {
-      const MaskTileStore& maskTiles = *l.mask;
+    if (const MaskTileStore* activeMask = layerActiveMask(l)) {
+      const MaskTileStore& maskTiles = *activeMask;
       const MaskTile* maskTile = maskTiles.find(coord);
       // Absent means "reveals" (core/Mask.hpp), the opposite reading from an
       // absent content tile -- handled here, before ever asking the generic
@@ -621,8 +633,8 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
     if (up == nullptr && low == nullptr) return false;  // the pair paints nothing here
     const float upperCoverage = layerCoverage(doc, upperIndex);
     const float lowerCoverage = layerCoverage(doc, upperIndex - 1);
-    const MaskTileStore* upperMaskTiles = upper.mask.has_value() ? &*upper.mask : nullptr;
-    const MaskTileStore* lowerMaskTiles = lower.mask.has_value() ? &*lower.mask : nullptr;
+    const MaskTileStore* upperMaskTiles = layerActiveMask(upper);
+    const MaskTileStore* lowerMaskTiles = layerActiveMask(lower);
     const MaskTile* upMask = upperMaskTiles ? upperMaskTiles->find(coord) : nullptr;
     const MaskTile* lowMask = lowerMaskTiles ? lowerMaskTiles->find(coord) : nullptr;
     const std::vector<Op> upperOps = layerPointOps(upper.ops);
@@ -684,6 +696,7 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
       }
     }
     floorMemo.emplace(coord, floor);
+    g_opaqueFloorSumForTesting += floor;
     return floor;
   };
 
@@ -843,7 +856,7 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
       // and an empty stack must leave the accumulator byte-for-byte untouched.
       if (coverage <= 0.0f || ops.empty()) continue;
 
-      const MaskTileStore* adjMask = layer.mask.has_value() ? &*layer.mask : nullptr;
+      const MaskTileStore* adjMask = layerActiveMask(layer);
       // Walked a tile at a time so the mask lookup is hoisted exactly as it is
       // for every other kind -- one hash lookup per canvas tile, not one per
       // texel.
@@ -946,7 +959,7 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
     // uniform 1.0 -- the identical arithmetic path an unmasked layer took
     // before this step, which is what keeps step 1's byte-identity boundary
     // exact (see this file's header, §5).
-    const MaskTileStore* maskTiles = layer.mask.has_value() ? &*layer.mask : nullptr;
+    const MaskTileStore* maskTiles = layerActiveMask(layer);
 
     // --- The clipping group this layer is the base of (§§12-17) -----------
     //
@@ -973,7 +986,7 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
       ClipMember cm;
       cm.coverage = layerCoverage(doc, mi);
       cm.ops = layerPointOps(m.ops);
-      cm.maskTiles = m.mask.has_value() ? &*m.mask : nullptr;
+      cm.maskTiles = layerActiveMask(m);
       if (m.kind == LayerKind::Adjustment) {
         // Reported before the coverage test, exactly as an unclipped
         // Adjustment layer's is -- §11's blend rule does not change because
@@ -1095,7 +1108,7 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
       // only its own coverage -- `covLow` and `covUp` in this file's header
       // §3, now per texel. The mixing weight `t` is `upper.mass` and is
       // untouched by either, which is the whole of §5's argument.
-      const MaskTileStore* lowerMaskTiles = lower.mask.has_value() ? &*lower.mask : nullptr;
+      const MaskTileStore* lowerMaskTiles = layerActiveMask(lower);
       const PigmentTileStore* upTiles =
           layer.pigmentTiles.has_value() ? &*layer.pigmentTiles : nullptr;
       const PigmentTileStore* lowTiles =

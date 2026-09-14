@@ -397,6 +397,23 @@ LayerThumbnail layerMaskThumbnail(const Document& doc, size_t layerIndex) {
                               // transparent part of a mask thumbnail
     }
   }
+  if (!layer.maskEnabled) {
+    // Photoshop's red X over a disabled mask, drawn into the picture so the
+    // panel needs no second primitive and the state is testable from bytes.
+    const int n = std::min(out.w, out.h);
+    for (int k = 0; k < n; ++k) {
+      const int ox = k * out.w / n;
+      const int oy = k * out.h / n;
+      for (const int x : {ox, out.w - 1 - ox}) {
+        const size_t o =
+            (static_cast<size_t>(out.y + oy) * kLayerThumbPx + static_cast<size_t>(out.x + x)) * 4;
+        out.rgba[o + 0] = kMaskOffMarkRgb[0];
+        out.rgba[o + 1] = kMaskOffMarkRgb[1];
+        out.rgba[o + 2] = kMaskOffMarkRgb[2];
+        out.rgba[o + 3] = 255;
+      }
+    }
+  }
   return out;
 }
 

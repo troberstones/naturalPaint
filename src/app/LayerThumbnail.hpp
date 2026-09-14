@@ -241,6 +241,9 @@ inline constexpr int kLayerThumbPx = 24;
 // value that keeps one thumbnail under ten thousand samples.
 inline constexpr int kThumbSupersample = 4;
 
+// The disabled-mask X drawn across a mask thumbnail.
+inline constexpr uint8_t kMaskOffMarkRgb[3] = {230, 40, 40};
+
 // One thumbnail: `kLayerThumbPx` square, RGBA8, **straight** alpha.
 //
 // The document's aspect ratio is preserved and the picture is centred, with

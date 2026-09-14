@@ -95,6 +95,8 @@ constexpr const char* kAttrClipped = "np:clipped";
 // document with no alpha-locked layer produces exactly the bytes it produced
 // before this attribute existed.
 constexpr const char* kAttrAlphaLocked = "np:alphaLocked";
+// `Layer::maskEnabled`, written as 1 only on a layer whose mask is disabled.
+constexpr const char* kAttrMaskOff = "np:maskOff";
 // Whether the layer is a flatting reference (core/Layer.hpp's
 // `flatsReference`): an `int` 0/1, `np:alphaLocked`'s own type and rule --
 // written **only when true**, so a document with no reference layer produces
@@ -319,6 +321,7 @@ bool isLayerAttributeRecognised(const std::string& name) {
          name == kAttrParent || name == kAttrOps || name == kAttrMask ||
          name == kAttrClipped || name == kAttrLabel || name == kAttrLink ||
          name == kAttrGroupId || name == kAttrAlphaLocked || name == kAttrFlatsRef ||
+         name == kAttrMaskOff ||
          name == kAttrVector ||
          name == kAttrText || name == kAttrFlats || name == kAttrStrokes;
 }
@@ -1481,6 +1484,11 @@ NpaintVerifyResult verifyNpaintRoundTrip(const Document& doc, const std::string&
                                        : " reads back with its layer mask missing entirely") +
                   ".");
     }
+    if (a.mask && a.maskEnabled != b.maskEnabled) {
+      return fail(where + (b.maskEnabled ? " reads back with its disabled mask re-enabled"
+                                         : " reads back with its mask disabled") +
+                  ".");
+    }
     if (a.mask) {
       std::string why;
       if (!tileStoresRoundTripEqual(
@@ -2137,6 +2145,8 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     // test). Absent therefore reads as `false`, `Layer::alphaLocked`'s own
     // default.
     if (layer.alphaLocked) part.attributes.push_back(intAttr(kAttrAlphaLocked, 1));
+    if (layer.mask.has_value() && !layer.maskEnabled)
+      part.attributes.push_back(intAttr(kAttrMaskOff, 1));
     // Same rule: only when true, so the byte identity of every document
     // without a reference layer is unchanged.
     if (layer.flatsReference) part.attributes.push_back(intAttr(kAttrFlatsRef, 1));
@@ -3066,6 +3076,9 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     if (const NpaintAttribute* a = findAttr(part.attributes, kAttrAlphaLocked);
         a && a->type == NpaintAttribute::Type::Int)
       layer.alphaLocked = a->intValue != 0;
+    if (const NpaintAttribute* a = findAttr(part.attributes, kAttrMaskOff);
+        a && a->type == NpaintAttribute::Type::Int)
+      layer.maskEnabled = a->intValue == 0;
     // Absent means `false`, `Layer::flatsReference`'s own default: a file
     // written before this step loads with no reference layer, which is
     // exactly the "every layer below" behaviour it had when it was saved.

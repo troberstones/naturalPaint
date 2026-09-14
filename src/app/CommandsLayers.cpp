@@ -503,6 +503,17 @@ CommandResult doSetLayerAlphaLocked(OpenDocument& doc, const JsonValue& params) 
       "set alpha lock");
 }
 
+CommandResult doSetLayerMaskEnabled(OpenDocument& doc, const JsonValue& params) {
+  size_t index = 0;
+  const std::string why = resolveTarget(doc, params, &index);
+  if (!why.empty()) return commandRefused(why);
+  bool enabled = true;
+  const std::string bad = requireBool(params, "enabled", &enabled);
+  if (!bad.empty()) return commandRefused(bad);
+  return fromDocumentOpResult(
+      recordLayerEdit(doc, setLayerMaskEnabled(doc.document, index, enabled)), "set mask enabled");
+}
+
 CommandResult doSetLayerClipped(OpenDocument& doc, const JsonValue& params) {
   size_t index = 0;
   const std::string why = resolveTarget(doc, params, &index);
@@ -685,6 +696,8 @@ void registerLayerCommandRows(std::vector<CommandSpec>* out) {
                   layerTargetUnavailable, doSetLayerAlphaLocked});
   out->push_back({"set_layer_clipped", "Set Clipping", {"layer", "clipped"},
                   layerTargetUnavailable, doSetLayerClipped});
+  out->push_back({"set_layer_mask_enabled", "Enable Layer Mask", {"layer", "enabled"},
+                  layerTargetUnavailable, doSetLayerMaskEnabled});
   out->push_back({"set_layer_flats_reference", "Set Flats Reference", {"layer", "reference"},
                   layerTargetUnavailable, doSetLayerFlatsReference});
   out->push_back({"set_layer_name", "Rename Layer", {"layer", "name"}, layerTargetUnavailable,

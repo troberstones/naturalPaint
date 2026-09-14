@@ -260,7 +260,7 @@ std::string layerRowSubLineImpl(const Layer& layer, std::optional<size_t> fillCo
   }
   if (layer.mask.has_value()) {
     s += kSep;
-    s += "MASK";
+    s += layer.maskEnabled ? "MASK" : "MASK OFF";
   }
   // docs/ui.md §3.2's own example row is `ADJUSTMENT · CLIPPED`, so this
   // vocabulary is the document's rather than invented here -- the UI assumed
