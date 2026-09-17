@@ -10120,19 +10120,41 @@ WGPUTextureView filterPreviewViewFor(GpuContext& gpu, const OpenDocument& active
 // just the wireframe. Reuses `FilterPreviewTexture`'s shape (own instance --
 // transform and a filter dialog are never both live, but sharing the slot
 // would still be the wrong coupling) and `previewWarpDocument()` for the
-// pixels. Recomputed at most every `kWarpPreviewThrottleSeconds` while
-// dragging, always once more on release -- cost measured in the commit
-// message.
+// pixels.
+//
+// The throttle interval is MEASURED, not guessed: it used to be a flat
+// `kWarpPreviewThrottleSeconds = 0.05`, sized for a ~50 ms recompute that was
+// true on a Mac and never checked anywhere else. On an iPad the same
+// recompute (before `warpImage()` gained the `core/Parallel.hpp` gather
+// rasteriser this preview now calls into) measured ~5.3 s -- about 100x the
+// throttle -- so every dragged frame queued a recompute that was still
+// running when the NEXT one came due, and the canvas showed a stale frame
+// for seconds at a time before jumping to wherever the finger had gone by
+// the time the queue drained. `lastComputeSeconds` below is this frame's own
+// answer to "how long does a recompute cost on THIS device, right now": each
+// `due` recompute times itself and the next interval is that measurement
+// (clamped so a pathological one-off spike or a too-fast unrealistic first
+// sample cannot wedge the cadence in either direction) rather than a
+// cross-platform constant this file has no way to keep honest.
 WGPUTextureView warpPreviewViewFor(GpuContext& gpu, const OpenDocument& activeDoc,
                                    TransformSession& transform) {
   if (!transform.active() || transform.mode() != TransformMode::Warp) return nullptr;
   if (transform.documentId() != activeDoc.id) return nullptr;
 
-  constexpr double kWarpPreviewThrottleSeconds = 0.05;
+  // Floor: never busier than a 60 Hz frame budget even if a recompute is
+  // implausibly fast (an empty/tiny region) -- there is no benefit to
+  // recomputing more often than the display can show a new frame anyway.
+  // Ceiling: even a very slow device should still see the drag catch up at
+  // least a couple of times a second, rather than the interval drifting up
+  // to match an outlier (a thermal-throttled frame, a first-call cache-miss)
+  // and getting stuck there.
+  constexpr double kWarpPreviewThrottleFloorSeconds = 1.0 / 60.0;
+  constexpr double kWarpPreviewThrottleCeilingSeconds = 0.5;
   struct Cache {
     bool valid = false;
     bool wasDragging = false;
     double lastComputeTime = -1e18;
+    double throttleSeconds = kWarpPreviewThrottleFloorSeconds;  // adapts after the first recompute
     uint64_t generation = 0;
     Document doc;
   };
@@ -10141,9 +10163,10 @@ WGPUTextureView warpPreviewViewFor(GpuContext& gpu, const OpenDocument& activeDo
   const bool dragReleased = cache.wasDragging && !dragging;
   const double now = ImGui::GetTime();
   const bool due = !cache.valid || !dragging || dragReleased ||
-                   (now - cache.lastComputeTime) >= kWarpPreviewThrottleSeconds;
+                   (now - cache.lastComputeTime) >= cache.throttleSeconds;
   cache.wasDragging = dragging;
   if (due) {
+    const double computeStart = now;
     Document previewDoc;
     cache.valid = transform.previewWarpDocument(activeDoc, ResampleKernel::CatmullRom, &previewDoc);
     if (cache.valid) {
@@ -10151,6 +10174,9 @@ WGPUTextureView warpPreviewViewFor(GpuContext& gpu, const OpenDocument& activeDo
       ++cache.generation;
     }
     cache.lastComputeTime = now;
+    const double measured = ImGui::GetTime() - computeStart;
+    cache.throttleSeconds =
+        std::clamp(measured, kWarpPreviewThrottleFloorSeconds, kWarpPreviewThrottleCeilingSeconds);
   }
   return cache.valid ? g_warpPreviewTexture.viewFor(gpu, cache.doc, cache.generation) : nullptr;
 }

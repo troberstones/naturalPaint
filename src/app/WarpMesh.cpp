@@ -1,7 +1,10 @@
 #include "app/WarpMesh.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+
+#include "core/Parallel.hpp"
 
 namespace np {
 namespace {
@@ -338,8 +341,17 @@ namespace {
 // two or three, and the fixed count costs nothing a data-dependent stopping
 // rule would save here. Returns false (leaving `*s`/`*t` at their last
 // estimate) when the quad is degenerate (a Jacobian that will not invert).
-bool invertBilinearQuad(const WarpQuad& q, Point2 p, float* s, float* t) noexcept {
+//
+// `dsLenOut`/`dtLenOut` (optional): the local |dQ/ds| / |dQ/dt| pixels-per-
+// parameter-unit at the converged (s, t) -- the last iteration's own
+// Jacobian columns, already computed for the Newton step and reused rather
+// than recomputed. `warpImage()`'s boundary antialiasing uses these to turn
+// a parametric overshoot at the mesh's own outer edge into a physical pixel
+// distance for a coverage ramp.
+bool invertBilinearQuad(const WarpQuad& q, Point2 p, float* s, float* t,
+                        float* dsLenOut = nullptr, float* dtLenOut = nullptr) noexcept {
   float ss = 0.5f, tt = 0.5f;
+  float dsx = 0.0f, dsy = 0.0f, dtx = 0.0f, dty = 0.0f;
   for (int iter = 0; iter < 8; ++iter) {
     const float omS = 1.0f - ss, omT = 1.0f - tt;
     const Point2 Q{omS * omT * q.dst00.x + ss * omT * q.dst10.x + ss * tt * q.dst11.x +
@@ -348,15 +360,17 @@ bool invertBilinearQuad(const WarpQuad& q, Point2 p, float* s, float* t) noexcep
                        omS * tt * q.dst01.y};
     const float rx = p.x - Q.x, ry = p.y - Q.y;
     // dQ/ds = (1-t)(dst10-dst00) + t(dst11-dst01)
-    const float dsx = omT * (q.dst10.x - q.dst00.x) + tt * (q.dst11.x - q.dst01.x);
-    const float dsy = omT * (q.dst10.y - q.dst00.y) + tt * (q.dst11.y - q.dst01.y);
+    dsx = omT * (q.dst10.x - q.dst00.x) + tt * (q.dst11.x - q.dst01.x);
+    dsy = omT * (q.dst10.y - q.dst00.y) + tt * (q.dst11.y - q.dst01.y);
     // dQ/dt = (1-s)(dst01-dst00) + s(dst11-dst10)
-    const float dtx = omS * (q.dst01.x - q.dst00.x) + ss * (q.dst11.x - q.dst10.x);
-    const float dty = omS * (q.dst01.y - q.dst00.y) + ss * (q.dst11.y - q.dst10.y);
+    dtx = omS * (q.dst01.x - q.dst00.x) + ss * (q.dst11.x - q.dst10.x);
+    dty = omS * (q.dst01.y - q.dst00.y) + ss * (q.dst11.y - q.dst10.y);
     const float det = dsx * dty - dtx * dsy;
     if (std::fabs(det) < 1e-9f) {
       *s = ss;
       *t = tt;
+      if (dsLenOut) *dsLenOut = std::hypot(dsx, dsy);
+      if (dtLenOut) *dtLenOut = std::hypot(dtx, dty);
       return false;
     }
     const float invDet = 1.0f / det;
@@ -368,8 +382,52 @@ bool invertBilinearQuad(const WarpQuad& q, Point2 p, float* s, float* t) noexcep
   }
   *s = ss;
   *t = tt;
+  if (dsLenOut) *dsLenOut = std::hypot(dsx, dsy);
+  if (dtLenOut) *dtLenOut = std::hypot(dtx, dty);
   return true;
 }
+
+// A uniform bucket grid over destination-local pixel coordinates, mapping
+// each bucket to the indices of every `WarpQuad` whose pixel bounding box
+// touches it. `warpImage()`'s gather rasteriser (below) looks up ONE bucket
+// per destination pixel instead of scanning every quad -- the same reason
+// any other broad-phase spatial index exists.
+class QuadBucketGrid {
+ public:
+  QuadBucketGrid(int width, int height, int cellSize)
+      : width_(width), height_(height), cellSize_(std::max(cellSize, 1)) {
+    cols_ = (width_ + cellSize_ - 1) / cellSize_;
+    rows_ = (height_ + cellSize_ - 1) / cellSize_;
+    cols_ = std::max(cols_, 1);
+    rows_ = std::max(rows_, 1);
+    buckets_.resize(static_cast<size_t>(cols_) * rows_);
+  }
+
+  void insert(uint32_t quadIndex, int lx, int ly, int hx, int hy) {
+    lx = std::clamp(lx, 0, width_ - 1);
+    hx = std::clamp(hx, 0, width_ - 1);
+    ly = std::clamp(ly, 0, height_ - 1);
+    hy = std::clamp(hy, 0, height_ - 1);
+    if (lx > hx || ly > hy) return;
+    const int bx0 = lx / cellSize_, bx1 = hx / cellSize_;
+    const int by0 = ly / cellSize_, by1 = hy / cellSize_;
+    for (int by = by0; by <= by1; ++by) {
+      for (int bx = bx0; bx <= bx1; ++bx) {
+        buckets_[static_cast<size_t>(by) * cols_ + bx].push_back(quadIndex);
+      }
+    }
+  }
+
+  const std::vector<uint32_t>& bucketAt(int px, int py) const noexcept {
+    const int bx = std::clamp(px / cellSize_, 0, cols_ - 1);
+    const int by = std::clamp(py / cellSize_, 0, rows_ - 1);
+    return buckets_[static_cast<size_t>(by) * cols_ + bx];
+  }
+
+ private:
+  int width_, height_, cellSize_, cols_, rows_;
+  std::vector<std::vector<uint32_t>> buckets_;
+};
 
 // One kernel-weighted sample of `src` at (sx, sy), source-local pixel
 // coordinates with the usual pixel-centre-at-half-integer convention
@@ -450,38 +508,155 @@ bool warpImage(const TransformImage& src, const WarpMesh& mesh, const DocumentRe
   const float srcH = static_cast<float>(src.height);
   const float n = static_cast<float>(mesh.n());
   const int outW = static_cast<int>(out->width), outH = static_cast<int>(out->height);
+  if (quads.empty()) return true;
 
-  for (const WarpQuad& q : quads) {
-    float minX = std::min({q.dst00.x, q.dst10.x, q.dst11.x, q.dst01.x});
-    float maxX = std::max({q.dst00.x, q.dst10.x, q.dst11.x, q.dst01.x});
-    float minY = std::min({q.dst00.y, q.dst10.y, q.dst11.y, q.dst01.y});
-    float maxY = std::max({q.dst00.y, q.dst10.y, q.dst11.y, q.dst01.y});
-    int lx = std::max(0, static_cast<int>(std::floor(minX)) - dstRegion.x);
-    int hx = std::min(outW - 1, static_cast<int>(std::ceil(maxX)) - dstRegion.x);
-    int ly = std::max(0, static_cast<int>(std::floor(minY)) - dstRegion.y);
-    int hy = std::min(outH - 1, static_cast<int>(std::ceil(maxY)) - dstRegion.y);
-    for (int iy = ly; iy <= hy; ++iy) {
-      const float py = static_cast<float>(dstRegion.y + iy) + 0.5f;
-      for (int ix = lx; ix <= hx; ++ix) {
-        const float px = static_cast<float>(dstRegion.x + ix) + 0.5f;
-        float s = 0.0f, t = 0.0f;
-        if (!invertBilinearQuad(q, Point2{px, py}, &s, &t)) continue;
-        const float eps = 1e-3f;
-        if (s < -eps || s > 1.0f + eps || t < -eps || t > 1.0f + eps) continue;
-        const float u = q.u0 + (q.u1 - q.u0) * clamp01(s);
-        const float v = q.v0 + (q.v1 - q.v0) * clamp01(t);
-        const float sx = (u / n) * srcW;
-        const float sy = (v / n) * srcH;
-        float texel[4];
-        sampleKernel(src, sx, sy, kernel, texel);
-        float* d = out->px.data() + (static_cast<size_t>(iy) * outW + ix) * 4u;
-        d[0] = texel[0];
-        d[1] = texel[1];
-        d[2] = texel[2];
-        d[3] = texel[3];
-      }
-    }
+  // --- Broad phase: bucket every quad by its own pixel bounding box --------
+  //
+  // Was a scatter (iterate quads, write whichever destination pixels each
+  // one's bbox+membership test claims): with `dstRegion` sized to the union
+  // of every quad, neighbouring quads' boxes overlap wherever the surface
+  // curves, and the OLD code let whichever quad happened to be LAST in raster
+  // order win that overlap with no ownership rule -- a big, wrongly-shaped,
+  // uniformly-sampled patch wherever a late quad's box swept over pixels an
+  // earlier, correct quad had already written. Gather (below) instead asks,
+  // per destination pixel, "which quad's PARAMETRIC interior actually
+  // contains me", which is well-defined everywhere the surface does not fold
+  // over itself -- the tessellation partitions `[0,n]x[0,n]` into
+  // non-overlapping cells, and away from a fold their IMAGES do not overlap
+  // either. That also makes the pixel loop embarrassingly parallel: each
+  // destination pixel is resolved independently, unlike the old scatter loop
+  // whose write order was the whole correctness argument.
+  //
+  // Bucket size: the mean quad footprint, so a typical pixel's bucket holds
+  // a small, roughly constant number of candidates regardless of `n` or the
+  // chord-error subdivision count.
+  double bboxPerimeterSum = 0.0;
+  std::vector<std::array<int, 4>> quadBoxes(quads.size());  // lx, ly, hx, hy (destination-local)
+  for (size_t i = 0; i < quads.size(); ++i) {
+    const WarpQuad& q = quads[i];
+    const float minX = std::min({q.dst00.x, q.dst10.x, q.dst11.x, q.dst01.x});
+    const float maxX = std::max({q.dst00.x, q.dst10.x, q.dst11.x, q.dst01.x});
+    const float minY = std::min({q.dst00.y, q.dst10.y, q.dst11.y, q.dst01.y});
+    const float maxY = std::max({q.dst00.y, q.dst10.y, q.dst11.y, q.dst01.y});
+    const int lx = static_cast<int>(std::floor(minX)) - dstRegion.x;
+    const int hx = static_cast<int>(std::ceil(maxX)) - dstRegion.x;
+    const int ly = static_cast<int>(std::floor(minY)) - dstRegion.y;
+    const int hy = static_cast<int>(std::ceil(maxY)) - dstRegion.y;
+    quadBoxes[i] = {lx, ly, hx, hy};
+    bboxPerimeterSum += std::max(0, hx - lx) + std::max(0, hy - ly);
   }
+  const int meanSpan = quads.empty()
+                           ? 4
+                           : std::clamp(static_cast<int>(bboxPerimeterSum / (2.0 * quads.size())) + 1,
+                                       2, 64);
+  QuadBucketGrid grid(outW, outH, meanSpan);
+  for (size_t i = 0; i < quads.size(); ++i) {
+    const auto& b = quadBoxes[i];
+    grid.insert(static_cast<uint32_t>(i), b[0], b[1], b[2], b[3]);
+  }
+
+  // --- Gather: one destination pixel at a time, independent of every other,
+  // so `parallelFor` (core/Parallel.hpp) can hand rows to every core instead
+  // of this running single-threaded -- the whole fix for PRD D23's warp
+  // preview costing ~5.3 s/recompute on an iPad (vs ~0.9 s on an M-series
+  // Mac): the per-texel work here is the same kernel-weighted resample the
+  // old scatter loop did, it is just no longer serialised through one
+  // core. -----------------------------------------------------------------
+  // TEMPORARY (device profiling A/B, remove before landing): grain >= outH
+  // forces parallelFor's own serial fallback path (core/Parallel.hpp: "below
+  // `grain` items, parallelFor just runs the loop serially"), isolating the
+  // parallelism variable from the broad-phase/gather-rasteriser rewrite so
+  // the iPad's real per-core speedup can be measured against the identical
+  // algorithm.
+  parallelFor(static_cast<size_t>(outH), static_cast<size_t>(outH) + 1, [&](size_t iyz) {
+    const int iy = static_cast<int>(iyz);
+    const float py = static_cast<float>(dstRegion.y + iy) + 0.5f;
+    for (int ix = 0; ix < outW; ++ix) {
+      const float px = static_cast<float>(dstRegion.x + ix) + 0.5f;
+      const std::vector<uint32_t>& candidates = grid.bucketAt(ix, iy);
+      if (candidates.empty()) continue;
+
+      // Pass 1: the pixel's true owner -- the quad whose PARAMETRIC interior
+      // contains it, picking the most interior candidate on the rare overlap
+      // a self-intersecting (folded) warp produces, since "most interior" is
+      // the candidate least likely to be the sliver on the wrong side of a
+      // fold.
+      int bestIdx = -1;
+      float bestS = 0.0f, bestT = 0.0f, bestMargin = -1.0f;
+      constexpr float kStrictEps = 1e-4f;
+      for (uint32_t qi : candidates) {
+        float s = 0.0f, t = 0.0f;
+        if (!invertBilinearQuad(quads[qi], Point2{px, py}, &s, &t)) continue;
+        if (s < -kStrictEps || s > 1.0f + kStrictEps || t < -kStrictEps || t > 1.0f + kStrictEps)
+          continue;
+        const float margin = std::min({s, 1.0f - s, t, 1.0f - t});
+        if (margin > bestMargin) {
+          bestMargin = margin;
+          bestIdx = static_cast<int>(qi);
+          bestS = s;
+          bestT = t;
+        }
+      }
+
+      float coverage = 1.0f;
+      if (bestIdx < 0) {
+        // Pass 2: nobody's strict interior reached this pixel. Only relevant
+        // within half a texel of the mesh's own OUTER silhouette (the warp's
+        // boundary antialiasing this function now provides, scoped to warp
+        // the way `ops/Transform.hpp`'s hard-edged affine path is not asked
+        // to change): an interior seam between two cells is already covered
+        // by pass 1 above (their shared control points make their strict
+        // interiors meet with no gap beyond float noise), so a pixel that
+        // reaches here from an INTERIOR edge is a rounding sliver smaller
+        // than the antialiasing band and is left transparent same as before
+        // rather than guessed at.
+        float bestPixelDist = -1.0f;
+        for (uint32_t qi : candidates) {
+          const WarpQuad& q = quads[qi];
+          const bool outerU0 = q.u0 <= 0.0f, outerU1 = q.u1 >= n;
+          const bool outerV0 = q.v0 <= 0.0f, outerV1 = q.v1 >= n;
+          if (!outerU0 && !outerU1 && !outerV0 && !outerV1) continue;
+          float s = 0.0f, t = 0.0f, dsLen = 0.0f, dtLen = 0.0f;
+          if (!invertBilinearQuad(q, Point2{px, py}, &s, &t, &dsLen, &dtLen)) continue;
+          const float kRelaxedEps = 1.0f;  // parameter units; converted to pixels below
+          if (s < -kRelaxedEps || s > 1.0f + kRelaxedEps || t < -kRelaxedEps ||
+              t > 1.0f + kRelaxedEps)
+            continue;
+          // Overshoot on whichever side is actually an outer edge, in pixels.
+          float pixelDist = 1e9f;
+          if (outerU0) pixelDist = std::min(pixelDist, -s * dsLen);
+          if (outerU1) pixelDist = std::min(pixelDist, (1.0f - s) * dsLen);
+          if (outerV0) pixelDist = std::min(pixelDist, -t * dtLen);
+          if (outerV1) pixelDist = std::min(pixelDist, (1.0f - t) * dtLen);
+          if (pixelDist > bestPixelDist) {
+            bestPixelDist = pixelDist;
+            bestIdx = static_cast<int>(qi);
+            bestS = s;
+            bestT = t;
+          }
+        }
+        if (bestIdx < 0) continue;
+        // Half-pixel antialiasing ramp: full coverage a half pixel inside the
+        // true edge, zero a half pixel outside -- the standard analytic-
+        // coverage width for a hard edge sampled at the pixel centre.
+        coverage = std::clamp(bestPixelDist / 0.5f + 0.5f, 0.0f, 1.0f);
+        if (coverage <= 0.0f) continue;
+      }
+
+      const WarpQuad& q = quads[static_cast<size_t>(bestIdx)];
+      const float u = q.u0 + (q.u1 - q.u0) * clamp01(bestS);
+      const float v = q.v0 + (q.v1 - q.v0) * clamp01(bestT);
+      const float sx = (u / n) * srcW;
+      const float sy = (v / n) * srcH;
+      float texel[4];
+      sampleKernel(src, sx, sy, kernel, texel);
+      float* d = out->px.data() + (static_cast<size_t>(iy) * outW + ix) * 4u;
+      d[0] = texel[0] * coverage;
+      d[1] = texel[1] * coverage;
+      d[2] = texel[2] * coverage;
+      d[3] = texel[3] * coverage;
+    }
+  });
   return true;
 }
 
