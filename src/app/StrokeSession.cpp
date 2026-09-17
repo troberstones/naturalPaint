@@ -1913,14 +1913,39 @@ float StrokeSession::smoothPressureByDistance(float rawPressure, float distanceP
   return smoothedPressure_;
 }
 
-float StrokeSession::taperedSpacingPx() const noexcept {
+float StrokeSession::taperedSpacingPx(const StrokeSample& sample) const noexcept {
+  // This sample's own Size multiplier, built the same way `depositPending()`
+  // builds a dab's: the sample's four hardware axes over the stroke's latched
+  // inputs, plus the stroke-position sources (fade/noise/random) at the
+  // distance travelled so far. Velocity and direction are deliberately left
+  // at the stroke's current values rather than recomputed -- a dab's own step
+  // distance does not exist until the dab is placed, and spacing is what
+  // decides where that is, so asking for it here would be circular.
+  DynamicInputs sizeInputs = hardwareInputs_;
+  sizeInputs.pressure = sample.pressure;
+  sizeInputs.tilt = sample.tilt;
+  sizeInputs.azimuth = sample.azimuth;
+  sizeInputs.barrel = sample.barrel;
+  sizeInputs.fade = dynamicFade(distanceTravelled_);
+  sizeInputs.noise = dynamicNoiseAt(seed_, distanceTravelled_);
+  sizeInputs.random = dynamicRandomDraw(seed_, static_cast<uint32_t>(dabs_));
+  sizeInputs.direction = lastDirection_;
+  sizeInputs.initialDirection = initialDirection_;
+  const float sizeMul = varianceScale(sizeVariance_, sizeInputs, seed_,
+                                      static_cast<uint32_t>(dabs_), VarianceSite::Size);
+
   // Entry only. Spacing has to be chosen as dabs are EMITTED, and at that
   // moment the exit taper's own multiplier is unknowable -- every point is
   // still within a taper length of the tip. The exit taper closes that gap
   // where it can: `depositPending()` subdivides the held-back tail at
   // deposit time, when the remaining distance is finally known.
   const float taperMul = std::max(taperMultiplier(distanceTravelled_, taperIn_), 0.05f);
-  return tip_.spacingPx() * taperMul;
+  // Floored on the same principle as the taper multiplier above: a Size
+  // dynamic that drives the radius to zero must not drive the spacing to
+  // zero as well, or a stroke would emit dabs without bound over any
+  // distance at all. `StrokePath::emitAlongSegment()` carries a 0.1 px
+  // backstop of its own; this one keeps the ratio sane before it gets there.
+  return tip_.spacingPx() * taperMul * std::max(sizeMul, 0.05f);
 }
 
 bool StrokeSession::exitTaperRepaintPending() const noexcept {
@@ -2532,7 +2557,7 @@ const std::vector<TileCoord>& StrokeSession::addSample(const StrokeSample& sampl
   stabiliser_.addSample(sample, smoothed);
   nib_ = smoothed;
   haveNib_ = true;
-  path_.addPoint(smoothed, taperedSpacingPx(), pending_);
+  path_.addPoint(smoothed, taperedSpacingPx(smoothed), pending_);
   depositPending();
 
   // Live feedback, header §3: the revision is what invalidates
@@ -2548,7 +2573,7 @@ const std::vector<TileCoord>& StrokeSession::tick(uint64_t nowNs) {
   StrokeSample smoothed;
   if (!stabiliser_.tick(nowNs, smoothed)) return frameTiles_;
   nib_ = smoothed;
-  path_.addPoint(smoothed, taperedSpacingPx(), pending_);
+  path_.addPoint(smoothed, taperedSpacingPx(smoothed), pending_);
   depositPending();
   if (!frameTiles_.empty()) ++doc_->revision;
   return frameTiles_;
@@ -2584,7 +2609,7 @@ const std::vector<TileCoord>& StrokeSession::end() {
     std::vector<StrokeSample> catchUpSteps;
     if (stabiliser_.forceCatchUp(catchUpSteps)) {
       for (const StrokeSample& step : catchUpSteps)
-        path_.addPoint(step, taperedSpacingPx(), pending_);
+        path_.addPoint(step, taperedSpacingPx(step), pending_);
     }
   }
 

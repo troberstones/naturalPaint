@@ -57,12 +57,14 @@ AtelierToolGrid atelierToolGrid(float availW, float availH) noexcept {
 }
 
 AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip,
-                           float menuBarReservedW) {
-  return atelierLayout(x, y, w, h, showTabStrip, kDefaultDockExtents, menuBarReservedW);
+                           float menuBarReservedW, bool tabStripOwnRow) {
+  return atelierLayout(x, y, w, h, showTabStrip, kDefaultDockExtents, menuBarReservedW,
+                       tabStripOwnRow);
 }
 
 AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip,
-                           const AtelierDockExtents& docks, float menuBarReservedW) {
+                           const AtelierDockExtents& docks, float menuBarReservedW,
+                           bool tabStripOwnRow) {
   AtelierBands b;
 
   const auto addRule = [&b](AtelierRect r) {
@@ -72,8 +74,13 @@ AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip
 
   float cy = y;
 
-  b.titleBar = AtelierRect{x, cy, w, kTitleBarH};
-  cy += kTitleBarH;
+  // The title row grows only when the tabs move out of it into their own
+  // row: the content left behind is then the whole reason for the extra
+  // height (see `kTallMenuRowH`). Every other configuration keeps the 36 px
+  // `app/selftest/AtelierChrome.cpp` has always asserted.
+  const float titleRowH = tabStripOwnRow && showTabStrip ? kTallMenuRowH : kTitleBarH;
+  b.titleBar = AtelierRect{x, cy, w, titleRowH};
+  cy += titleRowH;
   addRule(hRule(x, w, cy));
 
   // The document tabs live INSIDE the row just reserved, not below it -- see
@@ -83,7 +90,17 @@ AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip
   // window too narrow to hold both end reservations; clamped at zero rather
   // than handed to a caller as a rect with negative width, matching this
   // file's own "undersized windows" rule for every other band.
-  if (showTabStrip) {
+  if (showTabStrip && tabStripOwnRow) {
+    // A band of its own, below the title row and full width: with no
+    // wordmark or Undo/Redo cluster sharing it there is nothing to reserve
+    // either end for, so `menuBarReservedW`, `kTitleWordmarkW` and
+    // `kTitleControlsW` all stop applying -- the tabs (and the `+` and split
+    // icons at the right edge) get the whole width. It costs the canvas
+    // `kTabRowH` plus a rule, which is the trade this mode exists to make.
+    b.tabStrip = AtelierRect{x, cy, w, kTitleBarH};
+    cy += kTitleBarH;
+    addRule(hRule(x, w, cy));
+  } else if (showTabStrip) {
     const float leftReserve = kTitleWordmarkW + std::max(0.0f, menuBarReservedW);
     const float tabsW = std::max(0.0f, w - leftReserve - kTitleControlsW);
     b.tabStrip = AtelierRect{x + leftReserve, b.titleBar.y, tabsW, kTitleBarH};

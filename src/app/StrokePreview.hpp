@@ -278,11 +278,40 @@ struct StrokePreviewKey {
 StrokePreviewKey strokePreviewKeyFor(const BrushState& brush, const MixboxLut& lut);
 bool strokePreviewKeysEqual(const StrokePreviewKey& a, const StrokePreviewKey& b) noexcept;
 
+// A reference diameter the cache canonicalises SIZE to before building the
+// key below -- see `StrokePreviewCache`'s own comment for why. Arbitrary: the
+// only requirement is that it stay fixed, since it never reaches the raster
+// itself, only the "did anything but size change" comparison.
+inline constexpr float kStrokePreviewReferenceDiameterPx = 48.0f;
+
+// How long a live SIZE drag is given to settle before the cache pays for one
+// more accurate rasterisation. 150 ms is comfortably longer than a slider's
+// own per-frame tick at even a 120 Hz refresh, so a moving drag never reaches
+// it, and short enough that letting go of the slider reads as instant.
+inline constexpr uint64_t kStrokePreviewSizeSettleNs = 150'000'000ull;
+
 // Cache one rasterised strip against its key. Same shape and same contract as
 // `app/DabPreview`'s `DabPreviewCache` -- `generation()` is what the GPU side
 // keys its upload on, so a texture is re-uploaded exactly when the pixels
 // moved and an unchanged frame costs one integer comparison rather than a
 // memcmp of the image.
+//
+// **SIZE is deliberately not part of what forces an immediate re-rasterise.**
+// `rasteriseStrokePreview()`'s own §4 already normalises a brush's radius
+// against the strip's fixed dimensions (`strokePreviewReach()` /
+// `strokePreviewScale()`) precisely so the mark stays comparable across
+// sizes -- the pattern a bigger or smaller brush makes (spacing, scatter,
+// dab cadence) does not change with SIZE alone, only its scale does. So a
+// live SIZE drag is the one interaction this preview can answer without
+// re-running the stroke engine: the key compares the brush with its diameter
+// pinned to `kStrokePreviewReferenceDiameterPx`, which makes a SIZE-only
+// change a HIT rather than the guaranteed miss it used to be (every drag
+// frame moves `model.tip.diameterPx`, which was part of the key). The image
+// on screen is one drag-tick stale for at most `kStrokePreviewSizeSettleNs`,
+// at which point the size has stopped moving for that long and the cache
+// pays for exactly one rasterisation at the value the user actually settled
+// on -- the "renormalises as the size changes" behaviour, paid for once per
+// drag rather than once per frame of it.
 //
 // The counters are public for the reason that class's are: `--selftest` proves
 // the cache invalidates instead of trusting it, and a cache that silently
@@ -290,16 +319,26 @@ bool strokePreviewKeysEqual(const StrokePreviewKey& a, const StrokePreviewKey& b
 // slider does nothing", which is the complaint the preview exists to answer.
 class StrokePreviewCache {
  public:
-  const StrokePreviewImage& imageFor(const BrushState& brush, const MixboxLut& lut);
+  // `nowNs` is a monotonic clock (SDL_GetTicksNS() at the call site) --
+  // needed only to time the SIZE settle window above, and otherwise inert.
+  const StrokePreviewImage& imageFor(const BrushState& brush, const MixboxLut& lut,
+                                     uint64_t nowNs);
 
   uint64_t rasterisations() const noexcept { return rasterisations_; }
   uint64_t hits() const noexcept { return hits_; }
   uint64_t generation() const noexcept { return generation_; }
 
  private:
-  StrokePreviewKey key_{};
+  StrokePreviewKey shapeKey_{};  // canonicalised: diameterPx pinned to the reference
   bool haveKey_ = false;
   StrokePreviewImage image_;
+  // The diameter actually baked into `image_` right now, and the diameter a
+  // live drag is asking for -- compared each call to detect "still moving"
+  // (pendingDiameterPx_ changes) versus "held still long enough" (it does
+  // not, and sizeSettleDeadlineNs_ has passed).
+  float rasterisedDiameterPx_ = 0.0f;
+  float pendingDiameterPx_ = 0.0f;
+  uint64_t sizeSettleDeadlineNs_ = 0;
   uint64_t rasterisations_ = 0;
   uint64_t hits_ = 0;
   uint64_t generation_ = 0;

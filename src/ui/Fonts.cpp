@@ -94,6 +94,29 @@ ImFont* loadFirst(const GlyphFontCandidate* first, size_t count, float sizePx, s
   return nullptr;
 }
 
+// The vendored face, tried after every host path above has missed.
+//
+// **Last, not first, and that is the whole design of this change.** On a
+// desktop the entries above are real faces a user chose to install, and
+// putting a vendored one ahead of them would change what macOS and Linux have
+// always drawn -- every golden capture, and every panel measurement taken from
+// a rendered label width, for no design gain, since the vendored face is not
+// the design's Archivo either. On iOS none of them is readable at all: an app
+// sandbox cannot open /System/Library/Fonts/..., so the list above misses
+// entirely and ImGui substitutes its built-in ProggyClean BITMAP for the whole
+// interface. Appending here is therefore exactly enough -- it is reached only
+// where nothing else was, which is the platform that needed it.
+//
+// Swapping in the design's own Archivo later is a one-file change: drop it in
+// `third_party/` and repoint `NP_UI_TEXT_TTF`.
+ImFont* loadBundledUiFace(float sizePx, std::string* pathOut, std::string* tried) {
+  const std::string bundled = uiTextTtfPath();
+  if (bundled.empty()) return nullptr;
+  const GlyphFontCandidate candidate{bundled.c_str(),
+                                     "the vendored UI face (third_party/liberation, OFL 1.1)"};
+  return loadFirst(&candidate, 1, sizePx, pathOut, tried);
+}
+
 }  // namespace
 
 const UiFonts& uiFonts() { return g_fonts; }
@@ -220,6 +243,8 @@ FontLoadResult installUiFonts(float sizePx) {
   std::string textTried;
   g_fonts.text =
       loadFirst(kTextCandidates, std::size(kTextCandidates), sizePx, &result.textPath, &textTried);
+  if (g_fonts.text == nullptr)
+    g_fonts.text = loadBundledUiFace(sizePx, &result.textPath, &textTried);
   if (g_fonts.text == nullptr) {
     // An explicit SizePixels, not the two-arg default: `AddFontDefault()`
     // with no config leaves ImFontFlags_ImplicitRefSize set, which later
@@ -324,6 +349,11 @@ FontLoadResult installUiFonts(float sizePx) {
   std::string monoTried;
   g_fonts.mono =
       loadFirst(kMonoCandidates, std::size(kMonoCandidates), sizePx, &result.monoPath, &monoTried);
+  // The vendored face is proportional, so it is deliberately NOT offered here:
+  // a mono slot filled with a proportional face would silently lose the
+  // prose/numerics distinction this pair exists to make, which is worse than
+  // the documented "numerics share the text face" the empty slot already
+  // reports.
 
   result.ok = true;
   return result;

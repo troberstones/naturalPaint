@@ -273,17 +273,57 @@ bool strokePreviewKeysEqual(const StrokePreviewKey& a, const StrokePreviewKey& b
 }
 
 const StrokePreviewImage& StrokePreviewCache::imageFor(const BrushState& brush,
-                                                       const MixboxLut& lut) {
-  const StrokePreviewKey key = strokePreviewKeyFor(brush, lut);
-  if (haveKey_ && strokePreviewKeysEqual(key_, key)) {
+                                                       const MixboxLut& lut, uint64_t nowNs) {
+  // Canonicalised on SIZE alone -- see this class's own header comment. Every
+  // other field reaches the key exactly as `strokePreviewKeyFor()` always
+  // read it; only `diameterPx` is pinned, so a live SIZE drag (which touches
+  // nothing else) always compares equal to the last shape the cache saw.
+  BrushState canon = brush;
+  canon.model.tip.diameterPx = kStrokePreviewReferenceDiameterPx;
+  const StrokePreviewKey shapeKey = strokePreviewKeyFor(canon, lut);
+  const bool shapeChanged = !haveKey_ || !strokePreviewKeysEqual(shapeKey_, shapeKey);
+
+  if (shapeChanged) {
+    // A real brush-parameter change. Rasterise at the CURRENT size -- it is
+    // already being paid for, so there is nothing to gain by pinning it here
+    // too -- and reset the size-settle tracking against that fresh raster.
+    shapeKey_ = shapeKey;
+    haveKey_ = true;
+    image_ = rasteriseStrokePreview(brush, lut);
+    ++rasterisations_;
+    ++generation_;
+    rasterisedDiameterPx_ = brush.model.tip.diameterPx;
+    pendingDiameterPx_ = rasterisedDiameterPx_;
+    sizeSettleDeadlineNs_ = 0;
+    return image_;
+  }
+
+  // Shape unchanged. If SIZE also matches what is already on screen, this is
+  // an ordinary hit -- the common case once a drag has settled.
+  if (brush.model.tip.diameterPx == rasterisedDiameterPx_) {
     ++hits_;
     return image_;
   }
-  key_ = key;
-  haveKey_ = true;
+
+  // SIZE differs from the rasterised image. Either this is a new tick of a
+  // still-moving drag (extend the window) or the drag has been sitting still
+  // long enough to pay for one accurate rasterisation.
+  if (pendingDiameterPx_ != brush.model.tip.diameterPx || sizeSettleDeadlineNs_ == 0) {
+    pendingDiameterPx_ = brush.model.tip.diameterPx;
+    sizeSettleDeadlineNs_ = nowNs + kStrokePreviewSizeSettleNs;
+    ++hits_;
+    return image_;
+  }
+  if (nowNs < sizeSettleDeadlineNs_) {
+    ++hits_;
+    return image_;
+  }
+
   image_ = rasteriseStrokePreview(brush, lut);
   ++rasterisations_;
   ++generation_;
+  rasterisedDiameterPx_ = brush.model.tip.diameterPx;
+  sizeSettleDeadlineNs_ = 0;
   return image_;
 }
 

@@ -5825,18 +5825,18 @@ bool runWheelInputTest();
 // scale rather than a division blow-up.
 bool runTouchGestureTest();
 
-// item 4 continued: app/TouchGestureSession's "hold a gesture's own fixed
-// baseline across frames" half -- the piece computeTwoTouchDelta() alone
-// cannot exercise, since that function is stateless and this class is what
-// remembers a gesture's start across many frames (see its own header
-// comment for the drift argument, mirroring app/TransformSession's
-// beginDrag()/updateDrag()). Covers: a rising edge leaves `view` untouched;
-// a no-motion second frame is a true no-op; a pure-zoom gesture anchored
-// off-centre, verified by round-trip through the real ViewTransform; a
-// falling edge then a fresh rising edge re-baselines from the NEW touch
-// pair rather than drifting from the old gesture's remembered start; and
-// `lastDelta()` exposing the touch pair's own raw pan independently of
-// what `update()` wrote into `view`.
+// item 4 continued: app/TouchGestureSession's "hold a gesture across frames"
+// half, now a CHAIN OF ONE-FRAME ANCHOR SOLVES (see its own header for why
+// the fixed gesture-start baseline was replaced). Covers: a rising edge
+// leaves `view` untouched; fingers held still for 300 frames do not drift the
+// view by a pixel (the compounding since-gesture-start pan that made touch
+// feel swimmy); 200 frames of combined pinch+twist+slide keep the canvas
+// point under the fingers exactly under the fingers, round-tripped through
+// the real ViewTransform; a pure slide under a ROTATED view moves pan by
+// exactly the fingers' screen travel; both scrolling-direction signs of the
+// cursor-anchored trackpad branch; a pinch past the zoom limit clamps and
+// still keeps the anchor pinned; and a falling edge followed by a fresh
+// gesture that solves against the view it finds.
 bool runTouchGestureSessionTest();
 
 // track10/feel: PaintCopilot §3.2 (arXiv:2605.20941)'s two pressure-feel
@@ -6745,6 +6745,25 @@ bool runPointerQueueTest();
 // and the two new `user-presets.txt` keys (per brush), plus the `.abr`
 // smoothing mapping. Headless, GPU-free. See app/selftest/Stabiliser.cpp.
 bool runStabiliserTest();
+
+// app/UiPreferences -- the Preferences window's settings on disk. Covers: the
+// $NP_UI_PREFERENCES override resolving as the default path; a missing file
+// loading as a fresh install rather than an error; a full save/load round trip
+// through the real file, byte-identical on re-serialise, with no .tmp left
+// behind; the gesture stored by NAME rather than enum ordinal; hostile values
+// (absurd scale clamped, non-finite rejected, unknown gesture name ignored);
+// and an unknown key surviving a load/save cycle so an older build cannot eat a
+// newer one's settings. Headless and GPU-free.
+bool runUiPreferencesTest();
+
+// app/PointerPolicy -- the approved input truth table (which device may drive
+// which canvas interaction) and the press-time classifier that decides who
+// owns a gesture. Pins the event shapes measured on a real iPad, in
+// particular that "which=0 fingers=1" is an ordinary MOUSE click and not a
+// touch; that pen contact outranks a resting hand; that pen and mouse are
+// identical in every row; and the crop/gradient phase split. Headless and
+// GPU-free.
+bool runPointerPolicyTest();
 
 // Entry taper (`brush/EntryTaper.hpp`, `NativeBrush::taperInPx`/
 // `taperMinSize`/`taperFlow`) and the origin-dab fix it depends on -- a

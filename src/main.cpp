@@ -37,6 +37,7 @@
 #include "app/AppState.hpp"
 #include "app/FixedStep.hpp"
 #include "app/FramePacing.hpp"
+#include "app/IOSTouchTracker.hpp"
 #include "app/Keymap.hpp"
 #include "app/Latency.hpp"
 #include "app/Memory.hpp"
@@ -1213,6 +1214,152 @@ uint32_t imguiInputProcessedBound() {
     if (ev.EventId != 0) return ev.EventId;
   return GImGui->InputEventsNextEventId;
 }
+
+#if NP_PLATFORM_IOS
+// ---- the iOS pen-lift hover glitch ---------------------------------------
+//
+// **iOS replays a stale hover position into the middle of a live stroke, one
+// event before the pen comes up.** SDL's UIKit backend drives pen motion from
+// two sources: `touchesMoved:` while the pencil is in contact
+// (`UIKit_HandlePenMotion`), and a `UIHoverGestureRecognizer` while it is
+// near the glass but not touching (`UIKit_HandlePenHover`, which reads
+// `[recognizer locationInView:]`). The recognizer stops updating the moment
+// the pencil touches down, and fires once more the moment it lifts -- still
+// carrying the location it was frozen at, which is where the stroke STARTED.
+// Both sources call `UIKit_HandlePenAxes()`, so that stale point arrives as an
+// ordinary `SDL_EVENT_PEN_MOTION` (plus its axes, and the mouse motion SDL
+// synthesises from it) with nothing in the event to mark it as hover, and it
+// arrives BEFORE `SDL_EVENT_PEN_UP` -- so the queue takes it as the stroke's
+// last sample and the brush draws a straight line from the true lift point
+// all the way back to the origin, closing the stroke into a loop.
+//
+// Measured on an iPad (M5, iPadOS 26): hover's last pre-contact report was
+// (426.0, 708.5), touchdown was (424.5, 707.5), the stroke ran out to
+// (671.5, 642.0) over 105 motion events with no jump over 40 px -- and then
+// one event before the pen-up came a motion to (426.0, 708.5) again, bit for
+// bit the frozen hover point, 254 px from the previous sample. The pen-up
+// itself then inherits that same stale position, and the TRUE lift point
+// arrives only in the motion `UIKit_HandlePenRelease()` sends AFTER the up
+// (which the queue correctly ignores, the gesture being over).
+//
+// So this drops the whole hover-produced REPORT -- identified by what it IS
+// rather than by where it landed; the function below has the structural tell
+// and the measurements. Nothing is invented in its place: the stroke simply
+// ends at its last honest sample, which is the same one-sample-short tail every
+// release already has (app/PointerQueue.hpp never queues a button-up's own
+// coordinates either).
+//
+// Done here, at the SDL boundary, rather than in `PointerQueue` -- this is a
+// platform quirk of one backend, like the `SDL_EVENT_PEN_DOWN` position quirk
+// `pointerEventFromSdl()` already carries a note about, and the queue should
+// not grow a notion of "hover" it has no other use for. It must also run
+// before `ImGui_ImplSDL3_ProcessEvent()`, because the canvas reads the
+// stroke's screen position from `ImGui::GetIO().MousePos` -- letting ImGui
+// see the synthesised mouse motion would move the pointer even with the pen
+// sample dropped.
+// True for events belonging to a pen REPORT that the UIHoverGestureRecognizer
+// produced, while a stroke is in contact -- the stale-hover replay that used to
+// close a stroke back onto its own start.
+//
+// The report is identified structurally, from SDL's own two code paths, rather
+// than by how far the sample landed from anything. In `SDL_uikitpen.m` both
+// paths funnel through `UIKit_HandlePenAxes()`, and they differ in exactly two
+// values:
+//
+//   * the in-contact path (`UIKit_HandlePenAxesFromUITouch`, driven by
+//     `touchesMoved:`) hardcodes `zOffset = 0.0f` -- its own comment says
+//     "zOffset is zero here; if you're here, you're touching" -- and passes the
+//     pencil's real `[pencil force]`;
+//   * the hover path (`UIKit_HandlePenHover`) passes the recognizer's real
+//     `zOffset` and hardcodes `force = 0.0f` -- "force is zero here; if you're
+//     here, you're not touching".
+//
+// SDL emits an axis event only when a value CHANGES, so during a stroke
+// DISTANCE is pinned at 0 and produces no events at all; a DISTANCE event with
+// a non-zero value arriving mid-stroke can therefore only have come from the
+// hover recognizer. Pressure 0.0 is the same tell from the other side.
+//
+// Measured over 43 recorded device strokes (809 in-contact motion reports):
+// DISTANCE appeared mid-stroke exactly 43 times -- once per stroke -- always
+// non-zero (0.0181 to 0.0837), never zero. The predicate below flagged 48 of
+// the 809 motions, and every one of the 48 was in its stroke's last three
+// reports (43 were the final one). Nothing mid-stroke was touched.
+//
+// **This replaces a distance heuristic that was wrong twice.** That version
+// asked whether the sample had jumped "impossibly" far back to the stroke's
+// own start, which cannot work in general: the jump's size IS the stroke's
+// length, so a short enough stroke always slips under any fixed threshold (48
+// px missed every stroke shorter than 48 px; 24 px then missed strokes shorter
+// than 24). This asks what the sample IS, not where it landed, so it has no
+// per-length tuning to get wrong -- and it catches the two glitches in this
+// capture that landed 30.1 and 39.6 px out, which no "near the start" window
+// would have called near.
+//
+// **Ordering.** `UIKit_HandlePenAxes()` calls `SDL_SendPenMotion()` BEFORE
+// `SDL_SendPenAxis(PRESSURE, ...)`, so at the moment the motion is judged its
+// own pressure has not arrived yet and any "latest known pressure" still holds
+// the previous, real sample's value. Every event of one report does share a
+// single timestamp, though (they are all sent from one `timestamp` local), and
+// the whole report is already queued by the time this runs -- a UIKit callback
+// and this poll loop are both on the main thread and cannot interleave. So the
+// motion looks AHEAD, non-destructively, for its own report's axes, and once a
+// report is condemned every later event carrying its timestamp is dropped with
+// it. That last part matters beyond the pen: SDL's synthesised MOUSE_MOTION for
+// the report shares the timestamp too, and letting it through would move
+// ImGui's cursor even with the pen sample dropped.
+bool iosPenReportIsHover(uint64_t reportTs) {
+  // 32 is far more than one report's own axis events (at most six).
+  SDL_Event peeked[32];
+  const int n =
+      SDL_PeepEvents(peeked, 32, SDL_PEEKEVENT, SDL_EVENT_PEN_AXIS, SDL_EVENT_PEN_AXIS);
+  for (int i = 0; i < n; ++i) {
+    if (peeked[i].paxis.timestamp != reportTs) continue;
+    if (peeked[i].paxis.axis == SDL_PEN_AXIS_DISTANCE && peeked[i].paxis.value > 0.0f) return true;
+    if (peeked[i].paxis.axis == SDL_PEN_AXIS_PRESSURE && peeked[i].paxis.value == 0.0f) return true;
+  }
+  return false;
+}
+
+bool iosStalePenHoverGlitch(const SDL_Event& e) {
+  static bool penDown = false;
+  static bool dropping = false;
+  static uint64_t droppedTs = 0;
+
+  switch (e.type) {
+    case SDL_EVENT_PEN_DOWN:
+      penDown = true;
+      dropping = false;
+      return false;
+    case SDL_EVENT_PEN_UP:
+      penDown = false;
+      dropping = false;
+      return false;
+    case SDL_EVENT_PEN_MOTION:
+    case SDL_EVENT_PEN_AXIS:
+    case SDL_EVENT_MOUSE_MOTION: break;
+    default: return false;
+  }
+  if (!penDown) return false;  // a hover with no stroke in flight harms nothing
+
+  // The rest of a report already condemned by its motion (or by an axis that
+  // reached this first).
+  if (dropping && e.common.timestamp == droppedTs) return true;
+
+  bool isHover = false;
+  if (e.type == SDL_EVENT_PEN_MOTION) {
+    isHover = iosPenReportIsHover(e.common.timestamp);
+  } else if (e.type == SDL_EVENT_PEN_AXIS) {
+    // Should not normally be reached before its own motion, but an axis is
+    // self-describing, so judge it directly rather than assuming an order.
+    isHover = (e.paxis.axis == SDL_PEN_AXIS_DISTANCE && e.paxis.value > 0.0f) ||
+              (e.paxis.axis == SDL_PEN_AXIS_PRESSURE && e.paxis.value == 0.0f);
+  }
+  if (!isHover) return false;
+  dropping = true;
+  droppedTs = e.common.timestamp;
+  return true;
+}
+#endif  // NP_PLATFORM_IOS
 
 // SDL -> `np::PointerEvent`, one line per event type; false for events the
 // queue does not take. Every decision about them is `PointerQueue::push()`'s.
@@ -4488,6 +4635,8 @@ int main(int argc, char** argv) {
     // The stabiliser and entry taper/origin dab. Headless and GPU-free
     // (app/SelfTest.hpp's own comment on each).
     const bool stabiliserOk = !wanted("runStabiliserTest") || np::runStabiliserTest();
+    const bool uiPreferencesOk = !wanted("runUiPreferencesTest") || np::runUiPreferencesTest();
+    const bool pointerPolicyOk = !wanted("runPointerPolicyTest") || np::runPointerPolicyTest();
     const bool brushTaperOk = !wanted("runBrushTaperTest") || np::runBrushTaperTest();
     const bool pigmentBuildupOk =
         !wanted("runPigmentBuildupTest") || np::runPigmentBuildupTest();
@@ -4587,7 +4736,7 @@ int main(int argc, char** argv) {
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk && shapeToolOk &&
                     transformLayerSetOk && regionOk && tipEdgeOk && brushBlendModeOk &&
                     nativeBrushOk && strokeInputOk && pointerQueueOk && appIconOk &&
-                    stabiliserOk && brushTaperOk && pigmentBuildupOk && airbrushBuildUpOk && brushPanelsLiveOk && patternLibraryOk &&
+                    stabiliserOk && uiPreferencesOk && pointerPolicyOk && brushTaperOk && pigmentBuildupOk && airbrushBuildUpOk && brushPanelsLiveOk && patternLibraryOk &&
                     pasteCommandsOk && commandsFillOk && zoomToSelectionOk && warpMeshOk &&
                     splitViewOk && radialBlurHandlesOk && radialBlurRetargetOk && vectorTransformOk &&
                     selectDialogPreviewOk && fillStrokePreviewOk && dustScratchesOk && shadowsHighlightsOk && versionOk &&
@@ -4999,6 +5148,18 @@ int main(int argc, char** argv) {
       // be produced identically by a geometry that had dropped `y0`/`y1`, and
       // a symmetric one would look the same drawn backwards.
       st.gradientDrag.active = true;
+      // **`defining` is what "held open" now means.** The session outlives its
+      // drag (`app/GradientTool.hpp` § 3a), so "active" alone no longer says
+      // the pointer is still down -- it says a ramp is awaiting commit. This
+      // view is documented as a drag HELD OPEN, and that is `defining`: it is
+      // also what keeps the band from drawing its stop diamonds, which belong
+      // to a settled session the user can actually grab.
+      st.gradientDrag.defining = true;
+      // Without this the session belongs to document 0 and the gradient block
+      // cancels it on sight as a ramp aimed at another tab -- the demo would
+      // capture an empty canvas, and the view would assert nothing.
+      if (np::OpenDocument* gradOd = st.documents.active())
+        st.gradientDrag.doc = gradOd->id;
       st.gradientDrag.x0 = 220.0f;
       st.gradientDrag.y0 = 240.0f;
       st.gradientDrag.x1 = 620.0f;
@@ -5483,6 +5644,15 @@ int main(int argc, char** argv) {
       // pointer has wandered off the canvas mid-gesture, which drops
       // paintingThisFrame but must not stutter the stroke.
       pacing.painting = st.paintingThisFrame || st.strokeActive;
+      // A live pan/pinch/rotate is steering the frames just as a stroke is --
+      // see `app/FramePacing.hpp`'s `gesturing`. `touchGestureActive` is the
+      // two-finger session (iPad and Mac trackpad alike); on iOS a ONE-finger
+      // pan drives no session, so the raw finger count answers for it, and it
+      // comes straight from SDL_EVENT_FINGER_* with no synthesis lag.
+      pacing.gesturing = st.touchGestureActive;
+#if NP_PLATFORM_IOS
+      pacing.gesturing = pacing.gesturing || np::iosTouchTracker().count() >= 1;
+#endif
       pacing.simLive = sim != nullptr && !st.paused;
       const uint64_t pacingNowNs = SDL_GetTicksNS();
       pacing.nsSinceActivity =
@@ -5543,6 +5713,11 @@ int main(int argc, char** argv) {
     bool releasedThisFrame = false;
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
+#if NP_PLATFORM_IOS
+      // Before anything else sees it, ImGui included -- see the function's own
+      // comment for what this drops and why it cannot drop a real sample.
+      if (iosStalePenHoverGlitch(e)) continue;
+#endif
       pacingSawEvent = true;
       // Read BEFORE ImGui sees the event: this is where the event sits in
       // ImGui's own input stream (app/PointerQueue.hpp section 3).
@@ -5560,6 +5735,102 @@ int main(int argc, char** argv) {
         clickMarkerUntilNs = frameStartNs + 2'000'000'000ull;  // 2s, plenty over any real frame
       }
       if (frameTrace && e.type == SDL_EVENT_MOUSE_BUTTON_UP) releasedThisFrame = true;
+#if NP_PLATFORM_IOS
+      // See `AppState::activePointerKind`'s own comment: a finger
+      // must never draw, but the Apple Pencil still does through this exact
+      // mouse-click machinery, so the two synthesised sources have to be told
+      // apart here rather than by ignoring touch-sourced mouse input
+      // altogether.
+      //
+      // `which` alone is not enough to tell them apart. When SDL reassigns its
+      // primary touch (a second finger landing on a gesture already in flight)
+      // it emits a fresh button DOWN whose `which` does NOT read as
+      // `SDL_TOUCH_MOUSEID`, and that press latched the gesture as
+      // not-a-touch for its whole life: measured on device as a two-finger
+      // gesture running 11 straight frames at "touchFlag=0 fingers=2", ending
+      // in a 1-dab stroke the moment the fingers lifted.
+      //
+      // So the physical state decides, and `which` is only the first of three
+      // ways to reach it: a pen in contact is a pen, fingers on the glass with
+      // no pen in contact are a touch, and anything else is a real mouse.
+      // `iosPenInContact` is checked FIRST so that a hand resting on the iPad
+      // during a Pencil stroke -- fingers genuinely on the glass -- does not
+      // reclassify that stroke as a touch and kill it.
+      if ((e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP) &&
+          e.button.button == SDL_BUTTON_LEFT) {
+        // TEMPORARY (mouse-on-iPad): the identity of every left button event,
+        // as SDL actually labels it. -1 is SDL_TOUCH_MOUSEID, -2 is
+        // SDL_PEN_MOUSEID, anything else is a real mouse/trackpad.
+        std::fprintf(stderr, "[NPDBGM] %s which=%d fingers=%d penInContact=%d\n",
+                     e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? "BTN_DOWN" : "BTN_UP  ",
+                     (int)e.button.which, np::iosTouchTracker().count(),
+                     (int)st.iosPenInContact);
+      }
+      if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT) {
+        // iPadOS reports a MOUSE CLICK as a touch as well: measured on device,
+        // every one of eleven real mouse presses arrived as
+        // "BTN_DOWN which=0 fingers=1", the finger appearing with the click and
+        // vanishing with its release. So the finger count alone cannot say what
+        // pressed; `which` can, and does -- SDL labels touch
+        // `SDL_TOUCH_MOUSEID` and the pencil `SDL_PEN_MOUSEID`, and in the same
+        // capture the one genuine finger press was the only `which=-1`.
+        //
+        // The count is therefore consulted only for the case it was added for:
+        // SDL's primary-touch REASSIGNMENT press, which is not labelled touch
+        // but happens with two fingers already on the glass. One finger's worth
+        // of contact never overrules `which` any more -- that is exactly what
+        // made a mouse unable to paint, since its own click counted as that
+        // finger.
+        //
+        // The classification itself lives in `app/PointerPolicy.hpp` so it can
+        // be exercised by `--selftest` without a device, and so the truth table
+        // that consumes it sits beside it. This is the ONE place a gesture's
+        // owner is decided.
+        static_assert(np::kTouchMouseId == SDL_TOUCH_MOUSEID,
+                      "PointerPolicy mirrors SDL's sentinel ids; they have drifted");
+        static_assert(np::kPenMouseId == SDL_PEN_MOUSEID,
+                      "PointerPolicy mirrors SDL's sentinel ids; they have drifted");
+        st.activePointerKind = np::resolvePointerKind(
+            e.button.which, np::iosTouchTracker().count(), st.iosPenInContact);
+      }
+      // NOT cleared on SDL_EVENT_MOUSE_BUTTON_UP: the release reaches ImGui a
+      // frame later than it reaches this loop, and clearing here opened a
+      // one-frame window in which a finger read as a pen. The clear now lives
+      // next to `ImGui::NewFrame()` below, gated on ImGui's own button state.
+      // Pen contact, straight off the hardware events -- see
+      // `AppState::iosPenInContact`'s comment for why the flag above cannot
+      // stand in for it.
+      if (e.type == SDL_EVENT_PEN_DOWN)
+        st.iosPenInContact = true;
+      else if (e.type == SDL_EVENT_PEN_UP)
+        st.iosPenInContact = false;
+      // Raw finger tracking (app/IOSTouchTracker.hpp) -- the two-finger
+      // pinch/pan and two-finger-tap-undo path, fed independently of the
+      // SDL_TOUCH_MOUSEID synthesis above (see that file's own header
+      // comment for why a finger reaches this app twice).
+      switch (e.type) {
+        case SDL_EVENT_FINGER_DOWN:
+          np::iosTouchTracker().down(e.tfinger.fingerID, e.tfinger.x, e.tfinger.y, e.tfinger.timestamp);
+          break;
+        case SDL_EVENT_FINGER_MOTION:
+          np::iosTouchTracker().motion(e.tfinger.fingerID, e.tfinger.x, e.tfinger.y);
+          break;
+        case SDL_EVENT_FINGER_UP:
+        case SDL_EVENT_FINGER_CANCELED:
+          np::iosTouchTracker().up(e.tfinger.fingerID, e.tfinger.timestamp);
+          break;
+        default:
+          break;
+      }
+      // A quick, still two-finger touch is Undo (docs/ios-spike-plan.md's
+      // follow-up: "2 finger tap for undo") -- `enqueueMenuAction()` is the
+      // same queue the native menu bridge and `--mode-test`'s own harness
+      // use, so this needs no direct reach into `performMenuAction()` (which
+      // wants `canvasW`/`canvasH`, not in scope here) or any new plumbing at
+      // all.
+      if (np::iosTouchTracker().consumeTwoFingerTapUndo())
+        np::enqueueMenuAction(np::MenuAction::Undo, 0);
+#endif
 
       // `requestQuit`, not `quit` — a user asking to leave is a request that
       // has to be answered against the open documents first (app/QuitSequence).
@@ -6165,6 +6436,74 @@ int main(int argc, char** argv) {
     // presses `ImGui::IsMouseDown()` now reflects, and so which gestures' samples
     // the canvas block may be offered (app/PointerQueue.hpp section 3).
     st.pointerQueue.beginFrame(imguiInputProcessedBound());
+
+#if NP_PLATFORM_IOS
+    // The touch flag is cleared HERE, once ImGui has actually seen the release,
+    // rather than at SDL-poll time on `SDL_EVENT_MOUSE_BUTTON_UP`.
+    //
+    // Clearing it at poll time raced ImGui's input trickling
+    // (`io.ConfigInputTrickleEventQueue`, which deliberately defers a release
+    // to a later `NewFrame()`): for one frame after every touch gesture ended,
+    // `IsMouseDown(Left)` still read TRUE while the flag already read FALSE --
+    // a frame that is indistinguishable from a pencil press, and the canvas
+    // duly began a stroke and deposited exactly one dab. Measured on device:
+    // "f=3302 imguiDown=1 touchFlag=1 fingers=1", then
+    // "f=3303 imguiDown=1 touchFlag=0 fingers=0 down=1" followed immediately by
+    // a 1-dab stroke -- the stray dab from one- AND two-finger gestures alike,
+    // which is why both reports were one bug.
+    //
+    // Clearing it against ImGui's own button state makes the flag mean exactly
+    // what its comment in AppState.hpp always claimed: the gesture ImGui is
+    // tracking RIGHT NOW was synthesised from a finger. There is no window left
+    // between the two, because they are now read from the same frame.
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      st.activePointerKind.reset();
+      // Cleared with the gesture that earned it, at the same late moment and
+      // against the same button state -- an armed row that outlived its finger
+      // would hand the NEXT touch a drag it never held for.
+      st.layerRowDragArmed = false;
+    }
+    // ...and then the STICKY cross-check, in that order: the clear above is
+    // the only thing that ever lowers this flag, and it fires only once ImGui
+    // agrees the button is up.
+    //
+    // A press-time classification alone cannot carry this. Measured on device,
+    // a whole two-finger gesture ran with the flag reading false --
+    // "f=1915..1920 touchFlag=0 fingers=2" -- because SDL's primary-touch
+    // reassignment press is not labelled `SDL_TOUCH_MOUSEID` and whatever the
+    // finger count happened to be at that instant did not save it. Asserting
+    // the fact on EVERY frame instead of once means the verdict does not
+    // depend on catching a particular event: any frame with fingers on the
+    // glass and no pen in contact condemns the gesture, and the condemnation
+    // then survives to the release edge, where the finger count has already
+    // fallen to zero while ImGui still reports the button held ("f=1921
+    // touchFlag=0 fingers=0 down=1", the one dab).
+    //
+    // Both terms come straight from SDL_EVENT_FINGER_*/PEN_* with no synthesis
+    // in between. `iosPenInContact` is what keeps a hand resting on the iPad
+    // during a Pencil stroke from condemning that stroke.
+    //
+    // A real mouse or trackpad paired to the iPad never puts a finger on the
+    // glass, so this never fires for it and it paints normally -- which a
+    // pen-contact-only gate would have taken away.
+    if (!st.pointerIsRealMouse() && np::iosTouchTracker().count() > 0 && !st.iosPenInContact)
+      st.activePointerKind = np::PointerKind::Touch;
+#endif
+
+#if NP_PLATFORM_IOS
+    // The status bar/notch/Dynamic Island band a real device's compositor
+    // draws over -- queried every frame (not just once at launch) because it
+    // changes with device rotation, and `SDL_GetWindowSafeArea()` itself is
+    // cheap (no round trip to the display server; iOS reports its own
+    // `UIWindow.safeAreaInsets`, already cached by UIKit). `ui/MacPaintUI.cpp`
+    // reads `st.iosSafeAreaTop` to keep the app's own top chrome (menu bar,
+    // title row) out from under it -- see `AppState::iosSafeAreaTop`'s own
+    // comment.
+    {
+      SDL_Rect safeArea{};
+      if (SDL_GetWindowSafeArea(window, &safeArea)) st.iosSafeAreaTop = static_cast<float>(safeArea.y);
+    }
+#endif
 
     // docs/testing-issues.md T5, reversed 2026-09-08: "painting the bare
     // canvas is a supported workflow" no longer holds -- with no document

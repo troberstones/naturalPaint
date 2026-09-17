@@ -570,6 +570,75 @@ bool runStrokeInputTest() {
           "PenPressure Size: the LATE checkpoint is well above the sabotaged constant reading");
   }
 
+  // ==========================================================================
+  // Dab SPACING follows the live, dynamically-scaled radius -- not the base.
+  //
+  //    `BrushTip::spacing` is a fraction OF A RADIUS, so the pixel spacing of
+  //    a Size-driven stroke has to shrink with the dabs or the stroke beads:
+  //    a pressure-thinned dab spaced for a full-size one leaves gaps, and a
+  //    fattened one is spaced too tightly. Two strokes of IDENTICAL geometry
+  //    and different constant pressure make that measurable without any
+  //    per-dab bookkeeping: the lighter one has smaller dabs, so it must fit
+  //    MORE of them into the same distance.
+  //
+  //    This is the check that goes red if `taperedSpacingPx()` reverts to
+  //    `tip_.spacingPx()` alone -- both strokes then emit the SAME count,
+  //    since the base radius is all either one ever reads.
+  // ==========================================================================
+  {
+    constexpr float kBaseRadius = 40.0f;
+    BrushModel model;
+    model.tip.diameterPx = kBaseRadius * 2.0f;
+    model.tip.roundness = 1.0f;
+    model.scatter.count = 1;
+    model.shape.enabled = true;
+    model.shape.size.control = VarianceControl::PenPressure;
+
+    BrushTip tip;
+    tip.radius = kBaseRadius;
+    tip.hardness = 1.0f;
+    tip.flow = 1.0f;
+    tip.opacity = 1.0f;
+    tip.linearRgb = {0.5f, 0.3f, 0.2f};
+    tip.spacing = 0.25f;  // -> 10 px at full size, 2.5 px at quarter pressure
+
+    DynamicInputs inputs;
+    inputs.hasPressure = true;
+    inputs.pressure = 1.0f;
+
+    // One straight 400 px stroke at a constant pressure, returning its dabs.
+    const auto strokeAt = [&](float pressure) -> size_t {
+      OpenDocument od = makeBlankOpenDocument(512, 512, WorkingSpace{}, "spacing-follows-size");
+      recordLayerEdit(od, addLayer(od.document, od.document.layers.size(), makePigmentLayer("p")));
+      StrokeSession s;
+      std::string err;
+      if (!s.begin(od, 1, tip, Tool::Brush, &err, &model, inputs)) return 0;
+      for (int i = 0; i <= 4; ++i) {
+        const float x = 60.0f + 100.0f * static_cast<float>(i);
+        s.addSample(StrokeSample{Vec2{x, 250.0f}, pressure, 0.0f, 0.0f, 0.5f});
+      }
+      s.end();
+      return s.dabCount();
+    };
+
+    const size_t heavy = strokeAt(1.0f);
+    const size_t light = strokeAt(0.25f);
+    std::printf("  [measured] same 400 px path, PenPressure Size: pressure 1.00 -> %zu dabs, "
+                "pressure 0.25 -> %zu dabs (a base-radius spacing would give the same count "
+                "twice)\n",
+                heavy, light);
+
+    check(heavy > 0 && light > 0, "setup: both constant-pressure strokes emitted dabs");
+    check(light > heavy,
+          "spacing follows the live dab size: the lighter, thinner stroke packs MORE dabs into "
+          "the same distance");
+    // Quarter pressure is a quarter radius, so a quarter of the spacing --
+    // bracketed loosely rather than asserted exactly, because the origin dab
+    // and the end flush each contribute a dab the ratio does not predict.
+    check(light > heavy * 2,
+          "...and by a margin that only a genuinely size-proportional spacing can produce");
+  }
+
   std::printf("[selftest] stroke input %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

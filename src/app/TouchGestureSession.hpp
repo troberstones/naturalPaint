@@ -9,81 +9,87 @@
 
 namespace np {
 
-// app/TouchGestureSession -- app/TouchGesture.hpp's pure delta math, held
-// across a whole two-finger gesture the "absolute from gesture-start, not
-// incremental" way that header commits to (see its own comment for why:
-// the same drift argument as app/TransformSession's beginDrag()/
-// updateDrag()). computeTwoTouchDelta() alone is stateless -- it needs
-// SOMETHING to remember the touch pair's own starting positions, and the
-// view/pivot geometry those started against, across many frames of one
-// continuous gesture. This is that something.
+// app/TouchGestureSession -- a two-finger gesture held across frames as a
+// CHAIN OF ONE-FRAME ANCHOR SOLVES: given last frame's two touch points and
+// this frame's, find the canvas point that was under last frame's midpoint and
+// solve zoom, rotation and pan together so that same canvas point lands under
+// this frame's midpoint. Scale comes from the ratio of the fingers'
+// separation, rotation from the change in the angle between them, and
+// translation is not a separate term at all -- it falls out of the same solve.
 //
-// `update()` is meant to be called once per frame, unconditionally, with
-// whatever ui/MacTrackpadTouch.hpp's poll function reports RIGHT NOW: a
-// rising edge (was not tracking two touches, now is) snapshots gesture
-// state; a falling edge (was tracking, now is not -- lifted fingers, or a
-// third touch joined) clears it; two touches present on consecutive frames
-// recompute the WHOLE view from that one fixed snapshot every time, never
-// accumulating this frame's output onto last frame's.
+// **Why this replaces the previous "absolute from a gesture-start baseline"
+// model.** That model was sound for zoom and rotate, but the touch pair's own
+// translation was not part of its solve: `TwoTouchDelta::panDx/panDy` measure
+// the midpoint's motion SINCE THE GESTURE BEGAN, and the caller added that
+// absolute quantity to `view.panX/panY` with `+=` on every frame. So the whole
+// accumulated translation was re-applied once per frame for as long as the
+// gesture lasted -- the view kept sliding while the fingers were held still,
+// which is the "swimmy, uncontrollable" feel reported on iOS. Folding pan into
+// the anchor solve removes the separate additive step that could compound, and
+// states the intended behaviour directly: whatever was under your fingers a
+// moment ago is still under your fingers now.
 //
-// Deliberately NOT the touch-pan (`TwoTouchDelta::panDx`/`panDy`) -> screen
-// pixels conversion, and deliberately NOT the system natural/traditional
-// scrolling preference -- both are ui/MacTrackpadTouch.hpp's own concern
-// (the physical trackpad's `deviceSize` and `NSUserDefaults`, neither of
-// which this pure class has or needs), applied by the caller to `panDx`/
-// `panDy` before folding the result into whatever this returns. What this
-// class owns is only the zoom+rotate anchoring at the cursor -- the part
-// app/ZoomAndSize.hpp's `panForAnchoredZoomRotate()` already does, driven
-// from a fixed baseline instead of last frame's view.
+// Frame-to-frame rather than from a fixed baseline is also what makes each
+// frame start from where the view ACTUALLY is, so a clamp (zoom hitting its
+// limit) or any other external change to the view is absorbed rather than
+// fought by a stale baseline.
+enum class TouchAnchor {
+  // A touchscreen: the fingers are literally over the pixels they are
+  // touching, so the midpoint between them IS a screen position and the
+  // anchor is the real one the reference behaviour describes.
+  TouchMidpoint,
+  // A trackpad: an INDIRECT device whose surface has no correspondence to any
+  // screen location (`app/TouchGesture.hpp`'s own header makes this argument
+  // at length), so there is no honest absolute midpoint. Only the RELATIVE
+  // motion is physical; the cursor is the one screen-meaningful reference
+  // point available, so the anchor sits there and is carried by the
+  // midpoint's frame-to-frame travel.
+  Cursor,
+};
+
 class TouchGestureSession {
  public:
-  // `touches`: the current two-touch pair (matched by identity, already
-  // Y-flipped to this app's y-down convention -- see
-  // app/TouchGesture.hpp's `TrackpadTouchPoint` comment), or `std::nullopt`
-  // when fewer or more than two touches are down right now.
+  // `touchesScreen`: the current two-touch pair, ALREADY converted by the
+  // caller from its device's own normalised units into screen coordinates --
+  // the same units as `ImGui::GetIO().MousePos`, which is what makes the
+  // anchor solve's arithmetic dimensionally honest. On a touchscreen that
+  // conversion is exact (finger coordinates are normalised to the window); on
+  // a trackpad it is `normalizedPosition * deviceSize`, whose absolute origin
+  // is meaningless but whose DIFFERENCES are real screen-space travel -- which
+  // is all `TouchAnchor::Cursor` uses them for. `std::nullopt` when fewer or
+  // more than two touches are down right now.
   //
-  // `view`: read for its CURRENT zoom/rotation/pan on a rising edge (to
-  // snapshot the gesture-start baseline) and WRITTEN with the new zoom/
-  // rotation/pan on every frame a gesture is active; untouched when no
-  // gesture is active.
+  // `view`: read for its CURRENT zoom/rotation/pan every frame (this model has
+  // no gesture-start baseline to read instead) and WRITTEN with the solved
+  // zoom/rotation/pan; untouched when no gesture is active.
   //
-  // `canvasCenter`/`paintOrigin`/`avail`/`tex`/`cursorScreen`: this frame's
-  // own canvas layout and anchor point, exactly what
-  // app/ZoomAndSize.hpp's `panForAnchoredZoomRotate()` itself takes --
-  // ui/MacPaintUI.cpp already computes all of these for its own
-  // `ViewTransform` at the top of its canvas block, so this reads them
-  // rather than re-deriving a second copy. Layout is assumed stable across
-  // one gesture's lifetime (a resize mid-gesture is not defended against),
-  // the same posture the existing scrubby-zoom drag already takes with
-  // `io.MouseClickedPos[0]`.
+  // `canvasCenter`/`paintOrigin`/`avail`/`tex`/`cursorScreen`: this frame's own
+  // canvas layout and cursor, exactly what `app/ZoomAndSize.hpp`'s
+  // `panForAnchoredZoomRotateTo()` takes -- `ui/MacPaintUI.cpp` already
+  // computes all of these for its own `ViewTransform`, so this reads them
+  // rather than re-deriving a second copy.
   //
-  // Writes the anchored zoom+rotate result into `view` and returns void --
-  // the touch pair's own translation (`lastDelta().panDx`/`panDy`) is NOT
-  // folded in here; the caller reads it via `lastDelta()`, converts it to
-  // screen points (trackpad `deviceSize`) and the natural/traditional
-  // scrolling preference, and adds it to `view.panX`/`view.panY` itself --
-  // this class has no way to do that conversion (see the class comment
-  // above). `view` is left untouched on any frame no gesture is active
-  // (fewer/more than two touches).
-  void update(std::optional<std::pair<TrackpadTouchPoint, TrackpadTouchPoint>> touches,
+  // `panSign`: +1 to follow the fingers, -1 to oppose them (macOS's
+  // traditional-scrolling preference). A touchscreen always follows the
+  // finger, so it always passes +1 -- there is no such preference for a
+  // direct device. Kept a plain runtime argument rather than a compile-time
+  // branch so `--selftest` exercises the shape that actually ships.
+  void update(std::optional<std::pair<TrackpadTouchPoint, TrackpadTouchPoint>> touchesScreen,
               CanvasView& view, Vec2 canvasCenter, Vec2 paintOrigin, Vec2 avail, Vec2 tex,
-              Vec2 cursorScreen) noexcept;
+              Vec2 cursorScreen, TouchAnchor anchor = TouchAnchor::Cursor,
+              float panSign = 1.0f) noexcept;
 
-  // The touch pair's raw `panDx`/`panDy` for THIS frame, already computed
-  // against the gesture's own fixed starting positions -- exposed so the
-  // caller can convert it to screen points (trackpad `deviceSize`) and
-  // apply the scrolling-direction preference, then add it to what
-  // `update()` already wrote. {0, 0} whenever `update()` itself returned
-  // {0, 0} for the same reason (no gesture active this frame).
-  TwoTouchDelta lastDelta() const noexcept { return lastDelta_; }
+  // True while a two-touch gesture is being tracked -- the rising edge frame
+  // included, which applies no transform (there is no previous frame to solve
+  // against yet).
+  bool active() const noexcept { return active_; }
 
  private:
   bool active_ = false;
-  TrackpadTouchPoint startA_{};
-  TrackpadTouchPoint startB_{};
-  CanvasView viewAtStart_{};
-  Vec2 pivotScreenAtStart_{};
-  TwoTouchDelta lastDelta_{};
+  // Last frame's touch pair, in screen units. The whole of this class's
+  // memory: there is no gesture-start snapshot, by design.
+  TrackpadTouchPoint prevA_{};
+  TrackpadTouchPoint prevB_{};
 };
 
 }  // namespace np

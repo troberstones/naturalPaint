@@ -143,6 +143,7 @@ enum class ResourceKind {
   KeymapDir,
   LucideTtf,
   LucideCodepointsJson,
+  UiTextTtf,
 };
 
 // A short label used only in the missing-resource report -- "shaders/",
@@ -232,5 +233,15 @@ std::string mixboxLutPath();
 std::string keymapDir();
 std::string lucideTtfPath();
 std::string lucideCodepointsJsonPath();
+// The bundled UI text face. **Not a fallback of last resort -- the first
+// candidate `ui/Fonts.cpp` tries.** Every other entry in that file's
+// candidate lists is an absolute path into a host's own font directory,
+// which is fine on a desktop and useless inside an iOS sandbox, where none
+// of them is readable and ImGui silently substitutes its built-in
+// ProggyClean bitmap for ALL UI text. Vendoring one real vector face and
+// resolving it exactly the way `lucideTtfPath()` already resolves the tool
+// icons closes that hole on iOS and gives every other platform a face that
+// does not depend on what happens to be installed.
+std::string uiTextTtfPath();
 
 }  // namespace np

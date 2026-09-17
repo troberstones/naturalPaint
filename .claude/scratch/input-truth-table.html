@@ -1,0 +1,540 @@
+<title>Pointer Truth Table</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  :root {
+    --paper: #eef0ea;
+    --paper-raised: #ffffff;
+    --ink: #202521;
+    --ink-soft: #59614f;
+    --ink-faint: #85897c;
+    --accent: #2c5f7f;
+    --accent-soft: #dbe6ea;
+    --allow: #3f7d5c;
+    --allow-bg: #e2ede5;
+    --deny: #a3402f;
+    --deny-bg: #f3e4e0;
+    --longpress: #a3791f;
+    --longpress-bg: #f2ead6;
+    --line: #d3d6c9;
+    --line-strong: #b7bbab;
+    --shadow: 0 1px 2px rgba(32,37,33,0.06), 0 6px 20px rgba(32,37,33,0.05);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #1a1d18;
+      --paper-raised: #22261f;
+      --ink: #e9ebe1;
+      --ink-soft: #b1b6a3;
+      --ink-faint: #7d8272;
+      --accent: #85b7d4;
+      --accent-soft: #26333a;
+      --allow: #7bc79c;
+      --allow-bg: #223226;
+      --deny: #e39281;
+      --deny-bg: #3a2622;
+      --longpress: #d9b565;
+      --longpress-bg: #382f1c;
+      --line: #34382c;
+      --line-strong: #454a3b;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 6px 24px rgba(0,0,0,0.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #1a1d18;
+    --paper-raised: #22261f;
+    --ink: #e9ebe1;
+    --ink-soft: #b1b6a3;
+    --ink-faint: #7d8272;
+    --accent: #85b7d4;
+    --accent-soft: #26333a;
+    --allow: #7bc79c;
+    --allow-bg: #223226;
+    --deny: #e39281;
+    --deny-bg: #3a2622;
+    --longpress: #d9b565;
+    --longpress-bg: #382f1c;
+    --line: #34382c;
+    --line-strong: #454a3b;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 6px 24px rgba(0,0,0,0.35);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'Public Sans', system-ui, sans-serif;
+    padding: 0 20px;
+    padding-block: 40px 64px;
+  }
+  .sheet {
+    max-width: 980px;
+    margin: 0 auto;
+  }
+
+  /* ---- masthead ---- */
+  .masthead {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 16px;
+    border-bottom: 2px solid var(--ink);
+    padding-bottom: 18px;
+    margin-bottom: 6px;
+  }
+  h1 {
+    font-family: 'Fraunces', Georgia, serif;
+    font-weight: 600;
+    font-size: clamp(1.9rem, 4.2vw, 2.6rem);
+    line-height: 1.05;
+    margin: 0;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  .subtitle {
+    color: var(--ink-soft);
+    font-size: 1.02rem;
+    max-width: 46ch;
+    margin-top: 8px;
+  }
+  .meta {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.72rem;
+    color: var(--ink-faint);
+    text-align: right;
+    line-height: 1.7;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+  .meta b { color: var(--ink-soft); font-weight: 600; }
+
+  section { margin-top: 40px; }
+  h2 {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.76rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    margin: 0 0 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h2::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line-strong);
+  }
+
+  /* ---- legend ---- */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 22px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 0.87rem;
+    color: var(--ink-soft);
+  }
+  .chip {
+    width: 22px; height: 22px;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    font-weight: 700;
+    flex: none;
+  }
+  .chip.allow { background: var(--allow-bg); color: var(--allow); }
+  .chip.deny { background: var(--deny-bg); color: var(--deny); }
+  .chip.longpress { background: var(--longpress-bg); color: var(--longpress); }
+
+  /* ---- table ---- */
+  .table-wrap {
+    overflow-x: auto;
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    background: var(--paper-raised);
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 640px;
+  }
+  thead th {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-faint);
+    text-align: center;
+    padding: 14px 10px 12px;
+    border-bottom: 1px solid var(--line-strong);
+  }
+  thead th:first-child { text-align: left; padding-left: 20px; }
+  tbody th {
+    text-align: left;
+    font-weight: 600;
+    font-size: 0.92rem;
+    padding: 12px 10px 12px 20px;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+    vertical-align: top;
+  }
+  tbody th .sub {
+    display: block;
+    font-weight: 400;
+    font-size: 0.76rem;
+    color: var(--ink-faint);
+    margin-top: 2px;
+    white-space: normal;
+    max-width: 22ch;
+  }
+  tbody td {
+    text-align: center;
+    padding: 10px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: middle;
+  }
+  tbody tr:last-child th, tbody tr:last-child td { border-bottom: none; }
+  tbody tr.group-open th {
+    padding-top: 22px;
+  }
+  tbody tr.divider td, tbody tr.divider th {
+    padding: 0;
+    height: 0;
+    border-bottom: none;
+  }
+  .group-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 5px 20px;
+    display: block;
+  }
+  .mark {
+    display: inline-flex;
+    width: 26px; height: 26px;
+    border-radius: 7px;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.85rem;
+    font-weight: 700;
+  }
+  .mark.allow { background: var(--allow-bg); color: var(--allow); }
+  .mark.deny { background: var(--deny-bg); color: var(--deny); }
+  .mark.longpress { background: var(--longpress-bg); color: var(--longpress); }
+  td .note {
+    display: block;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.62rem;
+    color: var(--ink-faint);
+    margin-top: 4px;
+    letter-spacing: 0.01em;
+  }
+
+  /* ---- reserved nav callout ---- */
+  .callout {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 10px 10px 0;
+    padding: 20px 24px;
+  }
+  .callout p.lead {
+    margin: 0 0 14px;
+    font-size: 0.92rem;
+    color: var(--ink-soft);
+    max-width: 62ch;
+  }
+  .nav-rules {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 10px;
+  }
+  .nav-rules li {
+    display: flex;
+    gap: 12px;
+    align-items: baseline;
+    font-size: 0.9rem;
+  }
+  .nav-rules code {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.76rem;
+    background: var(--paper-raised);
+    padding: 3px 8px;
+    border-radius: 5px;
+    color: var(--accent);
+    flex: none;
+    min-width: 15ch;
+  }
+
+  /* ---- open questions ---- */
+  .questions {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    counter-reset: q;
+    display: grid;
+    gap: 14px;
+  }
+  .questions li {
+    counter-increment: q;
+    background: var(--paper-raised);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 18px 16px 52px;
+    position: relative;
+    box-shadow: var(--shadow);
+  }
+  .questions li::before {
+    content: counter(q);
+    position: absolute;
+    left: 16px; top: 16px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--accent);
+    background: var(--accent-soft);
+    width: 24px; height: 24px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .questions .q-text { font-size: 0.94rem; font-weight: 600; }
+  .questions .q-detail { font-size: 0.86rem; color: var(--ink-soft); margin-top: 6px; line-height: 1.5; }
+  .questions .q-lean {
+    display: inline-block;
+    margin-top: 8px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--longpress);
+    background: var(--longpress-bg);
+    padding: 3px 8px;
+    border-radius: 5px;
+  }
+
+  footer {
+    margin-top: 48px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+    font-size: 0.82rem;
+    color: var(--ink-faint);
+    line-height: 1.6;
+  }
+  footer b { color: var(--ink-soft); }
+
+  @media (max-width: 620px) {
+    .masthead { flex-direction: column; align-items: flex-start; }
+    .meta { text-align: left; }
+  }
+</style>
+
+<div class="sheet">
+
+  <div class="masthead">
+    <div>
+      <h1>Pointer Truth Table</h1>
+      <div class="subtitle">What mouse, pen, and touch are each allowed to do, per tool — naturalPaint / iPad + trackpad input.</div>
+    </div>
+    <div class="meta">
+      Status: <b>Draft — pending review</b><br>
+      Devices: Mouse · Pen (Pencil) · Touch<br>
+      Rev: 2026-09-16
+    </div>
+  </div>
+
+  <section>
+    <h2>Legend</h2>
+    <div class="legend">
+      <div class="legend-item"><span class="chip allow">✓</span> operates the tool normally</div>
+      <div class="legend-item"><span class="chip longpress">⏱</span> long-press only</div>
+      <div class="legend-item"><span class="chip deny">✕</span> no effect on this tool</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>By tool</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Tool</th>
+            <th>Mouse</th>
+            <th>Pen</th>
+            <th>Touch</th>
+          </tr>
+        </thead>
+        <tbody>
+
+          <tr class="divider"><td colspan="4"><span class="group-label">Creates or edits content — touch stays out</span></td></tr>
+
+          <tr>
+            <th>Brush / paint<span class="sub">brush, eraser, airbrush, smudge</span></th>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark deny">✕</span><span class="note">long-press = sample</span></td>
+          </tr>
+          <tr>
+            <th>Selection<span class="sub">marquee, lasso, wand</span></th>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark deny">✕</span></td>
+          </tr>
+          <tr>
+            <th>Shape</th>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark deny">✕</span></td>
+          </tr>
+          <tr>
+            <th>Vector / Pen<span class="sub">placing new path points</span></th>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark deny">✕</span></td>
+          </tr>
+          <tr>
+            <th>Paint bucket</th>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark deny">✕</span></td>
+          </tr>
+          <tr>
+            <th>Gradient<span class="sub">defining the fill drag</span></th>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark deny">✕</span></td>
+          </tr>
+          <tr>
+            <th>Clone stamp<span class="sub">set anchor, paint</span></th>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark deny">✕</span></td>
+          </tr>
+          <tr>
+            <th>Crop / Frame / Slice<span class="sub">defining a new rect</span></th>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark deny">✕</span></td>
+          </tr>
+          <tr>
+            <th>Measure<span class="sub">drawing a new line</span></th>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark deny">✕</span></td>
+          </tr>
+          <tr>
+            <th>Flats fill tools</th>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark deny">✕</span></td>
+          </tr>
+
+          <tr class="divider"><td colspan="4"><span class="group-label">Moves or samples something that already exists — touch joins in</span></td></tr>
+
+          <tr>
+            <th>Move<span class="sub">dragging layer pixels</span></th>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+          </tr>
+          <tr>
+            <th>Transform<span class="sub">gizmo + warp net</span></th>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+          </tr>
+          <tr>
+            <th>On-canvas handles<span class="sub">gradient stops, crop/frame handles, radial-blur, curve gnomon</span></th>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+          </tr>
+          <tr>
+            <th>Text field<span class="sub">move / reposition a placed box</span></th>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+          </tr>
+          <tr>
+            <th>Layer panel<span class="sub">drag row to reorder</span></th>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span><span class="note">needs hold-then-drag, see Q2</span></td>
+          </tr>
+          <tr>
+            <th>Eyedropper / sample</th>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark allow">✓</span></td>
+            <td><span class="mark longpress">⏱</span><span class="note">short tap reserved, see Q3</span></td>
+          </tr>
+
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Reserved for navigation — same in every tool above</h2>
+    <div class="callout">
+      <p class="lead">These gestures never reach the active tool. They pan, zoom, or rotate the canvas regardless of what's selected, and nothing above overrides them.</p>
+      <ul class="nav-rules">
+        <li><code>touch · 2-finger</code> pan, pinch-zoom, and rotate together (the anchor-solve gesture)</li>
+        <li><code>mouse · middle-drag</code> pan</li>
+        <li><code>mouse / trackpad · wheel</code> zoom</li>
+        <li><code>touch · 1-finger</code> <b style="color:var(--deny)">nothing reserved</b> — always goes to the active tool's Touch column above, see Q1</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>Open questions — before this gets built</h2>
+    <ol class="questions">
+      <li>
+        <div class="q-text">Is one-finger touch ever navigation?</div>
+        <div class="q-detail">This table assumes no — a single finger always drives whatever the active tool's Touch column says, even if that's "no effect." Camera navigation becomes two-finger only. The alternative is a fallback rule ("pan only when the active tool has no touch action"), but that conflicts with Move/Transform/Text, where a finger must drag the object, not the camera.</div>
+        <span class="q-lean">leaning: two-finger only</span>
+      </li>
+      <li>
+        <div class="q-text">"Finger can move layers" — panel, canvas, or both?</div>
+        <div class="q-detail">The table currently gives touch both: reordering a row in the Layers panel, and dragging a layer's pixels on canvas with Move. The panel case needs its own disambiguation from list-scrolling — likely a brief press-and-hold before the drag starts, matching the standard iOS reorder gesture — since a plain one-finger drag on a scrollable list is otherwise ambiguous.</div>
+      </li>
+      <li>
+        <div class="q-text">Does long-press-to-sample work inside every tool, or only some?</div>
+        <div class="q-detail">Treated here as a global modifier — available no matter which tool is active, the way Alt-click samples color on desktop regardless of tool. Confirm, or name the tools where it shouldn't fire.</div>
+      </li>
+      <li>
+        <div class="q-text">What does a denied touch input actually do?</div>
+        <div class="q-detail">For a ✕ cell (Brush, Selection, Shape, …), should a one-finger drag be fully inert — no visual feedback at all — or should it show some cue (a cursor change, a brief tooltip) explaining why nothing happened?</div>
+      </li>
+      <li>
+        <div class="q-text">Is Pen identical to Mouse in every row?</div>
+        <div class="q-detail">Assumed yes throughout — the Pencil is treated as a precision pointer with the same rights as a mouse everywhere. Say so if any row should actually differ for Pen specifically.</div>
+      </li>
+      <li>
+        <div class="q-text">Crop / Gradient / Frame-Slice: two phases, two rules?</div>
+        <div class="q-detail">The table denies touch for *defining* a new crop rect, gradient drag, or frame — that's content-editing. But once one exists, dragging its handles falls under "On-canvas handles," where touch is allowed. Confirm that split is right, since it means these three tools behave differently depending on whether the shape already exists.</div>
+      </li>
+    </ol>
+  </section>
+
+  <footer>
+    <b>Where this sits today:</b> mouse-vs-touch identity is resolved once per gesture from SDL's own device id, with finger-count only overriding it at 2+ fingers (the real two-finger reassignment case) — a one-finger mouse click was previously misread as touch because a click also registers as a phantom finger on iPadOS. Roughly 20 of the ~25 canvas interaction handlers don't yet check device identity at all; building this table means adding that check to each one, keyed off the rows above.
+  </footer>
+
+</div>

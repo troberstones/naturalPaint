@@ -8,8 +8,10 @@ FramePacingPlan planFramePacing(const FramePacingInputs& in) {
   // Tier 1. The exemption is checked first and unconditionally: a capture run
   // must not be paced even if it happens to look idle, which is exactly what
   // a golden view looks like (a scripted demo that settles and then sits
-  // still for 90 frames). Painting is the report's own carve-out.
-  if (in.exempt || in.painting) {
+  // still for 90 frames). Painting is the report's own carve-out; a live
+  // pan/pinch/rotate gesture joins it for the reason `gesturing`'s own
+  // comment gives -- the user is steering the frames either way.
+  if (in.exempt || in.painting || in.gesturing) {
     plan.tier = FramePacingTier::Unthrottled;
     plan.periodNs = 0;
     plan.waitOnEvents = false;

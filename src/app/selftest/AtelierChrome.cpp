@@ -246,6 +246,35 @@ bool runAtelierChromeTest() {
           "and with no documents open, the tab strip sub-rect is empty rather than a "
           "permanent gap in the row");
 
+    // --- the tabs' OWN row (iOS), asserted from a desktop build ----------
+    //
+    // `tabStripOwnRow` is a parameter and not an `#if` precisely so this can
+    // run here: the shape iOS ships would otherwise be arithmetic no test
+    // ever evaluates, which is the same "a branch nobody builds asserts
+    // nothing" hole this suite exists to close. Every claim below is the
+    // INVERSE of one made about the merged row a few lines up.
+    const AtelierBands ownRow =
+        atelierLayout(0.0f, 0.0f, kW, kH, /*showTabStrip=*/true, /*menuBarReservedW=*/0.0f,
+                      /*tabStripOwnRow=*/true);
+    check(ownRow.tabStrip.y == ownRow.titleBar.bottom() + kRuleThickness,
+          "the tabs' own row sits BELOW the title row, past its rule, not inside it");
+    check(ownRow.tabStrip.h == kTitleBarH,
+          "...and is the ordinary kTitleBarH tall: the TABS do not change size, the row they "
+          "left does");
+    check(ownRow.titleBar.h == kTallMenuRowH && kTallMenuRowH > kTitleBarH,
+          "the MENU row is the one that grows, to kTallMenuRowH");
+    check(ownRow.tabStrip.x == ownRow.titleBar.x && ownRow.tabStrip.w == ownRow.titleBar.w,
+          "...and spans the full width, since no wordmark or controls share it");
+    check(ownRow.canvas.h ==
+              withTabs.canvas.h - kTitleBarH - kRuleThickness - (kTallMenuRowH - kTitleBarH),
+          "the canvas pays for exactly the new row plus the title row's extra height");
+    check(ownRow.ruleCount == withTabs.ruleCount + 1 &&
+              ownRow.ruleCount <= AtelierBands::kMaxRules,
+          "...and the row brings exactly one more rule, still inside kMaxRules");
+    // The merged row is untouched by the new parameter's mere existence.
+    check(withTabs.tabStrip.y == withTabs.titleBar.y,
+          "and the default (merged) layout is unchanged by the option existing");
+
     // Non-square and odd sizes, because the real window is neither: the design
     // size is the only one whose numbers are quotable and the only one a
     // hand-checked layout would ever be tried at.

@@ -150,7 +150,7 @@ enum class FramePacingTier {
   // at all; vsync is the only limit.
   Unthrottled,
   // Awake -- input, a held widget, a stroke that just ended -- but not
-  // painting. 60 fps ceiling.
+  // painting and not mid-gesture. 60 fps ceiling.
   Interactive,
   // Nothing has happened for kFramePacingIdleAfterNs. As slow as section 2
   // allows.
@@ -207,6 +207,25 @@ struct FramePacingInputs {
   // dabs where the pointer has not moved) or AppState::strokeActive (the
   // stroke as a whole, which survives the pointer leaving the canvas).
   bool painting = false;
+  // The user is driving a continuous, motion-critical gesture that is not a
+  // paint stroke: a finger panning the canvas, or a two-finger/trackpad
+  // pinch-pan-rotate.
+  //
+  // Tier 2's 60 fps ceiling was written for "awake but not painting" -- a
+  // moving cursor, a hovered widget, a menu open -- where halving the rate is
+  // invisible. A gesture is not that. The whole image is moving under the
+  // user's fingers and tracking their motion is the entire feature, so a
+  // capped rate reads exactly as "the iPad is capped at 60fps and does not
+  // feel smooth", which is how this was reported on a ProMotion panel that
+  // can do twice that. The report's carve-out is really "frames the user is
+  // steering", and a stroke was simply the only kind of steering that existed
+  // when it was written.
+  //
+  // Separate from `painting` rather than folded into it so the trace and the
+  // suite can still tell the two apart, and so nothing that keys off painting
+  // for other reasons (the simulation, the stroke machinery) is told a pinch
+  // is a brush stroke.
+  bool gesturing = false;
   // A PaintSim exists and is not paused, so this frame will step physics and
   // section 2's ceiling applies.
   bool simLive = false;

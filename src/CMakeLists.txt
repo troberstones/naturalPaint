@@ -276,6 +276,8 @@ set(NP_SELFTEST_SOURCES
   app/selftest/StrokeInput.cpp
   app/selftest/PointerQueue.cpp
   app/selftest/Stabiliser.cpp
+  app/selftest/PointerPolicy.cpp
+  app/selftest/UiPreferences.cpp
   app/selftest/BrushTaper.cpp
   app/selftest/PigmentBuildup.cpp
   ui/BuildupPanel.cpp
@@ -388,6 +390,7 @@ add_executable(naturalPaint
   app/StrokeSession.cpp
   app/DocumentPresets.cpp
   app/TilePreview.cpp
+  app/IOSTouchTracker.cpp
   app/TouchGesture.cpp
   app/TouchGestureSession.cpp
   app/UserBrushLibrary.cpp
@@ -423,6 +426,7 @@ add_executable(naturalPaint
   brush/Stabiliser.cpp
   brush/Taper.cpp
   app/StrokePreferences.cpp
+  app/UiPreferences.cpp
   color/LutBake.cpp
   color/Shaper.cpp
   color/Space.cpp
@@ -566,6 +570,7 @@ add_executable(naturalPaint
   app/SplitView.cpp
   app/RadialBlurHandles.cpp
   ui/DustScratchesDialog.cpp
+  ui/PreferencesDialog.cpp
   ui/ShadowsHighlightsDialog.cpp
   ui/RepairDialogs.cpp
   app/Version.cpp
@@ -930,6 +935,13 @@ target_compile_definitions(naturalPaint PRIVATE
   # -- "every name you use MUST exist in codepoints.json" checked against the
   # vendored file itself at test time, not merely at authoring time.
   NP_LUCIDE_CODEPOINTS_JSON="${CMAKE_SOURCE_DIR}/third_party/lucide/codepoints.json"
+  # ui/Fonts.cpp's UI text face. Same convention again -- and the reason it is
+  # vendored at all is iOS: an app sandbox cannot read
+  # /System/Library/Fonts/..., so every hardcoded host path in that file's
+  # candidate list misses and ImGui falls back to its built-in bitmap font for
+  # the whole interface. Liberation Sans, SIL Open Font License 1.1 (the
+  # licence travels with it in third_party/liberation/LICENSE).
+  NP_UI_TEXT_TTF="${CMAKE_SOURCE_DIR}/third_party/liberation/LiberationSans-Regular.ttf"
   # app/selftest/SvgImport.cpp's two on-disk fixtures written to look like
   # real Inkscape and Illustrator exporter output (tests/svg/*.svg) -- a
   # source-tree-relative path, same convention as the four resources above,
@@ -976,7 +988,12 @@ add_custom_command(TARGET naturalPaint POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy
           "${CMAKE_SOURCE_DIR}/third_party/lucide/codepoints.json"
           "$<TARGET_FILE_DIR:naturalPaint>/third_party/lucide/codepoints.json"
-  COMMENT "naturalPaint: staging shaders/keymaps/mixbox-lut/lucide beside the built executable (core/ResourcePaths tier 2)"
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          "$<TARGET_FILE_DIR:naturalPaint>/third_party/liberation"
+  COMMAND ${CMAKE_COMMAND} -E copy
+          "${CMAKE_SOURCE_DIR}/third_party/liberation/LiberationSans-Regular.ttf"
+          "$<TARGET_FILE_DIR:naturalPaint>/third_party/liberation/LiberationSans-Regular.ttf"
+  COMMENT "naturalPaint: staging shaders/keymaps/mixbox-lut/lucide/ui-font beside the built executable (core/ResourcePaths tier 2)"
 )
 
 if(NP_USE_MIXBOX)

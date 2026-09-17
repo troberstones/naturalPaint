@@ -271,4 +271,120 @@ bool gradientDragIsUsable(float x0, float y0, float x1, float y1) {
   return dx * dx + dy * dy >= 1.0f;
 }
 
+
+// ---------------------------------------------------------------------------
+// § 3a. The session's handles (app/GradientTool.hpp)
+// ---------------------------------------------------------------------------
+
+std::vector<float> gradientEffectiveStopPositions(const GradientDrag& session,
+                                                  const GradientStops& stops) {
+  std::vector<float> positions;
+  positions.reserve(stops.colorStops.size());
+  for (const ColorStop& stop : stops.colorStops) positions.push_back(stop.position);
+  // The override is only honoured when it still describes THIS ramp. Swapping
+  // presets mid-session changes the stop count, and pasting old positions onto
+  // a new ramp would silently rewrite a preset the user just chose.
+  if (session.stopPositionOverride.size() == positions.size())
+    positions = session.stopPositionOverride;
+  return positions;
+}
+
+int gradientHandleAt(const GradientDrag& session, const GradientStops& stops, float x, float y,
+                     float radius) noexcept {
+  if (!session.active) return -1;
+
+  // **Nearest hit wins outright here**, unlike the crop's corner-beats-edge
+  // rule. Every handle on a ramp is a point on one line and stops can sit
+  // arbitrarily close together, so there is no "more specific" class to prefer
+  // -- the only defensible answer is the one the pointer is actually closest
+  // to. This matters far more under touch: at a fingertip's 22px radius three
+  // stops on a short ramp can all be in range at once, and a first-hit scan
+  // would return whichever came first in the list rather than the one aimed at.
+  int best = -1;
+  float bestDist2 = radius * radius;
+  const auto consider = [&](int handle, float px, float py) {
+    const float dx = x - px;
+    const float dy = y - py;
+    const float d2 = dx * dx + dy * dy;
+    // `<=` for the first candidate so an exact-radius hit counts, strict `<`
+    // afterwards so ties resolve to the earlier handle and the answer is
+    // stable rather than flickering with rounding.
+    if (d2 <= bestDist2 && (best < 0 || d2 < bestDist2)) {
+      best = handle;
+      bestDist2 = d2;
+    }
+  };
+
+  // Stops AT the ends are skipped entirely so the endpoints stay grabbable --
+  // see `kGradientStopEdgeEpsilon`, which the band's drawing reads too.
+  const std::vector<float> positions = gradientEffectiveStopPositions(session, stops);
+  for (size_t i = 0; i < positions.size(); ++i) {
+    const float t = positions[i];
+    if (t <= kGradientStopEdgeEpsilon || t >= 1.0f - kGradientStopEdgeEpsilon) continue;
+    consider(kGradientHandleStop + static_cast<int>(i),
+             session.x0 + (session.x1 - session.x0) * t,
+             session.y0 + (session.y1 - session.y0) * t);
+  }
+  consider(kGradientHandleStart, session.x0, session.y0);
+  consider(kGradientHandleEnd, session.x1, session.y1);
+  return best;
+}
+
+void gradientDragHandle(GradientDrag& session, const GradientStops& stops, int handle, float x,
+                        float y) noexcept {
+  if (handle == kGradientHandleStart) {
+    session.x0 = x;
+    session.y0 = y;
+    return;
+  }
+  if (handle == kGradientHandleEnd) {
+    session.x1 = x;
+    session.y1 = y;
+    return;
+  }
+  if (handle < kGradientHandleStop) return;
+
+  const size_t index = static_cast<size_t>(handle - kGradientHandleStop);
+  std::vector<float> positions = gradientEffectiveStopPositions(session, stops);
+  if (index >= positions.size()) return;
+
+  // A stop is a position ALONG the ramp, so the pointer is projected onto the
+  // ramp's axis rather than followed freely -- dragging one sideways moves it
+  // up or down the ramp, it does not pull it off the line. A degenerate ramp
+  // has no axis to project onto and is left alone rather than dividing by zero.
+  const float ax = session.x1 - session.x0;
+  const float ay = session.y1 - session.y0;
+  const float len2 = ax * ax + ay * ay;
+  if (len2 < 1e-6f) return;
+  float t = ((x - session.x0) * ax + (y - session.y0) * ay) / len2;
+  t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+  positions[index] = t;
+  session.stopPositionOverride = std::move(positions);
+}
+
+void gradientBeginDefine(GradientDrag& session, DocumentId doc, float x, float y) noexcept {
+  session.active = true;
+  session.defining = true;
+  session.doc = doc;
+  session.x0 = x;
+  session.y0 = y;
+  // The far end starts ON the near one, so a click that never drags is
+  // degenerate and `gradientDragIsUsable()` refuses it -- rather than
+  // inheriting the last session's endpoint and aiming a ramp somewhere the
+  // pointer has not been.
+  session.x1 = x;
+  session.y1 = y;
+  session.dragHandle = -1;
+  // Positions come back from the ramp itself until a handle is moved again.
+  session.stopPositionOverride.clear();
+}
+
+void gradientCancel(GradientDrag& session) noexcept {
+  session.active = false;
+  session.defining = false;
+  session.doc = 0;
+  session.dragHandle = -1;
+  session.stopPositionOverride.clear();
+}
+
 }  // namespace np

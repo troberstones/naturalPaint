@@ -58,6 +58,15 @@
   </array>
   <key>UILaunchScreen</key>
   <dict/>
+  <!-- Opt out of the 60 Hz default CoreAnimation imposes on third-party apps
+       on a ProMotion display, so the display link may run at the panel's full
+       rate. SDL's own SDL_uikitviewcontroller.m points at this key for exactly
+       this purpose. Apple documents it as an iPhone concern, so it may well be
+       inert on this iPad -- it is here as a one-line belt-and-braces alongside
+       the actual fix (app/FramePacing's own 60 fps tier was capping gestures);
+       measure before crediting it with anything. -->
+  <key>CADisableMinimumFrameDurationOnPhone</key>
+  <true/>
   <key>UIFileSharingEnabled</key>
   <true/>
   <key>LSSupportsOpeningDocumentsInPlace</key>

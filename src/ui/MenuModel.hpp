@@ -477,6 +477,14 @@ enum class MenuAction : uint16_t {
   DustScratches,
   AdjustShadowsHighlights,
 
+  // The Preferences window (ui/PreferencesDialog.hpp): interface scale and the
+  // one-finger touch gesture. A Command rather than a Check -- it opens a
+  // modal that closes itself, not a panel whose visibility the item reports.
+  // It sits at the foot of the Edit menu, which is where this menu bar puts
+  // application-wide settings; there is no separate application menu to use
+  // the platform's own Preferences seat.
+  Preferences,
+
   Count,
 };
 

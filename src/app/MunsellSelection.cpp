@@ -66,4 +66,45 @@ void applyMunsellSelection(BrushState& brush) noexcept {
     brush.rgb = *srgb;
 }
 
+const std::vector<std::optional<std::array<float, 3>>>& MunsellPageCache::gridFor(
+    const BrushState& brush) {
+  const int steps = brush.munsellSteps;
+  if (haveKey_ && steps_ == steps && hueDeg_ == brush.munsellHueDeg &&
+      perRowChroma_ == brush.munsellPerRowChroma) {
+    ++hits_;
+    return grid_;
+  }
+  steps_ = steps;
+  hueDeg_ = brush.munsellHueDeg;
+  perRowChroma_ = brush.munsellPerRowChroma;
+  haveKey_ = true;
+  grid_.assign(static_cast<size_t>(steps) * static_cast<size_t>(steps), std::nullopt);
+
+  // The values this hoists out of the per-cell loop below, byte-for-byte
+  // what `munsellCellSrgb()`/`munsellCellChroma()` compute per call -- see
+  // this class's own header comment on why calling them `steps * steps`
+  // times each redid the SAME gamut sweep up to `steps` times over.
+  const double hue = static_cast<double>(brush.munsellHueDeg);
+  // Per-page mode's span is the same number for every cell on the page,
+  // so it is swept once here rather than once per cell.
+  const double pageSpan = brush.munsellPerRowChroma ? 0.0 : pageChroma(steps, hue);
+  for (int row = 0; row < steps; ++row) {
+    const double rowL = munsellRowLStar(row, steps);
+    // Per-row mode's span is the same number across a row's `steps` columns,
+    // so it is swept once per row rather than once per cell.
+    const double rowSpan = brush.munsellPerRowChroma ? maxInGamutChroma(rowL, hue) : pageSpan;
+    for (int col = 0; col < steps; ++col) {
+      const double chroma =
+          steps <= 1 ? 0.0 : static_cast<double>(col) * rowSpan / static_cast<double>(steps - 1);
+      const auto linear = munsellCellLinearRgb(rowL, chroma, hue);
+      if (linear)
+        grid_[static_cast<size_t>(row) * static_cast<size_t>(steps) + static_cast<size_t>(col)] =
+            std::array<float, 3>{srgbEncode((*linear)[0]), srgbEncode((*linear)[1]),
+                                 srgbEncode((*linear)[2])};
+    }
+  }
+  ++recomputes_;
+  return grid_;
+}
+
 }  // namespace np

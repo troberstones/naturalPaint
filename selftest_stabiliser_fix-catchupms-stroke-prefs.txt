@@ -1,0 +1,12 @@
+naturalPaint-stroke-preferences 1
+mode 1
+stringPx 16
+strength 40
+responsiveness 50
+catchUpMs 777
+catchUpAtEnd 1
+catchUpWhilePaused 1
+stabilisePressure 0
+scaleWithZoom 0
+showString 1
+buildupWash 0

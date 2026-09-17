@@ -37,6 +37,8 @@ const char* resourceLabel(ResourceKind kind) {
     case ResourceKind::LucideTtf: return "third_party/lucide/lucide.ttf (NP_LUCIDE_TTF)";
     case ResourceKind::LucideCodepointsJson:
       return "third_party/lucide/codepoints.json (NP_LUCIDE_CODEPOINTS_JSON)";
+    case ResourceKind::UiTextTtf:
+      return "third_party/liberation/LiberationSans-Regular.ttf (NP_UI_TEXT_TTF)";
   }
   return "(unknown resource)";
 }
@@ -48,6 +50,7 @@ std::string resourceRelativePath(ResourceKind kind) {
     case ResourceKind::KeymapDir: return "keymaps";
     case ResourceKind::LucideTtf: return "third_party/lucide/lucide.ttf";
     case ResourceKind::LucideCodepointsJson: return "third_party/lucide/codepoints.json";
+    case ResourceKind::UiTextTtf: return "third_party/liberation/LiberationSans-Regular.ttf";
   }
   return "";
 }
@@ -59,6 +62,7 @@ std::string compileTimeAbsolutePath(ResourceKind kind) {
     case ResourceKind::KeymapDir: return NP_KEYMAP_DIR;
     case ResourceKind::LucideTtf: return NP_LUCIDE_TTF;
     case ResourceKind::LucideCodepointsJson: return NP_LUCIDE_CODEPOINTS_JSON;
+    case ResourceKind::UiTextTtf: return NP_UI_TEXT_TTF;
   }
   return "";
 }
@@ -223,5 +227,6 @@ std::string lucideTtfPath() { return resolveResourcePath(ResourceKind::LucideTtf
 std::string lucideCodepointsJsonPath() {
   return resolveResourcePath(ResourceKind::LucideCodepointsJson);
 }
+std::string uiTextTtfPath() { return resolveResourcePath(ResourceKind::UiTextTtf); }
 
 }  // namespace np

@@ -22,6 +22,8 @@
 #include "app/PanelLayout.hpp"
 #include "app/PenTool.hpp"
 #include "app/ShapeTool.hpp"
+#include "app/LongPressGesture.hpp"
+#include "app/PointerPolicy.hpp"
 #include "app/PointerQueue.hpp"
 #include "app/TextTool.hpp"
 #include "app/TilePreview.hpp"
@@ -34,6 +36,7 @@
 #include "app/SelectionDrag.hpp"
 #include "app/StrokeBake.hpp"
 #include "app/StrokePreferences.hpp"
+#include "app/UiPreferences.hpp"
 #include "app/TransformSession.hpp"
 #include "app/UserBrushLibrary.hpp"
 #include "app/VectorStyle.hpp"
@@ -1534,6 +1537,16 @@ struct AppState {
   // sample wants this one, not that one -- see main.cpp.
   bool paintingThisFrame = false;
 
+  // True on any frame a two-finger pan/pinch/rotate gesture is live -- written
+  // by `ui/MacPaintUI.cpp` from `TouchGestureSession::active()`, read by
+  // `main.cpp`'s frame-pacing decision so a gesture gets the same unthrottled
+  // tier a paint stroke does (`app/FramePacing.hpp`'s `gesturing` input has
+  // the argument). Covers the iPad's two-finger gestures and the Mac
+  // trackpad's raw-touch path alike, since both drive that one session; a
+  // ONE-finger iOS pan has no session and is reported by the touch tracker's
+  // own finger count instead.
+  bool touchGestureActive = false;
+
   // SDL3 pen state. penSeen stays false on a mouse-only machine, in which case
   // pressure is pinned to 1.
   bool penSeen = false;
@@ -1983,6 +1996,19 @@ struct AppState {
   StrokePreferencesStore strokePreferences;
   bool strokePreferencesLoaded = false;
 
+  // Interface scale and the one-finger touch gesture (app/UiPreferences.hpp),
+  // the same lazy-load shape and for the same reason -- but reached far
+  // earlier than the stroke gate above, because the scale has to be applied
+  // while the first frame is being built rather than at the first pen-down.
+  UiPreferences uiPreferences;
+  UiPreferencesStore uiPreferencesStore;
+  bool uiPreferencesLoaded = false;
+  // The scale that has actually been APPLIED to ImGui's style. ImGui's
+  // `ScaleAllSizes()` multiplies the live style in place, so re-applying it
+  // every frame would compound without bound; the UI compares this against
+  // `uiPreferences.uiScale` and only rebuilds the style when they differ.
+  float uiScaleApplied = 0.0f;
+
   // The dab library: a folder of brush tips, where dropping a file in IS the
   // import (app/DabLibrary.hpp). A sibling of the two stores above, for their
   // reason -- it is session state that belongs to the process rather than to a
@@ -2109,6 +2135,93 @@ struct AppState {
   // rather than behind `#if NP_PLATFORM_IOS` -- one bool is cheaper than a
   // platform-shaped hole in this struct.
   bool showDocumentGallery = false;
+
+  // iOS only: the window's safe-area top inset in points (the status bar/
+  // notch/Dynamic Island band a real device's compositor draws over), read
+  // once per frame in main.cpp via `SDL_GetWindowSafeArea()` and consumed by
+  // `ui/MacPaintUI.cpp`'s `atelierLayout()` call sites so the app's own top
+  // chrome starts below it rather than under it. Zero on every other
+  // platform (and on the Simulator before a real safe area is queried),
+  // where the whole layout already starts at the window's own top edge --
+  // same "cheap to declare unconditionally" reasoning as the bool above.
+  float iosSafeAreaTop = 0.0f;
+
+  // WHO is driving the left-button gesture ImGui is tracking right now:
+  // mouse/trackpad, Apple Pencil, or a finger. Empty when no gesture is in
+  // flight.
+  //
+  // This is the ONE place device identity lives. `app/PointerPolicy.hpp` holds
+  // both the classifier that fills it (`resolvePointerKind()`) and the truth
+  // table every canvas handler consults with it (`pointerMayDrive()`), so the
+  // per-tool rules cannot drift apart across the ~25 handlers that need them.
+  //
+  // Written in exactly two places in `main.cpp`, and both are load-bearing:
+  // once at the press, from SDL's `which` plus the raw finger count and pen
+  // contact; and then re-asserted toward Touch every frame that finds fingers
+  // on the glass with no pen in contact. Cleared beside `ImGui::NewFrame()`,
+  // once ImGui itself agrees the button is up -- never on the SDL release,
+  // which arrives a frame earlier and would leave a window in which a finger
+  // reads as a pen. That window is worth one deposited dab; see the comments
+  // at both sites for the measured frames.
+  //
+  // On every other platform this only ever holds `Mouse` or `Pen`: SDL never
+  // synthesises `SDL_TOUCH_MOUSEID` there.
+  std::optional<PointerKind> activePointerKind;
+
+  // The finger-held-still recogniser (app/LongPressGesture.hpp) behind touch's
+  // two deliberate gestures: sampling a colour, and picking up a layer row to
+  // reorder it. Lives here rather than as a function-local static because the
+  // canvas is redrawn from more than one place and a static would share one
+  // hold across them.
+  LongPressGesture touchLongPress;
+
+  // The layer panel's own recogniser, kept separate from the canvas one above
+  // so a hold on a row and a hold on the canvas cannot cancel each other --
+  // they share thresholds (app/PointerPolicy.hpp) but not state.
+  LongPressGesture layerRowLongPress;
+
+  // Latched once that hold completes, and held until the finger lifts.
+  //
+  // The latch is the whole trick. A long press is one-shot by design, but a
+  // drag needs permission for its WHOLE life -- and the gesture that follows
+  // the hold is, by definition, movement, which is exactly what disqualifies a
+  // hold. Without somewhere to record "this finger already earned the drag",
+  // the permission would expire the instant it was used.
+  bool layerRowDragArmed = false;
+
+  // The two questions handlers actually ask. Named rather than compared
+  // inline so a missing `.has_value()` cannot silently make "no gesture" look
+  // like a mouse.
+  bool pointerIsTouch() const {
+    return activePointerKind == PointerKind::Touch;
+  }
+  bool pointerIsRealMouse() const {
+    return activePointerKind == PointerKind::Mouse;
+  }
+
+  // The grab radius every on-canvas handle hit-test should use, in screen
+  // pixels. An UNCLASSIFIED pointer gets the precise radius: that is every
+  // desktop platform, and also a hover with no button held, neither of which
+  // wants a fingertip's tolerance.
+  float handleGrabRadiusPx() const {
+    return activePointerKind.has_value() ? pointerGrabRadiusPx(*activePointerKind)
+                                         : kPrecisePointerGrabPx;
+  }
+
+  // iOS only: true between `SDL_EVENT_PEN_DOWN` and `SDL_EVENT_PEN_UP` -- the
+  // Apple Pencil is physically on the glass right now.
+  //
+  // The flag above cannot carry this on its own. It is cleared by ANY left
+  // mouse-up, including one SDL synthesises from a finger, so during SDL's
+  // primary-touch reassignment (a second finger landing, or one of two
+  // lifting) an up/down pair crosses the flag through `false` while ImGui
+  // still latches the button as held -- one frame in which a touch reads
+  // exactly like a pen, which is one deposited dab. Pen contact is a positive
+  // fact with no synthesis step between the hardware and this bool, so
+  // `ui/MacPaintUI.cpp` can require it whenever fingers are on the glass
+  // rather than trusting the absence of a flag that briefly lies.
+  bool iosPenInContact = false;
+
 };
 
 // The three floats `effectivePigmentConstants()` below returns -- deliberately

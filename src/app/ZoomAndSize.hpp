@@ -93,6 +93,28 @@ AnchoredPan panForAnchoredZoomRotate(const CanvasView& oldView, const CanvasView
                                      Vec2 canvasCenter, Vec2 pivotScreenOld, Vec2 anchorScreen,
                                      Vec2 paintOrigin, Vec2 avail, Vec2 tex) noexcept;
 
+// The same solve, but with the anchor allowed to MOVE: find the canvas point
+// under `anchorScreenOld` in `oldView`, and place that same canvas point under
+// `anchorScreenNew` in `newView`.
+//
+// This is what lets a two-finger gesture's translation fall out of the anchor
+// solve instead of being added on afterwards. A separate "and now also shift
+// the view by this frame's finger travel" step is what made the touch path
+// swim: `TwoTouchDelta::panDx/panDy` are measured from the GESTURE'S START,
+// and adding that absolute quantity once per frame re-applied the whole
+// accumulated translation every frame. Translation has no separate step here
+// -- "the canvas point that was under your fingers is still under your
+// fingers" already says where the view must be, whatever combination of
+// pinch, twist and slide the fingers are doing.
+//
+// `panForAnchoredZoomRotate()` above is exactly this with
+// `anchorScreenNew == anchorScreenOld` ("the anchor did not move"), and is
+// implemented by calling this, so there is one copy of the algebra.
+AnchoredPan panForAnchoredZoomRotateTo(const CanvasView& oldView, const CanvasView& newView,
+                                       Vec2 canvasCenter, Vec2 pivotScreenOld,
+                                       Vec2 anchorScreenOld, Vec2 anchorScreenNew, Vec2 paintOrigin,
+                                       Vec2 avail, Vec2 tex) noexcept;
+
 // The existing zoom limits (`ui/MacPaintUI.cpp`'s `requestFitWindow`/
 // `applyZoomFactor` both already clamp to this exact pair) -- named here so
 // every clamp site reads the same two numbers instead of retyping 0.1f/8.0f,

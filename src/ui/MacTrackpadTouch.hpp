@@ -6,6 +6,10 @@
 #include "app/TouchGesture.hpp"  // TrackpadTouchPoint
 #include "core/Platform.hpp"
 
+#if !NP_PLATFORM_MACOS
+#include "app/IOSTouchTracker.hpp"
+#endif
+
 struct SDL_Window;
 
 namespace np {
@@ -119,6 +123,39 @@ TrackpadDeviceSize trackpadDeviceSize();
 // have no such preference (Apple defines "natural" only for a directional
 // scroll/pan), so this affects the pan component alone.
 bool trackpadNaturalScrolling();
+
+#elif NP_PLATFORM_IOS
+
+// iOS: a real touchscreen, not an indirect trackpad -- `app/IOSTouchTracker`
+// is the raw capture layer (fed by `main.cpp`'s `SDL_EVENT_FINGER_*`
+// handling, which needs no view opt-in or responder splice the way a Mac
+// trackpad's NSTouch delivery does; see that file's own header comment).
+// This branch is only the adapter to the interface every caller
+// (`ui/MacPaintUI.cpp`) already uses.
+inline void installTrackpadTouchCapture(SDL_Window*) {}
+inline std::optional<std::pair<TrackpadTouchPoint, TrackpadTouchPoint>> pollTwoFingerTouch() {
+  return iosTouchTracker().twoFingerTouch();
+}
+struct TrackpadDeviceSize {
+  float width = 0.0f;
+  float height = 0.0f;
+};
+// A touchscreen's finger coordinates are already normalised to the WINDOW
+// (`SDL_TouchFingerEvent`'s own contract), not to a separate physical
+// surface the way `NSTouch.normalizedPosition` is -- so "device size" here is
+// the window's own size in the same units `ImGui::GetIO().MousePos` (and so
+// `xform.toCanvas()`) already uses, which is `DisplaySize`, not a pixel size
+// that could differ from it under Retina/Dynamic Type scaling.
+#include "imgui.h"
+inline TrackpadDeviceSize trackpadDeviceSize() {
+  const ImVec2 size = ImGui::GetIO().DisplaySize;
+  return TrackpadDeviceSize{size.x, size.y};
+}
+// A touchscreen has no separate "natural scrolling" system preference (that
+// setting exists only for an INDIRECT pointing device, where scroll
+// direction is a choice); a finger dragging the canvas tracks the finger,
+// which is what `true` (this app's own "natural" branch) already means.
+inline bool trackpadNaturalScrolling() { return true; }
 
 #else
 

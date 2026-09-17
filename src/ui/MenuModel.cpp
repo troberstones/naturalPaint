@@ -264,6 +264,11 @@ const MenuItemSpec* specTable() {
     // already is.
     set(MenuAction::Pigment, "Pigment", "");
     set(MenuAction::ImGuiDemo, "ImGui demo", "");
+    // No key equivalent: docs/shortcuts.md assigns none, and claiming a chord
+    // from a native menu consumes it before SDL sees it -- the same reasoning
+    // `BrushSettings` above states, and the reason Cmd-comma is NOT taken here
+    // speculatively.
+    set(MenuAction::Preferences, "Preferences...", "");
     family(MenuAction::ActivateDocument);
 
     // --- Filter -------------------------------------------------------
@@ -547,6 +552,7 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::Rulers: return "Rulers";
     case MenuAction::Navigator: return "Navigator";
     case MenuAction::BrushSettings: return "BrushSettings";
+    case MenuAction::Preferences: return "Preferences";
     case MenuAction::Pigment: return "Pigment";
     case MenuAction::Guides: return "Guides";
     case MenuAction::AddGuide: return "AddGuide";
@@ -655,6 +661,9 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     // and process state, no document in the expression.
     case MenuAction::BrushSettings:
     case MenuAction::Pigment:
+    // Application settings, not a document edit: enabled with no document
+    // open, and it changes nothing a document could record.
+    case MenuAction::Preferences:
     case MenuAction::ImGuiDemo:
     case MenuAction::PauseSolver:
     case MenuAction::ReloadShaders:
@@ -1125,6 +1134,12 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     }
     e.push_back(separator());
     e.push_back(item(MenuAction::ClearCanvas));
+    e.push_back(separator());
+    // Application settings, at the foot of Edit -- this menu bar has no
+    // application menu of its own to give Preferences the platform's usual
+    // seat, and Edit is where the rest of the build's cross-document settings
+    // already live. Always enabled: it edits the application, not a document.
+    e.push_back(item(MenuAction::Preferences));
     bar.push_back(std::move(edit));
   }
 

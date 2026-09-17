@@ -332,6 +332,114 @@ bool runMunsellTest() {
     check(alwaysLive, "clampMunsellSelection() always lands on a live cell");
   }
 
+  // ======================================================================
+  // 7. MunsellPageCache -- correct, and cheap only when it should be.
+  // ======================================================================
+  //
+  // `munsellCellChroma()`'s per-page branch called `munsellPageChromaFor()`
+  // -- a full `pageChroma()` sweep, itself `steps` calls to the 60-iteration
+  // `maxInGamutChroma()` bisection -- once PER CELL, even though the result
+  // is identical for every cell on the page; the per-row branch had the same
+  // redundancy across a row's own columns. `MunsellPageCache::gridFor()`
+  // hoists both and additionally remembers the whole grid across frames, so
+  // `drawMunsellPage()` pays for a sweep once per real (steps, hue, mode)
+  // change instead of once per cell, per frame.
+  {
+    // --- correctness: the cache's grid is byte-identical to calling
+    //     munsellCellSrgb() directly, in both chroma modes, at both the
+    //     default and the maximum grid size. Hoisting the shared sweep must
+    //     not change a single value it used to compute per cell.
+    for (const bool perRow : {false, true}) {
+      for (const int n : {kDefaultPageSteps, kMaxPageSteps}) {
+        BrushState br;
+        br.munsellPerRowChroma = perRow;
+        br.munsellSteps = n;
+        br.munsellHueDeg = 40.0f;
+        clampMunsellSelection(br);
+
+        MunsellPageCache cache;
+        const auto& grid = cache.gridFor(br);
+        bool identical = true;
+        for (int row = 0; row < n && identical; ++row) {
+          for (int col = 0; col < n && identical; ++col) {
+            const auto direct = munsellCellSrgb(br, row, col);
+            const auto& cached = grid[static_cast<size_t>(row) * static_cast<size_t>(n) +
+                                      static_cast<size_t>(col)];
+            if (direct.has_value() != cached.has_value()) {
+              identical = false;
+            } else if (direct) {
+              for (int ch = 0; ch < 3; ++ch)
+                if ((*direct)[static_cast<size_t>(ch)] != (*cached)[static_cast<size_t>(ch)])
+                  identical = false;
+            }
+          }
+        }
+        check(identical, perRow ? "MunsellPageCache: per-row grid matches munsellCellSrgb() "
+                                  "cell for cell"
+                                : "MunsellPageCache: per-page grid matches munsellCellSrgb() "
+                                  "cell for cell");
+      }
+    }
+
+    // --- the cache: recomputes on a real change, hits on a repeat, and does
+    //     not confuse "the selection moved" (which touches no pixel) with
+    //     "hue or steps moved" (which touches every pixel).
+    MunsellPageCache cache;
+    BrushState br;
+    br.munsellSteps = kDefaultPageSteps;
+    clampMunsellSelection(br);
+
+    cache.gridFor(br);
+    check(cache.recomputes() == 1, "MunsellPageCache: the first call recomputes");
+
+    cache.gridFor(br);
+    check(cache.recomputes() == 1 && cache.hits() == 1,
+          "MunsellPageCache: an unchanged (steps, hue, mode) HITS -- no second sweep");
+
+    br.munsellRow = (br.munsellRow + 1) % br.munsellSteps;
+    br.munsellCol = 0;
+    cache.gridFor(br);
+    check(cache.recomputes() == 1,
+          "MunsellPageCache: moving the SELECTION alone (no pixel depends on it) still HITS");
+
+    br.munsellHueDeg = std::fmod(br.munsellHueDeg + 30.0f, 360.0f);
+    cache.gridFor(br);
+    check(cache.recomputes() == 2, "MunsellPageCache: a hue change recomputes");
+
+    br.munsellSteps = kMaxPageSteps;
+    clampMunsellSelection(br);
+    cache.gridFor(br);
+    check(cache.recomputes() == 3, "MunsellPageCache: a steps change recomputes");
+
+    br.munsellPerRowChroma = !br.munsellPerRowChroma;
+    cache.gridFor(br);
+    check(cache.recomputes() == 4,
+          "MunsellPageCache: switching per-row/per-page chroma recomputes -- it changes every "
+          "cell's chroma just as surely as hue or steps do");
+
+    // --- what a live hue drag now costs, measured rather than assumed: one
+    //     sweep at the START of the drag (the first call always misses) and
+    //     NONE for a held value, versus `n^2` sweeps a frame before this
+    //     change existed.
+    MunsellPageCache heldCache;
+    BrushState held;
+    held.munsellSteps = kMaxPageSteps;
+    clampMunsellSelection(held);
+    heldCache.gridFor(held);
+    const uint64_t beforeHeld = heldCache.recomputes();
+    constexpr int kFrames = 120;
+    const auto started = std::chrono::steady_clock::now();
+    for (int i = 0; i < kFrames; ++i) heldCache.gridFor(held);  // panel open, nothing moving
+    const double heldMs = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - started)
+                              .count();
+    check(heldCache.recomputes() == beforeHeld,
+          "MunsellPageCache: 120 frames of an open, UNCHANGED panel cost zero sweeps");
+    std::printf("    [measured] n=%d: %d frames of an open, unchanged Munsell page: %.3f ms "
+                "total (%.4f ms/frame)\n",
+                kMaxPageSteps, kFrames, heldMs, heldMs / kFrames);
+  }
+
   std::printf("Munsell page: %s\n", ok ? "OK" : "FAILURES");
   return ok;
 }

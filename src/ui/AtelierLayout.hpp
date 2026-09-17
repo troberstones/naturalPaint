@@ -61,6 +61,15 @@ struct AtelierRect {
 // two under it (52, 322) are the column widths -- kToolPaletteW is defined
 // just below, next to the arithmetic that produces its 52.
 constexpr float kTitleBarH   = 36.0f;
+// The TITLE row's height when the document tabs are given a row of their own
+// (`atelierLayout()`'s `tabStripOwnRow`). The menu row is the one that grows:
+// with the tabs moved out of it, what is left -- the wordmark, the inline
+// File/Edit/... menus and the Undo/Redo/fps cluster -- is exactly the content
+// a touch device needs a bigger target and bigger type for, and
+// `ui/MacPaintUI.cpp` scales the row's font to fill this height. The TAB row
+// keeps the ordinary `kTitleBarH`, so the tabs themselves are the size they
+// have always been.
+constexpr float kTallMenuRowH = 52.0f;
 constexpr float kOptionsBarH = 46.0f;
 constexpr float kStatusBarH  = 26.0f;
 constexpr float kRightColumnW = 322.0f;
@@ -322,7 +331,11 @@ struct AtelierBands {
   // One fewer than before the title bar and tab strip merged: `tabStrip` used
   // to be a band of its own with a rule under it, and a nested sub-rect has
   // no edge of the tiling to put a rule on.
-  static constexpr size_t kMaxRules = 6;
+  // Seven, not six: a tab strip given a row of its own (`tabStripOwnRow`)
+  // is a band in the tiling again and takes a rule under it, exactly as it
+  // did before the merge. `addRule()` indexes this array unchecked, so this
+  // bound is load-bearing rather than advisory.
+  static constexpr size_t kMaxRules = 7;
   AtelierRect rules[kMaxRules];
   size_t ruleCount = 0;
 };
@@ -366,14 +379,24 @@ struct AtelierBands {
 // Defaulted so every existing caller (including every `--selftest` site that
 // asserts this file's band arithmetic) keeps the exact geometry it already
 // has; only the real per-frame chrome call passes a measured, non-zero value.
+//
+// `tabStripOwnRow` gives the document tabs a `kTabRowH` band of their OWN,
+// below the title row, instead of nesting them inside it. iOS asks for this
+// (no native menu bar there, so the wordmark and the inline menus already
+// fill the title row, and touch wants a taller target than 36 px anyway);
+// every other platform keeps the merged row. **Defaulted false, and a
+// parameter rather than an `#if`**, so the two-row arithmetic is reachable
+// from `--selftest` on a desktop build -- a platform-gated branch that no
+// build under test ever compiles is how a green suite comes to assert
+// nothing about the layout that actually ships.
 AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip,
                            const AtelierDockExtents& docks,
-                           float menuBarReservedW = 0.0f);
+                           float menuBarReservedW = 0.0f, bool tabStripOwnRow = false);
 
 // The default arrangement, for the callers (and the tests) that do not vary
 // the docks. Exactly `atelierLayout(..., kDefaultDockExtents)`.
 AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip,
-                           float menuBarReservedW = 0.0f);
+                           float menuBarReservedW = 0.0f, bool tabStripOwnRow = false);
 
 // ------------------------------------------------------------- navigator
 //

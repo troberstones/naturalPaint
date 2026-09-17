@@ -394,8 +394,20 @@ bool runLayerStackTest() {
           "ops: painting into the copy does not reach the source -- the TileStore really was "
           "deep-copied, at 128 KiB per tile (COW is Phase 5 step 6)");
 
-    check(defaultNewLayerName(Document::createBlank(8, 8, WorkingSpace{})) == "Layer 1",
-          "ops: defaultNewLayerName() starts at \"Layer 1\"");
+    // A truly EMPTY document is the only place "Layer 1" is still free.
+    Document noLayers = Document::createBlank(8, 8, WorkingSpace{});
+    check(removeLayer(noLayers, 0).ok && defaultNewLayerName(noLayers) == "Layer 1",
+          "ops: defaultNewLayerName() starts at \"Layer 1\" on a document with no layers");
+    // ...but createBlank()'s own layer has an EMPTY name, and LayerPanel's
+    // layerRowTitle() shows an unnamed layer as "Layer <index+1>" -- so on a
+    // fresh document "Layer 1" is already occupied ON SCREEN. This assertion
+    // previously demanded "Layer 1" here, canonizing the duplicate-name bug the
+    // user reported: the first Add Layer produced a second row reading
+    // "Layer 1". The name handed out must dodge the placeholder, not just the
+    // stored names.
+    check(defaultNewLayerName(Document::createBlank(8, 8, WorkingSpace{})) == "Layer 2",
+          "ops: a fresh document's unnamed layer already READS \"Layer 1\", so the next name "
+          "is \"Layer 2\" -- the placeholder counts, or the first add collides");
     Document named = Document::createBlank(8, 8, WorkingSpace{});
     named.layers[0].name = "Layer 7";
     addRgbLayer(named, "Layer 3");

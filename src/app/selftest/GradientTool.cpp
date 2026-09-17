@@ -967,6 +967,145 @@ bool runGradientToolTest() {
           "the CUSTOM stops reached the pixels, not the built-in default");
   }
 
+  // === § 3a: the session outlives its drag (the Crop model) ==============
+  //
+  // Worth pinning hard, because this replaced a destructive pen-up commit that
+  // every existing gradient test took for granted. The claims below are the
+  // ones a user would notice breaking.
+  {
+    GradientStops ramp;
+    ramp.colorStops.push_back(ColorStop{0.0f, {1.0f, 0.0f, 0.0f}});
+    ramp.colorStops.push_back(ColorStop{0.5f, {0.0f, 1.0f, 0.0f}});
+    ramp.colorStops.push_back(ColorStop{1.0f, {0.0f, 0.0f, 1.0f}});
+
+    GradientDrag g;
+    check(!g.active && !g.defining, "session: starts inert");
+
+    gradientBeginDefine(g, 7u, 100.0f, 100.0f);
+    check(g.active && g.defining && g.doc == 7u, "session: defining begins active, on its document");
+    check(g.x1 == 100.0f && g.y1 == 100.0f,
+          "session: the far end starts ON the near one, so a click that never drags is degenerate");
+
+    // Pen-up ends the DRAG and leaves the session standing. This is the whole
+    // semantic change; if it ever regresses, the tool silently goes back to
+    // committing on release and every handle below becomes unreachable.
+    g.x1 = 200.0f;
+    g.y1 = 100.0f;
+    g.defining = false;
+    check(g.active, "session: survives pen-up with handles live");
+
+    // Hit-testing: the two ends, and a stop in the middle of the ramp.
+    check(gradientHandleAt(g, ramp, 100.0f, 100.0f, 6.0f) == kGradientHandleStart,
+          "handles: the near end hit-tests as the start");
+    check(gradientHandleAt(g, ramp, 200.0f, 100.0f, 6.0f) == kGradientHandleEnd,
+          "handles: the far end hit-tests as the end");
+    check(gradientHandleAt(g, ramp, 150.0f, 100.0f, 6.0f) == kGradientHandleStop + 1,
+          "handles: the midpoint stop hit-tests as that stop");
+    check(gradientHandleAt(g, ramp, 150.0f, 400.0f, 6.0f) == -1,
+          "handles: empty canvas hits nothing");
+
+    // **The endpoints must win at the extremes.** Nearly every ramp has stops
+    // at exactly 0 and 1 -- this one does -- so if those shadowed the endpoints
+    // a gradient could never be re-aimed after it was drawn, which is the main
+    // thing the session exists to allow. The two assertions above this one
+    // caught exactly that, and the band does not draw a mark there either.
+    GradientStops parked;
+    parked.colorStops.push_back(ColorStop{0.0f, {1.0f, 0.0f, 0.0f}});
+    parked.colorStops.push_back(ColorStop{1.0f, {0.0f, 0.0f, 1.0f}});
+    check(gradientHandleAt(g, parked, 100.0f, 100.0f, 6.0f) == kGradientHandleStart,
+          "handles: a stop parked at t=0 does NOT shadow the start handle");
+    check(gradientHandleAt(g, parked, 200.0f, 100.0f, 6.0f) == kGradientHandleEnd,
+          "handles: a stop parked at t=1 does NOT shadow the end handle");
+
+    // ...while a stop dragged NEAR an end is still its own handle, so the rule
+    // above is an edge case and not a dead zone.
+    GradientStops nearEnd;
+    nearEnd.colorStops.push_back(ColorStop{0.0f, {1.0f, 0.0f, 0.0f}});
+    nearEnd.colorStops.push_back(ColorStop{0.05f, {0.0f, 1.0f, 0.0f}});
+    check(gradientHandleAt(g, nearEnd, 105.0f, 100.0f, 3.0f) == kGradientHandleStop + 1,
+          "handles: a stop dragged close to an end is still grabbable");
+
+    // Dragging an endpoint moves it in texels.
+    gradientDragHandle(g, ramp, kGradientHandleEnd, 300.0f, 100.0f);
+    check(g.x1 == 300.0f, "handles: dragging the far end re-aims the ramp");
+
+    // Dragging a stop projects onto the ramp axis: the off-axis component is
+    // discarded rather than pulling the stop off the line.
+    gradientDragHandle(g, ramp, kGradientHandleStop + 1, 150.0f, 900.0f);
+    const std::vector<float> moved = gradientEffectiveStopPositions(g, ramp);
+    check(moved.size() == 3 && std::fabs(moved[1] - 0.25f) < 1e-4f,
+          "handles: a dragged stop projects onto the ramp axis (150 of 100..300 is t=0.25)");
+    check(moved[0] == 0.0f && moved[2] == 1.0f,
+          "handles: dragging one stop leaves the others where they were");
+
+    // Clamped to the ramp: a stop is a position ALONG it and has no meaning
+    // beyond either end.
+    gradientDragHandle(g, ramp, kGradientHandleStop + 1, -500.0f, 100.0f);
+    check(gradientEffectiveStopPositions(g, ramp)[1] == 0.0f,
+          "handles: a stop dragged past the start clamps to t=0");
+
+    // The override describes ONE ramp. Swapping presets mid-session changes
+    // the stop count, and pasting old positions onto a new ramp would rewrite
+    // a preset the user just chose.
+    GradientStops twoStop;
+    twoStop.colorStops.push_back(ColorStop{0.0f, {0.0f, 0.0f, 0.0f}});
+    twoStop.colorStops.push_back(ColorStop{0.75f, {1.0f, 1.0f, 1.0f}});
+    const std::vector<float> swapped = gradientEffectiveStopPositions(g, twoStop);
+    check(swapped.size() == 2 && swapped[1] == 0.75f,
+          "handles: an override sized for another ramp is ignored, not pasted on");
+
+    // === nearest-hit, which is what makes a fingertip's radius safe =======
+    //
+    // At the mouse's 9px nothing else was ever in range, so "first hit" and
+    // "nearest hit" were the same answer. At touch's 22px they are not: stops
+    // on a short ramp crowd inside one radius, and a first-hit scan would hand
+    // back whichever came first in the list rather than the one under the
+    // finger. These pin the difference.
+    {
+      GradientDrag h;
+      gradientBeginDefine(h, 1u, 0.0f, 0.0f);
+      h.defining = false;
+      h.x1 = 100.0f;
+      h.y1 = 0.0f;
+
+      GradientStops crowded;
+      crowded.colorStops.push_back(ColorStop{0.0f, {0.0f, 0.0f, 0.0f}});
+      crowded.colorStops.push_back(ColorStop{0.30f, {1.0f, 0.0f, 0.0f}});
+      crowded.colorStops.push_back(ColorStop{0.40f, {0.0f, 1.0f, 0.0f}});
+      crowded.colorStops.push_back(ColorStop{0.50f, {0.0f, 0.0f, 1.0f}});
+      crowded.colorStops.push_back(ColorStop{1.0f, {1.0f, 1.0f, 1.0f}});
+
+      // A radius of 22 spans all three interior stops (they sit 10 texels
+      // apart), so every one of these picks is a genuine disambiguation rather
+      // than the only candidate in range.
+      check(gradientHandleAt(h, crowded, 30.0f, 0.0f, 22.0f) == kGradientHandleStop + 1,
+            "nearest: three stops inside one touch radius -- the pointer picks the first");
+      check(gradientHandleAt(h, crowded, 40.0f, 0.0f, 22.0f) == kGradientHandleStop + 2,
+            "nearest: ...the middle one when the pointer is on it");
+      check(gradientHandleAt(h, crowded, 50.0f, 0.0f, 22.0f) == kGradientHandleStop + 3,
+            "nearest: ...and the last one, rather than whichever came first in the list");
+
+      // Slightly off-centre still resolves to the closer neighbour, which is
+      // the property a finger actually relies on.
+      check(gradientHandleAt(h, crowded, 44.0f, 0.0f, 22.0f) == kGradientHandleStop + 2,
+            "nearest: a pointer between two stops takes the nearer");
+      check(gradientHandleAt(h, crowded, 46.0f, 0.0f, 22.0f) == kGradientHandleStop + 3,
+            "nearest: ...and tips to the other one past the midpoint");
+
+      // An endpoint competes on distance like everything else, so a finger near
+      // the start does not get dragged to an interior stop inside its radius.
+      check(gradientHandleAt(h, crowded, 2.0f, 0.0f, 22.0f) == kGradientHandleStart,
+            "nearest: near the start, the endpoint wins over a stop in the same radius");
+    }
+
+    // Escape drops the session and, importantly, the override with it -- a
+    // stale override surviving a cancel would silently re-position the next
+    // gradient the user pulled.
+    gradientCancel(g);
+    check(!g.active && !g.defining && g.doc == 0 && g.stopPositionOverride.empty(),
+          "session: cancel clears the session and its dragged positions");
+  }
+
   return ok;
 }
 

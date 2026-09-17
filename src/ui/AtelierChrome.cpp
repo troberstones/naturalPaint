@@ -1527,6 +1527,32 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
           "Your choice is remembered and applies again on Linear and Radial.",
           gradientKindLabel(st.gradient.kind));
     popAtelierMono();
+    bandSeparator();
+    // **Both verbs visible, for the crop band's own reason** (twenty rows
+    // down): the gradient now outlives its drag and commits on Enter
+    // (`app/GradientTool.hpp` § 3a), and a tool whose entire interaction is
+    // dragging cannot have its only commit on a key. On an iPad there is no
+    // Enter key at all, so without these two buttons a finger could aim a
+    // gradient and never be able to apply it.
+    GradientDrag& grad = st.gradientDrag;
+    ImGui::BeginDisabled(!grad.active);
+    if (ImGui::Button("Apply")) grad.commitRequested = true;
+    ImGui::EndDisabled();
+    // Outside the disabled pair: a disabled item reports no hover, so a
+    // tooltip set inside one is the tooltip nobody can read -- and this is
+    // exactly when the user needs telling why the button is grey.
+    if (!grad.active)
+      ImGui::SetItemTooltip("Drag a gradient on the canvas first.");
+    else
+      ImGui::SetItemTooltip("Paint this gradient into the layer. Enter does the same. Until you "
+                            "do, the ramp is only a preview and its handles stay draggable.");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!grad.active);
+    if (ImGui::Button("Discard")) grad.cancelRequested = true;
+    ImGui::EndDisabled();
+    if (grad.active)
+      ImGui::SetItemTooltip("Drop the gradient without painting it. Escape does the same.");
+
     return;
   }
 

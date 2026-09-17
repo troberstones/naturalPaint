@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
+#include <utility>
 
 #include "core/LayerGeometry.hpp"
 #include "core/LayerOps.hpp"
@@ -221,18 +223,48 @@ TransformHandle hitTestTransformHandle(const TransformHandlePositions& h,
     const float dx = p.x - cursor.x, dy = p.y - cursor.y;
     return dx * dx + dy * dy <= r2;
   };
-  // Rotate first: it usually sits outside the box, where nothing else
-  // competes for it. Corners before edges, so an overlapping radius near a
-  // corner resolves to the corner.
+  // Rotate first: it usually sits outside the box, where nothing else competes
+  // for it. Corners before edges, so an overlapping radius near a corner
+  // resolves to the corner.
+  //
+  // **Within corners, and within edges, the NEAREST wins.** This used to return
+  // the first hit in a fixed order, which was indistinguishable from nearest at
+  // the mouse's 9px because nothing else was ever in range. A fingertip's 22px
+  // (`app/PointerPolicy.hpp`) breaks that: on a small or heavily zoomed-out box
+  // two corners can both be in range, and first-hit would resolve every
+  // ambiguous grab toward whichever the enum happened to list first -- a
+  // constant bias toward the top-left of the gizmo rather than toward the
+  // handle under the finger.
   if (near(h.rotate)) return TransformHandle::Rotate;
-  if (near(h.topLeft)) return TransformHandle::TopLeft;
-  if (near(h.topRight)) return TransformHandle::TopRight;
-  if (near(h.bottomLeft)) return TransformHandle::BottomLeft;
-  if (near(h.bottomRight)) return TransformHandle::BottomRight;
-  if (near(h.topCenter)) return TransformHandle::TopCenter;
-  if (near(h.bottomCenter)) return TransformHandle::BottomCenter;
-  if (near(h.middleLeft)) return TransformHandle::MiddleLeft;
-  if (near(h.middleRight)) return TransformHandle::MiddleRight;
+
+  const auto nearestOf =
+      [&](std::initializer_list<std::pair<Point2, TransformHandle>> candidates) {
+        TransformHandle best = TransformHandle::None;
+        float bestDist2 = r2;
+        for (const auto& [p, handle] : candidates) {
+          const float dx = p.x - cursor.x, dy = p.y - cursor.y;
+          const float d2 = dx * dx + dy * dy;
+          // `<=` for the first candidate so an exact-radius hit counts, strict
+          // `<` after so ties keep the earlier (documented) order.
+          if (d2 <= bestDist2 && (best == TransformHandle::None || d2 < bestDist2)) {
+            best = handle;
+            bestDist2 = d2;
+          }
+        }
+        return best;
+      };
+
+  const TransformHandle corner = nearestOf({{h.topLeft, TransformHandle::TopLeft},
+                                            {h.topRight, TransformHandle::TopRight},
+                                            {h.bottomLeft, TransformHandle::BottomLeft},
+                                            {h.bottomRight, TransformHandle::BottomRight}});
+  if (corner != TransformHandle::None) return corner;
+
+  const TransformHandle edge = nearestOf({{h.topCenter, TransformHandle::TopCenter},
+                                          {h.bottomCenter, TransformHandle::BottomCenter},
+                                          {h.middleLeft, TransformHandle::MiddleLeft},
+                                          {h.middleRight, TransformHandle::MiddleRight}});
+  if (edge != TransformHandle::None) return edge;
 
   // Inside the (possibly rotated) box body: map the cursor back into
   // source-local space through `pending`'s inverse and test the

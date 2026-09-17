@@ -267,6 +267,9 @@ CommandCoverage coverageFor(MenuAction action) {
     case MenuAction::BrushSettings:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "a panel"};
+    case MenuAction::Preferences:
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "application settings; it changes no document, so a batch has nothing to replay"};
     case MenuAction::Pigment:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "a panel"};

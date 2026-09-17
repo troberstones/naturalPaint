@@ -40,7 +40,29 @@ std::string defaultNewLayerName(const Document& doc) {
   // "layers.size() + 1", which collides the moment a layer is deleted from the
   // middle of the stack.
   long highest = 0;
-  for (const Layer& layer : doc.layers) {
+  for (size_t index = 0; index < doc.layers.size(); ++index) {
+    const Layer& layer = doc.layers[index];
+    // **An UNNAMED layer still occupies a "Layer N".** It has no stored name
+    // to scan -- `Document::createBlank()` gives its one layer none, and that
+    // is the layer every new document opens with -- but the panel does not
+    // show a blank row for it: `app/LayerPanel`'s `layerRowTitle()`
+    // synthesises "Layer <index+1>" as a positional placeholder. Scanning
+    // stored names alone therefore cannot see it, so a fresh document handed
+    // back "Layer 1" for the FIRST layer added, and the user got two rows
+    // both reading "Layer 1" (the second add then saw the real one and
+    // correctly said "Layer 2", which is why only the first collided).
+    //
+    // Reserving the placeholder's number here is the narrow fix: the name is
+    // still allocated from what the panel DISPLAYS, which is what "a name not
+    // already visible" has to mean. It deliberately does not give the unnamed
+    // layer a stored name -- that placeholder is positional and re-reads when
+    // the layer moves, and `layerRowTitle()`'s own comment is explicit that
+    // turning it into a real name would be wrong.
+    if (layer.name.empty()) {
+      const long shown = static_cast<long>(index) + 1;
+      if (shown > highest) highest = shown;
+      continue;
+    }
     if (layer.name.rfind("Layer ", 0) != 0) continue;
     const std::string digits = layer.name.substr(6);
     if (digits.empty()) continue;

@@ -93,6 +93,44 @@ bool runFramePacingTest() {
   }
 
   // -----------------------------------------------------------------------
+  // 1b. Nor is a live pan/pinch/rotate gesture.
+  // -----------------------------------------------------------------------
+  //
+  // The reported symptom was "the iPad is capped at 60fps and does not feel
+  // smooth": a gesture is not painting, so it fell into tier 2 and was capped
+  // at half a ProMotion panel's rate while the entire image was moving under
+  // the user's fingers. Swept over the idle age for the same reason case 1 is
+  // -- a gesture paused mid-flight (fingers down, momentarily still) must not
+  // be dropped to a throttled tier and then stutter when they move again.
+  {
+    bool everThrottled = false;
+    bool everWaited = false;
+    const uint64_t ages[] = {justNow, awake, justBeforeIdle, kFramePacingIdleAfterNs, deepIdle};
+    for (uint64_t age : ages) {
+      for (int simLive = 0; simLive < 2; ++simLive) {
+        FramePacingInputs in = inputs(false, false, simLive != 0, age);
+        in.gesturing = true;
+        const FramePacingPlan p = planFramePacing(in);
+        if (p.tier != FramePacingTier::Unthrottled || p.periodNs != 0) everThrottled = true;
+        if (p.waitOnEvents) everWaited = true;
+      }
+    }
+    check(!everThrottled, "gesturing: unthrottled at every idle age, sim or not -- a pinch or "
+                          "pan is steered frame by frame exactly as a stroke is");
+    check(!everWaited, "gesturing: never blocks the loop on the event queue");
+
+    // And the converse, or the assertion above would pass for a build that
+    // simply never throttles anything: the SAME inputs without the gesture
+    // are still capped at 60.
+    FramePacingInputs idleHands = inputs(false, false, false, justNow);
+    const FramePacingPlan capped = planFramePacing(idleHands);
+    check(capped.tier == FramePacingTier::Interactive &&
+              capped.periodNs == kFramePacingInteractivePeriodNs,
+          "...while the same frame with no gesture is still capped at 60 -- the tier 2 policy "
+          "is narrowed, not removed");
+  }
+
+  // -----------------------------------------------------------------------
   // 2. The capture exemption.
   // -----------------------------------------------------------------------
   //

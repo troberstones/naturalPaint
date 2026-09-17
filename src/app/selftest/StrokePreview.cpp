@@ -275,11 +275,11 @@ bool runStrokePreviewTest() {
   {
     StrokePreviewCache cache;
     const uint64_t gen0 = cache.generation();
-    cache.imageFor(base, lut);
+    cache.imageFor(base, lut, 0);
     check(cache.rasterisations() == 1 && cache.generation() > gen0,
           "cache: the first call rasterises and bumps the generation");
 
-    cache.imageFor(base, lut);
+    cache.imageFor(base, lut, 0);
     check(cache.rasterisations() == 1 && cache.hits() == 1,
           "cache: an unchanged brush HITS -- no second rasterisation, and the generation the "
           "GPU keys its upload on does not move");
@@ -287,15 +287,14 @@ bool runStrokePreviewTest() {
     // Every field below is one a single dab cannot express, which means every
     // one of them would have been missed by `dabPreviewTipsEqual()`'s own
     // subset. This is the list that makes `brushTipEqual()` worth its
-    // static_assert.
+    // static_assert. RADIUS is deliberately not among them any more -- see
+    // its own dedicated block below.
     struct Case {
       const char* what;
       BrushState brush;
     };
     BrushState spacing = base;
     spacing.model.tip.spacingPercent = 70.0f;
-    BrushState radius = base;
-    radius.model.tip.diameterPx = 80.0f;  // radius 40
     BrushState hardness = base;
     hardness.model.tip.hardness = 0.9f;
     BrushState roundness = base;
@@ -305,24 +304,24 @@ bool runStrokePreviewTest() {
     BrushState linked = base;
     linked.model.scatter.scatter.jitter = 0.6f;
 
-    const Case cases[] = {{"spacing", spacing},     {"radius", radius},
-                          {"hardness", hardness},   {"roundness", roundness},
-                          {"grain", grain},         {"a jittered Scatter Variance", linked}};
+    const Case cases[] = {{"spacing", spacing},     {"hardness", hardness},
+                          {"roundness", roundness}, {"grain", grain},
+                          {"a jittered Scatter Variance", linked}};
 
     size_t missed = 0;
     for (const Case& c : cases) {
       const uint64_t before = cache.rasterisations();
-      cache.imageFor(c.brush, lut);
+      cache.imageFor(c.brush, lut, 0);
       if (cache.rasterisations() != before + 1) {
         ++missed;
         std::printf("    [missed] cache did not invalidate on %s\n", c.what);
       }
-      cache.imageFor(base, lut);  // back to the reference, so each case is independent
+      cache.imageFor(base, lut, 0);  // back to the reference, so each case is independent
     }
     check(missed == 0,
-          "cache: invalidates on spacing, radius, hardness, roundness, grain and a Scatter "
-          "Variance jitter -- FOUR of those six are invisible to a single dab, so this is the "
-          "list dabPreviewTipsEqual()'s own narrower key would have got wrong");
+          "cache: invalidates on spacing, hardness, roundness, grain and a Scatter Variance "
+          "jitter -- FOUR of those five are invisible to a single dab, so this is the list "
+          "dabPreviewTipsEqual()'s own narrower key would have got wrong");
 
     // The Scatter Variance case deserves its own named assertion: it is the
     // one that is not a tip field at all (`brushTipFor()` never resolves
@@ -333,12 +332,84 @@ bool runStrokePreviewTest() {
     // was a real, live cache-correctness gap: two brushes differing only in
     // Scatter (or Size/Angle/Roundness) jitter hashed to the identical key.
     StrokePreviewCache linkCache;
-    linkCache.imageFor(base, lut);
+    linkCache.imageFor(base, lut, 0);
     const uint64_t beforeLink = linkCache.rasterisations();
-    linkCache.imageFor(linked, lut);
+    linkCache.imageFor(linked, lut, 0);
     check(linkCache.rasterisations() == beforeLink + 1,
           "cache: a jittered Scatter Variance added with every TIP field unchanged still "
           "invalidates -- Scatter never reaches a BrushTip, so the key compares `model` too");
+  }
+
+  // ======================================================================
+  // 5b. SIZE: a live drag must not re-rasterise on every tick, and must
+  //     still settle to the exact value the user let go of.
+  // ======================================================================
+  //
+  // This is the behaviour app/StrokePreview.hpp's own header now documents:
+  // `rasteriseStrokePreview()` already normalises a brush's radius against
+  // the strip's fixed dimensions, so the PATTERN a brush makes does not
+  // depend on size alone -- only its scale does -- and a live SIZE drag can
+  // be answered from the cache instead of re-running the stroke engine on
+  // every frame it moves. What section 5 above proves for every OTHER field
+  // (immediate invalidation) would, for size, reproduce the exact cost this
+  // whole change exists to remove.
+  {
+    StrokePreviewCache dragCache;
+    dragCache.imageFor(base, lut, 0);
+    check(dragCache.rasterisations() == 1, "size: the first call rasterises, same as any other");
+
+    // 120 ticks at roughly a 120 Hz drag's own spacing (~8 ms apart) -- every
+    // one of them well inside the settle window, so none should pay for a
+    // rasterisation of its own.
+    constexpr int kTicks = 120;
+    constexpr uint64_t kTickNs = 8'000'000ull;  // ~8 ms, a 120 Hz frame
+    uint64_t now = 0;
+    float finalDiameterPx = base.model.tip.diameterPx;
+    const auto started = std::chrono::steady_clock::now();
+    for (int i = 0; i < kTicks; ++i) {
+      now += kTickNs;
+      BrushState tick = base;
+      finalDiameterPx = 20.0f + static_cast<float>(i) * 0.5f;
+      tick.model.tip.diameterPx = finalDiameterPx;
+      dragCache.imageFor(tick, lut, now);
+    }
+    const double dragMs = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - started)
+                              .count();
+    check(dragCache.rasterisations() == 1,
+          "size: a whole drag -- 120 ticks, every one a different diameter -- costs no "
+          "rasterisation beyond the first, because every tick lands inside the settle window");
+    std::printf("    [measured] %d SIZE-drag ticks, %llu total rasterisation(s): %.3f ms\n",
+                kTicks, static_cast<unsigned long long>(dragCache.rasterisations()), dragMs);
+
+    // Holding still (repeating the LAST tick's value) for the settle window
+    // pays for exactly one rasterisation, at the value the drag actually
+    // ended on -- not the reference, and not some intermediate tick.
+    BrushState held = base;
+    held.model.tip.diameterPx = finalDiameterPx;
+    now += kStrokePreviewSizeSettleNs + kTickNs;
+    dragCache.imageFor(held, lut, now);
+    check(dragCache.rasterisations() == 2,
+          "size: holding still past the settle window pays for exactly one more rasterisation");
+
+    // And once settled, repeating the same held value again is an ordinary
+    // hit -- the drag is over, not merely paused.
+    const uint64_t beforeSettledHit = dragCache.rasterisations();
+    dragCache.imageFor(held, lut, now + kTickNs);
+    check(dragCache.rasterisations() == beforeSettledHit,
+          "size: once settled, the held value keeps hitting rather than re-rasterising");
+
+    // A genuine brush-parameter change mid-drag (not just size) must still
+    // invalidate immediately, settle window or not -- the debounce exists
+    // for size alone, not for every field the cache watches.
+    BrushState midDragEdit = base;
+    midDragEdit.model.tip.diameterPx = finalDiameterPx;
+    midDragEdit.model.tip.hardness = 0.9f;
+    const uint64_t beforeMidEdit = dragCache.rasterisations();
+    dragCache.imageFor(midDragEdit, lut, now + kTickNs);
+    check(dragCache.rasterisations() == beforeMidEdit + 1,
+          "size: a real parameter change mid-drag still rasterises immediately, unlike size "
+          "alone");
   }
 
   // ======================================================================

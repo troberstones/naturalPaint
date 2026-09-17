@@ -118,6 +118,10 @@ void PointerQueue::patchAxis(const PointerEvent& e) noexcept {
 }
 
 void PointerQueue::push(const PointerEvent& e) {
+  // Unconditional, and before the switch below decides whether this event
+  // gets a QUEUED sample -- see `latestPosition()`'s own comment for why a
+  // release (which never does) still has to update this.
+  latestPosition_ = {e.x, e.y};
   switch (e.kind) {
     case PointerEventKind::PenAxis:
       switch (e.axis) {

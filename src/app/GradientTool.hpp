@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "app/DocumentLifecycle.hpp"  // DocumentId -- the session outlives its drag (§ 3a)
 #include "ops/Gradient.hpp"
 
 namespace np {
@@ -255,12 +256,116 @@ struct GradientToolState {
 // Nothing else in the build writes these fields, so nothing else can clear
 // them, and `marqueeX0..Y1`'s own documented claim -- "only ever written by
 // the two marquee tools" -- becomes true again.
+// § 3a. The gradient OUTLIVES its drag (the Crop model)
+// ---------------------------------------------------------------------------
+//
+// This was once a pure drag: pen-down anchored t=0, pen-up wrote pixels, and
+// the geometry was discarded in the same statement. That made the ramp
+// unadjustable -- if the aim was wrong by ten degrees the only remedy was to
+// undo and pull the whole thing again -- and it made on-canvas handles
+// impossible for ANY input device, because there was never a moment when a
+// handle existed to be grabbed.
+//
+// So the session now follows `CropSession` (`app/CropTool.hpp`), the tool that
+// already had this shape: rubber-band it out, adjust it by its handles for as
+// long as you like, then commit with Enter or drop it with Escape. `active`
+// and `defining` are independent exactly as they are there -- the initial drag
+// sets both, and pen-up clears `defining` while leaving `active` set.
+//
+// The accepted cost is that pixels now land at Enter rather than at pen-up,
+// for the mouse and pen as much as for a finger. That is a real change to a
+// shipping tool's semantics, taken deliberately: a gradient is aimed, and a
+// tool you cannot re-aim without undoing is one you fight.
 struct GradientDrag {
+  // A ramp is laid down and awaiting commit. Handles are live.
   bool active = false;
-  // Document texels. Pen-down is t=0 and the live pointer is t=1 (§ 6).
+
+  // The initial rubber-band drag, pointer down. Independent of `active`.
+  bool defining = false;
+
+  // Which document this ramp was aimed at. A line in one document's texels is
+  // meaningless in another's -- `CropSession::doc`'s reason, and
+  // `app/MeasureLine`'s before it. Zero when inactive.
+  DocumentId doc = 0;
+
+  // Document texels. Pen-down is t=0 and the far end is t=1 (§ 6).
   float x0 = 0.0f, y0 = 0.0f;
   float x1 = 0.0f, y1 = 0.0f;
+
+  // Which handle the pointer is dragging: `kGradientHandleStart`,
+  // `kGradientHandleEnd`, `kGradientHandleStop + i` for the i'th colour stop,
+  // or -1 for none.
+  int dragHandle = -1;
+
+  // Session-local stop POSITIONS, when the user has dragged one.
+  //
+  // Deliberately positions only, and deliberately not a copy of the whole
+  // ramp. A snapshot of the resolved stops would freeze the foreground colour
+  // at define time, and a "Foreground" stop (§ 2a) is supposed to keep
+  // tracking the swatch -- with the ramp now living until Enter, freezing it
+  // would be a visible regression rather than a theoretical one. So the colours
+  // are still resolved fresh every frame by `currentGradientStops()` and only
+  // the positions are overridden, when and only when a handle has actually
+  // been moved.
+  //
+  // Empty means "the ramp's own positions", which is also what a size mismatch
+  // falls back to -- the ramp can be swapped for another preset mid-session,
+  // and an override sized for the old one must not be pasted onto the new.
+  std::vector<float> stopPositionOverride;
+
+  // Set by the options bar, read and cleared by `ui/MacPaintUI`'s gradient
+  // block on the next frame -- `CropSession`'s request-flag pattern (§5 there),
+  // so the band and the two keys are ONE commit path rather than two.
+  bool commitRequested = false;
+  bool cancelRequested = false;
 };
+
+// Handle ids. The two endpoints are fixed ids and each colour stop is
+// `kGradientHandleStop + its index`, so one `int` addresses every handle and
+// the hit-test can answer with the same vocabulary the drag reads.
+inline constexpr int kGradientHandleStart = 0;
+inline constexpr int kGradientHandleEnd = 1;
+inline constexpr int kGradientHandleStop = 2;
+
+// A stop this close to either end of the ramp is not separately grabbable, and
+// is not drawn as its own mark either.
+//
+// Nearly every ramp has stops at exactly 0 and 1, so without this rule the two
+// endpoints would be permanently shadowed and a gradient could never be
+// re-aimed once drawn -- the single most useful thing the session exists to
+// allow. At the extremes the endpoint wins; a stop parked under it is
+// visually indistinguishable from it anyway, so nothing grabbable is lost that
+// the user could have seen.
+//
+// Shared by the hit-test and the band's own drawing on purpose: an undrawn
+// handle that still answers the hit-test is worse than either behaviour on its
+// own, because it beats a handle the user CAN see.
+inline constexpr float kGradientStopEdgeEpsilon = 0.001f;
+
+// Which handle is within `radius` texels of (x, y), or -1.
+//
+// Interior stops are tested BEFORE the endpoints so a stop that has been
+// dragged near an end is still reachable; stops at the extremes are skipped
+// entirely (see `kGradientStopEdgeEpsilon`).
+int gradientHandleAt(const GradientDrag& session, const GradientStops& stops, float x, float y,
+                     float radius) noexcept;
+
+// Move `handle` to (x, y). Endpoints move in texels; a colour stop is projected
+// onto the ramp's own axis and clamped to [0, 1], because a stop is a position
+// ALONG the ramp and has no meaning off it.
+void gradientDragHandle(GradientDrag& session, const GradientStops& stops, int handle, float x,
+                        float y) noexcept;
+
+// The resolved positions this session should render with: the ramp's own,
+// unless a handle has been dragged and the override still fits.
+std::vector<float> gradientEffectiveStopPositions(const GradientDrag& session,
+                                                  const GradientStops& stops);
+
+// Start a fresh rubber-band at (x, y), discarding any previous session.
+void gradientBeginDefine(GradientDrag& session, DocumentId doc, float x, float y) noexcept;
+
+// Drop the session without writing anything.
+void gradientCancel(GradientDrag& session) noexcept;
 
 // ---------------------------------------------------------------------------
 // § 4. The vocabulary seam

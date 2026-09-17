@@ -2087,7 +2087,24 @@ class StrokeSession {
   // closer together instead of leaving gaps between shrunken dabs ("beaded"
   // taper) -- `entryTaperMultiplier()` is exactly 1.0f whenever taper is
   // off, so this is bit-identical to `tip_.spacingPx()` then.
-  float taperedSpacingPx() const noexcept;
+  //
+  // **And by this sample's own Size dynamic**, which is the other thing that
+  // changes how big the dab about to be laid actually is. `spacing` is a
+  // fraction OF A RADIUS (`brush/Deposit.hpp`), so a spacing in pixels that
+  // keeps using the stroke's base radius while the dabs themselves shrink or
+  // swell under pressure is not a percentage of anything the user can see:
+  // a pressure-thinned dab gets spaced as though it were still full size and
+  // the stroke beads, and a fattened one gets spaced too tightly. Taking
+  // `sample`'s own axes through the same `varianceScale(..., Size)` that
+  // `depositPending()` will use for the dab makes the pixel spacing track the
+  // real dab. `brush/Dynamics.hpp`'s own FADE comment already asserts this as
+  // established behaviour -- "a pressure-sized brush whose radius shrinks
+  // mid-stroke emits MORE dabs over the same distance" -- which was not true
+  // of this code until now, and `brush/StrokePath.hpp`'s `addPoint()` comment
+  // already licenses a spacing that changes "even sample-to-sample (e.g.
+  // pressure-modulated radius)". With no Size variance configured the scale
+  // is exactly 1.0f and this stays bit-identical to the tapered value alone.
+  float taperedSpacingPx(const StrokeSample& sample) const noexcept;
 
   OpenDocument* doc_ = nullptr;
   size_t layerIndex_ = 0;

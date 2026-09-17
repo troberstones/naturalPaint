@@ -16,6 +16,7 @@
 #include "ui/FillDialog.hpp"
 #include "ui/FilterDialogsExtra.hpp"
 #include "ui/DustScratchesDialog.hpp"
+#include "ui/PreferencesDialog.hpp"
 #include "ui/RepairDialogs.hpp"
 #include "ui/ShadowsHighlightsDialog.hpp"
 #include "ui/Dialog.hpp"
@@ -3196,7 +3197,30 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
       // renaming -- a text field and a drag source on the same item would fight
       // over the mouse.
       if (!renamingThis) {
-        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoPreviewTooltip)) {
+        // **Touch must press and hold before a row will lift.** A finger may
+        // reorder layers -- that is manipulation, which the truth table grants
+        // it (app/PointerPolicy.hpp) -- but not on a bare drag: the layer list
+        // scrolls, and a panel where every upward swipe might instead pick up
+        // a layer and drop it somewhere else is a panel nobody can scroll
+        // confidently. The hold is what separates "I am moving the list" from
+        // "I am moving this row", and it is the same hold, with the same
+        // thresholds, that samples a colour on the canvas.
+        //
+        // Mouse and pen are untouched: they drag immediately, as they always
+        // have, because a pointing device has a button to say which it meant.
+        bool touchNeedsHold = false;
+#if NP_PLATFORM_IOS
+        if (st.pointerIsTouch()) {
+          const ImVec2 rowPointer = ImGui::GetMousePos();
+          if (st.layerRowLongPress.update(ImGui::IsItemActive(), rowPointer.x, rowPointer.y,
+                                          ImGui::GetTime() * 1000.0) ==
+              LongPressGesture::Phase::Fired)
+            st.layerRowDragArmed = true;
+          touchNeedsHold = !st.layerRowDragArmed;
+        }
+#endif
+        if (!touchNeedsHold &&
+            ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoPreviewTooltip)) {
           ImGui::SetDragDropPayload("NP_LAYER_ROW", &i, sizeof(size_t));
           ImGui::TextUnformatted(layerRowTitle(layer, i).c_str());
           ImGui::EndDragDropSource();
@@ -4291,6 +4315,14 @@ void drawMunsellPage(AppState& st, const Pigment& sel) {
     }
   }
 
+  // Cached against (steps, hue, per-row-vs-per-page) -- see
+  // `app/MunsellSelection`'s own header comment. This panel used to call
+  // `munsellCellSrgb()` (a gamut bisection sweep) for every one of `n*n`
+  // cells on every frame the panel was open; the cache pays for that sweep
+  // once per actual hue/steps/mode change instead.
+  static MunsellPageCache cellCache;
+  const auto& grid = cellCache.gridFor(br);
+
   for (int row = 0; row < n; ++row) {
     for (int col = 0; col < n; ++col) {
       const float x0 = gridOrigin.x + static_cast<float>(col) * cellW;
@@ -4302,7 +4334,8 @@ void drawMunsellPage(AppState& st, const Pigment& sel) {
       const float inset = (cellW >= 8.0f && cellH >= 8.0f) ? 1.0f : 0.0f;
       const ImVec2 p0(x0 + inset, y0 + inset);
       const ImVec2 p1(x0 + cellW - inset, y0 + cellH - inset);
-      const auto cell = munsellCellSrgb(br, row, col);
+      const auto& cell = grid[static_cast<size_t>(row) * static_cast<size_t>(n) +
+                              static_cast<size_t>(col)];
       const bool selected = row == br.munsellRow && col == br.munsellCol;
       if (cell) {
         dl->AddRectFilled(p0, p1,
@@ -4859,7 +4892,7 @@ StrokePreviewTexture g_strokePreviewTexture;
 // floor are all invisible in a stationary dab, and between them that is most
 // of what the panel's sliders control. `app/StrokePreview` §1 lists them.
 void drawTestStroke(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
-  const StrokePreviewImage& img = g_strokePreview.imageFor(st.brush, lut);
+  const StrokePreviewImage& img = g_strokePreview.imageFor(st.brush, lut, SDL_GetTicksNS());
   const WGPUTextureView view =
       g_strokePreviewTexture.viewFor(gpu, img, g_strokePreview.generation());
 
@@ -13815,6 +13848,9 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     case MenuAction::LensCorrect:   requestLensCorrectDialog();   break;
     // PRD D11: ui/DustScratchesDialog.hpp.
     case MenuAction::DustScratches: requestDustScratchesDialog(); break;
+    // ui/PreferencesDialog.hpp -- the same request-a-flag split, for the same
+    // reason (a native menu callback has no ImGui frame to open a popup in).
+    case MenuAction::Preferences: requestPreferencesDialog(); break;
     // PRD D7 second half and D8: ui/RepairDialogs.hpp.
     case MenuAction::ContentAwareFill: requestContentAwareFillDialog(); break;
     case MenuAction::SeamHeal:         requestSeamHealDialog();         break;
@@ -16508,6 +16544,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // it would let a crosshair outlive the pointer being over the canvas.
   g_canvasCursor.reset();
   g_canvasBitmapTool.reset();  // same reasoning, ui/ToolCursor.hpp §7
+  // The interface scale, before a single widget is measured against the style
+  // it changes. A no-op on every frame the setting has not moved -- see
+  // `applyUiScaleIfChanged()` -- and the lazy load inside it is what makes a
+  // scale saved in a previous session take effect on frame one rather than
+  // only once the Preferences window has been opened.
+  applyUiScaleIfChanged(st);
   // And the same again for the text-frame handle: the block that computes it
   // runs only while the Text tool is active over a Text layer, so a stale one
   // would leave a handle drawn lit after the pointer had gone.
@@ -16581,9 +16623,37 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // the default dock extents gives the identical rect the later, real call
   // will -- this is the same value computed twice, not two different
   // answers.
+  // **iOS gives the document tabs a row of their own** (`kTabRowH`), below
+  // the title row rather than nested inside it: with no native menu bar there
+  // the wordmark and the inline File/Edit/... menus already fill the title
+  // row, and a fingertip wants a target taller than the 36 px a shared row
+  // can offer. Every other platform keeps the merged row, so this is the one
+  // predicate the two layouts differ by -- and it is a runtime bool handed to
+  // `atelierLayout()`, not an `#if` around the arithmetic, so `--selftest`
+  // exercises both shapes on a desktop build.
+#if NP_PLATFORM_IOS
+  constexpr bool kTabStripGetsOwnRow = true;
+#else
+  constexpr bool kTabStripGetsOwnRow = false;
+#endif
+  const bool tabsOwnRow = kTabStripGetsOwnRow && !st.documents.empty();
+  // The tabs keep the ordinary row height -- they are the same size they have
+  // always been. What changes is the row they LEFT: the menu row grows to
+  // `kTallMenuRowH` and its type is scaled to fill it, because the wordmark,
+  // the inline menus and the Undo/Redo/fps cluster are what a touch device
+  // actually needs a bigger target for.
+  const float tabRowH = tabsOwnRow ? kTitleBarH : 0.0f;
+  const float menuRowH = tabsOwnRow ? kTallMenuRowH : kTitleBarH;
+  // Type scaled to the row rather than a second font loaded for it: this
+  // build has one text face (`ui/Fonts`), and `SetWindowFontScale()` is what
+  // ImGui offers for exactly this. Kept a little under the row's own growth
+  // ratio so the widened menus plus the right-hand cluster still fit an iPad's
+  // width -- at 1.0 (every desktop platform) nothing below changes at all.
+  const float menuFontScale = tabsOwnRow ? 1.4f : 1.0f;
   const AtelierRect earlyTabStrip =
-      atelierLayout(vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y, !st.documents.empty(),
-                    nativeMenuBarInstalled() ? 0.0f : g_linuxMenuBarReservedW)
+      atelierLayout(vp->Pos.x, vp->Pos.y + st.iosSafeAreaTop, vp->Size.x,
+                    vp->Size.y - st.iosSafeAreaTop, !st.documents.empty(),
+                    nativeMenuBarInstalled() ? 0.0f : g_linuxMenuBarReservedW, tabsOwnRow)
           .tabStrip;
 
   // ------------------------------------------------------------ title bar
@@ -16630,7 +16700,27 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   publishMenuModel(menus);
   updateNativeMenuBar();
 
-  const float titleBarPad = (kTitleBarH - ImGui::GetFontSize()) * 0.5f;
+  // `st.iosSafeAreaTop` grows the whole bar by the status-bar/notch inset
+  // (main.cpp reads `SDL_GetWindowSafeArea()` every frame; zero on every
+  // platform but iOS) so its background paints under the status bar rather
+  // than leaving a gap, while the actual content stays pinned to the
+  // ORIGINAL `kTitleBarH`-tall band, now simply offset down by the inset --
+  // the explicit `SetCursorPosY()` below overrides ImGui's own centring
+  // rather than trusting it to split the taller frame evenly, and reduces to
+  // exactly today's expression when `iosSafeAreaTop` is 0.
+  // **One window for both rows, deliberately.** The tab strip's own row is
+  // drawn from inside this same `BeginMainMenuBar()` window rather than from a
+  // second one, by making the window tall enough to contain it -- ImGui sizes
+  // the main menu bar to `GetFrameHeight()`, i.e. the font plus twice the
+  // `FramePadding.y` pushed right here, so the row below is bought by padding
+  // and nothing else. That keeps `drawAtelierTabStrip()`'s history intact: the
+  // reason it draws into the caller's window instead of opening its own (see
+  // its declaration comment) was a z-order fight between two overlapping
+  // windows, and one window cannot fight itself. It also keeps the tabs'
+  // `InvisibleButton` hit rects inside the window whose clip rect admits them,
+  // which a strip drawn below a one-row-tall bar would not be.
+  const float titleBarH = menuRowH + st.iosSafeAreaTop + tabRowH;
+  const float titleBarPad = (titleBarH - ImGui::GetFontSize()) * 0.5f;
   ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
                       ImVec2(ImGui::GetStyle().FramePadding.x, titleBarPad));
   const bool menuBarOpen = ImGui::BeginMainMenuBar();
@@ -16642,8 +16732,43 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // menus' share on top of `kTitleWordmarkW`'s nominal 100 px (the two can
     // differ by a few px depending on the font actually loaded).
     const float titleRowStartX = ImGui::GetCursorPosX();
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
-                         (kTitleBarH - ImGui::GetFrameHeight()) * 0.5f);
+    // **Half the inset, not all of it.** ImGui centres a menu bar's items
+    // itself, by adding the bar's `FramePadding.y` to the cursor as the row's
+    // text baseline offset -- and `FramePadding.y` here is `titleBarPad`, the
+    // very inset-aware half-gap pushed above. Adding the whole inset on top
+    // of that counts the centring twice: at a 32 pt inset the wordmark and
+    // every menu landed at y=71 in a bar clipped to y<=68, so the entire left
+    // of the title row was drawn and then thrown away by the menu bar's own
+    // clip rect, leaving only the tab strip (which paints into the draw list
+    // directly, untouched by item clipping) visible. That is the whole of the
+    // "iOS title bar is blank" defect.
+    //
+    // `titleBarPad` is `(kTitleBarH + inset - font) * 0.5`, so subtracting it
+    // from the intended `inset + (kTitleBarH - font) * 0.5` leaves exactly
+    // this -- and at `inset == 0` it is bit-for-bit today's expression on
+    // macOS, Linux and Windows, so the row those platforms render does not
+    // move by a pixel.
+    // Scale the row's type BEFORE placing it: `GetFontSize()` reports the
+    // scaled size once this is set, and the menu popups each open in a window
+    // of their own whose scale is still 1, so the dropdowns stay ordinary
+    // size -- it is the bar's own row that grows. Reset below, before the tab
+    // strip is drawn into this same window, so the tabs are untouched by it.
+    const float unscaledFont = ImGui::GetFontSize();
+    if (menuFontScale != 1.0f) ImGui::SetWindowFontScale(menuFontScale);
+    const float menuFontPx = unscaledFont * menuFontScale;
+
+    // ImGui adds the bar's `FramePadding.y` -- `titleBarPad` -- to the cursor
+    // as this row's text baseline offset, so the cursor has to be the wanted
+    // screen y MINUS that. Two different wanted values: a row of its own gets
+    // its type CENTRED in it (there is nothing else in the row to align to,
+    // and centring is what makes the extra height read as deliberate), while
+    // the shared row keeps the bottom-aligned baseline every desktop platform
+    // has always drawn. At `iosSafeAreaTop == 0`, `tabRowH == 0` and scale 1
+    // the second branch is bit-for-bit the original expression.
+    const float menuTextY = tabsOwnRow
+                                ? st.iosSafeAreaTop + (menuRowH - menuFontPx) * 0.5f
+                                : st.iosSafeAreaTop + (kTitleBarH - unscaledFont);
+    ImGui::SetCursorPosY(menuTextY - titleBarPad);
 
     // docs/ui.md section 6: "substitute the naturalPaint wordmark in the menu
     // bar". The wireframe's "ATELIER 2D" is not adopted -- the project keeps
@@ -16694,6 +16819,36 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // reclaims is the *menus'* share of the band, and the band keeps doing
     // its other jobs.
     if (!nativeMenuBarInstalled()) {
+      // **Where a menu's dropdown opens, corrected for a two-row bar.**
+      // ImGui anchors a menu-bar popup at (imgui_widgets.cpp, `BeginMenuEx`)
+      //
+      //     popup.y = text_pos.y - style.FramePadding.y + window->MenuBarHeight
+      //
+      // which is flush under the bar only while the item's text sits at the
+      // TOP of it -- the one-row case, where `text_pos.y` is a few px and the
+      // whole bar height is the right thing to add. This row is not that: the
+      // menu text is centred in a tall row and `MenuBarHeight` is the height
+      // of BOTH rows, so ImGui adds the tab row's height a second time and
+      // the dropdown opens detached, a tab row's worth of empty space below
+      // its own menu.
+      //
+      // `FramePadding.y` is the one term in that expression this can set
+      // without touching the others (`MenuBarHeight` is locked at `Begin()`
+      // and `text_pos.y` is where the label has to be), so solving for the
+      // wanted anchor -- the bottom of the MENU row, so the dropdown hangs
+      // from its own item and overlays the tabs the way a menu should --
+      // gives `FramePadding.y = menuTextY + tabRowH`. Pushed around the menu
+      // loop ALONE, not the whole row: a menu-bar `Selectable` takes its box
+      // from the label and `ItemSpacing`, so this moves no menu item, but the
+      // wordmark, the Gallery button and the Undo/Redo cluster are ordinary
+      // framed widgets that would grow if it were pushed around them too.
+      //
+      // Only in the two-row layout. On one row the expression is already
+      // correct and every desktop platform keeps the padding it has always
+      // drawn these menus with.
+      if (tabsOwnRow)
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                            ImVec2(ImGui::GetStyle().FramePadding.x, menuTextY + tabRowH));
       for (const MenuNode& menu : menus) {
         // --open-layer-menu: the same id `BeginMenu()` below opens on a click,
         // so the menu can be photographed. See AppState::openLayerMenu. It
@@ -16716,6 +16871,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           ImGui::EndMenu();
         }
       }
+      if (tabsOwnRow) ImGui::PopStyleVar();
       // Measured so next frame's `atelierLayout()` calls can reserve exactly
       // this much room for the tab strip -- see `g_linuxMenuBarReservedW`'s
       // own comment. `titleRowStartX` is this same row's origin, so the delta
@@ -16728,7 +16884,6 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     } else {
       g_linuxMenuBarReservedW = 0.0f;
     }
-
     // The active document's name used to be here, with a `*` dirty marker,
     // and the argument for it was that "a Save whose target is not on screen
     // is how the wrong file gets overwritten". That argument is now the tab
@@ -16854,6 +17009,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // itself (with the live dock extents) is not computed until later in
     // this function; see this variable's own comment above for why that is
     // the same rect regardless.
+    // Back to 1.0 before the tabs: they share this window with the menu row
+    // but not its type scale -- `drawAtelierTabStrip()` reads the ambient font
+    // for every label it measures and draws, so leaving the row's scale set
+    // would grow the tabs too, which is exactly what this row split is NOT
+    // for.
+    if (menuFontScale != 1.0f) ImGui::SetWindowFontScale(1.0f);
     AtelierBands tabBands;
     tabBands.tabStrip = earlyTabStrip;
     if (drawAtelierTabStrip(st, tabBands, g_split, &g_docStatus)) {
@@ -16990,6 +17151,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // PRD D11: ui/DustScratchesDialog.hpp, same placement
   // rule again.
   drawDustScratchesDialog(st);
+  drawPreferencesDialog(st);
   // PRD D7 second half and D8: ui/RepairDialogs.hpp, same placement rule.
   drawContentAwareFillDialog(st);
   drawSeamHealDialog(st);
@@ -17214,13 +17376,17 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   dockExtents.top = pd.top;
   dockExtents.bottom = pd.bottom;
   const AtelierBands bands = atelierLayout(
-      vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y,
+      vp->Pos.x, vp->Pos.y + st.iosSafeAreaTop, vp->Size.x, vp->Size.y - st.iosSafeAreaTop,
       /*showTabStrip=*/!st.documents.empty(), dockExtents,
-      nativeMenuBarInstalled() ? 0.0f : g_linuxMenuBarReservedW);
+      nativeMenuBarInstalled() ? 0.0f : g_linuxMenuBarReservedW, tabsOwnRow);
 
   // Corner-placed dialogs stay between the top dock and the status bar.
   {
-    float top = bands.titleBar.bottom();
+    // `tabStrip.bottom()` as well as `titleBar.bottom()`: with the tabs in a
+    // row of their own the title bar is no longer the lowest chrome at the
+    // top of the window, and a dialog pinned to `titleBar.bottom()` would
+    // open underneath them.
+    float top = std::max(bands.titleBar.bottom(), bands.tabStrip.bottom());
     if (!bands.topDock.empty()) top = std::max(top, bands.topDock.bottom());
     const float bottom = bands.statusBar.empty() ? vp->Pos.y + vp->Size.y : bands.statusBar.y;
     setDialogWorkArea(ImVec2(vp->Pos.x, top), ImVec2(vp->Pos.x + vp->Size.x, bottom));
@@ -18112,6 +18278,23 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // pointer crosses onto a panel, and the pan cursor would flicker back to an
     // arrow mid-gesture while the view was still moving under it.
     const bool canvasHeld = ImGui::IsItemActive();
+
+    // The approved input truth table (app/PointerPolicy.hpp), asked the same
+    // way at every handler below. Before this, device identity was consulted
+    // at four sites out of ~25 and each phrased it differently; a rule spread
+    // that thin is a rule that drifts.
+    //
+    // An UNCLASSIFIED gesture always passes. That is what keeps every desktop
+    // platform exactly as it was: `activePointerKind` is only ever filled on
+    // iOS (the classifier sits inside `#if NP_PLATFORM_IOS` in main.cpp),
+    // because nowhere else can SDL synthesise a mouse event from a finger. So
+    // on macOS/Windows/Linux every one of these gates is structurally a no-op
+    // rather than a behaviour change that merely happens to evaluate true.
+    const auto mayDrive = [&st](np::CanvasInteraction interaction) {
+      return !st.activePointerKind.has_value() ||
+             np::pointerMayDrive(interaction, *st.activePointerKind);
+    };
+
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     // Pen input maps back through the transform's actual inverse (docs/
     // shortcuts.md section 3) -- not a second, independently re-derived
@@ -18122,6 +18305,36 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const Vec2 canvasMouse = xform.toCanvas(Vec2{mouse.x, mouse.y});
     const float tx = canvasMouse.x;
     const float ty = canvasMouse.y;
+
+#if NP_PLATFORM_IOS
+    // Long-press-to-sample: touch's ONLY route to the eyedropper, and a global
+    // modifier that works in every tool rather than only in the eyedropper's
+    // own. A finger is denied the content-creation tools by the table above, so
+    // in those tools the press would otherwise be inert -- this gives that
+    // otherwise-dead gesture the one meaning the truth table grants it.
+    //
+    // Deliberately NOT a tap. A tap is what a finger does by accident, and
+    // silently replacing the user's paint colour is an expensive accident;
+    // holding still for `kLongPressMs` is a thing nobody does unintentionally.
+    //
+    // Sampled at the recogniser's ANCHOR, not at the live pointer: over half a
+    // second a fingertip always creeps, and the colour the user meant is the
+    // one under the finger when they pressed.
+    {
+      const bool oneFingerHeld = st.pointerIsTouch() && hovered &&
+                                 iosTouchTracker().count() == 1 &&
+                                 ImGui::IsMouseDown(ImGuiMouseButton_Left);
+      if (st.touchLongPress.update(oneFingerHeld, mouse.x, mouse.y,
+                                   ImGui::GetTime() * 1000.0) ==
+          LongPressGesture::Phase::Fired) {
+        const Vec2 held = xform.toCanvas(Vec2{st.touchLongPress.anchorX(),
+                                              st.touchLongPress.anchorY()});
+        if (held.x >= 0 && held.y >= 0 && held.x < texW && held.y < texH)
+          applyEyedropperPick(st, PixelCoord{static_cast<int32_t>(held.x),
+                                             static_cast<int32_t>(held.y)});
+      }
+    }
+#endif
 
 
     // Everything below reads this rather than `st.transform.active()` so the
@@ -18170,8 +18383,18 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // divide is exact here rather than approximate, the same argument the
       // guide-snap radius above already makes.
       const float zoom = std::max(st.view.zoom, 0.01f);
-      const float handleRadiusDoc = kTransformHandleHitPx / zoom;
-      const float rotateReachDoc = kTransformRotateReachPx / zoom;
+      // Touch widens the gizmo's grab to a 44pt tap target
+      // (`app/PointerPolicy.hpp`) while mouse and pen keep their 9px precision.
+      // `hitTestTransformHandle()` resolves nearest-within-class, so two corners
+      // both falling inside a fingertip's radius on a small box still pick the
+      // one under the finger rather than the first in the enum.
+      const float handleRadiusDoc = std::max(kTransformHandleHitPx, st.handleGrabRadiusPx()) / zoom;
+      // The rotate ring's reach already exceeds a fingertip's radius, so it is
+      // raised only if touch ever asks for more -- widening it unconditionally
+      // would grow the ring INTO the corner handles it sits outside of and make
+      // a scale drag start a rotation.
+      const float rotateReachDoc =
+          std::max(kTransformRotateReachPx, st.handleGrabRadiusPx()) / zoom;
 
       // ---- input, claimed before any tool sees it -------------------------
       //
@@ -18204,6 +18427,17 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // `transformModalRefusal()` branch at this file's `ControlsSection::Options`
         // arm, which is what finally made that sentence true.
         if (grabbed != TransformHandle::None) st.transform.beginDrag(grabbed, Point2{tx, ty});
+#if NP_PLATFORM_IOS
+        // TEMPORARY (transform by touch): did a press reach the gizmo at all,
+        // and what was driving it?
+        std::fprintf(stderr,
+                     "[NPDBGT] gizmo press: grabbed=%d touchFlag=%d realMouse=%d pen=%d "
+                     "fingers=%d\n",
+                     (int)(grabbed != TransformHandle::None),
+                     (int)st.pointerIsTouch(),
+                     (int)st.pointerIsRealMouse(), (int)st.iosPenInContact,
+                     iosTouchTracker().count());
+#endif
       }
       if (st.transform.mode() == TransformMode::Affine && st.transform.dragging()) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
@@ -18551,27 +18785,70 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         const Vec2 availVec{avail.x, avail.y};
         const Vec2 texVec{texW, texH};
         const Vec2 cursorVec{mouse.x, mouse.y};
-        touchGestureSession.update(twoFingerTouch, st.view, canvasCenterVec, paintOriginVec,
-                                   availVec, texVec, cursorVec);
-        // The touch pair's own translation (the shared midpoint sliding --
-        // a two-finger drag riding along with a pinch/rotate, or on its
-        // own) is NOT part of the anchored zoom/rotate `update()` just
-        // applied; added here, converted from the trackpad's own
-        // dimensionless [0,1] fraction to screen points via its physical
-        // `deviceSize`, and sign-adjusted for the System Settings natural/
-        // traditional scrolling preference -- see ui/MacTrackpadTouch.hpp's
-        // header comment on `trackpadDeviceSize()`/`trackpadNaturalScrolling()`
-        // for why neither conversion belongs in the pure math itself.
-        const TwoTouchDelta delta = touchGestureSession.lastDelta();
+        // The touch pair converted from its device's own normalised units
+        // into screen coordinates, which is what the anchor solve needs to be
+        // dimensionally honest (see `TouchGestureSession`'s header). On a
+        // touchscreen `trackpadDeviceSize()` is the window's own DisplaySize,
+        // so this IS the finger's screen position; on a trackpad the origin is
+        // meaningless but the differences are real screen travel, which is all
+        // the cursor-anchored branch uses.
         const TrackpadDeviceSize deviceSize = trackpadDeviceSize();
-        float extraPanX = delta.panDx * deviceSize.width;
-        float extraPanY = delta.panDy * deviceSize.height;
-        if (!trackpadNaturalScrolling()) {
-          extraPanX = -extraPanX;
-          extraPanY = -extraPanY;
+        auto toScreenUnits = [&](TrackpadTouchPoint p) {
+          p.x *= deviceSize.width;
+          p.y *= deviceSize.height;
+          return p;
+        };
+        const std::pair<TrackpadTouchPoint, TrackpadTouchPoint> touchesScreen{
+            toScreenUnits(twoFingerTouch->first), toScreenUnits(twoFingerTouch->second)};
+#if NP_PLATFORM_IOS
+        // A finger is over the pixel it is touching, so the midpoint between
+        // the two fingers is a real screen position to pin the drawing to --
+        // and a direct device has no scrolling-direction preference to honour.
+        const TouchAnchor anchor = TouchAnchor::TouchMidpoint;
+        const float panSign = 1.0f;
+#else
+        const TouchAnchor anchor = TouchAnchor::Cursor;
+        const float panSign = trackpadNaturalScrolling() ? 1.0f : -1.0f;
+#endif
+        // Pan is NOT added separately any more. It is solved together with
+        // zoom and rotation by the call below, from the requirement that the
+        // canvas point under the fingers stays under the fingers. The previous
+        // `st.view.panX += delta.panDx * deviceSize.width` added a
+        // SINCE-GESTURE-START quantity once per frame, re-applying the whole
+        // accumulated translation every frame for as long as the gesture ran.
+        // TEMPORARY instrumentation (residual trackpad/touch jitter): does this
+        // frame actually carry a NEW touch sample, or the same one the last
+        // frame already consumed? `pollTwoFingerTouch()` returns whatever
+        // snapshot the last AppKit/SDL touch EVENT left, so once the render
+        // rate is near or above the input device's report rate, some frames
+        // see no new sample -- and this solve then produces zero motion for
+        // that frame and double motion for the next, which would read as
+        // exactly the "little jitter" reported. Counts duplicates against
+        // total gesture frames so the rate can be compared with the device's
+        // report rate; one summary line per gesture, not per frame.
+        {
+          static bool haveLast = false;
+          static float lastAx = 0.0f, lastAy = 0.0f, lastBx = 0.0f, lastBy = 0.0f;
+          static int frames = 0, duplicates = 0;
+          const bool same = haveLast && touchesScreen.first.x == lastAx &&
+                            touchesScreen.first.y == lastAy && touchesScreen.second.x == lastBx &&
+                            touchesScreen.second.y == lastBy;
+          ++frames;
+          if (same) ++duplicates;
+          haveLast = true;
+          lastAx = touchesScreen.first.x;
+          lastAy = touchesScreen.first.y;
+          lastBx = touchesScreen.second.x;
+          lastBy = touchesScreen.second.y;
+          if (frames % 120 == 0) {
+            std::fprintf(stderr,
+                         "[NPDBGJ] two-finger frames=%d duplicateSamples=%d (%.1f%% of frames saw "
+                         "no new touch report)\n",
+                         frames, duplicates, 100.0 * duplicates / frames);
+          }
         }
-        st.view.panX += extraPanX;
-        st.view.panY += extraPanY;
+        touchGestureSession.update(touchesScreen, st.view, canvasCenterVec, paintOriginVec,
+                                   availVec, texVec, cursorVec, anchor, panSign);
       } else {
         // Not hovered: no anchor to pin to, so this frame does not drive a
         // gesture -- but the session's own "was a pair active last frame"
@@ -18604,6 +18881,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         st.view.rotation = wrapRotationRadians(st.view.rotation +
                                                canvasRotationRadiansForTrackpad(rotationDegrees));
     }
+    // Published for `main.cpp`'s frame pacing: a live gesture earns the same
+    // unthrottled tier a paint stroke does, because the whole image is moving
+    // under the user's hand and a 60 fps cap is exactly what "capped and not
+    // smooth" felt like on a 120 Hz panel (`app/FramePacing.hpp`'s `gesturing`
+    // input). Read from the session itself rather than re-deriving "are two
+    // fingers down" here, so it cannot disagree with what actually drove the
+    // view this frame.
+    st.touchGestureActive = touchGestureSession.active();
     const ImVec2 viewportCenter(paintOrigin.x + avail.x * 0.5f, paintOrigin.y + avail.y * 0.5f);
     if (st.requestZoomIn) {
       applyZoomFactor(kZoomStepFactor, viewportCenter);
@@ -18688,14 +18973,63 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
 
+    // `canvasHeld` gates ALL three clauses below: every one of them reads a
+    // GLOBAL `IsMouseDragging()`, which is true for a drag that began on any
+    // widget anywhere -- a modal dialog's scrollable list, a layer row being
+    // drag-reordered -- and those drags were panning the canvas underneath.
+    // `IsItemActive()` on `##canvasHit` is exactly "this drag started on the
+    // canvas and still owns the ActiveId", so a drag owned by another widget
+    // (or blocked behind a modal, which never lets the canvas take ActiveId at
+    // all) cannot pan. It is `canvasHeld` and not `hovered` for the reason the
+    // cursor block below already states: a pan is meant to survive the pointer
+    // running off the sheet onto a panel.
     const bool panning =
-        !rotateHeld && !sizingHeld && !st.pendingGuide.has_value() &&
+        canvasHeld && !rotateHeld && !sizingHeld && !st.pendingGuide.has_value() &&
         (ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
          // `toolPansView()` rather than `== Tool::Hand`: this expression IS
          // the hand tool's canvas handler, and `toolHasCanvasHandler()`'s
          // completeness check reads the same predicate rather than a
          // description of it (app/StrokeSession §6b).
          (toolPansView(st.brush.tool) && ImGui::IsMouseDragging(ImGuiMouseButton_Left)));
+         //
+         // **One-finger touch is never navigation.** A clause used to live
+         // here making a single finger pan the canvas whatever the tool was
+         // ("touch is for UI and pan/zoom, the pencil draws"). The approved
+         // input truth table reverses that: a one-finger drag now goes to the
+         // active tool's own touch rule, and if the table denies it there, the
+         // gesture is INERT rather than falling through to a pan. That is the
+         // point of the change -- a finger that wanted to drag a transform
+         // handle used to pan the canvas out from under the handle in the same
+         // frame, because this predicate runs after the tool handlers and had
+         // no exclusion for them.
+         //
+         // Navigation is now exactly: two fingers (pan/pinch/rotate, handled
+         // by `touchGestureSession` above), the middle-drag and wheel, and the
+         // Hand tool -- which still pans from a finger through the
+         // `toolPansView()` clause above, because a finger dragging the Hand
+         // tool IS that tool's own behaviour rather than an override of it.
+#if NP_PLATFORM_IOS
+    // TEMPORARY (mouse-on-iPad "only pans"): which clause of `panning` fired.
+    // Printed only on the frames a pan actually happens, and only when the
+    // pointer has really moved, so a held-still gesture does not flood.
+    if (panning && (ImGui::GetIO().MouseDelta.x != 0.0f || ImGui::GetIO().MouseDelta.y != 0.0f)) {
+      static int dbgP = 0;
+      if ((dbgP++ % 30) == 0)
+        std::fprintf(stderr,
+                     "[NPDBGP] PAN middle=%d toolPans=%d touchClause=%d touchFlag=%d realMouse=%d "
+                     "fingers=%d tool=%d xformActive=%d xformDragging=%d\n",
+                     (int)ImGui::IsMouseDragging(ImGuiMouseButton_Middle),
+                     (int)(toolPansView(st.brush.tool) &&
+                           ImGui::IsMouseDragging(ImGuiMouseButton_Left)),
+                     (int)(st.pointerIsTouch() &&
+                           ImGui::IsMouseDragging(ImGuiMouseButton_Left) &&
+                           iosTouchTracker().count() <= 1),
+                     (int)st.pointerIsTouch(),
+                     (int)st.pointerIsRealMouse(), iosTouchTracker().count(),
+                     (int)st.brush.tool, (int)transformActive,
+                     (int)(st.transform.dragging() || st.transform.warpDragging()));
+    }
+#endif
     if (panning) {
       const ImVec2 d = ImGui::GetIO().MouseDelta;
       st.view.panX += d.x;
@@ -19017,8 +19351,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // `!transformActive`: while a Free Transform gizmo owns the canvas the
       // selection tools do not get the mouse. Without this a drag on the box
       // would move the pixels AND draw a new marquee over them.
-      const bool clicked =
-          hovered && !transformActive && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+      // A finger may not pull a selection: `mayDrive` covers all five
+      // selection tools at once because they all read this one bool.
+      const bool clicked = hovered && !transformActive &&
+                           mayDrive(np::CanvasInteraction::SelectionDefine) &&
+                           ImGui::IsMouseClicked(ImGuiMouseButton_Left);
       OpenDocument* od = st.documents.active();
 
       // Latched at mouse-down for every tool, for the reason
@@ -19289,7 +19626,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // so the grab target stays the same physical size at every zoom -- the
         // transform gizmo's own rule. Floored so a hugely zoomed-out view
         // still offers something grabbable.
-        const float grabTexels = std::max(4.0f, 9.0f / std::max(0.05f, st.view.zoom));
+        // Widened for a fingertip (`app/PointerPolicy.hpp`): 22px of radius for
+        // touch against the mouse's 9, so a handle meets iOS's 44pt minimum tap
+        // target. Divided by zoom so the target stays the same size under the
+        // finger however far out the view is zoomed.
+        const float grabTexels =
+            std::max(4.0f, st.handleGrabRadiusPx() / std::max(0.05f, st.view.zoom));
 
         if (hovered && !transformActive && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
           const int handle =
@@ -19304,7 +19646,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             // clicked somewhere else" is not evidence they meant to destroy
             // pixels. Starting a fresh drag is what the same click already
             // does in every marquee tool here, so the gesture is learned.
-            cropBeginDefine(crop, cropDocId, crop.mode, tx, ty);
+            //
+            // The phase split, and the reason the press above is NOT gated:
+            // grabbing an existing crop handle is manipulation and a finger may
+            // do it, while dragging out a new rect is content editing and a
+            // finger may not. Same tool, same button, two different rows of the
+            // table -- which is why the gate belongs here and not on the press.
+            if (mayDrive(np::CanvasInteraction::CropDefine))
+              cropBeginDefine(crop, cropDocId, crop.mode, tx, ty);
           }
         }
 
@@ -19393,7 +19742,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 
       // `--region-demo`'s pin, `CropSession::demoHeld`'s exact twin.
       if (!region.demoHeld && regionDoc != nullptr) {
-        const float grabTexels = std::max(4.0f, 9.0f / std::max(0.05f, st.view.zoom));
+        // Widened for a fingertip (`app/PointerPolicy.hpp`): 22px of radius for
+        // touch against the mouse's 9, so a handle meets iOS's 44pt minimum tap
+        // target. Divided by zoom so the target stays the same size under the
+        // finger however far out the view is zoomed.
+        const float grabTexels =
+            std::max(4.0f, st.handleGrabRadiusPx() / std::max(0.05f, st.view.zoom));
         const ImGuiIO& regionMods = ImGui::GetIO();
 
         if (hovered && !transformActive && region.gesture == RegionGesture::Idle &&
@@ -19411,7 +19765,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             // A click on empty canvas of this kind starts a new rectangle and
             // deselects whatever was selected -- `regionBeginDefine()`'s own
             // contract.
-            regionBeginDefine(region, regionDocId, kind, tx, ty);
+            // Phase split (as in Crop above): resizing a handle and moving an
+            // existing region are manipulation and stay open to a finger; only
+            // defining a NEW rect is content editing. The press is therefore
+            // ungated and the denial sits on this branch alone.
+            if (mayDrive(np::CanvasInteraction::CropDefine))
+              regionBeginDefine(region, regionDocId, kind, tx, ty);
           }
         }
 
@@ -19533,8 +19892,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // document does not have; `probePixel()` would answer transparent black
       // there anyway, but refusing to sample at all leaves the last good pick
       // in place rather than replacing it with a refusal sentence.
-      const bool sampling =
-          hovered && !transformActive && ImGui::IsMouseDown(ImGuiMouseButton_Left);
+      const bool sampling = hovered && !transformActive &&
+                            mayDrive(np::CanvasInteraction::EyedropperSample) &&
+                            ImGui::IsMouseDown(ImGuiMouseButton_Left);
       if (sampling && (od == nullptr || (tx >= 0 && ty >= 0 && tx < texW && ty < texH)))
         applyEyedropperPick(st, PixelCoord{static_cast<int32_t>(tx), static_cast<int32_t>(ty)});
     }
@@ -19556,7 +19916,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       const OpenDocument* od = st.documents.active();
       const bool blocked =
           panning || rotating || sizingHeld || transformActive || st.pendingGuide.has_value();
-      if (!blocked && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+      if (!blocked && hovered && mayDrive(np::CanvasInteraction::MeasureDefine) &&
+          ImGui::IsMouseClicked(ImGuiMouseButton_Left))
         beginMeasureLine(st.measure, od != nullptr ? od->id : 0u, tx, ty);
       if (st.measure.dragging) {
         // **`!IsMouseDown`, not `IsMouseReleased`.** A Space-pan or a
@@ -19728,7 +20089,13 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // document units here -- the crop tool's `grabTexels` rule, and the
         // reason app/PenTool takes it as a parameter rather than owning a
         // constant it could not zoom-correct.
-        const float pickTexels = std::max(3.0f, 8.0f / std::max(0.05f, st.view.zoom));
+        // The pen's own tighter base (8px, not 9) is kept for mouse and pen and
+        // widened for touch the same way every other handle is -- anchors and
+        // tangent handles crowd together on a dense path, and `pathEditBegin()`
+        // already resolves by nearest.
+        const float pickTexels =
+            std::max(3.0f, std::max(8.0f, st.pointerIsTouch() ? kTouchPointerGrabPx : 0.0f) /
+                               std::max(0.05f, st.view.zoom));
         // Alt suppresses the gnomon for the duration of the press, which is
         // docs/vector-editing.md section 3's escape hatch for a handle sitting
         // underneath it.
@@ -19744,7 +20111,15 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           // drawing tool. `pathToolPlacesAnchors()` splits the two apart:
           // Pen/Curve place, PathSelect edits, and neither does the other's
           // job.
-          if (pathToolPlacesAnchors(st.brush.tool)) {
+          // Placing is content creation, so a finger is turned away -- while
+          // the PathSelect arm further down, which drags existing anchors,
+          // tangents and the gnomon, stays open to one. The tool routing this
+          // block already does is exactly the line the truth table draws, so
+          // the gate needs no new hit-testing of its own. A denied touch is
+          // inert: no placement, no refusal text, no fall-through to a pan.
+          if (pathToolPlacesAnchors(st.brush.tool) &&
+              !mayDrive(np::CanvasInteraction::VectorPointPlace)) {
+          } else if (pathToolPlacesAnchors(st.brush.tool)) {
             const PenPressResult pressed = pathEditBeginPen(
                 &st.pathEdit, &pathLayer->shapes, &pathLayer->nextShapeId, PathPoint{tx, ty},
                 pickTexels, pathDocId, curveMode, penVectorStyle(st));
@@ -19866,7 +20241,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (!shapeTargetOk && shapeDoc == nullptr) {
         // No document at all: refused exactly as the Pen refuses the
         // identical case, out loud rather than silently dropped.
-        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        if (hovered && mayDrive(np::CanvasInteraction::ShapeDefine) &&
+            ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
           g_strokeRefusal =
               std::string("Shape needs a layer to draw into: this document has none selected.");
         }
@@ -19885,7 +20261,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
 
       if (shapeTargetOk) {
-        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        if (hovered && mayDrive(np::CanvasInteraction::ShapeDefine) &&
+            ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
           st.shapeDrag.active = true;
           st.shapeDrag.documentId = shapeDocId;
           st.shapeDrag.x0 = tx;
@@ -20033,8 +20410,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // the same lie in a different place.
       Layer* frameLayer = textDoc != nullptr ? activeLayerOf(*textDoc) : nullptr;
       if (frameLayer != nullptr && frameLayer->kind != LayerKind::Text) frameLayer = nullptr;
-      const float handleRadiusDoc =
-          kTransformHandleHitPx / std::max(0.05f, st.view.zoom);
+      // Text frame handles get the same fingertip tolerance as every other
+      // handle (`app/PointerPolicy.hpp`).
+      const float handleRadiusDoc = std::max(kTransformHandleHitPx, st.handleGrabRadiusPx()) /
+                                    std::max(0.05f, st.view.zoom);
       TextFrameHandle hoveredHandle = TextFrameHandle::None;
       if (frameLayer != nullptr && hovered && !st.textEdit.selectDragActive &&
           !st.textEdit.frameDragActive)
@@ -20333,7 +20712,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       const std::optional<size_t> fidx = fod != nullptr ? activeLayerIndex(*fod) : std::nullopt;
       if (flayer != nullptr && flayer->kind == LayerKind::Flats && !flayer->locked && fidx.has_value()) {
         const std::shared_ptr<const FlatEvaluation> eval = flatsEvaluateLayer(fod->document, *fidx);
-        const bool onCanvas = hovered && tx >= 0 && ty >= 0 && tx < texW && ty < texH;
+        // The flatting tools are content editing top to bottom -- bridges,
+        // fills, merges, carves -- so a finger is turned away from all of them
+        // at this one bool rather than at each sub-tool's own click. Gating the
+        // shared `onCanvas` covers the box-select, lasso, stroke and
+        // single-click sub-tools together, and cannot be partially applied the
+        // way five separate gates could be.
+        const bool onCanvas = hovered && mayDrive(np::CanvasInteraction::FlatsFill) &&
+                              tx >= 0 && ty >= 0 && tx < texW && ty < texH;
         if (eval) {
           switch (act) {
             case FlatsAction::DeleteFill:
@@ -20456,7 +20842,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       const bool flatsCanAct =
           ftl != nullptr && ftl->kind == LayerKind::Flats && !ftl->locked && fti.has_value();
       if (!flatsCanAct) {
-        const bool clickedOff = hovered && tx >= 0 && ty >= 0 && tx < texW && ty < texH &&
+        // Even the REFUSAL is withheld from a denied touch: the table's rule
+        // is that a denied gesture is fully inert, with no cue. A finger that
+        // brushes the canvas has not asked for anything, so telling it to go
+        // pick a Flats layer would be answering a question nobody asked.
+        const bool clickedOff = hovered && mayDrive(np::CanvasInteraction::FlatsFill) &&
+                                tx >= 0 && ty >= 0 && tx < texW && ty < texH &&
                                 ImGui::IsMouseClicked(ImGuiMouseButton_Left);
         if (clickedOff) {
           // On the click, not every frame: a band that permanently reads a
@@ -20473,7 +20864,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // on it too. Without that a bridge drag would record the flats edit
         // AND raise the RGB route's "this layer cannot take pixels" refusal,
         // with the refusal landing second and being the one the user reads.
-        const bool onCanvas = hovered && tx >= 0 && ty >= 0 && tx < texW && ty < texH;
+        // The flatting tools are content editing top to bottom -- bridges,
+        // fills, merges, carves -- so a finger is turned away from all of them
+        // at this one bool rather than at each sub-tool's own click. Gating the
+        // shared `onCanvas` covers the box-select, lasso, stroke and
+        // single-click sub-tools together, and cannot be partially applied the
+        // way five separate gates could be.
+        const bool onCanvas = hovered && mayDrive(np::CanvasInteraction::FlatsFill) &&
+                              tx >= 0 && ty >= 0 && tx < texW && ty < texH;
         const FlatsTool ft = st.flatsTool;
         const bool strokeTool = ft == FlatsTool::BridgePen || ft == FlatsTool::BridgeEraser ||
                                 ft == FlatsTool::DrawMerge;
@@ -20793,8 +21191,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // whether it can be honoured is answered *inside*, where there is
         // somewhere to put the answer. Putting it back in the condition is what
         // makes the refusal silent again.
-        if (hovered && !transformActive && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
-            tx >= 0 && ty >= 0 &&
+        if (hovered && !transformActive && mayDrive(np::CanvasInteraction::PaintBucket) &&
+            ImGui::IsMouseClicked(ImGuiMouseButton_Left) && tx >= 0 && ty >= 0 &&
             tx < texW && ty < texH) {
           if (st.bucketFill == BucketFill::Flats && od != nullptr && target != nullptr) {
             // **The Flats-mode bucket** (ADR-0009). On a Flats layer the click
@@ -20904,25 +21302,68 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // discarded at pen-up with nothing said. Fixing only the bucket would
         // have left the same silence in the tool sitting in the same palette
         // group behind the same guard.
+        const DocumentId gradDocId = od != nullptr ? od->id : 0u;
+
+        // A ramp aimed at another tab means nothing here -- `CropSession`'s
+        // rule (`app/CropTool.hpp`), now that this session outlives its drag
+        // and so can be left behind on a tab switch at all.
+        if (st.gradientDrag.active && st.gradientDrag.doc != gradDocId)
+          gradientCancel(st.gradientDrag);
+
+        // The options bar's buttons and the two keys are ONE commit path, as
+        // they are for Crop: the band raises a request and this block is the
+        // only committer.
+        const bool gradCommitKey = ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+                                   ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
+        const bool gradWantCommit =
+            st.gradientDrag.commitRequested || (st.gradientDrag.active && gradCommitKey);
+        const bool gradWantCancel =
+            st.gradientDrag.cancelRequested ||
+            (st.gradientDrag.active && ImGui::IsKeyPressed(ImGuiKey_Escape, false));
+        st.gradientDrag.commitRequested = false;
+        st.gradientDrag.cancelRequested = false;
+
+        const GradientStops gradSessionStops = currentGradientStops(st.brush, st.gradient);
+        // The preview and the commit must render the SAME ramp, dragged stops
+        // included -- § 1's rule, which a second inline position-copy at either
+        // end would quietly break.
+        const auto gradientPreviewStops = [](const GradientDrag& session,
+                                             const GradientStops& base) {
+          GradientStops out = base;
+          const std::vector<float> positions = gradientEffectiveStopPositions(session, base);
+          for (size_t i = 0; i < out.colorStops.size() && i < positions.size(); ++i)
+            out.colorStops[i].position = positions[i];
+          return out;
+        };
+        // Grab radius in texels, matched to the crop tool's own so the two
+        // tools' handles do not want different degrees of accuracy from the
+        // same hand at the same zoom.
+        const float gradGrabTexels =
+            std::max(4.0f, st.handleGrabRadiusPx() / std::max(0.05f, st.view.zoom));
+
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-          // **Refused at pen-DOWN, not at pen-up**, which is the one place the
-          // two tools' refusals differ in shape. A bucket's wasted gesture is
-          // one click; a gradient's is a drag across the canvas, and letting
-          // the user pull the whole ramp before admitting it was never going to
-          // land is the same silence in slower motion. So a refused gradient
-          // never starts a drag at all.
-          if (!usable) {
-            g_strokeRefusal = pixelOpRefusalMessage(refusal, target, "gradient");
-          } else {
-            st.gradientDrag.active = true;
-            st.gradientDrag.x0 = tx;
-            st.gradientDrag.y0 = ty;
-            // The far handle starts ON the near one, so the first frame of
-            // the drag is degenerate and `gradientDragIsUsable()` refuses a
-            // preview for it -- rather than leaving last drag's endpoint here
-            // and previewing a ramp aimed somewhere the pointer has not been.
-            st.gradientDrag.x1 = tx;
-            st.gradientDrag.y1 = ty;
+          // **The press splits by PHASE, which is also where the input truth
+          // table draws its line** (`app/PointerPolicy.hpp`): grabbing a handle
+          // on an existing ramp is manipulation and a finger may do it, while
+          // pulling out a NEW ramp is content creation and a finger may not.
+          // The hit-test therefore runs before -- and independently of -- the
+          // `GradientDefine` gate below.
+          const int grabbed =
+              gradientHandleAt(st.gradientDrag, gradSessionStops, tx, ty, gradGrabTexels);
+          if (grabbed >= 0) {
+            st.gradientDrag.dragHandle = grabbed;
+          } else if (mayDrive(np::CanvasInteraction::GradientDefine)) {
+            // **Refused at pen-DOWN, not at pen-up**, which is the one place the
+            // two tools' refusals differ in shape. A bucket's wasted gesture is
+            // one click; a gradient's is a drag across the canvas, and letting
+            // the user pull the whole ramp before admitting it was never going to
+            // land is the same silence in slower motion. So a refused gradient
+            // never starts a drag at all.
+            if (!usable) {
+              g_strokeRefusal = pixelOpRefusalMessage(refusal, target, "gradient");
+            } else {
+              gradientBeginDefine(st.gradientDrag, gradDocId, tx, ty);
+            }
           }
         }
         if (st.gradientDrag.active) {
@@ -20937,11 +21378,26 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           // it is the one thing a screenshot run cannot supply, because a
           // held drag's endpoint is the live mouse and a screenshot run's
           // mouse is wherever the human left it.
-          const bool aimMoved = st.gradientDragDemo ||
-                                (tx != st.gradientDrag.x1 || ty != st.gradientDrag.y1);
+          //
+          // Two ways the ramp moves now, where there used to be one. While
+          // `defining`, the far end follows the pointer as it always did;
+          // afterwards the session just sits there until a HANDLE is dragged,
+          // which is the whole point of it outliving the drag.
+          const bool draggingHandle =
+              !st.gradientDrag.defining && st.gradientDrag.dragHandle >= 0 &&
+              ImGui::IsMouseDown(ImGuiMouseButton_Left);
+          const bool aimMoved =
+              st.gradientDragDemo || draggingHandle ||
+              (st.gradientDrag.defining &&
+               (tx != st.gradientDrag.x1 || ty != st.gradientDrag.y1));
           if (!st.gradientDragDemo) {
-            st.gradientDrag.x1 = tx;
-            st.gradientDrag.y1 = ty;
+            if (st.gradientDrag.defining) {
+              st.gradientDrag.x1 = tx;
+              st.gradientDrag.y1 = ty;
+            } else if (draggingHandle) {
+              gradientDragHandle(st.gradientDrag, gradSessionStops, st.gradientDrag.dragHandle, tx,
+                                 ty);
+            }
           }
 
           // === the live preview ==========================================
@@ -20980,7 +21436,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                              gradientToolGeometry(st.gradient, st.gradientDrag.x0,
                                                   st.gradientDrag.y0, st.gradientDrag.x1,
                                                   st.gradientDrag.y1),
-                             currentGradientStops(st.brush, st.gradient),
+                             gradientPreviewStops(st.gradientDrag, gradSessionStops),
                              previewSel);
               setFilterPreview(FilterPreviewOwner::GradientTool, od->id, *previewLayer,
                                std::move(scratch));
@@ -20995,42 +21451,87 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           }
 
           if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-            st.gradientDrag.active = false;
-            // The preview goes the instant the hand lifts, whether or not the
-            // commit below writes anything. Leaving it up for the frame the
-            // real pixels land would be harmless; leaving it up when the
-            // commit REFUSES would leave a ramp on screen that is in no
-            // document and would survive until the next tool change.
-            clearFilterPreview(FilterPreviewOwner::GradientTool);
+            // **Pen-up no longer commits.** It ends the DRAG and leaves the
+            // session standing, handles live, until Enter or Escape -- the
+            // Crop model (`app/GradientTool.hpp` § 3a). This one line is the
+            // semantic change: pixels used to land here.
+            const bool wasDefining = st.gradientDrag.defining;
+            st.gradientDrag.defining = false;
+            st.gradientDrag.dragHandle = -1;
+            // Refined against `st.pointerQueue`'s own latest-seen position,
+            // not left at whatever `tx`/`ty` this frame's `ImGui::GetIO().
+            // MousePos` gave: that is ImGui's own bookkeeping, last set from
+            // a MOTION event, and `app/PointerQueue.hpp`'s survey of
+            // `SDL_uikitpen.m` found iOS sends a release's Touch(up) with no
+            // guarantee of a fresh Motion immediately before it -- so on a
+            // release frame specifically, `MousePos` can still be one sample
+            // behind the finger/pencil's true final position. This tool never
+            // claims a stroke gesture (it only needs two endpoints, not a
+            // path), so `latestPosition()` -- updated on every raw pointer
+            // event including the release itself -- is the only place that
+            // final coordinate is available at all.
+            // `st.gradientDragDemo` pins the far handle for `--gradient-demo
+            // drag` (this function's own comment above, twenty lines up) --
+            // a synthetic run pushes no real pointer events at all, so
+            // `latestPosition()` would read `{0, 0}` and must not override
+            // the demo's own pinned endpoint.
+            // Only for the DEFINING drag: it is the far endpoint that is
+            // still one sample behind. A handle drag has already written the
+            // position it wanted through `gradientDragHandle()`, and re-aiming
+            // the far end from the pointer afterwards would yank whichever
+            // handle the user had just placed.
+            if (wasDefining && !st.gradientDragDemo) {
+              const PointerQueue::Position latest = st.pointerQueue.latestPosition();
+              const Vec2 latestCanvas = xform.toCanvas(Vec2{latest.x, latest.y});
+              st.gradientDrag.x1 = latestCanvas.x;
+              st.gradientDrag.y1 = latestCanvas.y;
+            }
+            // The preview deliberately SURVIVES the release now: it is no
+            // longer a picture of a gesture in flight, it is the pending
+            // gradient itself, and it stands until Enter writes it or Escape
+            // drops it. Clearing it here -- which is what this block used to
+            // do -- would leave the session live with nothing on screen.
+          }
 
-            // `usable` is re-tested rather than trusted from pen-down: the
-            // drag spans frames, and `*target->rgbTiles` is dereferenced two
-            // lines down. Nothing in this build can lock or retype a layer
-            // while the pointer is held -- the same argument app/StrokeSession
-            // §5 makes about its own latched target -- so this is the guard
-            // being kept where it is relied on rather than where it happens to
-            // have been established.
-            //
-            // The ramp, the aim and the "is this a gradient at all" test all
-            // come from `app/GradientTool`, and the preview twenty lines above
-            // calls the identical three functions with the identical
-            // arguments. That is the whole reason those functions exist
-            // (`app/GradientTool.hpp` § 1): what the user watched during the
-            // drag and what lands here are not two computations that agree,
-            // they are one computation run twice.
+          // === commit / cancel (the Crop model) ==========================
+          //
+          // The one committer, reached from Enter, from the options bar's
+          // request flag, and from nowhere else.
+          //
+          // `usable` is re-tested rather than trusted from pen-down: the
+          // session now spans an unbounded number of frames rather than just a
+          // drag, so a layer really can be locked or retyped underneath it --
+          // the argument app/StrokeSession §5 makes about its own latched
+          // target, with the window widened from a held pointer to a whole
+          // editing session.
+          //
+          // The ramp, the aim and the "is this a gradient at all" test all
+          // come from `app/GradientTool`, and the preview above calls the
+          // identical functions with identical arguments. That is the whole
+          // reason those functions exist (`app/GradientTool.hpp` § 1): what the
+          // user watched and what lands here are not two computations that
+          // agree, they are one computation run twice.
+          if (gradWantCancel) {
+            clearFilterPreview(FilterPreviewOwner::GradientTool);
+            gradientCancel(st.gradientDrag);
+          } else if (gradWantCommit) {
+            clearFilterPreview(FilterPreviewOwner::GradientTool);
             if (usable && gradientDragIsUsable(st.gradientDrag.x0, st.gradientDrag.y0,
                                                st.gradientDrag.x1, st.gradientDrag.y1)) {
               const GradientRegion region{0, 0, od->document.width, od->document.height};
               const Selection* sel =
                   od->selection.has_value() ? &*od->selection : nullptr;
+              const GradientStops committed =
+                  gradientPreviewStops(st.gradientDrag, gradSessionStops);
               if (renderGradient(*target->rgbTiles, region,
                                  gradientToolGeometry(st.gradient, st.gradientDrag.x0,
                                                       st.gradientDrag.y0, st.gradientDrag.x1,
                                                       st.gradientDrag.y1),
-                                 currentGradientStops(st.brush, st.gradient), sel) > 0) {
+                                 committed, sel) > 0) {
                 od->recordEdit("gradient", EditKind::Content);
               }
             }
+            gradientCancel(st.gradientDrag);
           }
         }
       }
@@ -21181,14 +21682,55 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const bool strokeTool =
         toolBeginsStroke(st.brush.tool) && !transformActive && !cloneAnchoring && !quickMaskTool;
     const bool inside = tx >= 0 && ty >= 0 && tx < texW && ty < texH;
-    const bool down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    // `!st.pointerIsTouch()`: a finger held on the canvas must
+    // never read as a stroke's own `down` -- see that field's own comment.
+    // The Pencil is unaffected (its own mouse synthesis never sets the flag).
+    bool down = ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+                mayDrive(np::CanvasInteraction::PaintStroke);
+#if NP_PLATFORM_IOS
+    // Nothing extra is needed here. `activePointerKind` is a STICKY
+    // fact re-asserted every frame from the raw finger count and pen contact
+    // (see main.cpp, beside `ImGui::NewFrame()`), not a guess latched at the
+    // press -- so the plain test above already covers the RELEASE edge, which
+    // is where every touch gesture used to leak exactly one dab: ImGui's input
+    // trickling still reports the button held for one frame after the fingers
+    // are gone ("f=1920 touchFlag=0 fingers=2 down=0" then "f=1921 touchFlag=0
+    // fingers=0 down=1", measured on device).
+    //
+    // In particular this must NOT become a pen-contact requirement. That would
+    // shut the hole by also forbidding a mouse or trackpad paired to the iPad
+    // from ever painting, which is a real device this build supports.
+#endif
+#if NP_PLATFORM_IOS
+    // TEMPORARY debug scaffolding (Bug C: a one-finger pan sometimes deposits
+    // a dab). One line per frame in which anything pointer-ish is live, so the
+    // relative timing of ImGui's latched button state, the SDL-poll-time touch
+    // flag and the raw finger count can be read off directly.
+    {
+      static int dbgC = 0;
+      ++dbgC;
+      const int fingers = iosTouchTracker().count();
+      const bool imguiDown = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+      if (imguiDown || st.pointerIsTouch() || fingers > 0) {
+        std::fprintf(stderr,
+                     "[NPDBGC] f=%d imguiDown=%d touchFlag=%d realMouse=%d pen=%d fingers=%d "
+                     "down=%d strokeActive=%d strokeTool=%d tool=%d toolPans=%d hovered=%d "
+                     "canvasHeld=%d\n",
+                     dbgC, (int)imguiDown, (int)st.pointerIsTouch(),
+                     (int)st.pointerIsRealMouse(), (int)st.iosPenInContact, fingers,
+                     (int)down, (int)g_stroke.active(), (int)strokeTool, (int)st.brush.tool,
+                     (int)toolPansView(st.brush.tool), (int)hovered, (int)canvasHeld);
+      }
+    }
+#endif
     if (cloneTool && hovered && inside && !panning && !rotating && !sizingHeld &&
         !st.pendingGuide.has_value()) {
       if (cloneAnchoring) {
         // Clicked, not held: an anchor is a point, and a held Option-drag
         // re-aiming the source on every frame would make the offset whatever
         // the pointer happened to be over when the button came up.
-        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        if (mayDrive(np::CanvasInteraction::CloneStamp) &&
+            ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
           setCloneAnchor(st.clone, Vec2{tx, ty});
           g_strokeRefusal.clear();
         }
@@ -21411,6 +21953,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           // stroke claims nothing, and its gesture's samples are dropped at
           // the end of the frame like any other press the canvas did not use.
           strokeGesture = st.pointerQueue.claimGesture();
+#if NP_PLATFORM_IOS
+          // TEMPORARY debug scaffolding (Bug C): a stroke that begins while a
+          // finger is on the glass is the defect itself, caught in the act.
+          std::fprintf(stderr, "[NPDBGC] *** STROKE BEGIN fingers=%d touchFlag=%d at (%.1f,%.1f)\n",
+                       iosTouchTracker().count(), (int)st.pointerIsTouch(), tx, ty);
+#endif
         }
         st.lastX = tx;
         st.lastY = ty;
@@ -22093,6 +22641,37 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       dl->AddCircle(ImVec2(a.x, a.y), 4.0f, atelierToken(kAccent), 0, 1.5f);
       dl->AddCircleFilled(ImVec2(b.x, b.y), 4.0f, IM_COL32(0, 0, 0, 160));
       dl->AddCircleFilled(ImVec2(b.x, b.y), 3.0f, atelierToken(kAccent));
+
+      // **The colour stops, drawn because they are now grabbable.** The
+      // session outlives its drag (`app/GradientTool.hpp` § 3a), so these are
+      // handles rather than decoration -- and a handle the user cannot see is
+      // one they will never reach for. Drawn as small diamonds so they read as
+      // a different KIND of thing from the two round endpoints: the ends aim
+      // the ramp, these slide along it.
+      //
+      // Skipped entirely while `defining`. During the initial pull the stops
+      // are sliding along a line whose far end is still moving, and marks
+      // swimming down the band would be noise about something the user cannot
+      // act on until they let go.
+      if (!st.gradientDrag.defining) {
+        const GradientStops bandStops = currentGradientStops(st.brush, st.gradient);
+        const std::vector<float> bandPositions =
+            gradientEffectiveStopPositions(st.gradientDrag, bandStops);
+        for (size_t si = 0; si < bandPositions.size(); ++si) {
+          const float t = bandPositions[si];
+          // The ends already have their own marks; a diamond stacked on top of
+          // the ring or the disc would only blur what those mean.
+          if (t <= kGradientStopEdgeEpsilon || t >= 1.0f - kGradientStopEdgeEpsilon) continue;
+          const ImVec2 p(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+          const float rr = 5.0f;
+          const ImVec2 diamond[4] = {ImVec2(p.x, p.y - rr), ImVec2(p.x + rr, p.y),
+                                     ImVec2(p.x, p.y + rr), ImVec2(p.x - rr, p.y)};
+          dl->AddConvexPolyFilled(diamond, 4, IM_COL32(0, 0, 0, 160));
+          const ImVec2 inner[4] = {ImVec2(p.x, p.y - rr + 2.0f), ImVec2(p.x + rr - 2.0f, p.y),
+                                   ImVec2(p.x, p.y + rr - 2.0f), ImVec2(p.x - rr + 2.0f, p.y)};
+          dl->AddConvexPolyFilled(inner, 4, atelierToken(kAccent));
+        }
+      }
 
       // **What the two handles mean is not the same for all three kinds, so
       // neither is the band.** A bare line says "from here to there", which is

@@ -268,19 +268,37 @@ std::array<Point2, kCropHandleCount> cropHandlePoints(const CropQuad& quad) noex
 
 int cropHandleAt(const CropQuad& quad, CropMode mode, float x, float y, float radius) noexcept {
   const std::array<Point2, kCropHandleCount> h = cropHandlePoints(quad);
-  // Corners first and returned on the first hit, so a corner always wins a tie
-  // with the edge handle overlapping it on a small rectangle. Two passes rather
-  // than one pass plus a distance comparison: "the more specific handle wins"
-  // is the rule, not "the nearer one", and on a 3-texel-wide crop the nearer
-  // one is a coin toss.
+  // **Corners beat edges by CLASS, and within a class the NEAREST wins.**
+  //
+  // The class rule is the original one and it stands: "the more specific handle
+  // wins" rather than "the nearer one", because on a 3-texel-wide crop the
+  // nearer of a corner and its overlapping edge handle is a coin toss.
+  //
+  // Nearest-WITHIN-a-class is new, and it is what makes a fingertip's grab
+  // radius safe. At the mouse's 9px nothing else was ever in range, so
+  // returning the first hit was the same as returning the nearest; at touch's
+  // 22px two corners of a small rectangle can both be in range at once, and
+  // first-hit would then silently hand back whichever happened to be earlier in
+  // the array rather than the one under the finger.
   const int last = mode == CropMode::Rectangle ? kCropHandleCount : kCropCornerCount;
-  for (int i = 0; i < kCropCornerCount; ++i) {
-    if (edgeLength(h[static_cast<size_t>(i)], Point2{x, y}) <= radius) return i;
-  }
-  for (int i = kCropCornerCount; i < last; ++i) {
-    if (edgeLength(h[static_cast<size_t>(i)], Point2{x, y}) <= radius) return i;
-  }
-  return -1;
+  const auto nearestIn = [&](int from, int to) {
+    int best = -1;
+    float bestDist = radius;
+    for (int i = from; i < to; ++i) {
+      const float d = edgeLength(h[static_cast<size_t>(i)], Point2{x, y});
+      // `<=` so an exact-radius hit still counts, `<` thereafter so the first
+      // of two equidistant handles wins rather than the last -- a stable
+      // answer beats a marginally different one that flickers with rounding.
+      if (d <= bestDist && (best < 0 || d < bestDist)) {
+        best = i;
+        bestDist = d;
+      }
+    }
+    return best;
+  };
+  const int corner = nearestIn(0, kCropCornerCount);
+  if (corner >= 0) return corner;
+  return nearestIn(kCropCornerCount, last);
 }
 
 void cropDragHandle(CropSession& session, int handle, float x, float y) noexcept {

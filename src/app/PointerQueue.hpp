@@ -370,6 +370,23 @@ class PointerQueue {
   size_t gestureCount() const noexcept { return gestures_.size(); }
   const Axes& latestAxes() const noexcept { return latest_; }
 
+  // The position of the single most recent pointer event `push()` has seen,
+  // of ANY kind (down/motion/up, pen or mouse) and regardless of which
+  // gesture it belongs to or whether that gesture was ever claimed --
+  // updated unconditionally, unlike `samples_` itself, which never queues a
+  // button-up at all (section 1: "button-up is never queued... it ENDS the
+  // gesture"). A tool that only cares about a drag's two endpoints (Gradient,
+  // Bucket) and never claims a stroke gesture has no other way to learn where
+  // a pen/touch release actually landed: `ImGui::GetIO().MousePos` is
+  // whatever ImGui's own backend last set it to from a MOTION event, and
+  // section 2's own survey of `SDL_uikitpen.m` found iOS sends a release's
+  // Touch(up) with no guarantee of a fresh Motion immediately before it --
+  // exactly the gap this closes. `{0, 0}` before the first event.
+  struct Position {
+    float x = 0.0f, y = 0.0f;
+  };
+  Position latestPosition() const noexcept { return latestPosition_; }
+
  private:
   struct Gesture {
     uint64_t id = 0;
@@ -401,6 +418,7 @@ class PointerQueue {
   uint64_t penDownSeqPending_ = 0;
   uint64_t penUpSeqPending_ = 0;
   Axes latest_;
+  Position latestPosition_;
   // Rule (b)'s memory: which axes have already been reported since the last
   // PEN_MOTION event. Indexed by `PointerAxis` (Other excluded).
   std::array<bool, 4> axisSinceMotion_{};
