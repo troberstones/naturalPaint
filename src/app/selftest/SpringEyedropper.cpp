@@ -48,8 +48,8 @@ namespace {
 // by falling through to the `default`. `Tool::PaintBucket` is the only tool
 // whose answer depends on `fill`, handled before the switch so the switch
 // itself stays a flat membership table.
-bool expectedEligible(Tool t, BucketFill fill) noexcept {
-  if (t == Tool::PaintBucket) return fill == BucketFill::Colour;
+bool expectedEligible(Tool t, BucketRegion region) noexcept {
+  if (t == Tool::PaintBucket) return region == BucketRegion::Tolerance;
   switch (t) {
     case Tool::Brush:
     case Tool::Water:
@@ -77,29 +77,29 @@ bool runSpringEyedropperTest() {
       "[selftest] spring eyedropper: Alt/Option borrows Tool::Eyedropper, and hands it back\n");
 
   // =========================================================================
-  // 1. Eligibility, walked over every (Tool, BucketFill) pair
+  // 1. Eligibility, walked over every (Tool, BucketRegion) pair
   // =========================================================================
   {
     bool matchesOracleEverywhere = true;
     for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
       const Tool t = static_cast<Tool>(i);
-      for (BucketFill fill : {BucketFill::Colour, BucketFill::Flats}) {
-        if (springEyedropperEligible(t, fill) != expectedEligible(t, fill))
+      for (BucketRegion region : {BucketRegion::Tolerance, BucketRegion::Flats}) {
+        if (springEyedropperEligible(t, region) != expectedEligible(t, region))
           matchesOracleEverywhere = false;
       }
     }
     check(matchesOracleEverywhere,
           "springeyedrop: springEyedropperEligible() matches a hand-written table "
-          "for EVERY (Tool, BucketFill) pair -- Brush/Water/DryBrush/Pencil/"
-          "Eraser/Dodge/Burn/Smudge always, PaintBucket only in Colour mode, "
-          "everything else (including Flats-mode PaintBucket) never");
+          "for EVERY (Tool, BucketRegion) pair -- Brush/Water/DryBrush/Pencil/"
+          "Eraser/Dodge/Burn/Smudge always, PaintBucket only in Tolerance mode, "
+          "everything else (including Flats-region PaintBucket) never");
 
     // The one tool whose answer is not a constant, spelled out rather than
     // trusted to the walk above: a Colour<->Flats bug that only shows up on
     // PaintBucket would still make the walk fail, but this line says WHICH
     // tool and WHICH mode without having to re-derive it from a FAIL count.
-    check(springEyedropperEligible(Tool::PaintBucket, BucketFill::Colour) &&
-              !springEyedropperEligible(Tool::PaintBucket, BucketFill::Flats),
+    check(springEyedropperEligible(Tool::PaintBucket, BucketRegion::Tolerance) &&
+              !springEyedropperEligible(Tool::PaintBucket, BucketRegion::Flats),
           "springeyedrop: the paint bucket has Alt to lend only in Colour mode -- "
           "Flats keeps it for carving a fill out of a leaked area (ADR-0009)");
   }
@@ -154,10 +154,10 @@ bool runSpringEyedropperTest() {
     bool restoresEveryEligibleTool = true;
     for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
       const Tool t = static_cast<Tool>(i);
-      // Colour mode: the more permissive of PaintBucket's two, and the
+      // Tolerance mode: the more permissive of PaintBucket's two, and the
       // default a fresh AppState starts in, so a plain `setActiveTool()`
       // fixture below is really exercising it.
-      if (!expectedEligible(t, BucketFill::Colour)) continue;
+      if (!expectedEligible(t, BucketRegion::Tolerance)) continue;
       AppState w;
       setActiveTool(w, t);
       const bool began = beginSpringEyedropper(w);
@@ -201,17 +201,17 @@ bool runSpringEyedropperTest() {
 
     AppState flatsBucket;
     setActiveTool(flatsBucket, Tool::PaintBucket);
-    flatsBucket.bucketFill = BucketFill::Flats;
+    flatsBucket.bucketRegion = BucketRegion::Flats;
     check(!beginSpringEyedropper(flatsBucket) && flatsBucket.brush.tool == Tool::PaintBucket,
-          "springeyedrop: the Flats-mode bucket keeps Alt to carve a fill -- "
-          "refused, even though the SAME tool in Colour mode is eligible");
+          "springeyedrop: the Flats-region bucket keeps Alt to carve a fill -- "
+          "refused, even though the SAME tool in Tolerance mode is eligible");
 
     // The enum walked, not sampled: every tool the oracle marks ineligible,
-    // in Colour mode (the more permissive of the two for PaintBucket).
+    // in Tolerance mode (the more permissive of the two for PaintBucket).
     bool refusedEverywhereIneligible = true;
     for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
       const Tool t = static_cast<Tool>(i);
-      if (expectedEligible(t, BucketFill::Colour)) continue;
+      if (expectedEligible(t, BucketRegion::Tolerance)) continue;
       AppState w;
       setActiveTool(w, t);
       const bool began = beginSpringEyedropper(w);

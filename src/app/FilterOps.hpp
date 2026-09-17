@@ -11,6 +11,7 @@
 #include "ops/Inpaint.hpp"
 #include "ops/Lens.hpp"
 #include "ops/LensBlur.hpp"
+#include "ops/PolarRemap.hpp"
 #include "ops/PatchMatch.hpp"
 #include "ops/RadialBlur.hpp"
 #include "ops/SeamHeal.hpp"
@@ -246,6 +247,11 @@ FilterOpResult previewRadialBlur(const OpenDocument& doc, const RadialBlurParams
 FilterOpResult applyLensBlur(OpenDocument& doc, const LensBlurParams& params);
 FilterOpResult previewLensBlur(const OpenDocument& doc, const LensBlurParams& params,
                                TileStore* previewOut);
+
+// docs/operations.md §3: Polar Coordinates.
+FilterOpResult applyPolarRemap(OpenDocument& doc, const PolarRemapParams& params);
+FilterOpResult previewPolarRemap(const OpenDocument& doc, const PolarRemapParams& params,
+                                 TileStore* previewOut);
 
 // The canvas centre in document texels. The dialog seeds from it and the
 // command reader fills an absent centre from it, so the two cannot disagree.

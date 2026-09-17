@@ -675,29 +675,55 @@ struct ToolSwitchState {
   Tool springEyedropperReturn = Tool::Brush;
 };
 
-// ADR-0009: what the paint bucket fills.
-enum class BucketFill { Colour, Flats };
-struct BucketFillRow {
-  BucketFill mode;
+// ADR-0009, revised: **what FINDS the region** under the click. `Tolerance`
+// is the ordinary flood fill; `Flats` hangs the drawing as a rubber sheet
+// pinned at every stroke and takes the sagging valley instead -- a break in a
+// line narrower than GAP does not leak. This used to also decide what the
+// click painted with (Flats meant "solid foreground colour, baked through the
+// segmentation"); that bundled two independent questions into one control, so
+// a Pattern fill could never use the Flats algorithm to find its region.
+// `BucketContent` below is the other axis now.
+enum class BucketRegion { Tolerance, Flats };
+struct BucketRegionRow {
+  BucketRegion mode;
   const char* label;
   const char* tip;
 };
-inline constexpr size_t kBucketFillCount = 2;
-inline constexpr BucketFillRow kBucketFills[kBucketFillCount] = {
-    {BucketFill::Colour, "Colour",
+inline constexpr size_t kBucketRegionCount = 2;
+inline constexpr BucketRegionRow kBucketRegions[kBucketRegionCount] = {
+    {BucketRegion::Tolerance, "Tolerance",
      "The region of similar colour around the click, within TOLERANCE -- the ordinary bucket."},
-    {BucketFill::Flats, "Flats",
+    {BucketRegion::Flats, "Flats",
      "The enclosed region of the line art under the click, found by hanging the drawing as a "
      "rubber sheet pinned at every stroke: a break in a line narrower than GAP does not leak. "
-     "On a Flats layer the click recolours that fill and is remembered; on an RGB layer it "
-     "fills the pixels. Option-click carves a new fill out of a leaked area; Shift-click "
-     "recolours every fill of the same colour."},
+     "On a Flats layer the click recolours that fill and is remembered (always with the "
+     "foreground colour -- a Flats layer's own fills have no pattern of their own yet); on an "
+     "RGB layer it bakes CONTENT into the pixels. Option-click carves a new fill out of a "
+     "leaked area; Shift-click recolours every fill of the same colour."},
 };
-inline const char* bucketFillLabel(BucketFill mode) noexcept {
-  for (size_t i = 0; i < kBucketFillCount; ++i)
-    if (kBucketFills[i].mode == mode) return kBucketFills[i].label;
+inline const char* bucketRegionLabel(BucketRegion mode) noexcept {
+  for (size_t i = 0; i < kBucketRegionCount; ++i)
+    if (kBucketRegions[i].mode == mode) return kBucketRegions[i].label;
   return "?";
 }
+
+// **What fills the region once found** -- independent of how it was found.
+// Read only where the bucket actually writes pixels: the Tolerance path
+// always, and the Flats path's RGB-layer bake; a Flats layer's own recolour
+// has no texel to put a pattern into and stays foreground-colour-only (the
+// row above says so).
+enum class BucketContent { Colour, Pattern };
+struct BucketContentRow {
+  BucketContent mode;
+  const char* label;
+  const char* tip;
+};
+inline constexpr size_t kBucketContentCount = 2;
+inline constexpr BucketContentRow kBucketContents[kBucketContentCount] = {
+    {BucketContent::Colour, "Colour", "The foreground colour."},
+    {BucketContent::Pattern, "Pattern",
+     "A defined pattern, tiled from the canvas origin -- Edit > Define Pattern... first."},
+};
 
 // The flatting key actions, raised by the keymap while a Flats layer is
 // active (scoped bindings) and consumed by ui/MacPaintUI's canvas block.
@@ -942,13 +968,21 @@ struct AppState {
   FloodFillParams magicWand;
   FloodFillParams paintBucket;
 
-  // **The bucket's FILL mode** (ADR-0009): `Colour` is the tolerance flood
-  // above; `Flats` fills the rubber-sheet region under the click instead --
-  // on a Flats layer as a recorded recolour, on an RGB layer as a baked
-  // fill of the basin the bake segments. `flatsBucketParams` is what the bake
-  // segments with; a Flats layer uses its own `flats.params`.
-  BucketFill bucketFill = BucketFill::Colour;
+  // **How the bucket finds its region** (ADR-0009, revised): `Tolerance` is
+  // the flood above; `Flats` finds the rubber-sheet region under the click
+  // instead -- on a Flats layer as a recorded recolour, on an RGB layer as a
+  // baked fill of the basin the bake segments. `flatsBucketParams` is what
+  // the bake segments with; a Flats layer uses its own `flats.params`.
+  BucketRegion bucketRegion = BucketRegion::Tolerance;
   FlatParams flatsBucketParams;
+
+  // **What fills the region once found**, and which pattern -- independent
+  // of `bucketRegion` above (that header comment argues why the two used to
+  // be one control and should not have been). `bucketPatternIndex` indexes
+  // `sessionPatterns()`, the same store and the same by-index convention the
+  // Fill dialog's own Pattern combo uses.
+  BucketContent bucketContent = BucketContent::Colour;
+  int32_t bucketPatternIndex = 0;
 
   // **WHAT the bake segments** -- the options bar's SOURCE combo.
   //

@@ -26,6 +26,7 @@
 #include "color/Space.hpp"
 #include "core/TileStore.hpp"
 #include "io/GradientPresetFile.hpp"
+#include "ops/Pattern.hpp"
 #include "ui/AtelierTheme.hpp"
 #include "ui/Fonts.hpp"
 #include "ui/MacPaintUI.hpp"
@@ -2434,35 +2435,107 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
   // is a row of live controls bound to a struct the canvas never looks at: a
   // toolbar that responds perfectly and changes nothing.
   FloodFillParams* flood = floodToolParamsFor(st, st.brush.tool);
-  // ADR-0009: the bucket's FILL mode. `Colour` is the tolerance flood whose
-  // controls follow; `Flats` replaces them with the rubber sheet's own three
-  // (SHEET, GAP, DECLUTTER), bound to the active Flats layer's parameters
-  // when there is one and to `st.flatsBucketParams` -- what an RGB-layer
-  // bake segments with -- otherwise. The wand has no such mode: a selection
-  // of a flat's region is the Flats-mode bucket's job, one tool over.
+  // ADR-0009, revised: the bucket's REGION algorithm. `Tolerance` is the
+  // flood whose controls follow; `Flats` replaces them with the rubber
+  // sheet's own three (SHEET, GAP, DECLUTTER), bound to the active Flats
+  // layer's parameters when there is one and to `st.flatsBucketParams` --
+  // what an RGB-layer bake segments with -- otherwise. The wand has no such
+  // mode: a selection of a flat's region is the Flats-region bucket's job,
+  // one tool over. CONTENT (Colour/Pattern), just below, is the independent
+  // other axis -- what fills the region once REGION has found it.
   const bool flatsBucket = flood != nullptr && st.brush.tool == Tool::PaintBucket &&
-                           st.bucketFill == BucketFill::Flats;
-  if (flood != nullptr && st.brush.tool == Tool::PaintBucket) {
+                           st.bucketRegion == BucketRegion::Flats;
+  const bool isPaintBucket = flood != nullptr && st.brush.tool == Tool::PaintBucket;
+  if (isPaintBucket) {
     bandSeparator();
-    capsLabel("FILL");
+    capsLabel("REGION");
     ImGui::SameLine();
-    int fillIndex = 0;
-    for (size_t i = 0; i < kBucketFillCount; ++i)
-      if (kBucketFills[i].mode == st.bucketFill) fillIndex = static_cast<int>(i);
+    int regionIndex = 0;
+    for (size_t i = 0; i < kBucketRegionCount; ++i)
+      if (kBucketRegions[i].mode == st.bucketRegion) regionIndex = static_cast<int>(i);
     pushAtelierMono();
-    float widestFillLabel = 0.0f;
-    for (size_t i = 0; i < kBucketFillCount; ++i)
-      widestFillLabel = std::max(widestFillLabel, ImGui::CalcTextSize(kBucketFills[i].label).x);
-    ImGui::SetNextItemWidth(widestFillLabel + ImGui::GetFrameHeight() + 16.0f);
-    if (ImGui::BeginCombo("##bucketFill", kBucketFills[fillIndex].label)) {
-      for (size_t i = 0; i < kBucketFillCount; ++i) {
-        if (ImGui::Selectable(kBucketFills[i].label, static_cast<int>(i) == fillIndex))
-          st.bucketFill = kBucketFills[i].mode;
-        ImGui::SetItemTooltip("%s", kBucketFills[i].tip);
+    float widestRegionLabel = 0.0f;
+    for (size_t i = 0; i < kBucketRegionCount; ++i)
+      widestRegionLabel = std::max(widestRegionLabel, ImGui::CalcTextSize(kBucketRegions[i].label).x);
+    ImGui::SetNextItemWidth(widestRegionLabel + ImGui::GetFrameHeight() + 16.0f);
+    if (ImGui::BeginCombo("##bucketRegion", kBucketRegions[regionIndex].label)) {
+      for (size_t i = 0; i < kBucketRegionCount; ++i) {
+        if (ImGui::Selectable(kBucketRegions[i].label, static_cast<int>(i) == regionIndex))
+          st.bucketRegion = kBucketRegions[i].mode;
+        ImGui::SetItemTooltip("%s", kBucketRegions[i].tip);
       }
       ImGui::EndCombo();
     }
     popAtelierMono();
+
+    // CONTENT: what fills the region once REGION has found it. Disabled
+    // rather than hidden on a Flats layer under Flats-region -- that click
+    // recolours the layer's own fill record, which has no texel to put a
+    // pattern into (AppState.hpp's `kBucketRegions` row says so), but a
+    // control that vanishes as the active layer changes teaches nobody why
+    // and re-flows the row a painter is aiming at (SOURCE's own comment,
+    // just below, makes the identical argument).
+    OpenDocument* contentOd = st.documents.active();
+    Layer* contentLayer = contentOd != nullptr ? activeLayerOf(*contentOd) : nullptr;
+    const bool onFlatsLayerRecolour =
+        flatsBucket && contentLayer != nullptr && contentLayer->kind == LayerKind::Flats;
+    bandSeparator();
+    capsLabel("CONTENT");
+    ImGui::SameLine();
+    int contentIndex = 0;
+    for (size_t i = 0; i < kBucketContentCount; ++i)
+      if (kBucketContents[i].mode == st.bucketContent) contentIndex = static_cast<int>(i);
+    pushAtelierMono();
+    float widestContentLabel = 0.0f;
+    for (size_t i = 0; i < kBucketContentCount; ++i)
+      widestContentLabel =
+          std::max(widestContentLabel, ImGui::CalcTextSize(kBucketContents[i].label).x);
+    ImGui::SetNextItemWidth(widestContentLabel + ImGui::GetFrameHeight() + 16.0f);
+    ImGui::BeginDisabled(onFlatsLayerRecolour);
+    if (ImGui::BeginCombo("##bucketContent", kBucketContents[contentIndex].label)) {
+      for (size_t i = 0; i < kBucketContentCount; ++i) {
+        if (ImGui::Selectable(kBucketContents[i].label, static_cast<int>(i) == contentIndex))
+          st.bucketContent = kBucketContents[i].mode;
+        ImGui::SetItemTooltip("%s", kBucketContents[i].tip);
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::EndDisabled();
+    popAtelierMono();
+    if (onFlatsLayerRecolour)
+      ImGui::SetItemTooltip(
+          "A Flats layer's own fills are recoloured, not baked -- there is no texel here for a "
+          "pattern to fill, so this click always uses the foreground colour.");
+
+    if (st.bucketContent == BucketContent::Pattern && !onFlatsLayerRecolour) {
+      ImGui::SameLine();
+      const size_t patternCount = sessionPatterns().size();
+      if (patternCount == 0) {
+        ImGui::TextDisabled("No patterns are defined yet -- Edit > Define Pattern... first.");
+      } else {
+        std::vector<std::string> names;
+        names.reserve(patternCount);
+        for (size_t i = 0; i < patternCount; ++i) names.push_back(sessionPatterns().at(i).name);
+        std::vector<const char*> items;
+        items.reserve(patternCount);
+        for (const std::string& n : names) items.push_back(n.c_str());
+        st.bucketPatternIndex =
+            std::clamp(st.bucketPatternIndex, 0, static_cast<int>(patternCount) - 1);
+        pushAtelierMono();
+        float widestPatternLabel = 0.0f;
+        for (const char* n : items)
+          widestPatternLabel = std::max(widestPatternLabel, ImGui::CalcTextSize(n).x);
+        ImGui::SetNextItemWidth(widestPatternLabel + ImGui::GetFrameHeight() + 16.0f);
+        if (ImGui::BeginCombo("##bucketPattern", items[static_cast<size_t>(st.bucketPatternIndex)])) {
+          for (size_t i = 0; i < patternCount; ++i) {
+            if (ImGui::Selectable(items[i], static_cast<int>(i) == st.bucketPatternIndex))
+              st.bucketPatternIndex = static_cast<int>(i);
+          }
+          ImGui::EndCombo();
+        }
+        popAtelierMono();
+      }
+    }
   }
   if (flatsBucket) {
     // The three numbers that decide what one click fills. Bound to the layer

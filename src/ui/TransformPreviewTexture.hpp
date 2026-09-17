@@ -77,20 +77,25 @@
 // asserted an upload counter stayed at 1 across a drag; no such assertion
 // existed, and the counter it named had no reader at all, so both are gone.)
 //
-// **Named rather than silent: that one upload does NOT itself fit PRD F3 at
-// a large, fully-opaque layer.** `app/selftest/TransformPreviewTexture.cpp`'s
-// own cost section measures `transformPreviewStraightHalf()` at a realistic
-// 2048x2048 fully-covered layer at 49.7 ms -- 248% of F3's 20 ms budget,
-// dominated by `imageFromTileStore()`'s float widen and the per-texel
-// unpremultiply+`floatToHalf()` pass, both O(document pixels). This is a
-// single hitch at the moment a session BEGINS (Cmd+T's mouse-down, or a
-// picture landing via drag-and-drop), not a per-DRAG-FRAME cost -- section
-// 5's sabotage proof (this same suite's `runTransformPreviewTextureTest()`)
-// is what actually matters for T14's "does not blow the frame budget while
-// dragging" concern, and it does not touch this cost at all, because
-// `upload()` never runs again until the NEXT session begins. But it is a
-// real, user-visible stall on a large document today, and this file does not
-// claim otherwise. The fix this step's own brief names as "the obvious
+// **Named rather than silent: that one upload is the largest thing this file
+// costs.** `app/selftest/TransformPreviewTexture.cpp`'s own cost section
+// measures `transformPreviewStraightHalf()` at a realistic 2048x2048
+// fully-covered layer, dominated by `imageFromTileStore()`'s float widen and
+// the per-texel unpremultiply+`floatToHalf()` pass, both O(document pixels).
+// **Do not quote a number from this comment -- read the one the suite prints,
+// which is why it prints it.** An earlier draft of this paragraph said
+// "49.7 ms, 248% of F3's 20 ms budget"; by the time anyone checked it was
+// 18.2 ms, and parallelising `imageFromTileStore()` (dcb48e8) took it to
+// 11.2 ms, which FITS F3 rather than blowing it. The shape of the cost is
+// what is stable here; its magnitude is not.
+//
+// Either way this is a single hitch at the moment a session BEGINS (Cmd+T's
+// mouse-down, or a picture landing via drag-and-drop), not a per-DRAG-FRAME
+// cost -- section 5's sabotage proof (this same suite's
+// `runTransformPreviewTextureTest()`) is what actually matters for T14's
+// "does not blow the frame budget while dragging" concern, and it does not
+// touch this cost at all, because `upload()` never runs again until the NEXT
+// session begins. The fix this step's own brief names as "the obvious
 // answer" -- packing at VIEW resolution (downsample the crop toward the
 // quad's on-screen size before upload, bounding the cost by screen pixels
 // rather than document pixels, the same way ui/DocumentTexture.hpp's own

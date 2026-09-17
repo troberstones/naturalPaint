@@ -8,6 +8,7 @@
 
 #include "app/AdjustmentOps.hpp"
 #include "app/BlurCommandsExtra.hpp"
+#include "app/PolarRemapCommand.hpp"
 #include "app/CommandsImage.hpp"
 #include "app/CommandSupport.hpp"
 #include "app/FilterCommandsExtra.hpp"
@@ -527,6 +528,19 @@ CommandResult doLensBlur(OpenDocument& doc, const JsonValue& params) {
     return commandRefused(std::string("refused: ") + kId +
                           " was given an aperture ops/LensBlur cannot build.");
   return fromFilterResult(applyLensBlur(doc, p), doc, "lens blur");
+}
+
+// ==========================================================================
+// docs/operations.md §3: Polar Coordinates
+// ==========================================================================
+
+CommandResult doPolarRemap(OpenDocument& doc, const JsonValue& params) {
+  PolarRemapParams p;
+  const char* kId = "filter_polar_remap";
+  std::string why =
+      readEnumByName(params, kId, "direction", polarRemapDirectionFromName, &p.direction);
+  if (!why.empty()) return commandRefused(why);
+  return fromFilterResult(applyPolarRemap(doc, p), doc, "polar coordinates");
 }
 
 // ==========================================================================
@@ -1450,6 +1464,8 @@ void registerImageCommands(std::vector<CommandSpec>* out) {
                    "highlight_boost"},
                   pixelOpUnavailable,
                   doLensBlur, /*selectionBounded=*/true});
+  out->push_back({"filter_polar_remap", "Polar Coordinates", {"direction"}, pixelOpUnavailable,
+                  doPolarRemap, /*selectionBounded=*/true});
   // `filter_inpaint` is the one row here NOT bounded through the shared
   // `pixelOpUnavailable()` bridge -- `inpaintUnavailable()` calls
   // `inpaintRefusal()` instead, because an absent selection is a hard refusal
@@ -1716,6 +1732,12 @@ Command lensBlurCommand(const LensBlurParams& p) {
   j.set("highlight_threshold", JsonValue::number(p.highlightThreshold));
   j.set("highlight_boost", JsonValue::number(p.highlightBoost));
   return command("filter_lens_blur", std::move(j));
+}
+
+Command polarRemapCommand(const PolarRemapParams& p) {
+  JsonValue j = JsonValue::object();
+  j.set("direction", JsonValue::string(polarRemapDirectionName(p.direction)));
+  return command("filter_polar_remap", std::move(j));
 }
 
 Command levelsCommand(const std::array<LevelsParams, 3>& channels) {

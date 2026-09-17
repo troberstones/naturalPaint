@@ -624,6 +624,7 @@ should get one when the chain they belong to is complete.
 | deferred | depends on | note |
 |---|---|---|
 | **Puppet warp** | D23's lattice warp | The mesh machinery is shared; puppet warp is a different control scheme over it, so doing lattice first is not wasted work. |
+| **Warp preview as a GPU mesh** | D23's lattice warp, T14's affine preview | The warp drag preview re-warps the whole document on the CPU each throttled tick (91 ms at 4096x3072, so ~11 Hz), while the affine preview already draws one uploaded texture as a moving quad. `tessellateWarpMesh()` already yields the vertices and uvs a mesh draw needs. Sketch, including what a folded net would break: [docs/warp-gpu-mesh-preview.md](docs/warp-gpu-mesh-preview.md). |
 | **Vector masks** | J (paths) | A path used as a resolution-independent mask. Cheap once paths and masks both exist; the reason to defer is that raster masks cover the common case. |
 | **Vanishing point** | D21, D23 | Perspective-aware cloning and pasting. Genuinely useful for architectural texture work, and a large enough tool to deserve its own phase. |
 | Selection → path tracing | J | Contour extraction plus curve fitting. Listed in §5 today; it belongs here instead — wanted, not refused. |

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 
 #include "core/Parallel.hpp"
 
@@ -337,43 +338,98 @@ DocumentRegion warpedRegion(const WarpMesh& mesh, int subdivisionsPerCell) noexc
 
 namespace {
 
-// Newton solve for the (s, t) in the quad's own parametrisation such that
-// bilerp(q, s, t) == p. Eight iterations: the quad is small enough (chord
-// bound) to be near-parallelogram, so this converges to float precision in
-// two or three, and the fixed count costs nothing a data-dependent stopping
-// rule would save here. Returns false (leaving `*s`/`*t` at their last
-// estimate) when the quad is degenerate (a Jacobian that will not invert).
+// Closed-form inverse of the quad's own bilinear parametrisation: the (s, t)
+// with `bilerp(q, s, t) == p`. Writing the bilinear map as
+// `Q = A + sB + tC + stD` (A = dst00, B = dst10-A, C = dst01-A,
+// D = dst11 - dst10 - dst01 + dst00) and crossing `E = p - A` with the
+// `s`-dependent direction `C + sD` cancels `t` outright, leaving ONE
+// quadratic in `s`:
+//
+//   cross(B,D) s^2 + (cross(B,C) - cross(E,D)) s - cross(E,C) = 0
+//
+// and then `t` falls out of `E - sB = t (C + sD)` by division along whichever
+// axis of `C + sD` is larger. That replaces the fixed eight Newton
+// iterations this used to run -- each with its own 2x2 inverse and divide --
+// with one `sqrt`, and it is EXACT rather than converged-to-1e-6.
+//
+// `a` vanishes exactly when the quad is a parallelogram (D = 0, or D parallel
+// to B), which a lightly bent warp's quads very nearly are, so the linear
+// branch is the common one and is taken on its own merits, not as a
+// degenerate fallback.
+//
+// Returns false -- and the caller skips this quad -- when no real root exists
+// (the pixel genuinely has no preimage in this quad) or when both leading
+// coefficients vanish (a degenerate quad). A folded warp can give a pixel two
+// preimages inside one quad; both roots are scored and the more interior one
+// wins, which is the same tie-break the gather loop applies ACROSS quads.
 bool invertBilinearQuad(const WarpQuad& q, Point2 p, float* s, float* t) noexcept {
-  float ss = 0.5f, tt = 0.5f;
-  for (int iter = 0; iter < 8; ++iter) {
-    const float omS = 1.0f - ss, omT = 1.0f - tt;
-    const Point2 Q{omS * omT * q.dst00.x + ss * omT * q.dst10.x + ss * tt * q.dst11.x +
-                       omS * tt * q.dst01.x,
-                   omS * omT * q.dst00.y + ss * omT * q.dst10.y + ss * tt * q.dst11.y +
-                       omS * tt * q.dst01.y};
-    const float rx = p.x - Q.x, ry = p.y - Q.y;
-    // dQ/ds = (1-t)(dst10-dst00) + t(dst11-dst01)
-    const float dsx = omT * (q.dst10.x - q.dst00.x) + tt * (q.dst11.x - q.dst01.x);
-    const float dsy = omT * (q.dst10.y - q.dst00.y) + tt * (q.dst11.y - q.dst01.y);
-    // dQ/dt = (1-s)(dst01-dst00) + s(dst11-dst10)
-    const float dtx = omS * (q.dst01.x - q.dst00.x) + ss * (q.dst11.x - q.dst10.x);
-    const float dty = omS * (q.dst01.y - q.dst00.y) + ss * (q.dst11.y - q.dst10.y);
-    const float det = dsx * dty - dtx * dsy;
-    if (std::fabs(det) < 1e-9f) {
-      *s = ss;
-      *t = tt;
-      return false;
+  const float bx = q.dst10.x - q.dst00.x, by = q.dst10.y - q.dst00.y;
+  const float cx = q.dst01.x - q.dst00.x, cy = q.dst01.y - q.dst00.y;
+  const float dx = q.dst11.x - q.dst10.x - q.dst01.x + q.dst00.x;
+  const float dy = q.dst11.y - q.dst10.y - q.dst01.y + q.dst00.y;
+  const float ex = p.x - q.dst00.x, ey = p.y - q.dst00.y;
+
+  const float crossBD = bx * dy - by * dx;
+  const float crossBC = bx * cy - by * cx;
+  const float crossED = ex * dy - ey * dx;
+  const float crossEC = ex * cy - ey * cx;
+
+  const float a = crossBD;
+  const float b = crossBC - crossED;
+  const float c = -crossEC;
+
+  // `t` for a candidate `s`, plus how interior the pair is. Divides along the
+  // larger component of `C + sD` so a direction that is near-axis-aligned
+  // does not divide by its own near-zero component.
+  auto solveT = [&](float ss, float* tt) noexcept {
+    const float rx = cx + ss * dx, ry = cy + ss * dy;
+    const float nx = ex - ss * bx, ny = ey - ss * by;
+    if (std::fabs(rx) >= std::fabs(ry)) {
+      if (std::fabs(rx) < 1e-12f) return false;
+      *tt = nx / rx;
+    } else {
+      *tt = ny / ry;
     }
-    const float invDet = 1.0f / det;
-    const float dS = (rx * dty - dtx * ry) * invDet;
-    const float dT = (dsx * ry - rx * dsy) * invDet;
-    ss += dS;
-    tt += dT;
-    if (std::fabs(dS) < 1e-6f && std::fabs(dT) < 1e-6f) break;
+    return true;
+  };
+  auto margin = [](float ss, float tt) noexcept {
+    return std::min({ss, 1.0f - ss, tt, 1.0f - tt});
+  };
+
+  float roots[2];
+  int rootCount = 0;
+  // Scaled against the other coefficients rather than an absolute epsilon:
+  // these are cross products of DOCUMENT-pixel vectors, so what counts as
+  // "zero" for `a` depends on how large the quad is, not on a fixed number.
+  const float scale = std::fabs(b) + std::fabs(a) + std::fabs(c) + 1e-20f;
+  if (std::fabs(a) < 1e-7f * scale) {
+    if (std::fabs(b) < 1e-12f * scale) return false;  // degenerate quad
+    roots[rootCount++] = -c / b;
+  } else {
+    const float disc = b * b - 4.0f * a * c;
+    if (disc < 0.0f) return false;  // no preimage in this quad at all
+    const float sq = std::sqrt(disc);
+    // The sign-stable form: computing both roots as (-b +/- sq) / 2a loses
+    // the small one to cancellation when |b| >> |sq|.
+    const float qq = -0.5f * (b + (b >= 0.0f ? sq : -sq));
+    roots[rootCount++] = qq / a;
+    if (std::fabs(qq) > 1e-20f) roots[rootCount++] = c / qq;
   }
-  *s = ss;
-  *t = tt;
-  return true;
+
+  bool any = false;
+  float bestMargin = -std::numeric_limits<float>::infinity();
+  for (int i = 0; i < rootCount; ++i) {
+    float tt = 0.0f;
+    if (!solveT(roots[i], &tt)) continue;
+    const float m = margin(roots[i], tt);
+    if (!any || m > bestMargin) {
+      any = true;
+      bestMargin = m;
+      *s = roots[i];
+      *t = tt;
+    }
+  }
+  return any;
 }
 
 // A uniform bucket grid over destination-local pixel coordinates, mapping
@@ -437,16 +493,52 @@ void sampleKernel(const TransformImage& src, float sx, float sy, ResampleKernel 
   float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   float wsum = 0.0f;
   const int w = static_cast<int>(src.width), h = static_cast<int>(src.height);
-  for (int iy = iy0; iy <= iy1; ++iy) {
-    const float wy = resampleKernelWeight(kernel, sy - (static_cast<float>(iy) + 0.5f));
+  // Both weight vectors are evaluated ONCE, rather than the column weights
+  // being re-evaluated inside the row loop for every row of the footprint --
+  // `ops/Transform.cpp`'s affine sampler already hoists its own this way and
+  // this one had simply not. For the CatmullRom default that is 12
+  // `resampleKernelWeight()` calls per destination pixel instead of 42, and
+  // that function lives in another translation unit, so without LTO each one
+  // is a real call through a switch.
+  constexpr int kMaxTaps = 8;  // Lanczos3 (radius 3) is the widest: 8 columns
+  const int nx = ix1 - ix0 + 1;
+  const int ny = iy1 - iy0 + 1;
+  float wxs[kMaxTaps], wys[kMaxTaps];
+  if (nx <= 0 || ny <= 0 || nx > kMaxTaps || ny > kMaxTaps) {  // unreachable for the kernels that exist
+    out4[0] = out4[1] = out4[2] = out4[3] = 0.0f;
+    return;
+  }
+  for (int k = 0; k < nx; ++k)
+    wxs[k] = resampleKernelWeight(kernel, sx - (static_cast<float>(ix0 + k) + 0.5f));
+  for (int k = 0; k < ny; ++k)
+    wys[k] = resampleKernelWeight(kernel, sy - (static_cast<float>(iy0 + k) + 0.5f));
+
+  // The tap window above is deliberately one wider than any kernel's support
+  // on each side (`ops/Transform.cpp` says why: a tight bound computed with
+  // ceil/floor on a float is where an off-by-one at exact ties lives), so its
+  // outermost taps weigh exactly zero -- two of the six columns, for
+  // CatmullRom. Trimming them off the ENDS, by looking at the weights that
+  // were actually computed rather than by re-deriving a tighter index range,
+  // keeps the wide window's tie-safety and still shrinks the inner loop from
+  // 6x6 to 4x4. Bit-identical: a tap dropped here contributed `0.0f * texel`
+  // to the accumulator and `0.0f` to `wsum`.
+  int kx0 = 0, kx1 = nx - 1, ky0 = 0, ky1 = ny - 1;
+  while (kx0 <= kx1 && wxs[kx0] == 0.0f) ++kx0;
+  while (kx1 >= kx0 && wxs[kx1] == 0.0f) --kx1;
+  while (ky0 <= ky1 && wys[ky0] == 0.0f) ++ky0;
+  while (ky1 >= ky0 && wys[ky1] == 0.0f) --ky1;
+
+  for (int ky = ky0; ky <= ky1; ++ky) {
+    const float wy = wys[ky];
     if (wy == 0.0f) continue;
-    const int cy = std::clamp(iy, 0, h - 1);
-    for (int ix = ix0; ix <= ix1; ++ix) {
-      const float wx = resampleKernelWeight(kernel, sx - (static_cast<float>(ix) + 0.5f));
-      if (wx == 0.0f) continue;
-      const int cx = std::clamp(ix, 0, w - 1);
+    const int cy = std::clamp(iy0 + ky, 0, h - 1);
+    const float* row = src.px.data() + static_cast<size_t>(cy) * w * 4u;
+    for (int kx = kx0; kx <= kx1; ++kx) {
+      const float wx = wxs[kx];
+      if (wx == 0.0f) continue;  // an interior zero, which trimming the ends cannot remove
+      const int cx = std::clamp(ix0 + kx, 0, w - 1);
       const float weight = wx * wy;
-      const float* texel = src.px.data() + (static_cast<size_t>(cy) * w + cx) * 4u;
+      const float* texel = row + static_cast<size_t>(cx) * 4u;
       acc[0] += weight * texel[0];
       acc[1] += weight * texel[1];
       acc[2] += weight * texel[2];

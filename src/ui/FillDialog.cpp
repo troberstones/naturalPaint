@@ -113,6 +113,11 @@ struct FillSourceUi {
   int source = 0;  // 0 Foreground, 1 Colour, 2 Pattern, 3 Gradient
   float color[3] = {0.0f, 0.0f, 0.0f};
   int patternIndex = 0;
+  // Where the pattern's own (0, 0) lands in document space -- `ops/Pattern
+  // .hpp`'s tiling phase. Defaulted to the canvas origin, which is what a
+  // fill with these left untouched has always done.
+  int patternOriginX = 0;
+  int patternOriginY = 0;
   // Degrees, clockwise on screen (document space is y-down -- `core/Gradient
   // .hpp`'s own Angular-kind comment). 0 runs left to right.
   float gradientAngleDeg = 0.0f;
@@ -168,6 +173,8 @@ void drawFillSourceControls(FillSourceUi& ui) {
       for (const std::string& n : names) items.push_back(n.c_str());
       ui.patternIndex = std::clamp(ui.patternIndex, 0, static_cast<int>(count) - 1);
       dialogCombo("Pattern", &ui.patternIndex, items.data(), static_cast<int>(count));
+      dialogInputInt("Origin X", &ui.patternOriginX, "px");
+      dialogInputInt("Origin Y", &ui.patternOriginY, "px");
     }
   } else if (ui.source == 3) {
     dialogSlider("Angle", &ui.gradientAngleDeg, 0.0f, 360.0f, "%.0f", "deg");
@@ -213,6 +220,8 @@ std::string resolveFillParams(const FillSourceUi& ui, AppState& st, OpenDocument
     const size_t idx = static_cast<size_t>(
         std::clamp(ui.patternIndex, 0, static_cast<int>(sessionPatterns().size()) - 1));
     out->pattern = &sessionPatterns().at(idx);
+    out->patternOriginX = ui.patternOriginX;
+    out->patternOriginY = ui.patternOriginY;
     return {};
   }
   // Gradient.

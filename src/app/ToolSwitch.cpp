@@ -164,7 +164,7 @@ bool endSpringHand(AppState& st) noexcept {
 
 bool springEyedropperHeld(const AppState& st) noexcept { return st.tools.springEyedropperHeld; }
 
-bool springEyedropperEligible(Tool t, BucketFill fill) noexcept {
+bool springEyedropperEligible(Tool t, BucketRegion region) noexcept {
   switch (t) {
     // The paint-tool family: nothing here already has a use for a bare Alt.
     case Tool::Brush:
@@ -176,11 +176,11 @@ bool springEyedropperEligible(Tool t, BucketFill fill) noexcept {
     case Tool::Burn:
     case Tool::Smudge:
       return true;
-    // ADR-0009: the Flats-mode bucket spends Alt carving a new fill out of a
-    // leaked area (AppState.hpp's `kBucketFills` row for it says so); only
-    // the ordinary Colour-tolerance bucket has Alt to lend.
+    // ADR-0009: the Flats-region bucket spends Alt carving a new fill out of
+    // a leaked area (AppState.hpp's `kBucketRegions` row for it says so);
+    // only the ordinary Tolerance-flood bucket has Alt to lend.
     case Tool::PaintBucket:
-      return fill == BucketFill::Colour;
+      return region == BucketRegion::Tolerance;
     // Every one of these already has a live, shipped meaning for Alt, or
     // reads the canvas by a different gesture entirely -- listed rather than
     // caught by a `default:` so `-Wswitch` still catches a `Tool` this
@@ -239,7 +239,7 @@ bool beginSpringEyedropper(AppState& st) noexcept {
   // (the guard above already refused a live Hand-borrow), but it is the one
   // spelling that stays correct if a future caller ever reaches here through
   // a borrow this file does not yet know about.
-  if (!springEyedropperEligible(effectiveTool(st), st.bucketFill)) return false;
+  if (!springEyedropperEligible(effectiveTool(st), st.bucketRegion)) return false;
   st.tools.springEyedropperHeld = true;
   st.tools.springEyedropperReturn = st.brush.tool;
   st.brush.tool = Tool::Eyedropper;

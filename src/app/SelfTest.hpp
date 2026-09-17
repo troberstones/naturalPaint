@@ -537,7 +537,7 @@ bool runToolSwitchTest();
 // this suite's one-section-one-file rule (that file is already the Hand's
 // and T24's; this one does not reopen it).
 //
-// Covers: `springEyedropperEligible()` walked over every `(Tool, BucketFill)`
+// Covers: `springEyedropperEligible()` walked over every `(Tool, BucketRegion)`
 // pair against a hand-written expected table, not a restatement of the
 // production switch; begin/end restoring the exact prior tool (`brush.tool`
 // really becomes `Eyedropper`, `effectiveTool()` still reports the tool the
@@ -1012,6 +1012,13 @@ bool runFiltersExtTest();
 // and Lens blur (ops/LensBlur.hpp), and their app/FilterOps.hpp/Command
 // wiring. Also headless and GPU-free.
 bool runBlurFiltersTest();
+
+// docs/operations.md §3: Polar Coordinates (ops/PolarRemap.hpp), long marked
+// "future work". Proves the angular seam wraps rather than zero-padding, the
+// pole widens to a rotational average rather than one arbitrary tap, and the
+// two directions are genuine inverses of one another. Also headless and
+// GPU-free.
+bool runPolarRemapTest();
 
 // ops/Inpaint and Filter > Inpaint (PLAN.md "Phase 8 -- Repair it"; PRD D7's
 // first half, the diffusion one). Headless and GPU-free.
