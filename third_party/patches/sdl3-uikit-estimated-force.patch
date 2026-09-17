@@ -1,0 +1,111 @@
+--- a/src/video/uikit/SDL_uikitpen.m
++++ b/src/video/uikit/SDL_uikitpen.m
+@@ -92,7 +92,8 @@
+ }
+ 
+ static void UIKit_HandlePenAxes(SDL_Window *window, NSTimeInterval nstimestamp, float zOffset, const CGPoint *point, float force,
+-                                float maximumPossibleForce, float azimuthAngleInView, float altitudeAngle, float rollAngle)
++                                float maximumPossibleForce, float azimuthAngleInView, float altitudeAngle, float rollAngle,
++                                bool forceIsEstimated)
+ {
+     const SDL_PenID penId = UIKit_AddPenIfNecesary();
+     if (penId) {
+@@ -124,7 +125,17 @@
+         const float rotation = rollAngle * radians_to_degrees;  // !!! FIXME: this might need adjustment, I don't have a pencil that supports it.
+ 
+         SDL_SendPenMotion(timestamp, penId, window, point->x, point->y);
+-        SDL_SendPenAxis(timestamp, penId, window, SDL_PEN_AXIS_PRESSURE, pressure);
++        // UITouch.force is an ESTIMATE until UIKit says otherwise: at touchesBegan:
++        // it is a fixed placeholder (1/3 N on an Apple Pencil, whatever the real
++        // press), and the reports right after it are a ramp down from it rather
++        // than measurements. Reporting those as SDL_PEN_AXIS_PRESSURE makes every
++        // stroke open with a pressure the user never applied. UIKit delivers the
++        // true value later through touchesEstimatedPropertiesUpdated:, which
++        // UIKit_HandlePenEstimatedPressure() below forwards; until then we report
++        // no pressure at all rather than a number we know is wrong.
++        if (!forceIsEstimated) {
++            SDL_SendPenAxis(timestamp, penId, window, SDL_PEN_AXIS_PRESSURE, pressure);
++        }
+         SDL_SendPenAxis(timestamp, penId, window, SDL_PEN_AXIS_XTILT, xtilt);
+         SDL_SendPenAxis(timestamp, penId, window, SDL_PEN_AXIS_YTILT, ytilt);
+         SDL_SendPenAxis(timestamp, penId, window, SDL_PEN_AXIS_ROTATION, rotation);
+@@ -160,7 +171,7 @@
+ 
+     // force is zero here; if you're here, you're not touching.
+     // !!! FIXME: no timestamp on these...?
+-    UIKit_HandlePenAxes(window, 0, zOffset, &point, 0.0f, 1.0f, azimuthAngleInView, altitudeAngle, rollAngle);
++    UIKit_HandlePenAxes(window, 0, zOffset, &point, 0.0f, 1.0f, azimuthAngleInView, altitudeAngle, rollAngle, false);
+ }
+ #endif
+ 
+@@ -176,10 +187,33 @@
+     SDL_Window *window = [view getSDLWindow];
+     const CGPoint point = [pencil locationInView:view];
+ 
++    bool forceIsEstimated = false;
++#if !defined(SDL_PLATFORM_TVOS)
++    if (@available(iOS 9.1, *)) {
++        forceIsEstimated = ([pencil estimatedPropertiesExpectingUpdates] & UITouchPropertyForce) != 0;
++    }
++#endif
++
+     // zOffset is zero here; if you're here, you're touching.
+-    UIKit_HandlePenAxes(window, [pencil timestamp], 0.0f, &point, [pencil force], [pencil maximumPossibleForce], [pencil azimuthAngleInView:view], [pencil altitudeAngle], rollAngle);
++    UIKit_HandlePenAxes(window, [pencil timestamp], 0.0f, &point, [pencil force], [pencil maximumPossibleForce], [pencil azimuthAngleInView:view], [pencil altitudeAngle], rollAngle, forceIsEstimated);
+ }
+ 
++// Called from touchesEstimatedPropertiesUpdated:, where UIKit hands back a touch
++// whose previously estimated properties are now final. Only the pressure is
++// re-sent: position/tilt on this callback describe the ORIGINAL event, which was
++// already reported, and re-sending them would rewind the pen.
++void UIKit_HandlePenEstimatedPressure(SDL_uikitview *view, UITouch *pencil)
++{
++    const SDL_PenID penId = UIKit_AddPenIfNecesary();
++    if (penId) {
++        const float maxForce = (float) [pencil maximumPossibleForce];
++        if (maxForce > 0.0f) {
++            SDL_SendPenAxis(UIKit_GetEventTimestamp([pencil timestamp]), penId, [view getSDLWindow],
++                            SDL_PEN_AXIS_PRESSURE, ((float) [pencil force]) / maxForce);
++        }
++    }
++}
++
+ void UIKit_HandlePenMotion(SDL_uikitview *view, UITouch *pencil)
+ {
+     UIKit_HandlePenAxesFromUITouch(view, pencil);
+--- a/src/video/uikit/SDL_uikitpen.h
++++ b/src/video/uikit/SDL_uikitpen.h
+@@ -29,6 +29,7 @@
+ extern void UIKit_HandlePenMotion(SDL_uikitview *view, UITouch *pencil);
+ extern void UIKit_HandlePenPress(SDL_uikitview *view, UITouch *pencil);
+ extern void UIKit_HandlePenRelease(SDL_uikitview *view, UITouch *pencil);
++extern void UIKit_HandlePenEstimatedPressure(SDL_uikitview *view, UITouch *pencil);
+ 
+ #if !defined(SDL_PLATFORM_TVOS)
+ extern void UIKit_HandlePenHover(SDL_uikitview *view, UIHoverGestureRecognizer *recognizer) API_AVAILABLE(ios(13.0));
+--- a/src/video/uikit/SDL_uikitview.m
++++ b/src/video/uikit/SDL_uikitview.m
+@@ -426,6 +426,23 @@
+     }
+ }
+ 
++// UIKit reports UITouch.force as an ESTIMATE for the first few events of a pen
++// contact and calls back here once the real value is known. SDL_uikitpen.m
++// withholds the estimate entirely, so this callback is the ONLY place a pen's
++// opening pressure is ever reported.
++- (void)touchesEstimatedPropertiesUpdated:(NSSet<UITouch *> *)touches
++{
++#if !defined(SDL_PLATFORM_TVOS)
++    if (@available(iOS 13.0, *)) {
++        for (UITouch *touch in touches) {
++            if (touch.type == UITouchTypePencil) {
++                UIKit_HandlePenEstimatedPressure(self, touch);
++            }
++        }
++    }
++#endif
++}
++
+ - (void)touchesMoved:(NSSet *)touches withEvent:(UIEvent *)event
+ {
+     for (UITouch *touch in touches) {

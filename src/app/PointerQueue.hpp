@@ -319,7 +319,47 @@ struct PointerEvent {
 // replays the trickled frame boundaries measured with headless ImGui 1.92.9b.
 //
 // ---------------------------------------------------------------------------
-// 4. Memory bound
+// 4. A pen contact arrives with no pressure on iOS
+// ---------------------------------------------------------------------------
+//
+// **UIKit does not know how hard the Pencil is pressing when it lands.**
+// `UITouch.force` is *estimated* for the first few events of a contact
+// (`estimatedPropertiesExpectingUpdates`); the real value comes later, through
+// `touchesEstimatedPropertiesUpdated:`. Stock SDL implements neither, so it
+// forwards the estimate as `SDL_PEN_AXIS_PRESSURE`: a fixed placeholder at
+// touch-down, then a ramp down from it, none of it a measurement.
+// `third_party/patches/sdl3-uikit-estimated-force.patch` fixes that at the
+// backend -- patched SDL reports NO pressure while UIKit calls it an estimate,
+// and the real value when UIKit supplies it.
+//
+// So on this one backend a contact opens with no pressure reading at all, and
+// the rule here is: **while a gesture has no pressure yet, its samples are not
+// offered to a stroke; the first pressure event to arrive fills it into every
+// sample queued so far, and only then are they offered.** Every sample so far,
+// because until that event none had a pressure to snapshot. Painting the
+// opening dabs off a placeholder is what made every stroke start with a blob
+// and then go skinny, whatever the hand actually did.
+//
+// **Any pressure event releases it, with no timestamp exception.** Patched
+// SDL never sends an estimated pressure, so one reaching this queue is real by
+// construction -- and the correction can carry the pen's ORIGINAL contact
+// timestamp, which a rule that skipped that timestamp would throw away.
+//
+// Off by default, turned on by `setContactPressureEstimated(true)`: every
+// other backend delivers a measured pressure with its contact (section 2's
+// survey), and paying latency there would be a regression for nothing.
+// `main.cpp` sets it under `NP_PLATFORM_IOS`.
+//
+// Two ways out, so a stroke can never be withheld indefinitely:
+//   * **the pen lifts** -- PEN_UP closes the gesture, and a closed gesture is
+//     never withheld, so a tap too quick for any correction still lays its
+//     stationary-click dab;
+//   * **`kContactPressureWaitReports` position reports arrive with no pressure
+//     among them** -- the safety valve for a device that reports no pressure
+//     at all, which would otherwise wait forever for a value it never sends.
+//
+// ---------------------------------------------------------------------------
+// 5. Memory bound
 // ---------------------------------------------------------------------------
 //
 // At most `kMaxSamples` samples and `kMaxGestures` gesture records, enforced
@@ -349,8 +389,22 @@ class PointerQueue {
     float rotationDeg = 0.0f;
   };
 
+  // Section 4: how many position reports a withheld contact waits for a real
+  // pressure reading before giving up on ever getting one.
+  static constexpr int kContactPressureWaitReports = 8;
+
   // The producer side -- main.cpp's SDL poll loop, one call per event.
   void push(const PointerEvent& e);
+
+  // Section 4. True on the backends whose contact report carries an estimated
+  // pressure rather than a measured one -- iOS, and only iOS, today.
+  void setContactPressureEstimated(bool estimated) noexcept {
+    contactPressureEstimated_ = estimated;
+  }
+
+  // Section 4, for the selftest: whether the open gesture's samples are being
+  // held back for a real pressure reading right now.
+  bool contactPressurePending() const noexcept { return contactPending_; }
 
   // Once per frame, after `ImGui::NewFrame()`: the sequence number of the
   // first input event ImGui has not yet processed (section 3).
@@ -407,6 +461,12 @@ class PointerQueue {
   void endGesture(uint64_t id, uint32_t endSeq) noexcept;
   void enqueue(const PointerEvent& e, bool pen, uint64_t gesture);
   void patchAxis(const PointerEvent& e) noexcept;
+  // Section 4.
+  void resolveContactPressure(const PointerEvent& e) noexcept;
+  void countContactWaitReport(const PointerEvent& e) noexcept;
+  bool withheld(uint64_t gesture) const noexcept {
+    return contactPending_ && gesture != 0 && gesture == openPen_;
+  }
 
   std::vector<PointerSample> samples_;
   std::vector<Gesture> gestures_;
@@ -424,6 +484,14 @@ class PointerQueue {
   std::array<bool, 4> axisSinceMotion_{};
   uint32_t uiProcessedBound_ = 0;
   bool haveBound_ = false;
+  // Section 4: the open pen gesture's contact-report timestamp, whether its
+  // pressure is still the backend's estimate, and how many position reports
+  // have arrived since while it stayed that way.
+  bool contactPressureEstimated_ = false;
+  bool contactPending_ = false;
+  uint64_t contactTs_ = 0;
+  uint64_t contactWaitTs_ = 0;
+  int contactWaitReports_ = 0;
 };
 
 }  // namespace np
