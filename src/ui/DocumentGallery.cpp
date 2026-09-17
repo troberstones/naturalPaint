@@ -21,6 +21,7 @@
 #include "io/NpaintFile.hpp"
 #include "ui/AtelierChrome.hpp"
 #include "ui/AtelierTheme.hpp"
+#include "ui/Dialog.hpp"
 
 namespace fs = std::filesystem;
 
@@ -224,6 +225,8 @@ class GalleryAtlas {
 GalleryAtlas g_atlas;
 std::vector<GalleryEntry> g_entries;
 bool g_scanned = false;
+// Empty means `iosDocumentsDirectory()` -- see setDocumentGalleryDirectory().
+std::string g_dirOverride;
 
 // Forces the next `drawDocumentGallery()` call to rescan and rebuild the
 // atlas -- called after either tap below hands control back to the canvas,
@@ -258,21 +261,58 @@ constexpr float kTileCaptionH = 40.0f;              // two text lines' worth
 constexpr float kTileW = static_cast<float>(kGalleryThumbPx);
 constexpr float kTileH = static_cast<float>(kGalleryThumbPx) + kTileCaptionH;
 
-// One "+" or thumbnail tile: the clickable area, the frame, and the label
-// underneath. Returns true on a tap (released while still hovered, the same
-// contract `ImGui::InvisibleButton()` gives every other click target in this
-// codebase).
-bool drawTile(ImDrawList* dl, const ImVec2& at, const char* line1, const char* line2) {
+// The gap between the scrolling child's content origin and the first tile,
+// on both axes. A tile's frame is stroked OUTSIDE its thumbnail rect (at
+// `-1`, 1 px wide, 2 px while hovered, both centred on the line) -- and a
+// borderless `BeginChild()` is given zero window padding by ImGui, so its
+// content origin IS its clip-rect corner. At an origin of exactly zero the
+// top row and the left column therefore drew their outer edge outside the
+// clip and lost it: measured as a jump straight from chrome (45) to the
+// paper's own antialiased edge (187) with no hairline (155) in between,
+// against four transition rows on an edge that is not clipped.
+constexpr float kGridInset = 4.0f;
+
+// What one tile reported this frame. A long press is a menu, not a tap, so
+// the two are separate answers rather than one `bool`.
+struct TileInput {
+  bool clicked = false;
+  bool longPressed = false;
+};
+
+// The one press that has already fired its long-press menu. Held so the
+// finger lifting off afterwards does not ALSO read as a tap and open the
+// document behind the menu. Cleared at the end of the frame in which the
+// button comes up.
+ImGuiID g_longPressFired = 0;
+
+// One "+" or thumbnail tile: the clickable area, the paper ground, the frame,
+// and the label underneath. `paper` fills the thumbnail square with the
+// theme's canvas white before anything is drawn into it -- a document's
+// composite carries its own transparency, and against the dark chrome an
+// unpainted or partly-painted document read as a hole rather than as a sheet.
+TileInput drawTile(ImDrawList* dl, const ImVec2& at, const char* line1, const char* line2) {
   ImGui::SetCursorScreenPos(at);
   // Stable per grid cell for this frame -- the screen position is unique
   // across the tiles this function draws in one call.
   ImGui::PushID(static_cast<int>(at.y * 100000.0f + at.x));
   const bool clicked = ImGui::InvisibleButton("##tile", ImVec2(kTileW, kTileH + 6.0f));
+  const ImGuiID id = ImGui::GetItemID();
   const bool hovered = ImGui::IsItemHovered();
+  const bool held = ImGui::IsItemActive();
   ImGui::PopID();
+
+  TileInput in;
+  if (held && g_longPressFired != id &&
+      ImGui::GetIO().MouseDownDuration[ImGuiMouseButton_Left] >= kGalleryLongPressSeconds &&
+      !ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+    g_longPressFired = id;
+    in.longPressed = true;
+  }
+  in.clicked = clicked && g_longPressFired != id;
 
   const ImVec2 thumbLo = at;
   const ImVec2 thumbHi(at.x + kTileW, at.y + kTileW);
+  dl->AddRectFilled(thumbLo, thumbHi, atelierToken(kCanvasPaper), 4.0f);
   dl->AddRect(ImVec2(thumbLo.x - 1.0f, thumbLo.y - 1.0f), ImVec2(thumbHi.x + 1.0f, thumbHi.y + 1.0f),
               hovered ? atelierToken(kAccent) : atelierToken(kHairline), 4.0f, 0, hovered ? 2.0f : 1.0f);
 
@@ -283,10 +323,84 @@ bool drawTile(ImDrawList* dl, const ImVec2& at, const char* line1, const char* l
       dl->AddText(ImVec2(capAt.x, capAt.y + ImGui::GetFontSize() + 2.0f),
                   atelierToken(kTextSecondary), line2);
   }
-  return clicked;
+  return in;
 }
 
+// --- long-press menu and its two dialogs, all keyed by PATH ---------------
+//
+// Path, not index: every one of these actions ends in `invalidateGalleryScan()`,
+// after which `g_entries` is empty and will come back re-sorted by mtime, so an
+// index captured when the menu opened would name a different document (or none)
+// by the time the dialog it opened commits.
+const char* const kTileMenuPopup = "##galleryTileMenu";
+const char* const kRenamePopup = "Rename Document";
+const char* const kDeletePopup = "Delete Document";
+
+std::string g_menuPath;      // the document the menu/dialogs act on
+std::string g_menuName;      // its display name, for the dialogs' prose
+char g_renameBuf[192] = {};
+// A refusal from the last commit attempt, left on the dialog that refused.
+std::string g_renameStatus;
+std::string g_deleteStatus;
+// One-shot latch for `--gallery-menu-demo` (setDocumentGalleryDemoStage()).
+GalleryDemoStage g_demoStage = GalleryDemoStage::None;
+bool g_demoFired = false;
+// A one-line result under the "Documents" heading ("Deleted Sketch"), since
+// the tile it refers to is gone by the time it is shown.
+std::string g_galleryStatus;
+
 }  // namespace
+
+namespace {
+
+// Surrounding blanks are the user's slip, not their intent: a name is trimmed
+// before it is judged AND before it is written, so the two agree.
+std::string trimName(const std::string& s) {
+  const size_t b = s.find_first_not_of(" \t\r\n");
+  if (b == std::string::npos) return {};
+  return s.substr(b, s.find_last_not_of(" \t\r\n") - b + 1);
+}
+
+// The longest component most filesystems (APFS, HFS+, ext4) accept is 255
+// BYTES, extension included -- so the name itself is capped at 255 less the
+// seven `.npaint` costs.
+constexpr size_t kMaxNameBytes = 255 - 7;
+
+}  // namespace
+
+std::string galleryRenameRefusal(const std::string& newName) {
+  const std::string name = trimName(newName);
+  if (name.empty()) return "A document needs a name.";
+  if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos)
+    return "A name cannot contain a slash.";
+  // `.` and `..` are the directory itself and its parent; a leading dot hides
+  // the file from the Files app, which is the other half of this same folder.
+  if (name == "." || name == "..") return "That name is a directory, not a document.";
+  if (name.front() == '.') return "A name cannot begin with a dot.";
+  if (name.size() > kMaxNameBytes) return "That name is too long.";
+  return {};
+}
+
+std::string galleryRenamedPath(const std::string& path, const std::string& newName) {
+  std::string name = trimName(newName);
+  if (name.size() >= 7 && name.compare(name.size() - 7, 7, ".npaint") == 0)
+    name.erase(name.size() - 7);
+  return (fs::path(path).parent_path() / (name + ".npaint")).string();
+}
+
+std::string galleryDuplicatePath(const std::string& path) {
+  const fs::path src(path);
+  const fs::path dir = src.parent_path();
+  const std::string stem = src.stem().string();
+  std::error_code ec;
+  for (int n = 1; n <= 999; ++n) {
+    std::string candidate = stem + " copy";
+    if (n > 1) candidate += " " + std::to_string(n);
+    const fs::path p = dir / (candidate + ".npaint");
+    if (!fs::exists(p, ec)) return p.string();
+  }
+  return {};
+}
 
 std::vector<GalleryEntry> scanDocumentGallery(const std::string& dir) {
   std::vector<GalleryEntry> out;
@@ -340,9 +454,16 @@ std::vector<GalleryEntry> scanDocumentGallery(const std::string& dir) {
   return out;
 }
 
+void setDocumentGalleryDirectory(const std::string& dir) {
+  g_dirOverride = dir;
+  invalidateGalleryScan();
+}
+
+void setDocumentGalleryDemoStage(GalleryDemoStage stage) { g_demoStage = stage; }
+
 void drawDocumentGallery(AppState& st, GpuContext& gpu) {
   if (!g_scanned) {
-    g_entries = scanDocumentGallery(iosDocumentsDirectory());
+    g_entries = scanDocumentGallery(g_dirOverride.empty() ? iosDocumentsDirectory() : g_dirOverride);
     g_atlas.rebuild(gpu, g_entries);
     g_scanned = true;
   }
@@ -362,17 +483,31 @@ void drawDocumentGallery(AppState& st, GpuContext& gpu) {
   ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(atelierToken(kTextPrimary)));
   ImGui::TextUnformatted("Documents");
   ImGui::PopStyleColor();
+  if (!g_galleryStatus.empty()) {
+    ImGui::SameLine();
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(atelierToken(kTextSecondary)), "   %s",
+                       g_galleryStatus.c_str());
+  }
   ImGui::Dummy(ImVec2(1.0f, 12.0f));
+
+  // A tap must not act while the menu or a dialog is up: a non-modal
+  // `BeginPopup()` does not block the window under it, so the click that
+  // dismisses the menu would otherwise land on whatever tile it fell over.
+  // Read BEFORE the tiles are drawn, since dismissing happens inside them.
+  const bool popupWasOpen = ImGui::IsPopupOpen(kTileMenuPopup) ||
+                            ImGui::IsPopupOpen(kRenamePopup) || ImGui::IsPopupOpen(kDeletePopup);
 
   ImGui::BeginChild("##galleryGrid", ImVec2(0, 0), false, ImGuiWindowFlags_NoBackground);
   ImDrawList* dl = ImGui::GetWindowDrawList();
 
-  const float availW = ImGui::GetContentRegionAvail().x;
+  const float availW = ImGui::GetContentRegionAvail().x - kGridInset;
   const int columns = std::max(1, static_cast<int>((availW + kTileGap) / (kTileW + kTileGap)));
 
-  const ImVec2 origin = ImGui::GetCursorScreenPos();
+  const ImVec2 start = ImGui::GetCursorScreenPos();
+  const ImVec2 origin(start.x + kGridInset, start.y + kGridInset);
   int col = 0, row = 0;
   int tappedIndex = -1;   // index into g_entries, or -1
+  int pressedIndex = -1;  // the entry a long press opened the menu for, or -1
   bool tappedNew = false;
 
   auto cellPos = [&](int c, int r) {
@@ -382,13 +517,15 @@ void drawDocumentGallery(AppState& st, GpuContext& gpu) {
   // The "+" tile first -- "make something new" reads left-to-right as the
   // first choice, and it is the one tile that is always present, even in an
   // empty gallery (this function's own doc comment on a fresh install).
-  if (drawTile(dl, cellPos(col, row), "New Document", nullptr)) tappedNew = true;
+  if (drawTile(dl, cellPos(col, row), "New Document", nullptr).clicked) tappedNew = true;
   {
-    // The plus glyph itself, centred in the tile drawn above.
+    // The plus glyph itself, centred in the tile drawn above. Chrome-mid, not
+    // the secondary text grey: the tile's ground is now paper, and a #9b9797
+    // glyph on #f8f4f4 is barely a glyph.
     const ImVec2 c = cellPos(col, row);
     const ImVec2 mid(c.x + kTileW * 0.5f, c.y + kTileW * 0.5f);
     const float arm = kTileW * 0.18f;
-    const ImU32 col32 = atelierToken(kTextSecondary);
+    const ImU32 col32 = atelierToken(kChromeMid);
     dl->AddLine(ImVec2(mid.x - arm, mid.y), ImVec2(mid.x + arm, mid.y), col32, 2.0f);
     dl->AddLine(ImVec2(mid.x, mid.y - arm), ImVec2(mid.x, mid.y + arm), col32, 2.0f);
   }
@@ -399,7 +536,9 @@ void drawDocumentGallery(AppState& st, GpuContext& gpu) {
     const GalleryEntry& e = g_entries[i];
     const ImVec2 p = cellPos(col, row);
     const char* caption2 = e.modifiedLabel.empty() ? nullptr : e.modifiedLabel.c_str();
-    if (drawTile(dl, p, e.displayName.c_str(), caption2)) tappedIndex = static_cast<int>(i);
+    const TileInput in = drawTile(dl, p, e.displayName.c_str(), caption2);
+    if (in.clicked) tappedIndex = static_cast<int>(i);
+    if (in.longPressed) pressedIndex = static_cast<int>(i);
 
     if (!e.thumb.rgba.empty() && g_atlas.view() != nullptr) {
       ImVec2 uv0, uv1;
@@ -423,14 +562,158 @@ void drawDocumentGallery(AppState& st, GpuContext& gpu) {
     if (col >= columns) { col = 0; ++row; }
   }
 
-  ImGui::Dummy(ImVec2(1.0f, (row + 1) * (kTileH + kTileGap)));
+  ImGui::Dummy(ImVec2(1.0f, kGridInset + (row + 1) * (kTileH + kTileGap)));
   ImGui::EndChild();
+
+  // --- the long-press menu and its two dialogs -------------------------
+  //
+  // Opened and drawn here rather than inside the child: a popup belongs to
+  // the ID stack level that opened it, and the two dialogs below outlive the
+  // rescan that closes the child's own contents.
+  // `--gallery-menu-demo`: see setDocumentGalleryDemoStage(). Acted on once.
+  bool demoRename = false;
+  bool demoDelete = false;
+  if (g_demoStage != GalleryDemoStage::None && !g_demoFired && !g_entries.empty()) {
+    g_demoFired = true;
+    pressedIndex = 0;
+    demoRename = g_demoStage == GalleryDemoStage::Rename;
+    demoDelete = g_demoStage == GalleryDemoStage::Delete;
+  }
+  if (pressedIndex >= 0) {
+    const GalleryEntry& e = g_entries[static_cast<size_t>(pressedIndex)];
+    g_menuPath = e.path;
+    g_menuName = e.displayName;
+    // No explicit position: `OpenPopup()` records the pointer's own position
+    // and `BeginPopup()` opens there, which is the finger for a long press.
+    ImGui::OpenPopup(kTileMenuPopup);
+  }
+
+  bool openRename = demoRename;
+  bool openDelete = demoDelete;
+  if (demoRename || demoDelete) ImGui::CloseCurrentPopup();
+  if (ImGui::BeginPopup(kTileMenuPopup)) {
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(atelierToken(kTextSecondary)), "%s",
+                       g_menuName.c_str());
+    ImGui::Separator();
+    if (ImGui::Selectable("Rename\xe2\x80\xa6")) openRename = true;
+    if (ImGui::Selectable("Duplicate")) {
+      const std::string dst = galleryDuplicatePath(g_menuPath);
+      if (dst.empty()) {
+        g_galleryStatus = "Could not duplicate \xe2\x80\x9c" + g_menuName + "\xe2\x80\x9d: too many copies.";
+      } else {
+        std::error_code ec;
+        fs::copy_file(g_menuPath, dst, ec);
+        if (ec) {
+          g_galleryStatus =
+              "Could not duplicate \xe2\x80\x9c" + g_menuName + "\xe2\x80\x9d: " + ec.message();
+        } else {
+          g_galleryStatus = "Duplicated \xe2\x80\x9c" + g_menuName + "\xe2\x80\x9d.";
+          invalidateGalleryScan();
+        }
+      }
+      ImGui::CloseCurrentPopup();
+    }
+    if (ImGui::Selectable("Delete\xe2\x80\xa6")) openDelete = true;
+    ImGui::EndPopup();
+  }
+
+  if (openRename) {
+    std::snprintf(g_renameBuf, sizeof(g_renameBuf), "%s", g_menuName.c_str());
+    g_renameStatus.clear();
+    ImGui::OpenPopup(kRenamePopup);
+  }
+  if (openDelete) {
+    g_deleteStatus.clear();
+    ImGui::OpenPopup(kDeletePopup);
+  }
+
+  if (beginDialog(kRenamePopup)) {
+    // EnterReturnsTrue only tells us the field committed; the footer's own
+    // Return is what commits the dialog, so the two must not both fire.
+    dialogInputText("Name", g_renameBuf, sizeof(g_renameBuf));
+    dialogHint("Renaming the file here renames it in the Files app too \xe2\x80\x94 it is the same "
+               "folder.");
+    dialogStatusLine(DialogStatus::Error, g_renameStatus);
+
+    DialogFooter footer;
+    footer.commit = "Rename";
+    switch (dialogFooter(footer)) {
+      case DialogAction::Commit: {
+        const std::string name(g_renameBuf);
+        g_renameStatus = galleryRenameRefusal(name);
+        if (g_renameStatus.empty()) {
+          const std::string dst = galleryRenamedPath(g_menuPath, name);
+          std::error_code ec;
+          if (dst != g_menuPath && fs::exists(dst, ec)) {
+            g_renameStatus = "A document by that name is already here.";
+          } else {
+            fs::rename(g_menuPath, dst, ec);
+            if (ec) {
+              g_renameStatus = ec.message();
+            } else {
+              g_galleryStatus =
+                  "Renamed to \xe2\x80\x9c" + fs::path(dst).stem().string() + "\xe2\x80\x9d.";
+              invalidateGalleryScan();
+              ImGui::CloseCurrentPopup();
+            }
+          }
+        }
+        break;
+      }
+      case DialogAction::Cancel:
+        ImGui::CloseCurrentPopup();
+        break;
+      default:
+        break;
+    }
+    endDialog();
+  }
+
+  if (beginDialog(kDeletePopup)) {
+    dialogText("Delete \xe2\x80\x9c%s\xe2\x80\x9d?", g_menuName.c_str());
+    // Said plainly because it is true: this is `unlink`, not a move to a
+    // Trash the Files app can undo.
+    dialogHint("The file is removed from this device. This cannot be undone.");
+    dialogStatusLine(DialogStatus::Error, g_deleteStatus);
+
+    DialogFooter footer;
+    footer.commit = "Delete";
+    footer.commitDestructive = true;
+    switch (dialogFooter(footer)) {
+      case DialogAction::Commit: {
+        std::error_code ec;
+        if (!fs::remove(g_menuPath, ec) || ec) {
+          g_deleteStatus = ec ? ec.message() : std::string("The file could not be removed.");
+        } else {
+          g_galleryStatus = "Deleted \xe2\x80\x9c" + g_menuName + "\xe2\x80\x9d.";
+          invalidateGalleryScan();
+          ImGui::CloseCurrentPopup();
+        }
+        break;
+      }
+      case DialogAction::Cancel:
+        ImGui::CloseCurrentPopup();
+        break;
+      default:
+        break;
+    }
+    endDialog();
+  }
+
   ImGui::End();
   ImGui::PopStyleColor();
   ImGui::PopStyleVar(3);
 
+  // The press that fired a menu is spent once the finger is up. Cleared after
+  // the tiles have been drawn, so the release frame -- in which ImGui already
+  // reports the button as up while `InvisibleButton()` still returns its
+  // click -- still sees the flag and swallows that click.
+  if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) g_longPressFired = 0;
+
   // --- acting on a tap, after the frame's drawing is done --------------
-  if (tappedNew) {
+  if (popupWasOpen) {
+    // Nothing: this frame's click was the one that dismissed the menu.
+  } else if (tappedNew) {
     // The minimal new-document path (this header's own comment): the same
     // size/space main.cpp seeds a session with, not the New Document
     // dialog's size-and-preset modal.

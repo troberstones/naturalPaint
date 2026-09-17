@@ -52,6 +52,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/BrushLibraryFile.cpp
   app/selftest/BucketRefusal.cpp
   app/selftest/CanvasDimensions.cpp
+  app/selftest/DocumentGallery.cpp
   app/selftest/Channels.cpp
   app/selftest/ChannelsPanel.cpp
   app/selftest/CheckedAdd.cpp

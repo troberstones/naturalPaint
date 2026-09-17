@@ -5791,6 +5791,11 @@ bool runTilePreviewTest();
 //    checked anyway since every downstream division depends on it).
 bool runCanvasDimensionsTest();
 
+// ui/DocumentGallery's long-press actions: what a document may be renamed to,
+// where that rename lands, and which path a duplicate takes. Headless -- the
+// grid itself needs an ImGui frame (F4).
+bool runDocumentGalleryTest();
+
 // track10/input ("make Mac trackpad input feel right"): app/WheelInput.hpp's
 // pure functions -- the notch-vs-precise classifier
 // (`wheelDeltaIsPrecise()`), the panel scroll's discount and exponential

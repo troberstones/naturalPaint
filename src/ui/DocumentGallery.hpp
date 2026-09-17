@@ -138,9 +138,67 @@ std::vector<GalleryEntry> scanDocumentGallery(const std::string& dir);
 //   asks for -- it does not open ui/NewDocumentDialog.hpp's size-and-preset
 //   modal, which is a reasonable follow-up but is not free to reuse from a
 //   single tap with no size to negotiate.
-// * Neither delete nor rename is wired up here (the brief's own "nice to
-//   have, not required" list) -- the Files app already covers both for the
-//   same directory this scans.
+// * A long press (`kGalleryLongPressSeconds`) on a thumbnail opens a context
+//   menu offering Rename, Duplicate and Delete. The press that opened the
+//   menu is not also a tap, so the document does not open underneath it.
+//   Rename and Delete go through ui/Dialog (ADR-0010); Delete confirms
+//   first, because a `.npaint` removed here does not go to a Trash the Files
+//   app can restore it from.
 void drawDocumentGallery(AppState& st, GpuContext& gpu);
+
+// Scan `dir` instead of `iosDocumentsDirectory()`. `--gallery-demo`'s hook,
+// and the reason it takes a directory at all: this screen has no photograph
+// on any platform, and pointing a capture at the real `$HOME/Documents`
+// would put the machine's own files in the frame
+// ([[golden-must-not-photograph-home]] is a defect this project has already
+// shipped once). An empty string restores the default. Takes effect on the
+// next scan, so the caller sets it before the gallery is first drawn.
+void setDocumentGalleryDirectory(const std::string& dir);
+
+// `--gallery-menu-demo`'s hook: opens the first tile's long-press menu, or
+// one of the two dialogs that menu leads to, on the first frame the gallery
+// has entries. Same justification as `AppState::openToolFlyoutDemo` -- the
+// menu needs a ~0.5 s press-and-hold and a dialog needs a tap inside it, and
+// `--screenshot` has neither. Latched, so the popup opens once rather than
+// re-opening the instant it is closed.
+//
+// Lives here rather than as an `AppState` field (which is where
+// `openToolFlyoutDemo` lives) because nothing outside this module reads it
+// and `app/AppState.hpp` is a 112-TU compile hub.
+enum class GalleryDemoStage { None, Menu, Rename, Delete };
+void setDocumentGalleryDemoStage(GalleryDemoStage stage);
+
+// How long a finger must rest on a tile to mean "menu" rather than "open".
+// 0.5 s is UIKit's own `UILongPressGestureRecognizer` default; a tap that
+// drags past ImGui's mouse-drag threshold cancels it, so a scroll that begins
+// slowly is still a scroll.
+inline constexpr float kGalleryLongPressSeconds = 0.5f;
+
+// --- the three long-press actions, as pure functions ----------------------
+//
+// The grid itself is unreachable from `--selftest` (no ImGui frame -- docs/
+// reachability-audit.md F4), so everything about these actions that can be
+// wrong independently of a mouse lives here instead of inside
+// `drawDocumentGallery()`: what a name may be, where a rename moves a file,
+// and which path a duplicate takes. app/selftest/DocumentGallery.cpp is what
+// exercises them.
+
+// Empty when `newName` is an acceptable document name; otherwise the sentence
+// the rename dialog shows and refuses on. Guards the cases that would write
+// outside the gallery directory or produce a file the scan cannot see again:
+// a blank name, a path separator, `.`/`..`, a leading dot, and a name long
+// enough to overrun a filesystem's 255-byte component limit once `.npaint`
+// is appended.
+std::string galleryRenameRefusal(const std::string& newName);
+
+// Where `path` moves under `newName`: the same directory, `newName` trimmed
+// of surrounding blanks, and exactly one `.npaint` extension however the user
+// spelled it. Only meaningful when `galleryRenameRefusal(newName)` is empty.
+std::string galleryRenamedPath(const std::string& path, const std::string& newName);
+
+// The first free `"<stem> copy"`, `"<stem> copy 2"`, ... beside `path`, or
+// empty when a thousand of them are already taken (which is a refusal, not a
+// silent overwrite of someone's document).
+std::string galleryDuplicatePath(const std::string& path);
 
 }  // namespace np

@@ -2040,6 +2040,8 @@ int main(int argc, char** argv) {
   // --no-document: see the argument-parsing block, and the "A session always
   // has a document" comment this flag is the deliberate exception to.
   bool noDocumentDemo = false;
+  std::string galleryDemoDir;   // --gallery-demo <dir> / --gallery-menu-demo <dir>
+  np::GalleryDemoStage galleryDemoStage = np::GalleryDemoStage::None;
   bool panelStackDemo = false;
   bool gradeKindsDemo = false;
   bool flatsDemo = false;
@@ -2080,6 +2082,7 @@ int main(int argc, char** argv) {
   bool clickRequested = false;
   float clickX = 0.0f, clickY = 0.0f;
   int clickFrame = 15;
+  int clickHoldFrames = 1;  // --click's 4th argument; see its parse block
   bool advancedDynamics = false;
   // D4 (docs/reachability-audit.md): `naturalPaint foo.npaint` used to open
   // nothing, because this loop matched only `--flag` strings and fell
@@ -2679,6 +2682,31 @@ int main(int argc, char** argv) {
       // a flyout opens on right-click or a ~350ms press-and-hold, and the
       // screenshot path has neither. See AppState::openToolFlyoutDemo.
       flyoutDemo = true;
+    } else if (a == "--gallery-demo" || a == "--gallery-menu-demo") {
+      // --gallery-demo <dir> : draw ui/DocumentGallery's grid over <dir>,
+      // on any platform, instead of the canvas. The gallery is iOS-only in
+      // production (it is reached only through `st.showDocumentGallery`, set
+      // one place under NP_PLATFORM_IOS), so on every machine that builds
+      // this it had no photograph at all -- the same reach gap `--no-document`
+      // and `--flyout-demo` each close for a state no launch could produce.
+      //
+      // The directory is an ARGUMENT rather than the real
+      // `$HOME/Documents` on purpose: a capture aimed at the latter would put
+      // the machine's own files in the frame, which is a defect this project
+      // has shipped once already (golden-must-not-photograph-home).
+      //
+      // `--gallery-menu-demo <dir> [menu|rename|delete]` additionally holds
+      // the first tile's long-press menu, or one of the two dialogs that menu
+      // leads to, open -- see setDocumentGalleryDemoStage().
+      if (i + 1 < argc && argv[i + 1][0] != '-') galleryDemoDir = argv[++i];
+      if (a == "--gallery-menu-demo") {
+        galleryDemoStage = np::GalleryDemoStage::Menu;
+        if (i + 1 < argc && argv[i + 1][0] != '-') {
+          const std::string stage = argv[++i];
+          if (stage == "rename") galleryDemoStage = np::GalleryDemoStage::Rename;
+          else if (stage == "delete") galleryDemoStage = np::GalleryDemoStage::Delete;
+        }
+      }
     } else if (a == "--no-document") {
       // docs/testing-issues.md T5: leaves `st.documents` EMPTY, which is the
       // state the report is about -- "when you close all documents, there is
@@ -2912,6 +2940,13 @@ int main(int argc, char** argv) {
       clickX = static_cast<float>(std::atof(argv[++i]));
       clickY = static_cast<float>(std::atof(argv[++i]));
       if (i + 1 < argc && argv[i + 1][0] != '-') clickFrame = std::atoi(argv[++i]);
+      // --click <x> <y> [frame] [holdFrames] : how many frames the button
+      // stays down, default 1 (a tap). A press-and-hold gesture is judged on
+      // `io.MouseDownDuration`, which advances by the REAL frame delta, so a
+      // one-frame press is ~16 ms however many frames the capture runs for --
+      // there was no way to drive a hold at all. ui/DocumentGallery's
+      // long-press menu (0.5 s) needs roughly 35 frames at 60 Hz.
+      if (i + 1 < argc && argv[i + 1][0] != '-') clickHoldFrames = std::max(1, std::atoi(argv[++i]));
     } else if (a == "--open-layer-properties") {
       // The LAYERS panel's own gear-button modal, same justification as
       // --open-export-states one dialog over: it too is opened by a click and
@@ -4653,6 +4688,10 @@ int main(int argc, char** argv) {
     // on-screen `texW`/`texH`, closing "a non-square document displays
     // square". Headless and GPU-free.
     const bool canvasDimensionsOk = !wanted("runCanvasDimensionsTest") || np::runCanvasDimensionsTest();
+    // The iOS gallery's long-press menu (ui/DocumentGallery.hpp): the path
+    // arithmetic behind Rename, Duplicate and Delete -- the half that decides
+    // which file gets written over. The grid itself is unreachable here (F4).
+    const bool documentGalleryOk = !wanted("runDocumentGalleryTest") || np::runDocumentGalleryTest();
     // track10/input ("make Mac trackpad input feel right"): the notch-vs-
     // precise wheel classifier, the panel scroll's discount/smoothing, and
     // the pinch-to-zoom path's arithmetic -- app/WheelInput.hpp. Headless;
@@ -4877,6 +4916,7 @@ int main(int argc, char** argv) {
                     selectMenuOk &&
                     chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk && tilePreviewOk &&
                     canvasDimensionsOk &&
+                    documentGalleryOk &&
                     angleConventionOk && wheelInputOk && touchGestureOk && touchGestureSessionOk && pressureFeelOk
                     && transferDynamicsOk && toolOptionsBlendOk &&
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
@@ -5171,6 +5211,11 @@ int main(int argc, char** argv) {
   st.controlsAllOpen = controlsAllOpen;
   st.openLayerMenu = openLayerMenu;
   st.openToolFlyoutDemo = flyoutDemo;
+  np::setDocumentGalleryDemoStage(galleryDemoStage);
+  if (!galleryDemoDir.empty()) {
+    np::setDocumentGalleryDirectory(galleryDemoDir);
+    st.showDocumentGallery = true;
+  }
   st.panelStackDemo = panelStackDemo;
   st.gradeKindsDemo = gradeKindsDemo;
   st.flatsDemo = flatsDemo;
@@ -6574,7 +6619,7 @@ int main(int argc, char** argv) {
       io.AddMousePosEvent(clickX, clickY);
       if (static_cast<int>(frameIndex) == clickFrame)
         io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
-      else if (static_cast<int>(frameIndex) == clickFrame + 1)
+      else if (static_cast<int>(frameIndex) == clickFrame + clickHoldFrames)
         io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
     }
 
