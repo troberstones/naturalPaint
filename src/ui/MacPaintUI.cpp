@@ -20837,7 +20837,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       Layer* flayer = fod != nullptr ? activeLayerOf(*fod) : nullptr;
       const std::optional<size_t> fidx = fod != nullptr ? activeLayerIndex(*fod) : std::nullopt;
       if (flayer != nullptr && flayer->kind == LayerKind::Flats && !flayer->locked && fidx.has_value()) {
-        const std::shared_ptr<const FlatEvaluation> eval = flatsEvaluateLayer(fod->document, *fidx);
+        const std::shared_ptr<const FlatEvaluation> eval = flatsEvaluateLayer(fod->document, *fidx, &gpu);
         // The flatting tools are content editing top to bottom -- bridges,
         // fills, merges, carves -- so a finger is turned away from all of them
         // at this one bool rather than at each sub-tool's own click. Gating the
@@ -21176,7 +21176,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             bool changed = false;
             if (ft == FlatsTool::DrawMerge) {
               const std::shared_ptr<const FlatEvaluation> eval =
-                  flatsEvaluateLayer(ftod->document, *fti);
+                  flatsEvaluateLayer(ftod->document, *fti, &gpu);
               changed = eval && flatsDrawMerge(*ftl, *eval, pts);
               if (!changed)
                 g_strokeRefusal = "draw-merge: drag from inside one fill across the fills it "
@@ -21197,7 +21197,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         } else if (onCanvas && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
           // ---- the click tools ---------------------------------------------
           const std::shared_ptr<const FlatEvaluation> eval =
-              flatsEvaluateLayer(ftod->document, *fti);
+              flatsEvaluateLayer(ftod->document, *fti, &gpu);
           if (eval) {
             switch (ft) {
               case FlatsTool::DeleteFill:
@@ -21333,7 +21333,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             const bool optionHeld = ImGui::GetIO().KeyAlt;
             const bool shiftHeld = ImGui::GetIO().KeyShift;
             if (target->kind == LayerKind::Flats && !target->locked && li.has_value()) {
-              const std::shared_ptr<const FlatEvaluation> eval = flatsEvaluateLayer(od->document, *li);
+              const std::shared_ptr<const FlatEvaluation> eval = flatsEvaluateLayer(od->document, *li, &gpu);
               if (eval) {
                 const bool changed = optionHeld
                                          ? flatsBucketCarve(*target, *eval, tx, ty)
@@ -21358,7 +21358,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
               const std::vector<size_t> source =
                   flatsBakeSourceLayers(od->document, *li, st.flatsBakeSource);
               const std::shared_ptr<const FlatEvaluation> eval =
-                  flatsEvaluateSource(od->document, target->id, source, bake);
+                  flatsEvaluateSource(od->document, target->id, source, bake, &gpu);
               const int fill = eval ? eval->fillAt(tx, ty) : 0;
               if (!fill) {
                 g_strokeRefusal = "the click is on a stroke, not inside a region.";

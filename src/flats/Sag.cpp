@@ -12,6 +12,15 @@
 namespace np {
 
 namespace {
+MembraneSagGpuFn& membraneSagGpuSlot() {
+  static MembraneSagGpuFn fn = nullptr;
+  return fn;
+}
+}  // namespace
+
+void flatsSetMembraneSagGpu(MembraneSagGpuFn fn) { membraneSagGpuSlot() = fn; }
+
+namespace {
 
 constexpr int SUB = 8;       // sag quantisation, 1/8 px
 constexpr float REL = 0.3f;  // also merge when the col is within 30% of the peak
@@ -337,9 +346,11 @@ FlatLabels flatSagWatershed(const std::vector<float>& sag, const FlatMask& line,
   return core;
 }
 
-FlatSagResult flatSagSegment(const FlatMask& line, int w, int h, float tauPx, int maxGap) {
+FlatSagResult flatSagSegment(const FlatMask& line, int w, int h, float tauPx, int maxGap,
+                             GpuContext* gpu) {
   FlatSagResult r;
-  r.sag = flatMembraneSag(line, w, h);
+  MembraneSagGpuFn gpuSolve = gpu ? membraneSagGpuSlot() : nullptr;
+  r.sag = gpuSolve ? gpuSolve(*gpu, line, w, h, 30, 1e-2f) : flatMembraneSag(line, w, h);
   r.core = flatSagWatershed(r.sag, line, w, h, tauPx, maxGap);
   return r;
 }

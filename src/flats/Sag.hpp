@@ -36,6 +36,8 @@
 
 namespace np {
 
+class GpuContext;
+
 struct FlatSagResult {
   FlatLabels core;             // region id per free pixel, 0 on ink
   std::vector<float> sag;  // roominess in px (diagnostic / reusable)
@@ -44,7 +46,23 @@ struct FlatSagResult {
 // tauPx  -- a basin standing less than this above its col is a bulge, not an area.
 // maxGap -- the widest break the artist might plausibly have left; sets how far
 //           the ridge may search for the ink that justifies a boundary.
-FlatSagResult flatSagSegment(const FlatMask& line, int w, int h, float tauPx, int maxGap);
+// gpu    -- non-owning; non-null routes the sag solve through membraneSagGpu()
+//           instead of the CPU flatMembraneSag(). Never set by a headless caller.
+FlatSagResult flatSagSegment(const FlatMask& line, int w, int h, float tauPx, int maxGap,
+                             GpuContext* gpu = nullptr);
+
+// Registers the GPU membrane solve `flatSagSegment()` calls when it is given
+// a non-null GpuContext. An explicit setter rather than the more usual
+// static-initializer registration, so the wiring is one visible line in
+// main.cpp instead of an implicit link-order dependency -- and because
+// flats/MembraneGpu.cpp (wgpu-dependent) is deliberately never compiled into
+// `flatstest` (docs/autoflats-migration.md: that target stays GPU-free), a
+// hard call from here to membraneSagGpu() by name would make flatstest fail
+// to link. flatstest never calls this setter, so the slot stays null there
+// and flatSagSegment()'s `gpu` parameter -- always null in that binary too --
+// never reads it.
+using MembraneSagGpuFn = std::vector<float> (*)(GpuContext&, const FlatMask&, int, int, int, float);
+void flatsSetMembraneSagGpu(MembraneSagGpuFn fn);
 
 // Same, on a sag field already solved (the field only depends on the line
 // mask, so a re-segment at a new tau can reuse it).
