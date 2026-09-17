@@ -205,9 +205,14 @@ FlatMask flatBridgeMask(const FlatEdits& edits, int w, int h);
 
 // Segment + replay. `rgba8` is w*h*4 display-encoded bytes of the line art
 // beneath the layer (see flats/Ink for the domain argument).
-FlatEvaluation flatEvaluate(const uint8_t* rgba8, int w, int h, const FlatsContent& content);
+// `gpu` -- non-owning; non-null routes the rubber-sheet solve onto the GPU
+// (flats/MembraneGpu). Never set by a headless caller (--batch, --psd-export,
+// the golden harness, flatstest): this stays a pure CPU function for them.
+FlatEvaluation flatEvaluate(const uint8_t* rgba8, int w, int h, const FlatsContent& content,
+                           GpuContext* gpu = nullptr);
 // Same from a precomputed ink map (tests, and callers that cache the ink).
-FlatEvaluation flatEvaluateInk(FlatInk ink, int w, int h, const FlatsContent& content);
+FlatEvaluation flatEvaluateInk(FlatInk ink, int w, int h, const FlatsContent& content,
+                               GpuContext* gpu = nullptr);
 
 // Paint the evaluation into straight-alpha display RGBA8: each visible,
 // non-deleted root's colour over its labels; ink pixels take the colour of

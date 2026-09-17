@@ -29,6 +29,7 @@
 #include "app/Batch.hpp"
 #include "app/ProfileToggle.hpp"
 #include "app/ProfileVectorWarp.hpp"
+#include "app/ProfileFlatsSolver.hpp"
 #include "app/PsdExportCli.hpp"
 #include "app/PsdReport.hpp"
 #include "app/DabLibrary.hpp"
@@ -72,6 +73,9 @@
 #include "core/LayerCompOps.hpp"
 #include "core/ResourcePaths.hpp"
 #include "gfx/Context.hpp"
+#include "flats/Field.hpp"
+#include "flats/Membrane.hpp"
+#include "flats/MembraneGpu.hpp"
 #include "io/ImageDecode.hpp"
 #include "paint/Palette.hpp"
 #include "sim/PaintSim.hpp"
@@ -1895,6 +1899,20 @@ int main(int argc, char** argv) {
   bool selfTest = false;
   float diagSeconds = 0.0f;
   bool modeTest = false;
+  // --flats-gpu-check: verify flats/MembraneGpu.cpp's membraneSagGpu()
+  // against flats/Membrane.cpp's flatMembraneSag() (same three analytic
+  // fixtures flats/FlatsSelfTest.cpp already holds the CPU solver to) and
+  // against each other. Deliberately not part of --selftest: it needs a real
+  // GPU adapter and this port is not wired into any production call site
+  // yet, so it stays an explicit, standalone check.
+  bool flatsGpuCheck = false;
+  // --profile-flats-solver [width height iterations] : headless CPU-vs-GPU
+  // benchmark, see app/ProfileFlatsSolver.hpp. Temporary, same shape as
+  // --profile-vector-warp.
+  bool profileFlatsSolverRequested = false;
+  int profileFlatsSolverWidth = 0;
+  int profileFlatsSolverHeight = 0;
+  int profileFlatsSolverIterations = 0;
   bool latencyVerbose = false;
   // --frame-trace: per-phase timing for every frame (poll/newframe/drawUI/
   // render/present) plus the active document's revision, printed to stderr,
@@ -2259,6 +2277,15 @@ int main(int argc, char** argv) {
       if (i + 1 < argc) strokePreviewOut = argv[++i];
       if (i + 1 < argc && argv[i + 1][0] != '-') strokePreviewRadius = std::atof(argv[++i]);
       if (i + 1 < argc && argv[i + 1][0] != '-') strokePreviewSpacing = std::atof(argv[++i]);
+    } else if (a == "--flats-gpu-check") {
+      flatsGpuCheck = true;
+    } else if (a == "--profile-flats-solver") {
+      profileFlatsSolverRequested = true;
+      if (i + 3 < argc && argv[i + 1][0] != '-') {
+        profileFlatsSolverWidth = std::atoi(argv[++i]);
+        profileFlatsSolverHeight = std::atoi(argv[++i]);
+        profileFlatsSolverIterations = std::atoi(argv[++i]);
+      }
     } else if (a == "--modes") {
       modeTest = true;
     } else if (a == "--diag") {
@@ -3114,6 +3141,101 @@ int main(int argc, char** argv) {
   // reads this figure, and one of them running against the 8192 default while
   // the adapter allows 16384 would refuse files this machine draws perfectly.
   np::setMaxCanvasDimension(static_cast<int32_t>(gpu.maxTextureDimension));
+
+  // flats/Sag.cpp's flatSagSegment() calls through this slot, not by naming
+  // membraneSagGpu() directly, so that `flatstest` (GPU-free by design) never
+  // has a hard link dependency on flats/MembraneGpu.cpp. Registered once,
+  // here, rather than a static-initializer trick, so the wiring is a visible
+  // line rather than an implicit link-order dependency.
+  np::flatsSetMembraneSagGpu(&np::membraneSagGpu);
+
+  // --flats-gpu-check: same three analytic/drift fixtures
+  // flats/FlatsSelfTest.cpp holds flatMembraneSag() to, run through both the
+  // CPU solver and membraneSagGpu(), printing both values and pass/fail
+  // against the analytic target AND against each other. See
+  // flats/MembraneGpu.hpp/.cpp; not part of --selftest because it needs a
+  // real GPU adapter and this port is not wired into any production call
+  // site yet.
+  if (flatsGpuCheck) {
+    bool allOk = true;
+    auto check = [&](bool cond, const char* what) {
+      std::printf("  %-70s %s\n", what, cond ? "pass" : "FAIL");
+      if (!cond) allOk = false;
+    };
+
+    std::printf("[flats-gpu-check] membraneSagGpu vs flatMembraneSag vs analytic targets\n");
+
+    // --- 1. the 200x32 strip: discrete u_i = i(n+1-i)/2, n=30 -> u_max=120
+    {
+      const int W = 200, H = 32;
+      np::FlatMask line(static_cast<size_t>(W) * H, 0);
+      for (int x = 0; x < W; x++) { line[x] = 1; line[static_cast<size_t>(H - 1) * W + x] = 1; }
+      const std::vector<float> cpu = np::flatMembraneSag(line, W, H, 60, 1e-4f);
+      const std::vector<float> gpu2 = np::membraneSagGpu(gpu, line, W, H, 60, 1e-4f);
+      const double target = std::sqrt(8 * 120.0);
+      const float c = cpu[15 * W + 100], g = gpu2[15 * W + 100];
+      std::printf("    strip: cpu=%.4f gpu=%.4f target=%.4f\n", c, g, target);
+      check(std::fabs(c - target) <= 0.1, "strip: cpu matches analytic solution");
+      check(std::fabs(g - target) <= 0.1, "strip: gpu matches analytic solution");
+      check(std::fabs(c - g) <= 0.1, "strip: gpu matches cpu");
+    }
+
+    // --- 2. the R=80 disc: sag -> R*sqrt(2)
+    {
+      const int S = 201, R = 80;
+      np::FlatMask line(static_cast<size_t>(S) * S, 1);
+      for (int y = 0; y < S; y++)
+        for (int x = 0; x < S; x++)
+          if (std::hypot(x - 100, y - 100) < R) line[static_cast<size_t>(y) * S + x] = 0;
+      const std::vector<float> cpu = np::flatMembraneSag(line, S, S, 60, 1e-4f);
+      const std::vector<float> gpu2 = np::membraneSagGpu(gpu, line, S, S, 60, 1e-4f);
+      const double target = R * std::sqrt(2.0);
+      const float c = cpu[100 * S + 100], g = gpu2[100 * S + 100];
+      std::printf("    disc:  cpu=%.4f gpu=%.4f target=%.4f\n", c, g, target);
+      check(std::fabs(c - target) <= target * 0.01, "disc: cpu matches analytic solution");
+      check(std::fabs(g - target) <= target * 0.01, "disc: gpu matches analytic solution");
+      check(std::fabs(c - g) <= target * 0.02, "disc: gpu matches cpu within 2%");
+    }
+
+    // --- 3. hatched box: max sag must not drift as the solve tightens
+    {
+      const np::FlatArt a = np::flatHatchedBox();
+      const std::vector<float> cpuLoose = np::flatMembraneSag(a.line, a.w, a.h, 80, 1e-2f);
+      const std::vector<float> cpuTight = np::flatMembraneSag(a.line, a.w, a.h, 200, 1e-5f);
+      const std::vector<float> gpuLoose = np::membraneSagGpu(gpu, a.line, a.w, a.h, 80, 1e-2f);
+      const std::vector<float> gpuTight = np::membraneSagGpu(gpu, a.line, a.w, a.h, 200, 1e-5f);
+      float cLoose = 0, cTight = 0, gLoose = 0, gTight = 0;
+      for (size_t i = 0; i < cpuLoose.size(); i++) {
+        cLoose = std::max(cLoose, cpuLoose[i]);
+        cTight = std::max(cTight, cpuTight[i]);
+        gLoose = std::max(gLoose, gpuLoose[i]);
+        gTight = std::max(gTight, gpuTight[i]);
+      }
+      std::printf("    hatched box max sag: cpu loose=%.4f tight=%.4f | gpu loose=%.4f tight=%.4f\n",
+                 cLoose, cTight, gLoose, gTight);
+      check(cTight > 0 && std::fabs(cLoose / cTight - 1) <= 0.05, "hatched box: cpu does not drift");
+      check(gTight > 0 && std::fabs(gLoose / gTight - 1) <= 0.05, "hatched box: gpu does not drift");
+      check(cTight > 0 && gTight > 0 && std::fabs(cTight / gTight - 1) <= 0.05,
+           "hatched box: gpu matches cpu within 5% at tight tolerance");
+    }
+
+    std::printf("[flats-gpu-check] %s\n", allOk ? "ALL PASS" : "FAILED");
+    gpu.shutdown();
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    std::exit(allOk ? 0 : 1);
+  }
+
+  if (profileFlatsSolverRequested) {
+    const int w = profileFlatsSolverWidth > 0 ? profileFlatsSolverWidth : 2048;
+    const int h = profileFlatsSolverHeight > 0 ? profileFlatsSolverHeight : 2048;
+    const int iters = profileFlatsSolverIterations > 0 ? profileFlatsSolverIterations : 5;
+    const int rc = np::runProfileFlatsSolver(gpu, w, h, iters);
+    gpu.shutdown();
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    std::exit(rc);
+  }
 
   np::MixboxLut lut;
   const std::string mixboxLutPath = np::mixboxLutPath();
