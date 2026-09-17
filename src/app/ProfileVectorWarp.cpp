@@ -176,7 +176,7 @@ int runProfileVectorWarp(int width, int height, int anchors, int iterations) {
     }
 
     std::vector<double> ms(static_cast<size_t>(iterations));
-    const WarpControlRef center{true, 3 * (mesh.n() / 2), 3 * (mesh.n() / 2)};
+    const WarpControlRef center{true, mesh.n() / 2, mesh.n() / 2};
     std::string err;
     {
       // Untimed warmup tick, bent slightly, mirroring warpBeginDrag().

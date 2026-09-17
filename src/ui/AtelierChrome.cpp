@@ -1107,7 +1107,7 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
         if (warping) st.transform.setWarpMode(true, n);  // re-fits the live net in place
       }
       if (selected) ImGui::PopStyleColor();
-      ImGui::SetItemTooltip("%dx%d control cells for the next Warp -- PRD D23's own choice, "
+      ImGui::SetItemTooltip("%dx%d control points for the next Warp -- PRD D23's own choice, "
                             "3, 4 (the default) or 5.",
                             n, n);
     }

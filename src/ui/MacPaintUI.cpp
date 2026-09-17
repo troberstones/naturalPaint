@@ -17991,7 +17991,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (st.transform.mode() == TransformMode::Warp) {
         const WarpMesh& mesh = st.transform.warpMesh();
         const int n = mesh.n();
-        const WarpControlRef center{true, 3 * (n / 2), 3 * (n / 2)};
+        const WarpControlRef center{true, n / 2, n / 2};
         const float bend =
             std::min(static_cast<float>(mesh.bounds().width), static_cast<float>(mesh.bounds().height)) *
             0.15f;
@@ -18493,7 +18493,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // Warp claims the same mouse the affine gizmo does, through its own
       // parallel `warp*()` session methods rather than teaching
       // `TransformHandle` a control-net index (it names 8 box handles plus
-      // rotate, not a 13x13 lattice point). Commit/cancel need no branch:
+      // rotate, not an up-to-5x5 lattice point). Commit/cancel need no branch:
       // `TransformSession` already dispatches on `mode()` internally.
       if (st.transform.mode() == TransformMode::Warp) {
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -22674,42 +22674,38 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         dl->AddCircleFilled(rot, r, atelierToken(kCanvasPaper));
         dl->AddCircle(rot, r, line, 0, 1.0f);
       } else if (!g_moveDragging && st.transform.mode() == TransformMode::Warp) {
-        // The lattice grid in place of the affine box: (n+1) curved iso-lines
-        // each direction, a fixed cosmetic subdivision (this is chrome, not
-        // the commit rasteriser). Anchors reuse the square glyph above;
-        // handles are small discs, same square/disc vocabulary as the rotate
-        // handle.
+        // The lattice grid in place of the affine box: `cells()+1` curved
+        // iso-lines each direction, a fixed cosmetic subdivision (this is
+        // chrome, not the commit rasteriser). Every grid point is now a
+        // plain, draggable control point -- Catmull-Rom's own net has no
+        // separate tangent handle, so unlike the old Bezier gizmo there is
+        // only one glyph to draw here, not two.
         const WarpMesh& mesh = st.transform.warpMesh();
-        const int n = mesh.n();
+        const int cells = mesh.cells();
         constexpr int kGizmoSubdivisions = 10;
         auto drawIsoline = [&](bool alongU, int fixedIndex) {
           Point2 prev = alongU ? mesh.evaluate(0.0f, static_cast<float>(fixedIndex))
                                : mesh.evaluate(static_cast<float>(fixedIndex), 0.0f);
-          const int steps = n * kGizmoSubdivisions;
+          const int steps = cells * kGizmoSubdivisions;
           for (int k = 1; k <= steps; ++k) {
-            const float t = static_cast<float>(n) * static_cast<float>(k) / steps;
+            const float t = static_cast<float>(cells) * static_cast<float>(k) / steps;
             const Point2 cur = alongU ? mesh.evaluate(t, static_cast<float>(fixedIndex))
                                       : mesh.evaluate(static_cast<float>(fixedIndex), t);
             dl->AddLine(toScr(prev), toScr(cur), line, kRuleThickness);
             prev = cur;
           }
         };
-        for (int j = 0; j <= n; ++j) drawIsoline(true, j);
-        for (int i = 0; i <= n; ++i) drawIsoline(false, i);
+        for (int j = 0; j <= cells; ++j) drawIsoline(true, j);
+        for (int i = 0; i <= cells; ++i) drawIsoline(false, i);
 
         const float r = kTransformHandleDrawPx * 0.5f;
         const int side = mesh.pointsPerSide();
         for (int row = 0; row < side; ++row) {
           for (int col = 0; col < side; ++col) {
             const ImVec2 c = toScr(mesh.at(row, col));
-            if (WarpControlRef{true, row, col}.isAnchor()) {
-              dl->AddRectFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r),
-                                atelierToken(kCanvasPaper));
-              dl->AddRect(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), line, 0.0f, 0, 1.0f);
-            } else {
-              dl->AddCircleFilled(c, r * 0.6f, atelierToken(kCanvasPaper));
-              dl->AddCircle(c, r * 0.6f, line, 0, 1.0f);
-            }
+            dl->AddRectFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r),
+                              atelierToken(kCanvasPaper));
+            dl->AddRect(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), line, 0.0f, 0, 1.0f);
           }
         }
       }
