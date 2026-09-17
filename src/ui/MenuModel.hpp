@@ -382,6 +382,11 @@ enum class MenuAction : uint16_t {
   RadialBlur,
   LensBlur,
 
+  // docs/operations.md §3: Polar Coordinates (ops/PolarRemap.hpp), long
+  // marked "future work" -- the same wiring shape again, one direction toggle
+  // rather than a method/amount pair.
+  PolarRemap,
+
   // --- Image ------------------------------------------------------------
   //
   // ops/DocumentTransform, Photoshop-style: geometry that changes the

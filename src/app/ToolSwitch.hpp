@@ -382,16 +382,17 @@ bool endSpringHand(AppState& st) noexcept;
 // Pen keeps Alt to suppress its gnomon, and the Flats-mode paint bucket
 // keeps Alt to carve a fill -- every one of those is a live, shipped meaning
 // for the same chord, and this borrow must not steal it. `AppState.hpp`'s
-// `BucketFill` is why `PaintBucket` alone needs a second argument: the SAME
-// tool means "carve a fill" in Flats mode and "the ordinary bucket" in
-// Colour mode, and only the latter has Alt to spare.
+// `BucketRegion` is why `PaintBucket` alone needs a second argument: the SAME
+// tool means "carve a fill" in Flats-region mode and "the ordinary bucket" in
+// Tolerance mode, and only the latter has Alt to spare.
 bool springEyedropperHeld(const AppState& st) noexcept;
 
 // PURE: whether Alt spring-loads the Eyedropper for tool `t` with the paint
-// bucket's fill mode `fill` (read only when `t == Tool::PaintBucket`, and
-// otherwise ignored). No `AppState` reference so `--selftest` can walk every
-// `(Tool, BucketFill)` pair without standing up a document or a canvas.
-bool springEyedropperEligible(Tool t, BucketFill fill) noexcept;
+// bucket's region algorithm `region` (read only when `t == Tool::PaintBucket`,
+// and otherwise ignored). No `AppState` reference so `--selftest` can walk
+// every `(Tool, BucketRegion)` pair without standing up a document or a
+// canvas.
+bool springEyedropperEligible(Tool t, BucketRegion region) noexcept;
 
 // Alt went down over an eligible tool: borrow the Eyedropper, remembering
 // what to give back. Returns false and changes nothing if a borrow is

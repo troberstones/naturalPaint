@@ -98,6 +98,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/Filters.cpp
   app/selftest/FiltersExt.cpp
   app/selftest/BlurFilters.cpp
+  app/selftest/PolarRemap.cpp
   app/selftest/RadialBlurHandles.cpp
   app/selftest/RadialBlurRetarget.cpp
   app/selftest/VectorTransform.cpp
@@ -536,6 +537,7 @@ add_executable(naturalPaint
   ops/PointOpTiles.cpp
   ops/PointOps.cpp
   ops/Poisson.cpp
+  ops/PolarRemap.cpp
   ops/RadialBlur.cpp
   ops/Resample.cpp
   ops/Roi.cpp
@@ -583,6 +585,7 @@ add_executable(naturalPaint
   ui/RepairDialogs.cpp
   app/Version.cpp
   ui/BlurDialogsExtra.cpp
+  ui/PolarRemapDialog.cpp
 )
 
 # NP_SELFTEST's two halves: the 236 section TUs, and the guard main.cpp's

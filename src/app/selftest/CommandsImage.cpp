@@ -302,6 +302,12 @@ std::vector<ImageCommandFixture> imageCommandFixtures() {
     p.set("highlight_boost", num(0.3));
     add("filter_lens_blur", p);
   }
+  // docs/operations.md §3.
+  {
+    JsonValue p = JsonValue::object();
+    p.set("direction", JsonValue::string("rect_to_polar"));
+    add("filter_polar_remap", p);
+  }
   {
     JsonValue p = JsonValue::object();
     p.set("radius", num(4));

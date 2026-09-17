@@ -716,8 +716,8 @@ bool runToolSwitchTest() {
     // session can be in, and Move is not eligible. Asserted rather than
     // assumed, because it is a gate that exists by construction -- exactly
     // the kind that stops existing when someone adds a row to a table.
-    check(!springEyedropperEligible(Tool::Move, BucketFill::Colour) &&
-              !springEyedropperEligible(Tool::Move, BucketFill::Flats),
+    check(!springEyedropperEligible(Tool::Move, BucketRegion::Tolerance) &&
+              !springEyedropperEligible(Tool::Move, BucketRegion::Flats),
           "toolswitch: and Alt cannot borrow the Eyedropper under a gizmo without a line "
           "being written -- Move is the only tool a session can be in, and Move is not "
           "eligible for that borrow in either fill mode");

@@ -2499,11 +2499,11 @@ int main(int argc, char** argv) {
       // combo and both states of the checkbox under coverage, which is the
       // argument `gradient_spread_off` makes for existing beside `gradient`.
       //
-      // The optional third word `flats` is `bucket` plus `BucketFill::Flats`,
+      // The optional third word `flats` is `bucket` plus `BucketRegion::Flats`,
       // which replaces the tolerance block with the rubber sheet's own three
       // numbers AND the SOURCE combo. It is a view of its own rather than a
       // change to `bucket` for the reason the paragraph above gives about two
-      // reads of one row: FILL is the switch between two entirely different
+      // reads of one row: REGION is the switch between two entirely different
       // control sets, and a golden view of one of them proves nothing about
       // the other. SOURCE in particular had no coverage at all until this
       // view existed -- it draws only in this state.
@@ -3464,7 +3464,7 @@ int main(int argc, char** argv) {
     const bool toolSwitchOk = !wanted("runToolSwitchTest") || np::runToolSwitchTest();
     // app/ToolSwitch: the spring-loaded Eyedropper (Alt/Option), the Hand's
     // borrow-and-give-back shape applied to a second tool -- eligibility
-    // walked over every (Tool, BucketFill) pair, the borrow writing no
+    // walked over every (Tool, BucketRegion) pair, the borrow writing no
     // ledger entry, and the two springs proven mutually exclusive rather
     // than merely never observed together. Headless and GPU-free.
     const bool springEyedropperOk = !wanted("runSpringEyedropperTest") || np::runSpringEyedropperTest();
@@ -3583,6 +3583,9 @@ int main(int argc, char** argv) {
     // See app/SelfTest.hpp's own comment on runBlurFiltersTest(). Also
     // headless and GPU-free.
     const bool blurFiltersOk = !wanted("runBlurFiltersTest") || np::runBlurFiltersTest();
+    // docs/operations.md §3: Polar Coordinates. See app/SelfTest.hpp's own
+    // comment on runPolarRemapTest(). Also headless and GPU-free.
+    const bool polarRemapOk = !wanted("runPolarRemapTest") || np::runPolarRemapTest();
     // PLAN.md "Phase 8 -- Repair it" (PRD D7, first half): ops/Inpaint's
     // diffusion fill and the Filter > Inpaint command. The one op here whose
     // selection is the HOLE rather than a bound on the result -- see
@@ -4831,7 +4834,7 @@ int main(int argc, char** argv) {
                     gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
                     textShaperOk && vectorLayerOk && vectorGradientOk && textContentOk &&
                     transformPreviewTextureOk &&
-                    transformCompositeSplitOk && packBitsOk && psdWriteOk && psdBlendKeysOk && psdExportOk && psdLayerSectionOk && psdLayerExtrasOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && blurFiltersOk && inpaintOk && patchMatchOk && seamHealOk && curveEditOk &&
+                    transformCompositeSplitOk && packBitsOk && psdWriteOk && psdBlendKeysOk && psdExportOk && psdLayerSectionOk && psdLayerExtrasOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && blurFiltersOk && polarRemapOk && inpaintOk && patchMatchOk && seamHealOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
                     multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk &&
                     userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
@@ -5482,9 +5485,9 @@ int main(int argc, char** argv) {
         // first. SOURCE stays at its own default (`ExcludeTarget`), which is
         // the value worth having under coverage: it is the one that fixed the
         // bake reading back its own pixels.
-        st.bucketFill = np::BucketFill::Flats;
+        st.bucketRegion = np::BucketRegion::Flats;
         std::printf(
-            "[wand-demo] ...and FILL: Flats -- SHEET/GAP/DECLUTTER and SOURCE=%s replace the "
+            "[wand-demo] ...and REGION: Flats -- SHEET/GAP/DECLUTTER and SOURCE=%s replace the "
             "tolerance block\n",
             np::kFlatsBakeSources[0].label);
       } else {

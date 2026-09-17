@@ -300,6 +300,7 @@ const MenuItemSpec* specTable() {
     set(MenuAction::DustScratches, "Dust & Scratches...", "");
     set(MenuAction::RadialBlur, "Radial Blur...", "");
     set(MenuAction::LensBlur, "Lens Blur...", "");
+    set(MenuAction::PolarRemap, "Polar Coordinates...", "");
 
     // --- Image ----------------------------------------------------------
     set(MenuAction::ImageSize, "Image Size...", "");
@@ -581,6 +582,7 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::LensCorrect: return "LensCorrect";
     case MenuAction::RadialBlur: return "RadialBlur";
     case MenuAction::LensBlur: return "LensBlur";
+    case MenuAction::PolarRemap: return "PolarRemap";
     case MenuAction::ImageSize: return "ImageSize";
     case MenuAction::CanvasSize: return "CanvasSize";
     case MenuAction::CropToSelection: return "CropToSelection";
@@ -811,10 +813,11 @@ bool menuActionEndsTransform(MenuAction action) noexcept {
     case MenuAction::Highpass:
     case MenuAction::LocalContrast:
     case MenuAction::LensCorrect:
-    // Radial and Lens Blur, the same seat as GaussianBlur above -- each
-    // rewrites the active layer's own texels.
+    // Radial and Lens Blur, and Polar Coordinates, the same seat as
+    // GaussianBlur above -- each rewrites the active layer's own texels.
     case MenuAction::RadialBlur:
     case MenuAction::LensBlur:
+    case MenuAction::PolarRemap:
     case MenuAction::Batch:
     // Each rewrites the active layer's own texels or
     // opens a modal, the identical seat as the rows just above.
@@ -890,6 +893,8 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     // The identical reason -- each opens a modal (ui/BlurDialogsExtra.hpp).
     case MenuAction::RadialBlur:
     case MenuAction::LensBlur:
+    // The identical reason -- opens a modal (ui/PolarRemapDialog.hpp).
+    case MenuAction::PolarRemap:
     case MenuAction::ImageSize:
     case MenuAction::CanvasSize:
     // Image > Adjustments' four dialogs, for the identical reason: opening one
@@ -1406,6 +1411,9 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     // Beside the blur family; Lens Blur is not directional like Motion Blur.
     flt.push_back(filterItem(MenuAction::RadialBlur));
     flt.push_back(filterItem(MenuAction::LensBlur));
+    // A remap, not a blur -- long marked "future work"
+    // (docs/spec-vs-implementation.md).
+    flt.push_back(filterItem(MenuAction::PolarRemap));
     // Set apart, and the separator is the point: the eight above are filters
     // BOUNDED by the selection, and this one FILLS it (ops/Inpaint.hpp
     // section 1). It is also the only one whose enable predicate asks a

@@ -225,8 +225,12 @@ bool runMenuModelTest() {
   // `Highpass`, `LocalContrast` and `LensCorrect`, and PRD D23's `Warp`.
   // Counted off the enum: SplitView, MatchZoom, DustScratches,
   // AdjustShadowsHighlights, ContentAwareFill, SeamHeal, RadialBlur, LensBlur.
-  check(kMenuActionCount == 122,
-        "ids: exactly 122 actions -- the original 41-item extraction plus D1/D2's "
+  //
+  // 122 -> 123: `PolarRemap` (docs/operations.md §3, Polar Coordinates), the
+  // same way as every entry above -- counted off `MenuAction`'s enumerators
+  // in the merged header, never by adding 1 to 122.
+  check(kMenuActionCount == 123,
+        "ids: exactly 123 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
         "dialog, Brush Settings, the crop pair, Pigment, Batch, Inpaint, D8's "
@@ -234,8 +238,9 @@ bool runMenuModelTest() {
         "Paste Into / Paste as New Document, Fill/Stroke/Define Pattern, the "
         "save/load channel and quick-mask trio, Zoom to Selection/Highpass/Local "
         "Contrast/Lens Correction, Warp, Split View/Match Zoom, Dust & "
-        "Scratches/Shadows-Highlights, Content-Aware Fill/Seam Heal and Radial/Lens "
-        "Blur, and Preferences, so an item lost in a later edit fails here");
+        "Scratches/Shadows-Highlights, Content-Aware Fill/Seam Heal, Radial/Lens "
+        "Blur and Polar Coordinates, and Preferences, so an item lost in a later "
+        "edit fails here");
 
   {
     std::set<MenuAction> seen;

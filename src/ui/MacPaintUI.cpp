@@ -13,6 +13,7 @@
 #include "ui/DynamicsMatrixPanel.hpp"
 #include "ui/FileDialog.hpp"
 #include "ui/BlurDialogsExtra.hpp"
+#include "ui/PolarRemapDialog.hpp"
 #include "ui/FillDialog.hpp"
 #include "ui/FilterDialogsExtra.hpp"
 #include "ui/DustScratchesDialog.hpp"
@@ -117,6 +118,7 @@
 #include "color/Munsell.hpp"
 #include "ops/Feather.hpp"
 #include "ops/FloodFill.hpp"
+#include "ops/Pattern.hpp"
 #include "ops/Gradient.hpp"
 #include "io/ExportStates.hpp"
 #include "io/GradientPresetFile.hpp"
@@ -13903,6 +13905,8 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     // ui/BlurDialogsExtra.hpp.
     case MenuAction::RadialBlur:       requestRadialBlurDialog();       break;
     case MenuAction::LensBlur:         requestLensBlurDialog();         break;
+    // ui/PolarRemapDialog.hpp.
+    case MenuAction::PolarRemap:       requestPolarRemapDialog();       break;
 
     // --- Image ----------------------------------------------------------
     case MenuAction::ImageSize:  g_imageSizeRequested = true;  break;
@@ -17204,6 +17208,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // ui/BlurDialogsExtra.hpp, same placement rule.
   drawRadialBlurDialog(st);
   drawLensBlurDialog(st);
+  // ui/PolarRemapDialog.hpp, same placement rule.
+  drawPolarRemapDialog(st);
   drawAdjustmentDialogs(st);
   // PRD D24: the gradient tool's own stop editor, opened from the options
   // bar's swatch rather than a menu -- same placement rule again, so it
@@ -21311,6 +21317,44 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // foreground, which is worse than either being wrong alone.
       const std::array<float, 4> fg = foregroundLinearRgba(st.brush);
 
+      // **CONTENT, independent of REGION** (ADR-0009, revised): whichever
+      // algorithm found `region`, this is what gets written into it -- the
+      // foreground colour (the historical behaviour, unchanged) or a defined
+      // pattern, tiled from the canvas origin through the identical
+      // `ops/Fill`/`compositeFilterResult()` pipeline the Fill dialog's own
+      // Pattern source already runs (ui/FillDialog.cpp), so a bucket fill and
+      // a dialog fill with the same pattern agree pixel for pixel. `target`
+      // is read, not captured by value, because both call sites already hold
+      // one proven non-null by the branch they sit in.
+      auto fillBucketRegion = [&](const Selection& region, const char* editLabel) -> bool {
+        if (st.bucketContent == BucketContent::Pattern) {
+          if (sessionPatterns().size() == 0) {
+            g_strokeRefusal = "no pattern is defined yet -- Edit > Define Pattern... first.";
+            return false;
+          }
+          const size_t idx = static_cast<size_t>(std::clamp(
+              st.bucketPatternIndex, 0, static_cast<int>(sessionPatterns().size()) - 1));
+          PatternFillParams pp;
+          pp.pattern = &sessionPatterns().at(idx);
+          const TileStore original = *target->rgbTiles;
+          const PixelRect canvasRect{0, 0, static_cast<int32_t>(od->document.width),
+                                     static_cast<int32_t>(od->document.height)};
+          TileStore filtered;
+          if (!patternFillTiles(original, canvasRect, pp, &filtered)) return false;
+          TileStore composed = original;
+          if (compositeFilterResult(original, filtered, canvasRect, &region, composed) == 0)
+            return false;
+          *target->rgbTiles = std::move(composed);
+          od->recordEdit(editLabel, EditKind::Content);
+          return true;
+        }
+        if (fillThroughSelection(*target->rgbTiles, region, fg) > 0) {
+          od->recordEdit(editLabel, EditKind::Content);
+          return true;
+        }
+        return false;
+      };
+
       if (st.brush.tool == Tool::PaintBucket) {
         // `usable` is deliberately NOT in this condition. A click on the canvas
         // is a click on the canvas whatever the active layer is made of, and
@@ -21320,14 +21364,18 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         if (hovered && !transformActive && mayDrive(np::CanvasInteraction::PaintBucket) &&
             ImGui::IsMouseClicked(ImGuiMouseButton_Left) && tx >= 0 && ty >= 0 &&
             tx < texW && ty < texH) {
-          if (st.bucketFill == BucketFill::Flats && od != nullptr && target != nullptr) {
-            // **The Flats-mode bucket** (ADR-0009). On a Flats layer the click
-            // is a recorded recolour (Option: a carve; Shift: every fill of
-            // that colour), and the record is what re-evaluates the layer.
-            // On a layer that can take pixels it is a bake: the basin under
-            // the click, found in the whole composite, filled through the
-            // same `fillThroughSelection()` the colour bucket uses. Anything
-            // else refuses in the colour bucket's own words.
+          if (st.bucketRegion == BucketRegion::Flats && od != nullptr && target != nullptr) {
+            // **The Flats-region bucket** (ADR-0009, revised). On a Flats
+            // layer the click is a recorded recolour (Option: a carve;
+            // Shift: every fill of that colour), and the record is what
+            // re-evaluates the layer -- always with the foreground colour,
+            // since a Flats layer's own fills have no pattern of their own
+            // yet. On a layer that can take pixels it is a bake: the basin
+            // under the click, found in the whole composite, filled with
+            // `fillBucketRegion()`'s own CONTENT (colour or pattern) through
+            // the same pipeline the Tolerance-region bucket uses below.
+            // Anything else refuses in the Tolerance-region bucket's own
+            // words.
             const std::optional<size_t> li = activeLayerIndex(*od);
             const FlatRgb fg8 = flatRgbFromSrgb(foregroundSrgb(st.brush));
             const bool optionHeld = ImGui::GetIO().KeyAlt;
@@ -21366,8 +21414,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                 Selection region = flatsFillSelection(*eval, fill);
                 if (od->selection.has_value())
                   region = combineSelections(region, *od->selection, SelectionCombine::Intersect);
-                if (fillThroughSelection(*target->rgbTiles, region, fg) > 0)
-                  od->recordEdit("paint bucket (flats)", EditKind::Content);
+                fillBucketRegion(region, "paint bucket (flats)");
               }
             } else {
               g_strokeRefusal = target->locked
@@ -21414,9 +21461,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             if (od->selection.has_value()) {
               region = combineSelections(region, *od->selection, SelectionCombine::Intersect);
             }
-            if (fillThroughSelection(*target->rgbTiles, region, fg) > 0) {
-              od->recordEdit("paint bucket", EditKind::Content);
-            }
+            fillBucketRegion(region, "paint bucket");
           }
         }
       } else {

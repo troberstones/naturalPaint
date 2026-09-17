@@ -490,6 +490,15 @@ FilterOpResult previewLensBlur(const OpenDocument& doc, const LensBlurParams& pa
   return computePixelFilter(doc, lensBlurTiles, params, previewOut);
 }
 
+FilterOpResult applyPolarRemap(OpenDocument& doc, const PolarRemapParams& params) {
+  return applyPixelFilter(doc, polarRemapTiles, params, "polar coordinates");
+}
+
+FilterOpResult previewPolarRemap(const OpenDocument& doc, const PolarRemapParams& params,
+                                 TileStore* previewOut) {
+  return computePixelFilter(doc, polarRemapTiles, params, previewOut);
+}
+
 DocumentOpOutcome applyImageSize(OpenDocument& doc, uint32_t width, uint32_t height,
                                  ResampleKernel kernel) {
   DocumentTransformParams params;
