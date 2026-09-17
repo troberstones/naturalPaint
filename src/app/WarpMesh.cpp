@@ -561,14 +561,11 @@ bool warpImage(const TransformImage& src, const WarpMesh& mesh, const DocumentRe
   // preview costing ~5.3 s/recompute on an iPad (vs ~0.9 s on an M-series
   // Mac): the per-texel work here is the same kernel-weighted resample the
   // old scatter loop did, it is just no longer serialised through one
-  // core. -----------------------------------------------------------------
-  // TEMPORARY (device profiling A/B, remove before landing): grain >= outH
-  // forces parallelFor's own serial fallback path (core/Parallel.hpp: "below
-  // `grain` items, parallelFor just runs the loop serially"), isolating the
-  // parallelism variable from the broad-phase/gather-rasteriser rewrite so
-  // the iPad's real per-core speedup can be measured against the identical
-  // algorithm.
-  parallelFor(static_cast<size_t>(outH), static_cast<size_t>(outH) + 1, [&](size_t iyz) {
+  // core. One row (`outW` gathers, each an interior/AA classification plus a
+  // kernel-weighted resample) is comfortably above core/Parallel.hpp's
+  // measured per-tile floor, so the header's own default grain is used
+  // rather than a bespoke number here. -------------------------------------
+  parallelFor(static_cast<size_t>(outH), kParallelForDefaultGrain, [&](size_t iyz) {
     const int iy = static_cast<int>(iyz);
     const float py = static_cast<float>(dstRegion.y + iy) + 0.5f;
     for (int ix = 0; ix < outW; ++ix) {
@@ -598,50 +595,20 @@ bool warpImage(const TransformImage& src, const WarpMesh& mesh, const DocumentRe
         }
       }
 
-      float coverage = 1.0f;
-      if (bestIdx < 0) {
-        // Pass 2: nobody's strict interior reached this pixel. Only relevant
-        // within half a texel of the mesh's own OUTER silhouette (the warp's
-        // boundary antialiasing this function now provides, scoped to warp
-        // the way `ops/Transform.hpp`'s hard-edged affine path is not asked
-        // to change): an interior seam between two cells is already covered
-        // by pass 1 above (their shared control points make their strict
-        // interiors meet with no gap beyond float noise), so a pixel that
-        // reaches here from an INTERIOR edge is a rounding sliver smaller
-        // than the antialiasing band and is left transparent same as before
-        // rather than guessed at.
-        float bestPixelDist = -1.0f;
-        for (uint32_t qi : candidates) {
-          const WarpQuad& q = quads[qi];
-          const bool outerU0 = q.u0 <= 0.0f, outerU1 = q.u1 >= n;
-          const bool outerV0 = q.v0 <= 0.0f, outerV1 = q.v1 >= n;
-          if (!outerU0 && !outerU1 && !outerV0 && !outerV1) continue;
-          float s = 0.0f, t = 0.0f, dsLen = 0.0f, dtLen = 0.0f;
-          if (!invertBilinearQuad(q, Point2{px, py}, &s, &t, &dsLen, &dtLen)) continue;
-          const float kRelaxedEps = 1.0f;  // parameter units; converted to pixels below
-          if (s < -kRelaxedEps || s > 1.0f + kRelaxedEps || t < -kRelaxedEps ||
-              t > 1.0f + kRelaxedEps)
-            continue;
-          // Overshoot on whichever side is actually an outer edge, in pixels.
-          float pixelDist = 1e9f;
-          if (outerU0) pixelDist = std::min(pixelDist, -s * dsLen);
-          if (outerU1) pixelDist = std::min(pixelDist, (1.0f - s) * dsLen);
-          if (outerV0) pixelDist = std::min(pixelDist, -t * dtLen);
-          if (outerV1) pixelDist = std::min(pixelDist, (1.0f - t) * dtLen);
-          if (pixelDist > bestPixelDist) {
-            bestPixelDist = pixelDist;
-            bestIdx = static_cast<int>(qi);
-            bestS = s;
-            bestT = t;
-          }
-        }
-        if (bestIdx < 0) continue;
-        // Half-pixel antialiasing ramp: full coverage a half pixel inside the
-        // true edge, zero a half pixel outside -- the standard analytic-
-        // coverage width for a hard edge sampled at the pixel centre.
-        coverage = std::clamp(bestPixelDist / 0.5f + 0.5f, 0.0f, 1.0f);
-        if (coverage <= 0.0f) continue;
-      }
+      // Boundary antialiasing (a relaxed second pass over the mesh's outer
+      // silhouette quads) was tried here and reverted: it produced visible
+      // speckle/gap noise right at the mesh boundary whenever an edge/corner
+      // knot introduced curvature there (a corner quad's two outer edges
+      // fought each other in the old per-quad `min()` over active outer
+      // edges, and the relaxed +-1 parameter-unit extrapolation of the
+      // bilinear inverse was itself unstable at high curvature). The warp
+      // mesh's control-point scheme is being redesigned separately
+      // (Bezier -> Catmull-Rom); AA is being left out here rather than
+      // reworked against a representation that is about to change. A pixel
+      // no strict-interior quad claims is simply left transparent, same as
+      // before `e897eb3`.
+      const float coverage = 1.0f;
+      if (bestIdx < 0) continue;
 
       const WarpQuad& q = quads[static_cast<size_t>(bestIdx)];
       const float u = q.u0 + (q.u1 - q.u0) * clamp01(bestS);
