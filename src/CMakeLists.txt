@@ -281,7 +281,6 @@ set(NP_SELFTEST_SOURCES
   app/selftest/UiPreferences.cpp
   app/selftest/BrushTaper.cpp
   app/selftest/PigmentBuildup.cpp
-  ui/BuildupPanel.cpp
   app/selftest/AppIcon.cpp
   app/selftest/AirbrushBuildUp.cpp
   app/selftest/BrushPanelsLive.cpp
@@ -560,6 +559,7 @@ add_executable(naturalPaint
   ui/BrushPanelLayout.cpp
   ui/StabiliserPanel.cpp
   ui/TaperPanel.cpp
+  ui/BuildupPanel.cpp
   ui/FileDialog.cpp
   ui/AtelierLayout.cpp
   ui/DockLayout.cpp
