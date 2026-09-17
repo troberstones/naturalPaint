@@ -3336,6 +3336,12 @@ int main(int argc, char** argv) {
     // a PROPER subset of the old ones -- a synonym would make every other
     // assertion here unfalsifiable. Headless and GPU-free.
     const bool toolSurfaceOk = !wanted("runToolSurfaceTest") || np::runToolSurfaceTest();
+    // The FOURTH axis (app/ToolLayerCompat.hpp): the toolbar/tool audit's own
+    // finding that a Marquee or Magic Wand cell drawn live over a Vector or
+    // Text layer took the click and installed nothing. Headless and
+    // GPU-free.
+    const bool toolLayerCompatOk =
+        !wanted("runToolLayerCompatTest") || np::runToolLayerCompatTest();
     // docs/testing-issues.md T5, reversed 2026-09-08: no document means no
     // canvas at all now, not a bare paintable one belonging to nobody.
     // Pins DocumentSession::empty() as the predicate the canvas block and
@@ -4669,7 +4675,7 @@ int main(int argc, char** argv) {
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     eyedropperOk && sceneReferredColourOk && measureOk && toolSwitchOk &&
                     springEyedropperOk && flatsExpandOk && flatsSourceOk && strokesLayerOk &&
-                    toolSurfaceOk &&
+                    toolSurfaceOk && toolLayerCompatOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     halfOk && histogramOk && pointOpsOk && toneOpsOk && colorOpsOk && monoOpsOk &&
                     autoLevelsOk &&
@@ -4872,6 +4878,41 @@ int main(int argc, char** argv) {
   // AppState::screenshotCliActive's own comment for why the title bar's fps
   // readout needs to know this.
   st.screenshotCliActive = (screenshotPath != nullptr);
+
+#if NP_PLATFORM_IOS
+  // `SDL_EVENT_WILL_ENTER_BACKGROUND`/`LOW_MEMORY`/`TERMINATING` are each
+  // documented by SDL3 as "must be handled in a callback set with
+  // `SDL_AddEventWatch()`" -- and `SDL_SendAppEvent()`
+  // (`src/events/SDL_events.c`) is explicit about why: for exactly these six
+  // app-lifecycle events it does NOT push onto the normal queue this loop's
+  // own `SDL_PollEvent()` drains further down ("we won't actually queue this
+  // event, it needs to be handled in this call stack by an event watcher").
+  // A plain `e.type == SDL_EVENT_WILL_ENTER_BACKGROUND` check in that loop --
+  // which is exactly what `appBackgrounded` below still does, for its own,
+  // narrower reason -- would therefore never see one of these three on a real
+  // device; this watcher is the only path that actually receives them.
+  //
+  // The lambda is captureless (a plain function pointer, which is all
+  // `SDL_EventFilter` accepts) and reaches `st` through `userdata` instead.
+  // It autosaves every DIRTY open document into the gallery, synchronously,
+  // in this call stack -- per SDL's own contract above, by the time control
+  // returns to the render loop the process may already be suspended, so
+  // deferring the write to a flag some later frame checks would be exactly
+  // the bug this comment is warning against, one level up.
+  SDL_AddEventWatch(
+      [](void* userdata, SDL_Event* event) -> bool {
+        if (event->type != SDL_EVENT_WILL_ENTER_BACKGROUND &&
+            event->type != SDL_EVENT_LOW_MEMORY && event->type != SDL_EVENT_TERMINATING)
+          return true;
+        auto* state = static_cast<np::AppState*>(userdata);
+        for (size_t i = 0; i < state->documents.count(); ++i) {
+          np::OpenDocument* od = state->documents.at(i);
+          if (od != nullptr && od->isDirty()) np::autosaveDocumentToGallery(*od);
+        }
+        return true;
+      },
+      &st);
+#endif
 
   // PLAN.md Phase 4 step 9 (app/Journal, ADR-0008, PRD O5-O10).
   //
@@ -6780,8 +6821,13 @@ int main(int argc, char** argv) {
       const std::string shotPath =
           st.requestScreenshot && screenshotPath == nullptr ? st.screenshotPath : screenshotPath;
       std::string shotError;
+      // Fast (low-effort) PNG compression only for the CLI `--screenshot`
+      // dev/golden-harness path -- `screenshotPath != nullptr` is the same
+      // test `shotPath` above already uses to tell it apart from a real F12
+      // Save Screenshot, which keeps stb_image_write's normal, smaller-file
+      // compression level.
       if (np::captureSurfaceToPng(gpu, surfaceTex.texture, gpu.width, gpu.height, shotPath,
-                                  &shotError))
+                                  &shotError, /*fastCompression=*/screenshotPath != nullptr))
         std::printf("[screenshot] wrote %s (%ux%u)\n", shotPath.c_str(), gpu.width, gpu.height);
       else
         std::fprintf(stderr, "[screenshot] %s\n", shotError.c_str());

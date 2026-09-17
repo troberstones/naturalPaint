@@ -625,6 +625,56 @@ bool runDocumentLifecycleTest() {
     }
   }
 
+  // --- iOS background/eviction autosave ------------------------------------
+  //
+  // `HOME` overridden for this block only, save/restore, the same discipline
+  // NP_RECENT_DOCUMENTS etc. use elsewhere in this file -- `iosDocumentsDirectory()`
+  // reads it directly and this must never touch the developer's real
+  // `~/Documents`.
+  {
+    const char* savedHome = std::getenv("HOME");
+    const std::string homeSaved = savedHome != nullptr ? savedHome : "";
+    const std::string fakeHome = dir + "/fake_home";
+    fs::create_directories(fakeHome, ec);
+    setenv("HOME", fakeHome.c_str(), 1);
+
+    check(iosDocumentsDirectory() == fakeHome + "/Documents",
+          "iosDocumentsDirectory() honours the overridden HOME");
+
+    OpenDocument doc = makeBlankOpenDocument(4, 4, WorkingSpace{}, "Sketch");
+    check(doc.iosAutosavePath.empty(), "a fresh document has no shadow path yet");
+    // A brand-new blank document is not dirty (nothing has changed since
+    // `history.begin()`'s baseline) -- an edit is what autosave exists to
+    // protect, so the test needs one to check "still dirty after" is real.
+    writeStraight(doc.document, 0, 1, 1, 0.5f, 0.5f, 0.5f, 1.0f);
+    doc.recordEdit("stroke");
+    check(doc.isDirty(), "fixture: the document is dirty before the first autosave");
+
+    autosaveDocumentToGallery(doc);
+    const std::string firstShadow = doc.iosAutosavePath;
+    check(!firstShadow.empty() && fs::exists(firstShadow, ec),
+          "the first autosave picks a shadow path inside iosDocumentsDirectory() and writes it");
+    check(doc.path.empty() && doc.isDirty(),
+          "autosaving never binds the document's real path or clears its dirty state");
+
+    writeStraight(doc.document, 0, 1, 1, 0.75f, 0.1f, 0.1f, 1.0f);
+    autosaveDocumentToGallery(doc);
+    check(doc.iosAutosavePath == firstShadow,
+          "a second autosave of the SAME document reuses the same shadow path -- no "
+          "proliferation");
+
+    // A second, unrelated document sharing the same display name must not
+    // silently autosave onto the first one's file.
+    OpenDocument other = makeBlankOpenDocument(4, 4, WorkingSpace{}, "Sketch");
+    autosaveDocumentToGallery(other);
+    check(!other.iosAutosavePath.empty() && other.iosAutosavePath != firstShadow,
+          "a same-named but DIFFERENT document is disambiguated onto its own shadow path");
+    check(fs::exists(firstShadow, ec),
+          "...and the first document's own shadow file is untouched by the second's autosave");
+
+    setenv("HOME", homeSaved.c_str(), 1);
+  }
+
   // --- Clean up ------------------------------------------------------------
   fs::remove_all(dir, ec);
   check(!fs::exists(dir, ec), "every scratch file this section wrote is removed");

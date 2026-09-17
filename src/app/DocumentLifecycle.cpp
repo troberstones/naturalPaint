@@ -493,6 +493,53 @@ DocumentOpResult saveDocumentCopy(const OpenDocument& doc, const std::string& pa
   return r;
 }
 
+// --- iOS background/eviction autosave ---------------------------------------
+
+std::string iosDocumentsDirectory() {
+  const char* home = std::getenv("HOME");
+  return (home != nullptr ? std::string(home) : std::string()) + "/Documents";
+}
+
+void autosaveDocumentToGallery(OpenDocument& doc) {
+  // Normally already there (the app's sandbox ships with it), but a fresh
+  // install or a HOME override in a test should not make this silently do
+  // nothing -- `create_directories` on an existing directory is a no-op.
+  std::error_code mkdirEc;
+  fs::create_directories(iosDocumentsDirectory(), mkdirEc);
+  if (doc.iosAutosavePath.empty()) {
+    std::string name = documentDisplayName(doc);
+    if (name.size() < 7 || name.compare(name.size() - 7, 7, ".npaint") != 0) name += ".npaint";
+    fs::path candidate = fs::path(iosDocumentsDirectory()) / name;
+    // Disambiguate only against a file this document did not itself just
+    // create -- two different documents sharing a display name (two blank
+    // "Untitled" canvases, two files coincidentally sharing a name from
+    // different external folders) must not autosave onto each other.
+    std::error_code ec;
+    if (fs::exists(candidate, ec) && ec.value() == 0) {
+      candidate = fs::path(iosDocumentsDirectory()) /
+                  (candidate.stem().string() + " (" + std::to_string(doc.id) + ")" +
+                   candidate.extension().string());
+    }
+    doc.iosAutosavePath = candidate.string();
+  }
+  // The one case `saveDocumentCopy()` itself refuses: a document already
+  // bound to exactly this path (it already lives in `iosDocumentsDirectory()`
+  // under the name this function would have picked). There, the shadow file
+  // and the real file are the same file, so the correct write IS the ordinary
+  // save -- `saveDocumentCopy()`'s refusal exists precisely to stop a copy
+  // from silently wearing a real save's name, which is not what is happening
+  // here.
+  if (!doc.path.empty() &&
+      normalizeDocumentPath(doc.path) == normalizeDocumentPath(doc.iosAutosavePath)) {
+    saveDocument(doc);
+    return;
+  }
+  // Otherwise best-effort and silent: `saveDocumentCopy()`'s own contract is
+  // that `doc` is untouched by this call either way, so a failure here
+  // changes nothing about the document's state for the caller to react to.
+  saveDocumentCopy(doc, doc.iosAutosavePath);
+}
+
 // --- Save incremental ------------------------------------------------------
 
 bool nextIncrementalPath(const std::string& currentPath, std::string* outPath,

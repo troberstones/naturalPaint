@@ -162,4 +162,21 @@ SelectionDragBox computeSelectionDragBox(float anchorX, float anchorY, float cur
 std::vector<Vec2> ellipseMarqueePreviewPoints(float x0, float y0, float x1, float y1,
                                               int segments);
 
+// Fixed-size marquee/ellipse (ui/AtelierChrome.cpp's "Fixed Size" checkbox and
+// WxH field): the drag never resizes the box, only repositions it. `anchorX/Y`
+// is the click point; `curX/Y` the live cursor. `fromCentre` decides whether
+// the anchor is the box's centre or its corner -- the same flag the ordinary
+// from-centre gesture above reads (`computeSelectionDragBox()`'s own
+// parameter), so a user who has that checkbox on gets the identical
+// interpretation here rather than a second, independently-toggled meaning.
+//
+// Pure translation, not a special case of `computeSelectionDragBox()`: that
+// function sizes the box FROM the anchor/cursor delta (optionally
+// constrained), which is a different question from "the size is fixed, only
+// the position moves" -- feeding it a fixed delta would still let Shift's
+// constrain or Space's offset reshape the box, neither of which is
+// meaningful once the size is no longer being drawn.
+SelectionDragBox fixedSizeDragBox(float anchorX, float anchorY, float curX, float curY, float w,
+                                  float h, bool fromCentre) noexcept;
+
 }  // namespace np

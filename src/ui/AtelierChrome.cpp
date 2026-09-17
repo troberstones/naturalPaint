@@ -1055,7 +1055,8 @@ void drawVectorFillStrokeControls(AppState& st, OpenDocument* pathOd, Layer* pat
   popAtelierMono();
 }
 
-void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& refusal) {
+void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& refusal,
+                                  bool moveDragActive) {
   // **Content only -- no window of its own.** The options bar used to be a
   // band welded under the tab strip, so it opened its own `beginBand()` window
   // and the only question was which rect. It is a dockable panel now
@@ -1081,12 +1082,12 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
   ImGui::SameLine(0.0f, 8.0f);
   ImGui::TextUnformatted(toolName(st.brush.tool));
 
-  // --- Warp's grid-size choice and the Free Transform <-> Warp toggle ------
+  // --- Warp's grid-size choice, Apply/Cancel, and Free Transform <-> Warp --
   //
-  // The palette is pinned to `Tool::Move` while a transform is live, which
-  // has no options of its own -- drawn for both modes so the grid choice is
-  // settable before the user switches into Warp.
-  if (st.transform.active()) {
+  // Gated on `!moveDragActive`: an ordinary Move-tool drag runs through the
+  // same `TransformSession` as an explicit Cmd+T (see this function's header
+  // comment), so `st.transform.active()` alone can't tell the two apart.
+  if (st.transform.active() && !moveDragActive) {
     bandSeparator();
     capsLabel("GRID");
     ImGui::SameLine();
@@ -1119,6 +1120,241 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
                              ? "Back to the affine box (the bent net is discarded, not "
                                "collapsed into an approximating matrix)."
                              : "Bend this transform into a lattice instead of a box.");
+
+    bandSeparator();
+    // Same two flags the canvas block's own Return/Escape handling services
+    // (ui/MacPaintUI.cpp) -- a click behaves exactly like the key it stands in
+    // for, one code path either way.
+    if (ImGui::SmallButton("Apply")) st.requestTransformApply = true;
+    ImGui::SetItemTooltip("Commit this transform -- same as Return.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Cancel")) st.requestTransformCancel = true;
+    ImGui::SetItemTooltip("Discard this transform -- same as Escape.");
+  }
+
+  // Tool::Move, not dragging: nothing to configure, and the transform block
+  // above already covers the dragging case's own gizmo controls -- Move's
+  // options bar is "drag on the canvas", not brush sliders.
+  if (st.brush.tool == Tool::Move) {
+    if (!st.transform.active()) {
+      bandSeparator();
+      ImGui::TextDisabled("Drag on the canvas to move the active layer.");
+    }
+    return;
+  }
+
+  // Tool::Hand and Tool::Zoom -- the audit's other minimal-content case.
+  // Both move `AppState::view` (`app/ToolSurface.hpp` names them the two
+  // tools that need no document at all, for exactly this reason: the SIZE/
+  // HARD/LOAD/WET sliders below are brush-tip properties, and neither tool
+  // reads a brush tip. A one-line hint stated in the gesture's own words,
+  // the same shape Move's above and Measure's below already use.
+  if (st.brush.tool == Tool::Hand) {
+    bandSeparator();
+    ImGui::TextDisabled("Drag on the canvas to pan the view.");
+    return;
+  }
+  if (st.brush.tool == Tool::Zoom) {
+    bandSeparator();
+    ImGui::TextDisabled(
+        "Click to zoom in, Option-click (Alt-click) to zoom out, or drag to scrub.");
+    return;
+  }
+
+  // --- Clone Stamp / Heal's own source controls (AppState::CloneSourceState)
+  //
+  // **Drawn before the generic sliders, not instead of them.** Unlike Move/
+  // Hand/Zoom/Eyedropper/Measure/Gradient above, this block does not
+  // `return` -- SIZE/HARD/LOAD/WET below are real for these two tools (they
+  // are brush strokes, brush/CloneStamp and brush/Heal), so this only adds
+  // the row the shared source needs ahead of them.
+  //
+  // **The Aligned checkbox.** `AppState::CloneSourceState::aligned`'s own
+  // comment carries the behaviour; this is the control that used to be
+  // missing -- shipping the flag without it would leave the tool doing
+  // whichever of the two modes the default happened to be, with nothing in
+  // the chrome saying which.
+  //
+  // **The anchor-status line.** A retoucher who has not yet Option-clicked a
+  // source sees the same "no source set" fact `cloneSourceRefusal()` would
+  // otherwise only report AFTER a failed stroke -- stated here instead, ahead
+  // of the gesture, the way this band already surfaces "what your last
+  // gesture did" for the eyedropper above. Read from `haveAnchor` rather than
+  // `haveOffset`: an anchor with no offset yet (set, but no stroke has begun
+  // to derive one) still reads as "source set" here, because it IS one --
+  // `cloneSourceRefusal()`'s own comment on why the two states present
+  // identically to a user is about the STROKE refusal, not this status line.
+  if (toolUsesCloneSource(st.brush.tool)) {
+    bandSeparator();
+    bool aligned = st.clone.aligned;
+    if (ImGui::Checkbox("Aligned", &aligned)) st.clone.aligned = aligned;
+    ImGui::SetItemTooltip(
+        "Ticked: the source moves with every new stroke, offset from the anchor by the "
+        "same amount as the first one. Unticked: every new stroke restarts from the "
+        "anchor itself.");
+
+    bandSeparator();
+    if (st.clone.haveAnchor) {
+      ImGui::PushStyleColor(ImGuiCol_Text,
+                            ImGui::ColorConvertU32ToFloat4(atelierToken(kTextSecondary)));
+      ImGui::TextUnformatted("Source set -- Option-click to move it.");
+      ImGui::PopStyleColor();
+    } else {
+      ImGui::TextDisabled("No source set -- Option-click the canvas to set one.");
+    }
+  }
+
+  // --- the four marquee/lasso/wand tools' common actions -------------------
+  //
+  // These tools draw or click a selection on the canvas; the band's own job
+  // is the actions you'd otherwise reach through the Select menu or its
+  // shortcuts (Cmd+D, Cmd+Shift+I, Cmd+Shift+F) but that a painter mid-gesture
+  // shouldn't have to leave the canvas for. Deselect/Invert act at once,
+  // through the same one-shot request flags the menu items set (`st.request*`
+  // above them in AppState.hpp); Feather opens the same radius dialog the
+  // menu's `Select > Feather...` does (`requestSelectMenuDialog`,
+  // ui/MacPaintUI.hpp), since a feather amount needs a value, not a click.
+  //
+  // Disabled together on "no selection", the same predicate ui/MenuModel.cpp
+  // uses for the Select menu's own Deselect/Invert/Feather rows
+  // (`ctx.hasSelection`) -- a button here that did something different from
+  // its menu twin would be its own bug to explain.
+  if (st.brush.tool == Tool::Marquee || st.brush.tool == Tool::EllipseMarquee ||
+      st.brush.tool == Tool::Lasso || st.brush.tool == Tool::PolygonLasso ||
+      st.brush.tool == Tool::MagicWand) {
+    bandSeparator();
+
+    // --- combine mode: New / Add / Subtract / Intersect ---------------------
+    //
+    // The sticky default `st.selectionCombineMode` latches into
+    // `st.marqueeCombine` at the next mouse-down whenever Shift/Option is
+    // NOT held (ui/MacPaintUI.cpp) -- a held modifier still wins on desktop,
+    // exactly like every other editor's toolbar-button-plus-override
+    // convention, but this is the ONLY way touch (no keyboard at all) ever
+    // reaches Add/Subtract/Intersect. Four mutually exclusive chips, not a
+    // combo: this is "what the next click on the canvas means", read on
+    // every gesture, and worth seeing at a glance the way the four style
+    // letters elsewhere in this band are.
+    {
+      struct ModeEntry {
+        SelectionCombine mode;
+        const char* label;
+        const char* tip;
+      };
+      static const ModeEntry kModes[] = {
+          {SelectionCombine::Replace, "New", "Replace the selection -- same as no modifier."},
+          {SelectionCombine::Add, "Add", "Add to the selection -- same as holding Shift."},
+          {SelectionCombine::Subtract, "Subtract",
+           "Subtract from the selection -- same as holding Option."},
+          {SelectionCombine::Intersect, "Intersect",
+           "Keep only the overlap -- same as holding Shift+Option."},
+      };
+      for (const ModeEntry& m : kModes) {
+        if (m.mode != kModes[0].mode) ImGui::SameLine(0.0f, 4.0f);
+        if (atelierToggleChip(m.label, st.selectionCombineMode == m.mode))
+          st.selectionCombineMode = m.mode;
+        ImGui::SetItemTooltip("%s", m.tip);
+      }
+    }
+
+    // --- rectangle/ellipse-only geometry controls ---------------------------
+    if (st.brush.tool == Tool::Marquee || st.brush.tool == Tool::EllipseMarquee) {
+      bandSeparator();
+      const bool ellipse = st.brush.tool == Tool::EllipseMarquee;
+      bool constrain = st.selectionConstrainSquare;
+      if (ImGui::Checkbox(ellipse ? "Circle##selConstrain" : "Square##selConstrain", &constrain))
+        st.selectionConstrainSquare = constrain;
+      ImGui::SetItemTooltip("Constrain to a %s -- same as holding Shift while dragging.",
+                            ellipse ? "circle" : "square");
+      ImGui::SameLine();
+      bool fromCentre = st.selectionFromCentre;
+      if (ImGui::Checkbox("From Centre##selFromCentre", &fromCentre))
+        st.selectionFromCentre = fromCentre;
+      ImGui::SetItemTooltip("Draw from the centre outward -- same as holding Option.");
+
+      bandSeparator();
+      bool fixedSize = st.selectionUseFixedSize;
+      if (ImGui::Checkbox("Fixed Size##selFixedSize", &fixedSize))
+        st.selectionUseFixedSize = fixedSize;
+      ImGui::SetItemTooltip("Start the drag with a %s of the size below, and only move it "
+                            "-- typing, say, \"200x200\" then clicking places one immediately.",
+                            ellipse ? "circle/ellipse" : "box");
+      ImGui::SameLine();
+      pushAtelierMono();
+      ImGui::BeginDisabled(!fixedSize);
+      // "WxH" or "W,H" (px, document texels), parsed on every edit -- a
+      // partial or malformed string just leaves the last valid W/H alone,
+      // since a fixed-size drag with nothing valid yet to fall back on would
+      // have no size to start at all.
+      static char sizeBuf[32] = "100x100";
+      static Tool lastSizeBufTool = Tool::Count;
+      if (lastSizeBufTool != st.brush.tool) {
+        std::snprintf(sizeBuf, sizeof(sizeBuf), "%gx%g", static_cast<double>(st.selectionFixedW),
+                     static_cast<double>(st.selectionFixedH));
+        lastSizeBufTool = st.brush.tool;
+      }
+      ImGui::SetNextItemWidth(90.0f);
+      if (ImGui::InputText("##selFixedSizeText", sizeBuf, sizeof(sizeBuf))) {
+        float w = 0.0f, h = 0.0f;
+        char sep = 0;
+        if (std::sscanf(sizeBuf, "%f%c%f", &w, &sep, &h) == 3 &&
+            (sep == 'x' || sep == 'X' || sep == ',') && w > 0.0f && h > 0.0f) {
+          st.selectionFixedW = w;
+          st.selectionFixedH = h;
+        }
+      }
+      ImGui::SetItemTooltip("Width x height in document pixels, e.g. \"25x25\" or \"40,80\".");
+      ImGui::EndDisabled();
+      popAtelierMono();
+    }
+
+    // --- common Select-menu actions ------------------------------------------
+    //
+    // The band's own job is the actions you'd otherwise reach through the
+    // Select menu or its shortcuts (Cmd+D, Cmd+Shift+I, Cmd+Shift+F) but that
+    // a painter mid-gesture shouldn't have to leave the canvas for. Deselect/
+    // Invert act at once, through the same one-shot request flags the menu
+    // items set (`st.request*` above them in AppState.hpp); Feather opens the
+    // same radius dialog the menu's `Select > Feather...` does
+    // (`requestSelectMenuDialog`, ui/MacPaintUI.hpp), since a feather amount
+    // needs a value, not a click.
+    //
+    // Disabled together on "no selection", the same predicate ui/MenuModel.cpp
+    // uses for the Select menu's own Deselect/Invert/Feather rows
+    // (`ctx.hasSelection`) -- a button here that did something different from
+    // its menu twin would be its own bug to explain.
+    bandSeparator();
+    const OpenDocument* od = st.documents.active();
+    const bool hasSelection = od != nullptr && od->selection.has_value();
+    ImGui::BeginDisabled(!hasSelection);
+    if (ImGui::SmallButton("Deselect")) st.requestDeselect = true;
+    ImGui::SetItemTooltip("Clear the selection -- same as Cmd+D.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Invert")) st.requestInvertSelection = true;
+    ImGui::SetItemTooltip("Select everything currently NOT selected -- same as Cmd+Shift+I.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Feather...")) requestSelectMenuDialog(MenuAction::SelectFeather);
+    ImGui::SetItemTooltip("Soften the selection edge by a radius you choose -- same as "
+                          "Select > Feather...");
+    ImGui::EndDisabled();
+
+    // **The missing return -- for four of the five tools, not the Magic
+    // Wand.** Without it, execution fell through every check below --
+    // Eyedropper, Measure, Gradient, all false for a selection tool --
+    // straight into the generic SIZE/HARD/LOAD/WET brush sliders at the
+    // bottom of this function, so Marquee/Ellipse Marquee/Lasso/Polygon
+    // Lasso's own options above had four irrelevant brush controls tacked on
+    // after them. Every other early return in this band (Move, Eyedropper,
+    // Measure, Gradient) already does this; this block simply never had one.
+    //
+    // **The Magic Wand is deliberately excluded from this return.** It falls
+    // through on purpose, to the `flood != nullptr` block further down that
+    // draws ITS OWN options -- TOLERANCE, REACH, ANTI-ALIAS -- which are
+    // real settings this tool reads, not brush sliders it does not. That
+    // block's own `flood == nullptr` guard already keeps the generic brush
+    // sliders from ever reaching the wand, so returning here as well would
+    // not fix a second bug, it would delete a working one.
+    if (st.brush.tool != Tool::MagicWand) return;
   }
 
   // --- the eyedropper's own two options (PRD Q10, P0) ---------------------

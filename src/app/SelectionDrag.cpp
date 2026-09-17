@@ -87,6 +87,19 @@ SelectionDragBox computeSelectionDragBox(float anchorX, float anchorY, float cur
   return box;
 }
 
+SelectionDragBox fixedSizeDragBox(float anchorX, float anchorY, float curX, float curY, float w,
+                                  float h, bool fromCentre) noexcept {
+  const float dx = curX - anchorX;
+  const float dy = curY - anchorY;
+  // `fromCentre`: the anchor IS the centre, so the live centre is just the
+  // anchor translated by the drag. Otherwise the anchor is the corner the box
+  // started at, so the centre sits half a box further in, translated the
+  // same way.
+  const float cx = fromCentre ? anchorX + dx : anchorX + dx + w * 0.5f;
+  const float cy = fromCentre ? anchorY + dy : anchorY + dy + h * 0.5f;
+  return SelectionDragBox{cx - w * 0.5f, cy - h * 0.5f, cx + w * 0.5f, cy + h * 0.5f};
+}
+
 std::vector<Vec2> ellipseMarqueePreviewPoints(float x0, float y0, float x1, float y1,
                                               int segments) {
   std::vector<Vec2> pts;

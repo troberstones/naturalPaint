@@ -1221,15 +1221,20 @@ struct AppState {
   // own paragraph carries that argument (a preferences format freezes keys
   // forever) and nothing here is different.
   //
-  // **The offset is derived once and then kept -- this build clones
-  // *aligned*.** Photoshop has an Aligned checkbox; unticked, every new stroke
-  // restarts the copy at the anchor, which is what a repeating stamp wants.
-  // That is a control in the options bar this build has not drawn, and shipping
-  // the toggle without the control would leave the tool doing whichever of the
-  // two the default happened to be, with nothing in the chrome saying which.
-  // Aligned is Photoshop's own default and the behaviour a retoucher expects,
-  // so it is the one built.
+  // **The offset is derived once and then kept when `aligned` is true --
+  // Photoshop's own default and the behaviour a retoucher expects.** Unticked,
+  // every new stroke restarts the copy at the anchor, which is what a
+  // repeating stamp wants: `aligned = false` makes `ui/MacPaintUI.cpp`'s
+  // pen-down handler clear `haveOffset` before `latchCloneOffset()` runs, so
+  // the vector is re-derived from the SAME anchor at the start of every
+  // stroke instead of being kept from the first one.
   struct CloneSourceState {
+    // Photoshop's own Aligned checkbox (ui/AtelierChrome.cpp's options-bar
+    // row for CloneStamp/Heal). True is the default this build shipped with
+    // before the toggle existed, so an `.npaint` from that era -- there is
+    // nothing to load; this is session state, not persisted, exactly like
+    // `haveAnchor` below -- opens with the behaviour it always had.
+    bool aligned = true;
     // Whether an Option+click has ever set a source. False is what makes a
     // clone stroke refuse OUT LOUD (`StrokeSession::begin()`) instead of
     // reading from offset (0,0) and stamping the layer onto itself -- a
@@ -1440,6 +1445,40 @@ struct AppState {
   // shape is being drawn.
   float marqueeBoxX0 = 0.0f, marqueeBoxY0 = 0.0f;
   float marqueeBoxX1 = 0.0f, marqueeBoxY1 = 0.0f;
+
+  // --- Selection options-bar controls, ui/AtelierChrome.cpp -- Shift/Option
+  // equivalents that work with no keyboard (touch), and one genuinely new
+  // gesture (fixed size). ----------------------------------------------------
+  //
+  // The sticky default `marqueeCombine` latches to when NO modifier is held
+  // at mouse-down -- `selectionCombineFromModifiers()` already returns
+  // `Replace` for "nothing pressed", so the call site treats that as "defer
+  // to this" rather than as a real answer. A held Shift/Option still wins on
+  // desktop (matching every other editor's toolbar-button-plus-modifier-
+  // override convention); on iOS, where nothing can be held, this is the
+  // only way to pick Add/Subtract/Intersect at all.
+  SelectionCombine selectionCombineMode = SelectionCombine::Replace;
+
+  // Persistent equivalents of T10's live Shift-constrain / Option-from-centre
+  // reads (app/SelectionDrag.hpp's `computeSelectionDragBox()`). OR'd with
+  // the live modifier at the call site, never replacing it -- a desktop user
+  // can still toggle either mid-drag by holding the key, exactly as before;
+  // these just give touch (and a "leave it on" preference on any platform) a
+  // way to reach the same two booleans.
+  bool selectionConstrainSquare = false;
+  bool selectionFromCentre = false;
+
+  // Fixed-size marquee/ellipse: when `selectionUseFixedSize` and both extents
+  // are positive, a click on the canvas begins a box/ellipse of exactly
+  // `selectionFixedW x selectionFixedH` (document texels) instead of sizing
+  // one from the drag -- the drag then only repositions it, the same
+  // "anchor plus live cursor" translation `SelectionMoveState`'s own Space-
+  // move already uses one level up. `selectionFromCentre` decides whether the
+  // click point is the box's centre or its corner, shared with the ordinary
+  // from-centre gesture above rather than being a second flag that could
+  // disagree with it.
+  bool selectionUseFixedSize = false;
+  float selectionFixedW = 100.0f, selectionFixedH = 100.0f;
 
   // The lasso's path, in document texel space, shared by both lasso tools
   // (PRD E3) because core/SelectionShapes rasterises them with one function --
@@ -1725,6 +1764,18 @@ struct AppState {
   // above switches a fresh session into Warp, so `--screenshot` shows a
   // visibly bent net rather than a flat grid indistinguishable from a box.
   bool requestWarpDemoBend = false;
+
+  // The options bar's Apply/Cancel buttons for a live transform session
+  // (ui/AtelierChrome.cpp) -- serviced beside the canvas block's own
+  // Return/Escape handling in `ui/MacPaintUI.cpp`, which both flags reuse
+  // verbatim (same `commit()`/`cancel()` calls, same status text, same
+  // `g_transformPreview` reset), so a click behaves exactly like the key it
+  // stands in for. Two bools rather than one enum: unlike `requestAdjustment`
+  // above, these are not "which of nineteen things" -- they are the two
+  // opposite endings of the SAME session, and the options bar's own code
+  // never has a reason to set both in one frame.
+  bool requestTransformApply = false;
+  bool requestTransformCancel = false;
 
   // **Image > Adjustments** (app/AdjustmentOps.hpp): which adjustment the next
   // frame should service, and `None` the rest of the time. Serviced and
@@ -2174,6 +2225,19 @@ struct AppState {
   // canvas is redrawn from more than one place and a static would share one
   // hold across them.
   LongPressGesture touchLongPress;
+
+  // iOS's own route to the Clone Stamp/Heal source (ui/MacPaintUI.cpp,
+  // beside `touchLongPress` above): touch has no Option key, so a held finger
+  // is the substitute for the desktop's Option+click, exactly as
+  // `touchLongPress` already is for the eyedropper. A second recogniser
+  // rather than a branch on the one above, for the same "canvas redrawn from
+  // more than one place" reason `touchLongPress` is a member and not a
+  // function-local static, plus one more: the two holds gate on opposite
+  // halves of `toolUsesCloneSource()` (`touchLongPress`'s own site excludes
+  // these two tools now), so they can never both be live in the same frame,
+  // but sharing one state machine between two different anchors and two
+  // different fired-actions would still be one flag doing two jobs.
+  LongPressGesture cloneAnchorLongPress;
 
   // The layer panel's own recogniser, kept separate from the canvas one above
   // so a hold on a row and a hold on the canvas cannot cancel each other --

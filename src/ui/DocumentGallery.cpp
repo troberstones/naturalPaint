@@ -288,11 +288,6 @@ bool drawTile(ImDrawList* dl, const ImVec2& at, const char* line1, const char* l
 
 }  // namespace
 
-std::string iosDocumentsDirectory() {
-  const char* home = std::getenv("HOME");
-  return (home != nullptr ? std::string(home) : std::string()) + "/Documents";
-}
-
 std::vector<GalleryEntry> scanDocumentGallery(const std::string& dir) {
   std::vector<GalleryEntry> out;
   std::error_code ec;

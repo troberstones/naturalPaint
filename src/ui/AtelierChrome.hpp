@@ -536,7 +536,16 @@ bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands, AtelierSplitSt
 // window it belongs in. `bandH` is the height available, which is all the
 // vertical centring needs. See the definition for what went wrong with the
 // version that made its own window.
-void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& refusal);
+//
+// `moveDragActive`: true while `Tool::Move`'s own drag (ui/MacPaintUI.cpp's
+// `g_moveDragging`/`g_moveCommitPending`, file-scope there and so passed in
+// rather than read directly) is in flight. A Move drag runs through
+// `TransformSession` the same as an explicit Cmd+T, so `st.transform.active()`
+// is true for both -- without this flag the GRID/Warp controls below would
+// flash on for the ordinary case of just moving a layer, which the user
+// never asked to transform.
+void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& refusal,
+                                  bool moveDragActive);
 
 // docs/ui.md section 2's 26px band: zoom, dimensions and working space,
 // resident against budget, and the view-state markers.

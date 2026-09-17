@@ -79,7 +79,20 @@ struct GpuContext;
 // failed map, or a write error. The file is written only once the whole path
 // has succeeded, so a failed capture leaves no truncated PNG behind to be
 // mistaken for a real one.
+//
+// `fastCompression`: use a low zlib effort instead of stb_image_write's
+// default (level 8). A profiler run against the golden harness's own
+// `--screenshot` launches found PNG compression costing ~4.5% of a whole
+// launch's sampled CPU time, on every one of the 39 launches a `check` run
+// makes -- paid to compress an image that is about to be pixel-diffed and
+// thrown away on a passing run. Left false by default (and unused by the
+// user-facing Save Screenshot action, which shares this function) so a real
+// screenshot the user keeps is not made larger for a saving that only pays
+// off in a tight, scripted, throwaway loop. `main.cpp`'s `--screenshot` CLI
+// flag -- the one path tools/golden/run_golden.sh drives -- is the only
+// caller that sets it.
 bool captureSurfaceToPng(GpuContext& gpu, WGPUTexture surfaceTexture, uint32_t width,
-                         uint32_t height, const std::string& path, std::string* errorOut);
+                         uint32_t height, const std::string& path, std::string* errorOut,
+                         bool fastCompression = false);
 
 }  // namespace np

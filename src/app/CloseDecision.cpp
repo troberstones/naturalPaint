@@ -3,6 +3,8 @@
 #include <string>
 #include <utility>
 
+#include "core/Platform.hpp"
+
 // app/CloseDecision -- implementation. Every design decision is argued in
 // CloseDecision.hpp; this file holds the mechanics and comments only where the
 // mechanics themselves are not obvious from the header's contract.
@@ -100,6 +102,29 @@ CloseOutcome requestDocumentClose(DocumentSession& session, size_t index,
     out.status = "Closed " + name + ".";
     return out;
   }
+
+#if NP_PLATFORM_IOS
+  // iOS never asks Save/Don't Save/Cancel: a Save/Don't Save/Cancel dialog
+  // over a discarded edit is a desktop convention this platform's own review
+  // (docs/ios-spike-plan.md) does not follow, and there is nothing to lose by
+  // skipping it here -- `autosaveDocumentToGallery()` writes the current
+  // content into the gallery FIRST, so "discard" below only ever discards the
+  // in-memory copy, never the work itself. The document is retrievable from
+  // the gallery afterward exactly as if the user had saved it there
+  // themselves.
+  {
+    const std::string name = documentDisplayName(*doc);
+    autosaveDocumentToGallery(*doc);
+    std::string err;
+    if (!session.close(index, /*discardUnsavedChanges=*/true, &err)) {
+      out.status = err;
+      return out;
+    }
+    out.closed = true;
+    out.status = "Closed " + name + ".";
+    return out;
+  }
+#endif
 
   // Dirty. The index is turned into an identity right here, in the same frame
   // as the click, and the index itself is not kept -- see CloseDecision.hpp on

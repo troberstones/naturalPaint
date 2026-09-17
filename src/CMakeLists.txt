@@ -218,6 +218,7 @@ set(NP_SELFTEST_SOURCES
   app/selftest/ToneOps.cpp
   app/selftest/ToolCursor.cpp
   app/selftest/ToolSurface.cpp
+  app/selftest/ToolLayerCompat.cpp
   app/selftest/NoDocumentCanvas.cpp
   app/selftest/ExportDialog.cpp
   app/selftest/FlatsExpand.cpp
@@ -347,6 +348,7 @@ add_executable(naturalPaint
   app/ToolSwitch.cpp
   app/FramePacing.cpp
   app/ToolSurface.cpp
+  app/ToolLayerCompat.cpp
   app/ExportDialog.cpp
   app/LayerPanel.cpp
   app/Latency.cpp

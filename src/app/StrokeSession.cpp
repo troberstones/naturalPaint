@@ -903,8 +903,12 @@ bool latchCloneOffset(AppState::CloneSourceState& clone, Vec2 penDown) noexcept 
     clone.offset = Vec2{clone.anchor.x - penDown.x, clone.anchor.y - penDown.y};
     clone.haveOffset = true;
   }
-  // Aligned: every call after the first is the identity. See
-  // `AppState::CloneSourceState` for why the non-aligned variant is not built.
+  // Aligned: every call after the first is the identity, because `haveOffset`
+  // stays true. Non-aligned is the caller's job: `AppState::CloneSourceState`
+  // documents that the pen-down handler clears `haveOffset` before calling
+  // this, for every stroke, whenever `aligned` is false -- which makes THIS
+  // call the "first" one again and re-derives the vector from the same
+  // anchor.
   return true;
 }
 

@@ -37,7 +37,8 @@ int redOffsetForFormat(WGPUTextureFormat format) {
 }  // namespace
 
 bool captureSurfaceToPng(GpuContext& gpu, WGPUTexture surfaceTexture, uint32_t width,
-                         uint32_t height, const std::string& path, std::string* errorOut) {
+                         uint32_t height, const std::string& path, std::string* errorOut,
+                         bool fastCompression) {
   auto fail = [&](std::string why) {
     if (errorOut != nullptr) *errorOut = std::move(why);
     return false;
@@ -130,9 +131,18 @@ bool captureSurfaceToPng(GpuContext& gpu, WGPUTexture surfaceTexture, uint32_t w
   wgpuBufferRelease(staging);
 
   if (!ok) return fail("screenshot: the staging buffer could not be mapped for reading");
-  if (stbi_write_png(path.c_str(), static_cast<int>(width), static_cast<int>(height), 4,
-                     rgba.data(), static_cast<int>(width * 4)) == 0)
-    return fail("screenshot: could not write " + path);
+
+  // Saved and restored around the one call rather than left set: this is a
+  // process-wide stb_image_write global, and io/Export.cpp's real PNG
+  // exports read the same one without expecting a dev capture to have
+  // changed it.
+  const int savedLevel = stbi_write_png_compression_level;
+  if (fastCompression) stbi_write_png_compression_level = 1;
+  const int wrote = stbi_write_png(path.c_str(), static_cast<int>(width),
+                                   static_cast<int>(height), 4, rgba.data(),
+                                   static_cast<int>(width * 4));
+  stbi_write_png_compression_level = savedLevel;
+  if (wrote == 0) return fail("screenshot: could not write " + path);
   return true;
 }
 

@@ -611,6 +611,7 @@ bool runSpringEyedropperTest();
 // the golden harness carries a `no_document` view that photographs the dimmed
 // palette this section can only assert the inputs to.
 bool runToolSurfaceTest();
+bool runToolLayerCompatTest();
 
 // docs/testing-issues.md T5, reversed 2026-09-08: "painting the bare canvas
 // is a supported workflow" no longer holds. With no document open there is

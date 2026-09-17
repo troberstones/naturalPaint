@@ -248,6 +248,13 @@ DocumentSaver documentSaverFor(RecentDocuments* recent);
 // up, is refused with a sentence and changes nothing. One question at a time
 // is not a limitation -- two overlapping modals about two documents is a
 // dialog a user cannot answer correctly.
+//
+// **On iOS, a dirty document never raises the question at all.** It is
+// autosaved into the gallery (`app/DocumentLifecycle.hpp`'s
+// `autosaveDocumentToGallery()`) and closed immediately, `pending` untouched
+// and `out.closed` true -- the same "closing always preserves the work"
+// convention the platform's own document-picker apps follow, made safe here
+// because the autosave runs before the discard.
 CloseOutcome requestDocumentClose(DocumentSession& session, size_t index,
                                   PendingClose& pending);
 

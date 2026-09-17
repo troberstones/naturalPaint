@@ -242,6 +242,40 @@ bool runSelectionDragTest() {
           "the cursor, so carrying on drawing does not jump");
   }
 
+  // --- fixed-size marquee/ellipse: translate, never resize -----------------
+  //
+  // ui/AtelierChrome.cpp's "Fixed Size" checkbox and WxH field. The box's
+  // dimensions must stay exactly w x h across every frame of a drag, and
+  // moving the cursor must translate it by exactly the cursor's own delta
+  // from the click point -- the drag never reshapes it, only repositions it.
+  {
+    const SelectionDragBox atClick =
+        fixedSizeDragBox(100.0f, 100.0f, 100.0f, 100.0f, 40.0f, 25.0f, false);
+    check(boxEq(atClick, 100.0f, 100.0f, 140.0f, 125.0f),
+          "fixed size, corner anchor: a click with no movement yet places the box "
+          "with the click point as its top-left corner");
+
+    const SelectionDragBox dragged =
+        fixedSizeDragBox(100.0f, 100.0f, 130.0f, 90.0f, 40.0f, 25.0f, false);
+    check(boxEq(dragged, 130.0f, 90.0f, 170.0f, 115.0f) &&
+              nearf(dragged.x1 - dragged.x0, 40.0f, kTol) &&
+              nearf(dragged.y1 - dragged.y0, 25.0f, kTol),
+          "fixed size, corner anchor: dragging translates the box by exactly the "
+          "cursor's delta (30,-10) and its size is unchanged");
+
+    const SelectionDragBox fromCentreAtClick =
+        fixedSizeDragBox(200.0f, 200.0f, 200.0f, 200.0f, 40.0f, 25.0f, true);
+    check(boxEq(fromCentreAtClick, 180.0f, 187.5f, 220.0f, 212.5f),
+          "fixed size, centre anchor: a click with no movement yet centres the box "
+          "ON the click point, not at its corner");
+
+    const SelectionDragBox fromCentreDragged =
+        fixedSizeDragBox(200.0f, 200.0f, 210.0f, 220.0f, 40.0f, 25.0f, true);
+    check(boxEq(fromCentreDragged, 190.0f, 207.5f, 230.0f, 232.5f),
+          "fixed size, centre anchor: dragging moves the centre by the cursor's "
+          "delta (10,20), size still unchanged");
+  }
+
   std::printf("[selftest] selection drag %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

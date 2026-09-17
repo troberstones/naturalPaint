@@ -351,6 +351,15 @@ struct OpenDocument {
   // remembered one. See `documentDisplayName()`.
   std::string title;
 
+  // iOS only: the shadow file `autosaveDocumentToGallery()` writes into and
+  // reuses, once established -- see that function's own comment for why this
+  // is a THIRD path, distinct from `path` above. Empty until the first
+  // autosave for this document (closing it, backgrounding the app, or a
+  // memory-pressure event), and never touched by the ordinary Save/Save As/
+  // Save a Copy family, which is exactly what keeps a background write from
+  // ever being mistaken for the user's own save.
+  std::string iosAutosavePath;
+
   // Today always Eager -- see this header's residency section for why the
   // record does not hold `LayerResidency` objects yet.
   TileResidencyMode residencyMode = TileResidencyMode::Eager;
@@ -702,6 +711,48 @@ DocumentOpResult saveDocumentAs(OpenDocument& doc, const std::string& path,
 // exists to avoid. (Photoshop's Save a Copy behaves the same way.)
 DocumentOpResult saveDocumentCopy(const OpenDocument& doc, const std::string& path,
                                   const NpaintSaveOptions& options = {});
+
+// The app's sandboxed Documents folder on iOS -- the same folder
+// `UIFileSharingEnabled`/`LSSupportsOpeningDocumentsInPlace` (icons/ios/
+// Info.plist.in) expose to the Files app, and the one `ui/DocumentGallery.hpp`
+// scans for `.npaint` files. Declared here rather than in `ui/` because
+// `autosaveDocumentToGallery()` below needs it and `app/` may not depend on
+// `ui/`; `ui/DocumentGallery.cpp` includes this header and calls the same
+// function. `$HOME` resolves inside the app's own container on every Apple
+// platform (core/Platform.hpp's own `Library/Application Support` paths make
+// the identical assumption). Only meaningful on iOS; harmless (and unused)
+// elsewhere.
+std::string iosDocumentsDirectory();
+
+// iOS only: silently preserve `doc`'s current content into the gallery,
+// without touching `doc.path`, its dirty state, or its edit history -- called
+// when a document is closed, when the app is about to be backgrounded, and on
+// a memory-pressure warning, none of which are the user asking to save.
+//
+// **A shadow file, not a promotion of `doc.path`.** Three cases, one
+// mechanism: an unsaved document has nowhere else to go; a document bound to
+// a path already inside `iosDocumentsDirectory()` gets an autosave that is,
+// in effect, the same file kept current on disk; and -- the case this
+// function exists to get right -- a document opened from OUTSIDE the app's
+// own storage (an iCloud file via the document picker, a Files-app share)
+// must never be silently overwritten by a background event the user did not
+// ask for. Routing every case through the same gallery-local shadow file,
+// via `saveDocumentCopy()` (which cannot rebind or clear the dirty flag),
+// satisfies all three without a branch that has to get the distinction right.
+//
+// **The shadow path is established once and reused.** `doc.iosAutosavePath`
+// starts empty; the first call picks a name from `documentDisplayName(doc)`
+// inside `iosDocumentsDirectory()`, disambiguated against a same-named file
+// that is not already this document's own shadow, and every later call
+// overwrites that same file -- so a session that backgrounds and foregrounds
+// repeatedly leaves ONE gallery entry for the document, not one per event.
+//
+// Best-effort: a write that fails (full disk, sandbox revoked mid-eviction)
+// is silently swallowed, the same as every other place in this codebase that
+// autosaves for the user's protection rather than at the user's request --
+// there is no dialog to put a failure in, and refusing to close/background
+// over it would be worse than the failure itself.
+void autosaveDocumentToGallery(OpenDocument& doc);
 
 // **Save incremental** -- write the next version of this document and rebind
 // to it.

@@ -103,7 +103,10 @@ struct GalleryEntry {
 // same fact core/Platform.hpp records for the `Library/Application Support`
 // paths this codebase already builds off `getenv("HOME")` on every Apple
 // platform. Only ever called on iOS; harmless (and unused) elsewhere.
-std::string iosDocumentsDirectory();
+//
+// Declared in app/DocumentLifecycle.hpp, not here: `app/autosaveDocumentToGallery()`
+// needs it too, and `app/` may not depend on `ui/`. This header pulls it in
+// transitively (`app/DocumentLifecycle.hpp` is already included below).
 
 // Scans `dir` for `*.npaint`, newest-modified first (the conventional
 // choice -- a working iPad session's most relevant document is almost always

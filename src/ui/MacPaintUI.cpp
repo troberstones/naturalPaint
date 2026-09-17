@@ -95,6 +95,7 @@
 #include "app/Snapping.hpp"
 #include "app/SplitView.hpp"    // matchZoomView()
 #include "app/TilePreview.hpp"  // PRD D8: the 3x3 repeat preview's offsets and its enter/leave
+#include "app/ToolLayerCompat.hpp"  // the fourth axis: can this tool act on THIS layer's kind
 #include "app/ToolSurface.hpp"  // T5's second axis: can this tool act on THIS surface
 #include "app/ToolSwitch.hpp"
 #include "app/UserBrushLibrary.hpp"
@@ -672,8 +673,16 @@ bool toolButton(AppState& st, Tool t, float cellSize) {
   // `setActiveTool()` because these are two different jobs: the setter makes
   // the refusal true, and this makes it visible before the user aims at it.
   const char* modalWhy = transformModalRefusal(st);
-  // All three axes, and a cell is live only if it clears every one.
-  const bool live = implemented && onSurface && modalWhy == nullptr;
+  // The FOURTH axis (app/ToolLayerCompat.hpp): does this tool have anything
+  // to act on in the active layer's OWN kind? Asked only once a document is
+  // open -- with `documentOpen` false there is no layer to name, and
+  // `toolValidForLayer(tool, nullptr)` already answers true for exactly that
+  // reason, so this reads correctly either way.
+  const OpenDocument* toolLayerDoc = st.documents.active();
+  const Layer* toolLayerActive = toolLayerDoc != nullptr ? activeLayerOf(*toolLayerDoc) : nullptr;
+  const char* layerWhy = toolLayerRefusal(t, toolLayerActive);
+  // All four axes, and a cell is live only if it clears every one.
+  const bool live = implemented && onSurface && modalWhy == nullptr && layerWhy == nullptr;
   const bool clickedRaw = ImGui::InvisibleButton("##tool", size);
   const bool clicked = clickedRaw && live;
   // **`!flatsToolIsActive()`: the tool state is exclusive.** While a flatting
@@ -807,14 +816,19 @@ constexpr float kFlyoutPadX = 10.0f;
 // shows a different member of the group, so leaving the axis out here would
 // have left one live-looking route to every tool it disables.
 bool toolFlyoutRow(Tool member, bool isCurrent, bool documentOpen, const char* modalWhy,
-                   float rowW) {
+                   const Layer* layerActive, float rowW) {
   const bool implemented = toolImplemented(member);
   // `modalWhy` is the third axis toolButton() takes above -- a live transform
   // gizmo (app/ToolSwitch.hpp section 5). Passed in rather than read off an
-  // `AppState` this function deliberately does not take: it is handed the two
+  // `AppState` this function deliberately does not take: it is handed the
   // facts it needs about the session, exactly as `documentOpen` already is.
-  const bool live =
-      implemented && (toolActsWithoutDocument(member) || documentOpen) && modalWhy == nullptr;
+  // `layerActive` is the fourth (app/ToolLayerCompat.hpp) -- a flyout member
+  // that cannot act on the active layer's kind must dim exactly like a
+  // member that cannot act on "no document", or a group whose cell shows an
+  // implemented tool would flyout to a row that looks identical to a live
+  // one and does nothing when clicked.
+  const bool live = implemented && (toolActsWithoutDocument(member) || documentOpen) &&
+                    modalWhy == nullptr && toolValidForLayer(member, layerActive);
   ImGui::PushID(static_cast<int>(member));
   const ImVec2 p = ImGui::GetCursorScreenPos();
   const ImVec2 size(rowW, kFlyoutRowH);
@@ -876,6 +890,10 @@ bool toolFlyoutRow(Tool member, bool isCurrent, bool documentOpen, const char* m
     if (modalWhy != nullptr) {
       tip += "\n";
       tip += modalWhy;
+    }
+    if (const char* why = toolLayerRefusal(member, layerActive)) {
+      tip += "\n";
+      tip += why;
     }
     ImGui::SetTooltip("%s", tip.c_str());
   }
@@ -964,11 +982,13 @@ void toolGroupButton(AppState& st, int groupIndex, float cellSize, bool forceOpe
         rowW = std::max(rowW, ImGui::CalcTextSize(toolName(group.members[m])).x);
       rowW += kFlyoutIconGutter + kFlyoutPadX;
 
-      const bool documentOpen = st.documents.active() != nullptr;
+      const OpenDocument* flyoutDoc = st.documents.active();
+      const bool documentOpen = flyoutDoc != nullptr;
       const char* modalWhy = transformModalRefusal(st);
+      const Layer* flyoutLayer = flyoutDoc != nullptr ? activeLayerOf(*flyoutDoc) : nullptr;
       for (int m = 0; m < group.memberCount; ++m) {
         const Tool member = group.members[m];
-        if (toolFlyoutRow(member, member == current, documentOpen, modalWhy, rowW)) {
+        if (toolFlyoutRow(member, member == current, documentOpen, modalWhy, flyoutLayer, rowW)) {
           // **A dead row is still a CLICKABLE row.** `toolFlyoutRow()`
           // returns its `InvisibleButton`'s raw result -- dimming a row
           // changes how it draws, not whether ImGui reports the press -- so
@@ -15391,9 +15411,11 @@ void drawPanelBody(AppState& st, ControlsSection section, std::unique_ptr<PaintS
       // is live" since that gizmo was written, and until now nothing stated
       // them anywhere.
       if (const char* modalWhy = transformModalRefusal(st))
-        drawAtelierOptionsBarContent(st, ImGui::GetWindowHeight(), modalWhy);
+        drawAtelierOptionsBarContent(st, ImGui::GetWindowHeight(), modalWhy,
+                                     g_moveDragging || g_moveCommitPending);
       else
-        drawAtelierOptionsBarContent(st, ImGui::GetWindowHeight(), g_strokeRefusal);
+        drawAtelierOptionsBarContent(st, ImGui::GetWindowHeight(), g_strokeRefusal,
+                                     g_moveDragging || g_moveCommitPending);
       break;
     // PLAN.md Phase 5 step 1 ("Multiple layers in `Document`, with reorder,
     // visibility, lock, opacity"; PRD C4).
@@ -16639,17 +16661,25 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   const bool tabsOwnRow = kTabStripGetsOwnRow && !st.documents.empty();
   // The tabs keep the ordinary row height -- they are the same size they have
   // always been. What changes is the row they LEFT: the menu row grows to
-  // `kTallMenuRowH` and its type is scaled to fill it, because the wordmark,
-  // the inline menus and the Undo/Redo/fps cluster are what a touch device
-  // actually needs a bigger target for.
+  // `kTallMenuRowH`, which is the bigger TAP TARGET a touch device needs for
+  // the wordmark, the inline menus and the Undo/Redo/fps cluster.
+  //
+  // **The row grows; its type does not.** This used to also scale the row's
+  // font by a fixed 1.4x on top of `ImGui::GetIO().FontGlobalScale` --
+  // Preferences' own "UI scale" slider (`ui/PreferencesDialog.cpp`'s
+  // `applyUiScaleIfChanged()`), which is the ONE knob everything else in this
+  // build's text answers to. Stacking a second, local multiplier on top of it
+  // meant this row's text was never actually AT the size the rest of the
+  // interface was proportioned for -- it was always 40% past it, on every
+  // platform and at every UI scale, which is a standing mismatch rather than
+  // a scale-dependent one. Dropping the local multiplier makes the row's text
+  // answer to the same single scale as a title bar, a panel label or a
+  // dialog's -- "the rest of the UI" -- and the row stays taller regardless,
+  // because the extra height was always a hit-target decision, not a
+  // type-size one; `menuTextY` below still centres whatever size the ambient
+  // scale currently gives it.
   const float tabRowH = tabsOwnRow ? kTitleBarH : 0.0f;
   const float menuRowH = tabsOwnRow ? kTallMenuRowH : kTitleBarH;
-  // Type scaled to the row rather than a second font loaded for it: this
-  // build has one text face (`ui/Fonts`), and `SetWindowFontScale()` is what
-  // ImGui offers for exactly this. Kept a little under the row's own growth
-  // ratio so the widened menus plus the right-hand cluster still fit an iPad's
-  // width -- at 1.0 (every desktop platform) nothing below changes at all.
-  const float menuFontScale = tabsOwnRow ? 1.4f : 1.0f;
   const AtelierRect earlyTabStrip =
       atelierLayout(vp->Pos.x, vp->Pos.y + st.iosSafeAreaTop, vp->Size.x,
                     vp->Size.y - st.iosSafeAreaTop, !st.documents.empty(),
@@ -16748,14 +16778,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // this -- and at `inset == 0` it is bit-for-bit today's expression on
     // macOS, Linux and Windows, so the row those platforms render does not
     // move by a pixel.
-    // Scale the row's type BEFORE placing it: `GetFontSize()` reports the
-    // scaled size once this is set, and the menu popups each open in a window
-    // of their own whose scale is still 1, so the dropdowns stay ordinary
-    // size -- it is the bar's own row that grows. Reset below, before the tab
-    // strip is drawn into this same window, so the tabs are untouched by it.
+    // The row's type is the ambient (UI-scale-scaled) font, same as every
+    // other band -- see this block's own header comment on why the old extra
+    // 1.4x here was removed.
     const float unscaledFont = ImGui::GetFontSize();
-    if (menuFontScale != 1.0f) ImGui::SetWindowFontScale(menuFontScale);
-    const float menuFontPx = unscaledFont * menuFontScale;
 
     // ImGui adds the bar's `FramePadding.y` -- `titleBarPad` -- to the cursor
     // as this row's text baseline offset, so the cursor has to be the wanted
@@ -16763,10 +16789,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // its type CENTRED in it (there is nothing else in the row to align to,
     // and centring is what makes the extra height read as deliberate), while
     // the shared row keeps the bottom-aligned baseline every desktop platform
-    // has always drawn. At `iosSafeAreaTop == 0`, `tabRowH == 0` and scale 1
-    // the second branch is bit-for-bit the original expression.
+    // has always drawn. At `iosSafeAreaTop == 0` and `tabRowH == 0` the
+    // second branch is bit-for-bit the original expression.
     const float menuTextY = tabsOwnRow
-                                ? st.iosSafeAreaTop + (menuRowH - menuFontPx) * 0.5f
+                                ? st.iosSafeAreaTop + (menuRowH - unscaledFont) * 0.5f
                                 : st.iosSafeAreaTop + (kTitleBarH - unscaledFont);
     ImGui::SetCursorPosY(menuTextY - titleBarPad);
 
@@ -17009,12 +17035,6 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // itself (with the live dock extents) is not computed until later in
     // this function; see this variable's own comment above for why that is
     // the same rect regardless.
-    // Back to 1.0 before the tabs: they share this window with the menu row
-    // but not its type scale -- `drawAtelierTabStrip()` reads the ambient font
-    // for every label it measures and draws, so leaving the row's scale set
-    // would grow the tabs too, which is exactly what this row split is NOT
-    // for.
-    if (menuFontScale != 1.0f) ImGui::SetWindowFontScale(1.0f);
     AtelierBands tabBands;
     tabBands.tabStrip = earlyTabStrip;
     if (drawAtelierTabStrip(st, tabBands, g_split, &g_docStatus)) {
@@ -18321,9 +18341,17 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // second a fingertip always creeps, and the colour the user meant is the
     // one under the finger when they pressed.
     {
+      // **Never for Clone Stamp or Heal.** The user's own instruction: the
+      // eyedropper is not a relevant action in either mode, since both
+      // already claim Option+click for something else (the anchor). Without
+      // this exclusion a long press on the clone tool would silently
+      // overwrite the foreground colour instead of doing anything clone- or
+      // heal-related -- the tool-agnostic version of the exact defect this
+      // whole discipline exists to prevent.
       const bool oneFingerHeld = st.pointerIsTouch() && hovered &&
                                  iosTouchTracker().count() == 1 &&
-                                 ImGui::IsMouseDown(ImGuiMouseButton_Left);
+                                 ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+                                 !toolUsesCloneSource(st.brush.tool);
       if (st.touchLongPress.update(oneFingerHeld, mouse.x, mouse.y,
                                    ImGui::GetTime() * 1000.0) ==
           LongPressGesture::Phase::Fired) {
@@ -18332,6 +18360,44 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         if (held.x >= 0 && held.y >= 0 && held.x < texW && held.y < texH)
           applyEyedropperPick(st, PixelCoord{static_cast<int32_t>(held.x),
                                              static_cast<int32_t>(held.y)});
+      }
+    }
+
+    // Long-press-to-anchor: touch's ONLY route to setting the Clone Stamp/
+    // Heal source, for the reason `oneFingerHeld` above excludes these two
+    // tools from the eyedropper's own long press -- Option+click has no touch
+    // equivalent (there is no modifier key), and the eyedropper's gesture is
+    // exactly the one this build already teaches a user to hold still for.
+    //
+    // **Gated on `toolUsesCloneSource()`, unlike the eyedropper's own
+    // recogniser above.** The eyedropper's is deliberately tool-agnostic (its
+    // own comment: "a global modifier that works in every tool"), because a
+    // finger denied the content-creation tools would otherwise have no use
+    // for a long press at all. This one is the opposite: it is ONE tool
+    // pair's own gesture, reusing the shared anchor exactly as the desktop
+    // Option+click does (`AppState::CloneSourceState`'s own "one anchor for
+    // both tools" argument), so a second, separate recogniser -- rather than
+    // widening `st.touchLongPress` with a branch -- keeps the two holds from
+    // fighting over one anchor/timestamp pair if a user somehow triggered
+    // both gestures in the same frame.
+    //
+    // Bypasses `mayDrive(np::CanvasInteraction::CloneStamp)` on purpose, for
+    // the identical reason the eyedropper's long press bypasses the
+    // `CanvasInteraction` table: this is touch's substitute for a desktop
+    // MODIFIER KEY, not a paint gesture, and the truth table has no row for
+    // "touch may hold a key down".
+    {
+      const bool oneFingerHeld = st.pointerIsTouch() && hovered &&
+                                 iosTouchTracker().count() == 1 &&
+                                 ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+                                 toolUsesCloneSource(st.brush.tool);
+      if (st.cloneAnchorLongPress.update(oneFingerHeld, mouse.x, mouse.y,
+                                         ImGui::GetTime() * 1000.0) ==
+          LongPressGesture::Phase::Fired) {
+        const Vec2 held = xform.toCanvas(Vec2{st.cloneAnchorLongPress.anchorX(),
+                                              st.cloneAnchorLongPress.anchorY()});
+        if (held.x >= 0 && held.y >= 0 && held.x < texW && held.y < texH)
+          setCloneAnchor(st.clone, held);
       }
     }
 #endif
@@ -18469,13 +18535,21 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // there committed the session twice -- once in the dialog, then once
       // more here, where `commit()` found no session and reported it.
       const bool dialogOwnsKeys = modalDimActive() || dialogHandledKeyThisFrame();
-      if (!dialogOwnsKeys && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+      // The options bar's Apply/Cancel buttons (ui/AtelierChrome.cpp) set
+      // `st.requestTransformApply`/`Cancel` instead of driving ImGui's own
+      // key-injection queue, so they join this same gate rather than needing
+      // one of their own -- a click while a dialog owns the keys is exactly
+      // as invalid as an Enter/Escape keypress would be there.
+      if (!dialogOwnsKeys && (ImGui::IsKeyPressed(ImGuiKey_Escape) || st.requestTransformCancel)) {
+        st.requestTransformCancel = false;
         // Nothing was written, so there is nothing to unwind -- see
         // app/TransformSession.hpp's "cancel needs no restore step".
         st.transform.cancel();
         g_transformPreview.reset();  // T14: this session's uploaded crop is dead with it.
       } else if (!dialogOwnsKeys && (ImGui::IsKeyPressed(ImGuiKey_Enter) ||
-                                     ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))) {
+                                     ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) ||
+                                     st.requestTransformApply)) {
+        st.requestTransformApply = false;
         if (OpenDocument* od = st.documents.active()) {
           const TransformCommitResult done = st.transform.commit(*od);
           g_docStatus = done.ok ? (done.exact != ExactRemap::None
@@ -19366,12 +19440,22 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // held on the third click of a five-click path is not a new answer to
       // the same question.
       if (clicked && (!st.polygonLassoActive || st.brush.tool != Tool::PolygonLasso)) {
-        st.marqueeCombine = selectionCombineFromModifiers(mods.KeyShift, mods.KeyAlt);
+        // A held Shift/Option always wins (the desktop gesture this latch was
+        // written for); with neither held, `selectionCombineFromModifiers()`
+        // returns `Replace` for "nothing pressed", which is not a real answer
+        // -- so that case defers to the options bar's sticky mode instead,
+        // which is the only way touch (no keyboard) ever picks anything but
+        // Replace.
+        const SelectionCombine fromKeys = selectionCombineFromModifiers(mods.KeyShift, mods.KeyAlt);
+        st.marqueeCombine =
+            fromKeys != SelectionCombine::Replace ? fromKeys : st.selectionCombineMode;
       }
 
       switch (st.brush.tool) {
         case Tool::Marquee:
         case Tool::EllipseMarquee: {
+          const bool fixedSize = st.selectionUseFixedSize && st.selectionFixedW > 0.0f &&
+                                 st.selectionFixedH > 0.0f;
           if (clicked) {
             st.marqueeDragging = true;
             st.marqueeX0 = tx;
@@ -19385,17 +19469,33 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             st.marqueeX1 = tx;
             st.marqueeY1 = ty;
 
-            // T10 (docs/testing-issues.md): live modifier reads for drag
-            // GEOMETRY only -- deliberately separate from `st.marqueeCombine`
-            // above, which latches Shift/Option at mouse-down to answer a
-            // different question (which boolean) that a moving hand must not
-            // be allowed to re-answer mid-drag. Shift/Option here only ever
-            // shape app/SelectionDrag.hpp's pure box math; they never touch
-            // `marqueeCombine`.
-            updateSelectionMove(st.marqueeMove, ImGui::IsKeyDown(ImGuiKey_Space), tx, ty);
-            const SelectionDragBox box = computeSelectionDragBox(
-                st.marqueeX0, st.marqueeY0, st.marqueeX1, st.marqueeY1,
-                st.marqueeMove.offsetX, st.marqueeMove.offsetY, mods.KeyShift, mods.KeyAlt);
+            SelectionDragBox box;
+            if (fixedSize) {
+              // Fixed size: the drag only repositions a box of exactly
+              // `selectionFixedW x selectionFixedH` -- it never resizes.
+              // `st.marqueeX0/Y0` is the click point (corner, or centre when
+              // `selectionFromCentre` is on, the same flag the ordinary
+              // from-centre gesture below reads, so the two never disagree).
+              box = fixedSizeDragBox(st.marqueeX0, st.marqueeY0, st.marqueeX1, st.marqueeY1,
+                                     st.selectionFixedW, st.selectionFixedH,
+                                     st.selectionFromCentre);
+            } else {
+              // T10 (docs/testing-issues.md): live modifier reads for drag
+              // GEOMETRY only -- deliberately separate from `st.marqueeCombine`
+              // above, which latches Shift/Option at mouse-down to answer a
+              // different question (which boolean) that a moving hand must not
+              // be allowed to re-answer mid-drag. Shift/Option here only ever
+              // shape app/SelectionDrag.hpp's pure box math; they never touch
+              // `marqueeCombine`. OR'd with the options bar's persistent
+              // checkboxes (AppState.hpp's own comment on them) so touch, with
+              // no keyboard, reaches the same two gestures.
+              updateSelectionMove(st.marqueeMove, ImGui::IsKeyDown(ImGuiKey_Space), tx, ty);
+              box = computeSelectionDragBox(st.marqueeX0, st.marqueeY0, st.marqueeX1,
+                                            st.marqueeY1, st.marqueeMove.offsetX,
+                                            st.marqueeMove.offsetY,
+                                            mods.KeyShift || st.selectionConstrainSquare,
+                                            mods.KeyAlt || st.selectionFromCentre);
+            }
             st.marqueeBoxX0 = box.x0;
             st.marqueeBoxY0 = box.y0;
             st.marqueeBoxX1 = box.x1;
@@ -21736,8 +21836,17 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         }
       } else if (down && !g_stroke.active()) {
         // Pen-down, before `begin()` below reads the offset. Idempotent after
-        // the first stroke since the anchor (this build clones aligned), and a
-        // no-op with no anchor -- in which case `begin()` refuses out loud.
+        // the first stroke since the anchor when `aligned` is true (this
+        // build's default), and a no-op with no anchor -- in which case
+        // `begin()` refuses out loud.
+        //
+        // **Unaligned clears `haveOffset` first**, on every pen-down: that is
+        // the whole difference between the two modes (`AppState::
+        // CloneSourceState`'s own comment). Clearing it here rather than
+        // inside `latchCloneOffset()` keeps that function a pure "derive once,
+        // then hold" primitive with no knowledge of the checkbox -- this is
+        // the one call site that reads it.
+        if (!st.clone.aligned) st.clone.haveOffset = false;
         latchCloneOffset(st.clone, Vec2{tx, ty});
       }
     }
