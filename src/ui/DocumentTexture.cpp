@@ -152,6 +152,15 @@ WGPUTextureView DocumentTexture::viewFor(GpuContext& gpu, const OpenDocument& do
   if (!haveSnapshot_ || freshTexture || !haveKey_ || key_.id != key.id) {
     dirty.everything = true;
     dirty.reason = FullRecompositeReason::NoPreviousComposite;
+    // This slot is starting over against a document it either has never
+    // composited or has not composited since being re-pointed at a
+    // different one (`key_.id != key.id`): `vectorCache_`'s entries, if any,
+    // were built from a DIFFERENT document's layer ids and content, and
+    // `Document::nextLayerId` starts at 1 per document, so an id from the
+    // old document can name an unrelated layer in the new one. Clearing
+    // rather than pruning avoids depending on hash collision alone to keep
+    // the two apart.
+    if (!haveKey_ || key_.id != key.id) vectorCache_ = VectorRasterCache{};
   } else {
     dirty = documentDirtyTiles(snapshot_, doc.document);
     // The change *was* localised, but to so much of the canvas that a full
@@ -255,7 +264,8 @@ WGPUTextureView DocumentTexture::viewFor(GpuContext& gpu, const OpenDocument& do
       // `premultScratch_` instead of that function's temporary.
       {
         const auto t0 = std::chrono::steady_clock::now();
-        compositeDocumentPremultipliedInto(doc.document, premultScratch_, warningsOut);
+        compositeDocumentPremultipliedInto(doc.document, premultScratch_, warningsOut,
+                                           &vectorCache_);
         lastCompositeMs_ +=
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
       }
@@ -295,7 +305,8 @@ WGPUTextureView DocumentTexture::viewFor(GpuContext& gpu, const OpenDocument& do
       // happened to be cheap. Recomputing them costs one pass over the layer
       // list and no tile access at all.
       if (warningsOut != nullptr)
-        compositeDocumentTilesPremultiplied(doc.document, {}, CompositeRegion{}, warningsOut);
+        compositeDocumentTilesPremultiplied(doc.document, {}, CompositeRegion{}, warningsOut,
+                                            &vectorCache_);
       ++emptyUpdates_;
     } else {
       // Decision 4's band/run walk, extracted below (decision 6) so a
@@ -365,7 +376,8 @@ WGPUTextureView DocumentTexture::viewFor(GpuContext& gpu, const OpenDocument& do
       // because warnings are a property of the document, not of whether a
       // tile got composited, and must never silently stop being produced.
       if (warningsOut != nullptr)
-        compositeDocumentTilesPremultiplied(doc.document, {}, CompositeRegion{}, warningsOut);
+        compositeDocumentTilesPremultiplied(doc.document, {}, CompositeRegion{}, warningsOut,
+                                            &vectorCache_);
       ++emptyUpdates_;
     } else {
       compositeAndUploadTileList(gpu, doc, key, dst, processSet, warningsOut);
@@ -381,6 +393,12 @@ WGPUTextureView DocumentTexture::viewFor(GpuContext& gpu, const OpenDocument& do
   // outliving it, and this is the narrowest possible window.
   snapshot_ = doc.document;
   haveSnapshot_ = true;
+
+  // Prune rasters for layers no longer in this (the same, per the id check
+  // above) document -- mirrors why `snapshot_` itself is not left to grow
+  // stale entries. Cheap: O(layers) with no tile access, same as its other
+  // caller (core/VectorRaster.cpp's own comment on `forgetLayersNotIn()`).
+  vectorCache_.forgetLayersNotIn(doc.document);
 
   key_ = key;
   haveKey_ = true;
@@ -492,7 +510,7 @@ void DocumentTexture::compositeAndUploadTileList(GpuContext& gpu, const OpenDocu
     {
       const auto t0 = std::chrono::steady_clock::now();
       compositeDocumentTilesPremultiplied(doc.document, band, region,
-                                          warned ? nullptr : warningsOut);
+                                          warned ? nullptr : warningsOut, &vectorCache_);
       lastCompositeMs_ +=
           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     }

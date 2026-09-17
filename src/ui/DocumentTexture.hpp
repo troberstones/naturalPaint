@@ -9,6 +9,7 @@
 #include "app/DocumentLifecycle.hpp"
 #include "core/DirtyTiles.hpp"
 #include "core/Document.hpp"
+#include "core/VectorRaster.hpp"
 #include "gfx/Wgpu.hpp"
 
 // ui/DocumentTexture -- the open document, on screen.
@@ -725,6 +726,30 @@ class DocumentTexture {
   // write handle across it.
   Document snapshot_;
   bool haveSnapshot_ = false;
+
+  // Per-document cache of each Vector/Text/Flats/Strokes layer's rasterised
+  // content, keyed by that layer's own content hash (core/VectorRaster.hpp).
+  // Without this, `compositeDocumentPremultipliedInto()`/
+  // `compositeDocumentTilesPremultiplied()` are always handed a null
+  // `VectorRasterCache*` and `MaterializedDocument` rasterises every such
+  // layer over the FULL canvas on every single call -- not only while
+  // dragging a knot, but on every edit anywhere in the document (a single
+  // brush dab on an unrelated RGB layer still recomposites via this same
+  // path) and even on an edit that touches no pixel at all (a rename, which
+  // still recomputes warnings via an empty-tile call). Measured on a
+  // 4096x3072 canvas with a 4-shape/200-anchor Vector layer
+  // (`--profile-vector-warp`): ~90ms on this Mac, ~818ms reported on an
+  // iPad, PER CALL, entirely avoidable whenever the layer's content did not
+  // change since the last time this slot composited it.
+  //
+  // Reset (not merely pruned) when this slot is re-pointed at a different
+  // document: `Document::nextLayerId` starts at 1 per document, so two
+  // unrelated documents can share a layer id, and clearing avoids relying on
+  // hash collision alone to keep them apart. Pruned via
+  // `forgetLayersNotIn()` after every successful composite of the SAME
+  // document, so a deleted Vector layer's raster does not sit resident for
+  // the rest of the session (mirrors `snapshot_`'s own lifetime).
+  VectorRasterCache vectorCache_;
 
   // Reused across calls; bounded by one tile row of the canvas, because the
   // region walk is driven a tile band at a time (decision 4).
