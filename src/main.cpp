@@ -28,6 +28,7 @@
 #include "app/AbrReport.hpp"
 #include "app/Batch.hpp"
 #include "app/ProfileToggle.hpp"
+#include "app/ProfileVectorWarp.hpp"
 #include "app/PsdExportCli.hpp"
 #include "app/PsdReport.hpp"
 #include "app/DabLibrary.hpp"
@@ -2115,6 +2116,13 @@ int main(int argc, char** argv) {
   const char* profileTogglePath = nullptr;
   int profileToggleLayer = -1;
   int profileToggleIterations = 50;
+  // --profile-vector-warp [width height anchors iterations] : headless
+  // benchmarking scaffold, see app/ProfileVectorWarp.hpp. Temporary.
+  bool profileVectorWarpRequested = false;
+  int profileVectorWarpWidth = 0;
+  int profileVectorWarpHeight = 0;
+  int profileVectorWarpAnchors = 0;
+  int profileVectorWarpIterations = 0;
   // --abr-keys <file.abr> : one level below --abr-report -- the 8BIM section
   // table and a census of every descriptor key the file actually contains.
   // See app/AbrReport.hpp on why measuring beats remembering here.
@@ -2192,6 +2200,14 @@ int main(int argc, char** argv) {
       if (i + 1 < argc) profileTogglePath = argv[++i];
       if (i + 1 < argc) profileToggleLayer = std::atoi(argv[++i]);
       if (i + 1 < argc && argv[i + 1][0] != '-') profileToggleIterations = std::atoi(argv[++i]);
+    } else if (a == "--profile-vector-warp") {
+      profileVectorWarpRequested = true;
+      if (i + 4 < argc && argv[i + 1][0] != '-') {
+        profileVectorWarpWidth = std::atoi(argv[++i]);
+        profileVectorWarpHeight = std::atoi(argv[++i]);
+        profileVectorWarpAnchors = std::atoi(argv[++i]);
+        profileVectorWarpIterations = std::atoi(argv[++i]);
+      }
     } else if (a == "--abr-keys") {
       if (i + 1 < argc) abrKeysPath = argv[++i];
     } else if (a == "--dab-scan") {
@@ -2982,6 +2998,9 @@ int main(int argc, char** argv) {
   if (psdExportPath != nullptr) return np::runPsdExportDemo(psdExportPath, psdExportLayered);
   if (profileTogglePath != nullptr)
     return np::runProfileToggle(profileTogglePath, profileToggleLayer, profileToggleIterations);
+  if (profileVectorWarpRequested)
+    return np::runProfileVectorWarp(profileVectorWarpWidth, profileVectorWarpHeight,
+                                    profileVectorWarpAnchors, profileVectorWarpIterations);
   if (abrKeysPath != nullptr) return np::runAbrKeyCensus(abrKeysPath);
   if (dabImportPath != nullptr) return np::runDabImport(dabImportPath);
   if (pattWritePath != nullptr) return np::runPattWrite(pattWritePath);

@@ -337,6 +337,7 @@ add_executable(naturalPaint
   app/PsdReport.cpp
   app/SvgReport.cpp
   app/ProfileToggle.cpp
+  app/ProfileVectorWarp.cpp
   app/Screenshot.cpp
   app/SelectionDrag.cpp
   app/LayerEditor.cpp
