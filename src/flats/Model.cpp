@@ -256,7 +256,7 @@ struct Segmented {
   FlatSagView sag;
 };
 
-Segmented segment(FlatMask line, const FlatInk& ink, int w, int h, const FlatParams& p) {
+Segmented segment(FlatMask line, const FlatInk& ink, int w, int h, const FlatParams& p, GpuContext* gpu) {
   Segmented s;
   if (p.closeTightGaps) {
     s.closures = flatTightClosures(line, w, h, p.gapSize);
@@ -264,7 +264,7 @@ Segmented segment(FlatMask line, const FlatInk& ink, int w, int h, const FlatPar
       flatMarkLine(line, w, h, s.closures[i], s.closures[i + 1], s.closures[i + 2], s.closures[i + 3]);
   }
   if (p.sheet > 0) {
-    FlatSagResult r = flatSagSegment(line, w, h, p.sheet, p.gapSize);
+    FlatSagResult r = flatSagSegment(line, w, h, p.sheet, p.gapSize, gpu);
     s.core = std::move(r.core);
     s.sag = flatSagView(r.sag);
   } else {
@@ -276,11 +276,11 @@ Segmented segment(FlatMask line, const FlatInk& ink, int w, int h, const FlatPar
 
 }  // namespace
 
-FlatEvaluation flatEvaluate(const uint8_t* rgba8, int w, int h, const FlatsContent& content) {
-  return flatEvaluateInk(flatExtractInk(rgba8, w, h, content.params.colourReject), w, h, content);
+FlatEvaluation flatEvaluate(const uint8_t* rgba8, int w, int h, const FlatsContent& content, GpuContext* gpu) {
+  return flatEvaluateInk(flatExtractInk(rgba8, w, h, content.params.colourReject), w, h, content, gpu);
 }
 
-FlatEvaluation flatEvaluateInk(FlatInk ink, int w, int h, const FlatsContent& content) {
+FlatEvaluation flatEvaluateInk(FlatInk ink, int w, int h, const FlatsContent& content, GpuContext* gpu) {
   const FlatParams& p = content.params;
   FlatEvaluation e;
   e.w = w;
@@ -288,7 +288,7 @@ FlatEvaluation flatEvaluateInk(FlatInk ink, int w, int h, const FlatsContent& co
   e.ink = std::move(ink);
   e.line = flatLineMask(e.ink, w, h, content);
 
-  Segmented s = segment(e.line, e.ink, w, h, p);
+  Segmented s = segment(e.line, e.ink, w, h, p, gpu);
   e.core = std::move(s.core);
   e.labels = std::move(s.labels);
   e.closures = std::move(s.closures);

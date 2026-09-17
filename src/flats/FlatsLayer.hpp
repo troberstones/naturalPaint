@@ -47,6 +47,8 @@
 
 namespace np {
 
+class GpuContext;
+
 // Whether `doc.layers[index]` is a Flats layer this file evaluates.
 bool flatsLayerEvaluable(const Document& doc, size_t index) noexcept;
 
@@ -92,7 +94,10 @@ std::vector<uint8_t> flatsSourceRgba8(const Document& doc, const std::vector<siz
 
 // The evaluation of the Flats layer at `index`, from the cache or freshly
 // computed. Never null for an evaluable layer; null otherwise.
-std::shared_ptr<const FlatEvaluation> flatsEvaluateLayer(const Document& doc, size_t index);
+// `gpu` -- non-owning; non-null (and only on a cache miss) routes the solve
+// onto the GPU. Left null by every headless caller.
+std::shared_ptr<const FlatEvaluation> flatsEvaluateLayer(const Document& doc, size_t index,
+                                                         GpuContext* gpu = nullptr);
 
 // The evaluation of the Flats layer at `index` **from the cache only**, or
 // null when the cache holds nothing current for it. NEVER computes.
@@ -116,7 +121,8 @@ std::shared_ptr<const FlatEvaluation> flatsPeekEvaluation(const Document& doc, s
 // the document.
 std::shared_ptr<const FlatEvaluation> flatsEvaluateSource(const Document& doc, uint64_t cacheKey,
                                                           const std::vector<size_t>& layers,
-                                                          const FlatsContent& content);
+                                                          const FlatsContent& content,
+                                                          GpuContext* gpu = nullptr);
 
 // The evaluation painted into linear, premultiplied tiles -- what the
 // materialise loop hands the compositor in place of the layer.

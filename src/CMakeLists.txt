@@ -339,6 +339,7 @@ add_executable(naturalPaint
   app/SvgReport.cpp
   app/ProfileToggle.cpp
   app/ProfileVectorWarp.cpp
+  app/ProfileFlatsSolver.cpp
   app/Screenshot.cpp
   app/SelectionDrag.cpp
   app/LayerEditor.cpp
@@ -368,6 +369,10 @@ add_executable(naturalPaint
   flats/Expand.cpp
   flats/Segment.cpp
   flats/Membrane.cpp
+  # GPU port of Membrane.cpp's solver (flats/MembraneGpu.hpp). Needs
+  # gfx/Context's WGPUDevice, so unlike the rest of flats/ it does NOT go in
+  # flatstest below, which is deliberately GPU-free.
+  flats/MembraneGpu.cpp
   flats/Sag.cpp
   flats/Gaps.cpp
   flats/Model.cpp

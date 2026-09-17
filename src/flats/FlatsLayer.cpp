@@ -71,13 +71,14 @@ uint64_t layerSignature(const Layer& l, const GradientTable& gradients) {
 }
 
 std::shared_ptr<const FlatEvaluation> evaluate(const Document& doc, const std::vector<size_t>& source,
-                                               const FlatsContent& content, uint64_t layerId, uint64_t hash) {
+                                               const FlatsContent& content, uint64_t layerId, uint64_t hash,
+                                               GpuContext* gpu) {
   auto& c = cache();
   auto it = c.find(layerId);
   if (it != c.end() && it->second.hash == hash && it->second.eval) return it->second.eval;
   const std::vector<uint8_t> rgba = flatsSourceRgba8(doc, source);
   auto eval = std::make_shared<const FlatEvaluation>(
-      flatEvaluate(rgba.data(), doc.width, doc.height, content));
+      flatEvaluate(rgba.data(), doc.width, doc.height, content, gpu));
   Entry e;
   e.hash = hash;
   e.eval = eval;
@@ -224,13 +225,13 @@ std::vector<uint8_t> flatsSourceRgba8(const Document& doc, const std::vector<siz
   return out;
 }
 
-std::shared_ptr<const FlatEvaluation> flatsEvaluateLayer(const Document& doc, size_t index) {
+std::shared_ptr<const FlatEvaluation> flatsEvaluateLayer(const Document& doc, size_t index, GpuContext* gpu) {
   if (!flatsLayerEvaluable(doc, index)) return nullptr;
   const Layer& layer = doc.layers[index];
   const std::vector<size_t> source = flatsSourceLayers(doc, index);
   uint64_t hash = flatsContentHash(layer.flats);
   mix(hash, flatsSourceSignature(doc, source));
-  return evaluate(doc, source, layer.flats, layer.id, hash);
+  return evaluate(doc, source, layer.flats, layer.id, hash, gpu);
 }
 
 std::shared_ptr<const FlatEvaluation> flatsPeekEvaluation(const Document& doc, size_t index) {
@@ -248,12 +249,12 @@ std::shared_ptr<const FlatEvaluation> flatsPeekEvaluation(const Document& doc, s
 
 std::shared_ptr<const FlatEvaluation> flatsEvaluateSource(const Document& doc, uint64_t cacheKey,
                                                           const std::vector<size_t>& layers,
-                                                          const FlatsContent& content) {
+                                                          const FlatsContent& content, GpuContext* gpu) {
   if (doc.width <= 0 || doc.height <= 0) return nullptr;
   uint64_t hash = flatsContentHash(content);
   mix(hash, flatsSourceSignature(doc, layers));
   mix(hash, 0x5bd1e995u);  // never collides with a Flats layer's own evaluation
-  return evaluate(doc, layers, content, cacheKey, hash);
+  return evaluate(doc, layers, content, cacheKey, hash, gpu);
 }
 
 TileStore flatsRasterize(const FlatEvaluation& e) {
