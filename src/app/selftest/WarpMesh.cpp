@@ -690,6 +690,47 @@ bool runWarpMeshTest() {
           "corner-pull: the committed selection follows the corner out to (11, 11)");
   }
 
+  // --- 17. A curved corner produces a hard edge, not speckle ----------------
+  //
+  // Regression lock for the boundary-antialiasing pass reverted alongside
+  // this test: dragging a corner anchor bends the two cells that touch it
+  // (the anchor's own rigid neighbours ride along, the next control out does
+  // not -- see `dragControl()`), exactly the "edge/corner knot creates
+  // curvature at the boundary" shape the AA pass got wrong. A fully opaque
+  // source warped through that curvature must land as a hard silhouette:
+  // every touched destination pixel is either fully covered (the strict-
+  // interior gather claimed it) or left untouched at alpha 0 -- never a
+  // fractional alpha in between, which is what the old relaxed second pass
+  // produced as visible speckle right at the curve.
+  {
+    const DocumentRegion bounds{0, 0, 60u, 60u};
+    WarpMesh m = WarpMesh::flat(bounds, 3);
+    m.dragControl(WarpControlRef{true, 0, 3}, Point2{-13.0f, 9.0f});
+    m.dragControl(WarpControlRef{true, 0, 0}, Point2{14.0f, -11.0f});
+
+    TransformImage src;
+    src.width = 60;
+    src.height = 60;
+    src.px.assign(src.sampleCount(), 1.0f);  // solid opaque white
+
+    const int sub = warpChordSubdivisions(m);
+    const DocumentRegion dstRegion = warpedRegion(m, sub);
+    TransformImage out;
+    std::string err;
+    const bool warped = warpImage(src, m, dstRegion, ResampleKernel::CatmullRom, &out, &err);
+    check(warped, "corner-curvature speckle fixture: warp succeeds");
+
+    int partialAlphaCount = 0;
+    for (size_t p = 0; p < out.px.size() / 4; ++p) {
+      const float a = out.px[p * 4 + 3];
+      if (a > 1e-6f && a < 1.0f - 1e-6f) ++partialAlphaCount;
+    }
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "no partial-alpha boundary speckle pixels (found %d)",
+                 partialAlphaCount);
+    check(partialAlphaCount == 0, buf);
+  }
+
   std::printf("[selftest] warp mesh %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }
