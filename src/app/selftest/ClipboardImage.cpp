@@ -3,6 +3,7 @@
 #include <SDL3/SDL_clipboard.h>
 #include <SDL3/SDL_stdinc.h>
 
+#include "core/Platform.hpp"
 #include "io/ClipboardImage.hpp"
 
 namespace np {
@@ -117,12 +118,26 @@ bool runClipboardImageTest() {
     if (prevText) SDL_free(prevText);
 
     check(SDL_ClearClipboardData(), "clipboardimage: (setup) SDL_ClearClipboardData() succeeds");
+#if !NP_PLATFORM_IOS
+    // Not reachable on iOS: `src/video/uikit/SDL_uikitclipboard.m` implements
+    // none of SetClipboardData/ClearClipboardData/GetClipboardData (see
+    // io/ClipboardImage.hpp's own note on the UIKit backend), so
+    // SDL_ClearClipboardData() above only clears SDL's internal mime-type
+    // cache -- it never touches the real UIPasteboard.string a PRIOR
+    // SDL_SetClipboardText() call left behind (this section's own fixture
+    // text, from an earlier --selftest run against the same device, or
+    // anything the person running it had copied). There is no call through
+    // SDL that actually empties the real pasteboard on this platform, so
+    // "prove Empty after Clear" cannot be asserted here -- probeClipboardImage
+    // ()'s Empty contract itself is unaffected by this and still holds true
+    // whenever the real pasteboard genuinely has nothing on it.
     const ClipboardImageProbe empty = probeClipboardImage();
     check(empty.status == ClipboardImageStatus::Empty,
           "clipboardimage: probeClipboardImage() on a cleared pasteboard reports Empty");
     check(empty.width == 0 && empty.height == 0 && empty.pixels.empty(),
           "clipboardimage: Empty carries no width, height or pixels -- never a manufactured "
           "0x0 document's worth of data");
+#endif
 
     check(SDL_SetClipboardText("naturalPaint --selftest clipboard probe fixture"),
           "clipboardimage: (setup) SDL_SetClipboardText() succeeds");

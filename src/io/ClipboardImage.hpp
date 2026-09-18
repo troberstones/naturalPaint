@@ -48,6 +48,30 @@
 // through the OIIO fallback when `NP_USE_OIIO=ON`). This header is a thin
 // probe on top of two functions this codebase already had.
 //
+// **iOS is a second, asymmetric backend, found on a real device.**
+// `src/video/uikit/SDL_uikitclipboard.m` implements only
+// `SetClipboardText`/`GetClipboardText`/`HasClipboardText`, wired straight to
+// `[UIPasteboard generalPasteboard].string`, and never touches
+// `SDL_GetClipboardMimeTypes()`'s backing store at all (that list is filled
+// in only by `SDL_SetClipboardData()`, which the UIKit backend does not
+// implement -- its `UIKit_InitClipboard()` literally says `// TODO: compute
+// mime types`). So `SDL_SetClipboardText()` -- what every text-copy call in
+// this application makes -- puts text on the real pasteboard while leaving
+// `SDL_GetClipboardMimeTypes()` reporting zero types, indistinguishable by
+// that call alone from a genuinely empty pasteboard. `probeClipboardImage()`
+// below falls back to `SDL_HasClipboardText()` in exactly that case to tell
+// the two apart -- see its own comment for the mechanics.
+//
+// The same missing hooks mean `SDL_ClearClipboardData()` cannot actually
+// empty the real `UIPasteboard` on this platform either -- with no
+// `SetClipboardData`/`ClearClipboardData` hook to call, it only clears SDL's
+// own internal mime-type cache. `probeClipboardImage()`'s `Empty` contract
+// still holds whenever the pasteboard genuinely has nothing on it; what does
+// not hold on iOS is `--selftest` PROVING that by calling
+// `SDL_ClearClipboardData()` and expecting `Empty` back (see
+// `app/selftest/ClipboardImage.cpp`'s own `#if !NP_PLATFORM_IOS` on that
+// assertion).
+//
 // ==========================================================================
 // 1. What "holds an image" means here, and the three ways it can fail
 //    cleanly

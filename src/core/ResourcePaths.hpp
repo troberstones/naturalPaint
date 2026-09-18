@@ -144,6 +144,7 @@ enum class ResourceKind {
   LucideTtf,
   LucideCodepointsJson,
   UiTextTtf,
+  GlyphSourceTtf,
 };
 
 // A short label used only in the missing-resource report -- "shaders/",
@@ -224,7 +225,7 @@ void reportResourceMissing(const char* label, const std::vector<std::string>& tr
 std::string resolveResourcePath(ResourceKind kind);
 
 // Convenience accessors -- these are what call sites use in place of the
-// five raw NP_* macros. Each is `resolveResourcePath(ResourceKind::X)` by
+// raw NP_* macros. Each is `resolveResourcePath(ResourceKind::X)` by
 // another name, so `#include "core/ResourcePaths.hpp"` plus one of these is
 // the whole migration for a call site that used to write `NP_SHADER_DIR`
 // etc. directly.
@@ -233,15 +234,23 @@ std::string mixboxLutPath();
 std::string keymapDir();
 std::string lucideTtfPath();
 std::string lucideCodepointsJsonPath();
-// The bundled UI text face. **Not a fallback of last resort -- the first
-// candidate `ui/Fonts.cpp` tries.** Every other entry in that file's
-// candidate lists is an absolute path into a host's own font directory,
-// which is fine on a desktop and useless inside an iOS sandbox, where none
-// of them is readable and ImGui silently substitutes its built-in
-// ProggyClean bitmap for ALL UI text. Vendoring one real vector face and
-// resolving it exactly the way `lucideTtfPath()` already resolves the tool
-// icons closes that hole on iOS and gives every other platform a face that
-// does not depend on what happens to be installed.
+// The bundled UI text face -- a fallback of last resort, tried only after
+// every host path in `ui/Fonts.cpp`'s `kTextCandidates` has missed. Every one
+// of those is an absolute path into a host's own font directory, which is
+// fine on a desktop and useless inside an iOS sandbox, where none of them is
+// readable and ImGui would otherwise substitute its built-in ProggyClean
+// bitmap for ALL UI text. Vendoring one real vector face and resolving it
+// exactly the way `lucideTtfPath()` already resolves the tool icons closes
+// that hole on iOS and gives every other platform a face that does not
+// depend on what happens to be installed.
 std::string uiTextTtfPath();
+// The bundled glyph source -- same fallback-of-last-resort shape as
+// `uiTextTtfPath()`, but for `ui/Fonts.cpp`'s `kCandidates` (the layer-kind
+// icons, the settings gear) rather than the prose face. Those candidates are
+// macOS/Linux system-font paths too, and none of them is readable inside an
+// iOS sandbox either -- see `ui/Fonts.cpp`'s `loadBundledGlyphSource()` for
+// why `uiTextTtfPath()`'s own Liberation Sans cannot double as this fallback
+// (it does not cover the required codepoints; a DejaVu Sans subset does).
+std::string glyphSourceTtfPath();
 
 }  // namespace np
