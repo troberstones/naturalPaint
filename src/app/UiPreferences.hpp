@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+#include "ui/AtelierTheme.hpp"  // AtelierThemeMode
+
 namespace np {
 
 // app/UiPreferences -- the settings the Preferences window edits: how big the
@@ -41,6 +43,13 @@ struct UiPreferences {
   // Multiplies ImGui's font size and every style metric. 1.0 is the size the
   // app has always drawn at.
   float uiScale = 1.0f;
+
+  // `Dark` rather than `System`: the app drew one palette, unconditionally,
+  // for every session before this preference existed, and a fresh install
+  // (or an older preferences file with no `theme` key) should keep drawing
+  // exactly that rather than silently picking up whatever the OS happens to
+  // be set to on this particular machine.
+  AtelierThemeMode theme = AtelierThemeMode::Dark;
 
   // iOS only in effect, but stored and edited on every platform: a preference
   // file that gains and loses keys depending on which machine wrote it is the

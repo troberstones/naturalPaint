@@ -62,6 +62,27 @@ constexpr uint32_t kOnAccent      = 0x201e1d;
 constexpr uint32_t kError         = 0xf27366;
 constexpr uint32_t kWarning       = 0xebc759;
 
+// The recessed-panel-body role, split out of `kChromeDeep` for Light mode's
+// sake. In Dark mode this is `kChromeDeep` in every way that matters -- one
+// bit off in the blue channel, invisible at render -- because before Light
+// mode existed there was no reason to tell "the colour a docked panel's body
+// is filled with" apart from "the colour on-accent text is drawn in" and
+// "the colour a 2px rule is drawn in": all three read the same near-black.
+// Light mode is what pulls them apart: on-accent text and rules against
+// bright chrome have to STAY dark to stay legible, but a panel body is not
+// text on a bright ground, it is the ground itself, and it has to lighten
+// with everything else or the dock reads as a hole cut in the interface --
+// which is exactly what shipped as this feature's first Light-mode
+// screenshot before this token existed. `resolveAtelierToken()` is keyed by
+// literal value, so the only way to give these two roles independent Light
+// answers is to give them independent Dark literals; `kWell` exists for
+// that reason alone; nothing about the docs/ui.md value it stands in for.
+constexpr uint32_t kWell          = 0x201e1c;
+static_assert(kWell != kChromeDeep,
+              "kWell must be numerically distinct from kChromeDeep so the value-keyed light "
+              "remap can answer them differently, even though both render as the same "
+              "near-black in Dark mode");
+
 // Four of the twelve rows above are the same value under two names, and that
 // is deliberate rather than a table that wants tidying: `divider` is a role
 // (1px internal separators) that currently resolves to `chrome mid`,
@@ -158,6 +179,62 @@ static_assert(kCanvasSurroundDefault != kChromeBase,
 // mirror axes: it never touches the document, and no file records it.
 uint32_t atelierSurround() noexcept;
 void setAtelierSurround(uint32_t rgb) noexcept;
+
+// ---------------------------------------------------------------------------
+// Light/dark theming.
+//
+// The twelve-plus-two tokens above are the app's ORIGINAL palette -- every
+// session before this drew exactly them, unconditionally, and `--selftest`'s
+// hex-equality checks and the `static_assert`s pinning e.g. `kRule ==
+// kChromeDeep` both depend on them staying real `constexpr` literals. So a
+// second (light) palette is NOT a second set of named constants; it is a
+// runtime remap keyed BY VALUE -- `resolveAtelierToken(kAccent)` returns
+// `kAccent` unchanged in Dark mode and the light palette's accent value in
+// Light mode -- and every existing call site (`atelierToken(kX)`,
+// `applyAtelierTheme()`'s internal `col(kX)`/`lift(kX, t)`) is unchanged; the
+// indirection lives inside those, not at ~150 call sites across the app.
+//
+// Being keyed by value rather than by a symbolic role is also why the four
+// pinned aliases (`kDivider == kChromeMid`, `kRule == kOnAccent ==
+// kChromeDeep`, `kTextSecondary == kHairline`) stay coherent for free: two
+// tokens that are the same dark value necessarily resolve to the same light
+// value too, so a light palette can never give "divider" and "chrome mid" --
+// which this file's own `static_assert`s say must always read as one role --
+// two different appearances.
+//
+// **First pass, not a design pass.** The ten light values below make the
+// chrome legibly invert without breaking any of this file's contrast
+// invariants, but they were derived from the dark palette by an engineer, not
+// chosen by whoever drew docs/ui.md. Panel-local one-off colours elsewhere in
+// the app (`ui/MacPaintUI.cpp`'s `kLayerSelMeta`, `kLayerRowHover`, and
+// similar) are NOT in this table and do not remap at all yet -- Light mode
+// will have rough edges there until a real pass covers them too.
+// Defined here, not in app/UiPreferences.hpp, despite being what that
+// header's `UiPreferences::theme` field is typed as -- this header has no
+// dependency beyond `<cstdint>` by design (see the file's own top comment),
+// and the theme mode is fundamentally a property of the palette, not of the
+// preferences file that happens to persist it. app/UiPreferences.hpp includes
+// this header rather than the other way around.
+enum class AtelierThemeMode {
+  Dark,
+  Light,
+  System,
+};
+
+AtelierThemeMode atelierThemeMode() noexcept;
+// Also re-pushes the resolved palette into the live `ImGuiStyle`
+// (`applyAtelierTheme()`) and both draw-list wash colours, since those are
+// captured once rather than re-read every frame -- see `applyAtelierTheme()`'s
+// own comment for why. A caller that wants the change to be visible this
+// frame must still call `applyAtelierTheme()` itself; this only updates what
+// `resolveAtelierToken()` returns from here on.
+void setAtelierThemeMode(AtelierThemeMode mode) noexcept;
+
+// `rgb`, unchanged, in Dark mode; its light-palette counterpart in Light
+// mode; whichever of the two the OS reports (falling back to Dark where this
+// build cannot ask) in System mode. Every token consumer in this file and in
+// `atelierToken()` (ui/AtelierChrome.cpp) routes through this.
+uint32_t resolveAtelierToken(uint32_t rgb) noexcept;
 
 // Unpack a 0xRRGGBB token to three [0,1] floats, in the order R, G, B.
 // sRGB-encoded values -- these are chrome, drawn by ImGui straight into the

@@ -28,4 +28,11 @@ void drawPreferencesDialog(AppState& st);
 // rather than only after the Preferences window has been opened.
 void applyUiScaleIfChanged(AppState& st);
 
+// Same shape as `applyUiScaleIfChanged()` above, for `st.uiPreferences.theme`
+// against `st.themeApplied`: pushes the theme into ImGui's style only when it
+// differs, and is called once per frame from the same top-level spot so a
+// theme loaded from disk (or changed via the System option tracking the OS)
+// takes effect without the Preferences window ever having been opened.
+void applyThemeIfChanged(AppState& st);
+
 }  // namespace np

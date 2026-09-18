@@ -218,7 +218,7 @@ float alertBannerReserve(const std::string& message) {
 
 ImU32 atelierToken(uint32_t rgb) noexcept {
   float c[3];
-  unpackRgb(rgb, c);
+  unpackRgb(resolveAtelierToken(rgb), c);
   return IM_COL32(static_cast<int>(c[0] * 255.0f + 0.5f), static_cast<int>(c[1] * 255.0f + 0.5f),
                   static_cast<int>(c[2] * 255.0f + 0.5f), 255);
 }

@@ -6814,6 +6814,7 @@ int main(int argc, char** argv) {
     // there. A no-op on every frame the setting has not moved -- see
     // `applyUiScaleIfChanged()`.
     applyUiScaleIfChanged(st);
+    applyThemeIfChanged(st);
 
     // iOS's gallery replaces drawUI() entirely while it is showing -- there
     // is no document open yet for the canvas/panels drawUI() draws to have

@@ -1,5 +1,7 @@
 #include "ui/AtelierTheme.hpp"
 
+#include <SDL3/SDL.h>
+
 #include "imgui.h"
 
 // "Is a modal popup open right now?" has no answer in the public Dear ImGui
@@ -24,9 +26,79 @@ namespace {
 // PRD L6: session state, not a constant and not a document property.
 uint32_t g_surround = kCanvasSurroundDefault;
 
+// Session state, like `g_surround` above -- `setAtelierThemeMode()` is the
+// one writer, called from ui/PreferencesDialog.cpp on an edit and from
+// wherever the saved preference is first loaded (app/UiPreferences.hpp's
+// `theme` field).
+AtelierThemeMode g_themeMode = AtelierThemeMode::Dark;
+
+// The light palette, keyed by the ORIGINAL (dark) literal -- see
+// ui/AtelierTheme.hpp's own comment on `resolveAtelierToken()` for why value
+// keying is what keeps the four pinned aliases (kDivider==kChromeMid etc.)
+// coherent for free. First pass -- flagged in the header, not re-flagged
+// per line here.
+struct LightEntry {
+  uint32_t darkRgb;
+  uint32_t lightRgb;
+};
+constexpr LightEntry kLightPalette[] = {
+    {kChromeBase, 0xe6e3e3},
+    // Now only the rule/on-accent-text role (kRule, kOnAccent both alias
+    // kChromeDeep) -- kept dark so on-accent text stays legible against
+    // kAccent, and so a rule drawn against bright chrome still reads as a
+    // line. The panel-body role that used to ride along with this moved to
+    // kWell below, which is why this no longer needs to be "dark enough to
+    // read as text AND still work as a background" at once.
+    {kChromeDeep, 0x4a4646},
+    // The panel-body half of what kChromeDeep used to cover alone: docked
+    // panels, popups, input fields, title bars, scrollbar tracks, the
+    // selected tab. Lighter than kChromeDeep's own light value because
+    // nothing here has to double as text colour -- just as `kChromeMid`
+    // sits between `kChromeBase` and `kChromeDeep` in Dark mode, this sits
+    // between them in Light mode too.
+    {kWell, 0xd6d2d2},
+    {kChromeMid, 0xcac6c6},
+    {kHairline, 0x7a7676},
+    // Near-black text on a light ground -- deliberately the DARK palette's
+    // own kChromeDeep value, reused rather than a fresh literal.
+    {kTextPrimary, kChromeDeep},
+    {kRowSelected, 0xffd6cc},
+    {kError, 0xc23f2b},
+    {kWarning, 0x8a6a0a},
+    // kAccent and kCanvasPaper are deliberately absent: no entry means
+    // `resolveAtelierToken()` returns the input unchanged, and both are
+    // meant to read the same in either palette -- the accent is a brand
+    // colour, and the canvas paper represents physical paper, not chrome.
+};
+
+}  // namespace
+
+AtelierThemeMode atelierThemeMode() noexcept { return g_themeMode; }
+
+void setAtelierThemeMode(AtelierThemeMode mode) noexcept { g_themeMode = mode; }
+
+uint32_t resolveAtelierToken(uint32_t rgb) noexcept {
+  AtelierThemeMode effective = g_themeMode;
+  if (effective == AtelierThemeMode::System) {
+    // Falls back to Dark when SDL cannot say (SDL_SYSTEM_THEME_UNKNOWN --
+    // e.g. this build's platform has no OS-level light/dark concept, or SDL
+    // has not been initialised yet), matching UiPreferences::theme's own
+    // documented default reasoning: an unknown state draws what every
+    // session before this preference existed always drew.
+    const SDL_SystemTheme os = SDL_GetSystemTheme();
+    effective = (os == SDL_SYSTEM_THEME_LIGHT) ? AtelierThemeMode::Light : AtelierThemeMode::Dark;
+  }
+  if (effective != AtelierThemeMode::Light) return rgb;
+  for (const LightEntry& e : kLightPalette)
+    if (e.darkRgb == rgb) return e.lightRgb;
+  return rgb;
+}
+
+namespace {
+
 ImVec4 col(uint32_t rgb, float a = 1.0f) {
   float c[3];
-  unpackRgb(rgb, c);
+  unpackRgb(resolveAtelierToken(rgb), c);
   return ImVec4(c[0], c[1], c[2], a);
 }
 
@@ -37,7 +109,7 @@ ImVec4 col(uint32_t rgb, float a = 1.0f) {
 // from the twelve -- a hover is the same colour with more light in it.
 ImVec4 lift(uint32_t rgb, float t) {
   float c[3];
-  unpackRgb(rgb, c);
+  unpackRgb(resolveAtelierToken(rgb), c);
   for (float& v : c) v = v + (1.0f - v) * t;
   return ImVec4(c[0], c[1], c[2], 1.0f);
 }
@@ -111,24 +183,27 @@ void applyAtelierTheme() {
   c[ImGuiCol_Text]                 = col(kTextPrimary);
   c[ImGuiCol_TextDisabled]         = col(kTextSecondary);
   c[ImGuiCol_WindowBg]             = col(kChromeBase);
-  c[ImGuiCol_ChildBg]              = col(kChromeDeep);
-  c[ImGuiCol_PopupBg]              = col(kChromeDeep);
+  c[ImGuiCol_ChildBg]              = col(kWell);
+  c[ImGuiCol_PopupBg]              = col(kWell);
   c[ImGuiCol_Border]               = col(kDivider);
   c[ImGuiCol_BorderShadow]         = ImVec4(0, 0, 0, 0);
 
   // Inputs sit in the deep value -- docs/ui.md section 1 lists "tool options"
   // among chrome deep, and every text field and slider track in the design is
-  // a well cut into the panel rather than a raised control.
-  c[ImGuiCol_FrameBg]              = col(kChromeDeep);
-  c[ImGuiCol_FrameBgHovered]       = lift(kChromeDeep, 0.10f);
-  c[ImGuiCol_FrameBgActive]        = lift(kChromeDeep, 0.18f);
+  // a well cut into the panel rather than a raised control. `kWell` rather
+  // than `kChromeDeep` itself, per that token's own comment: this is the
+  // panel-body role, not the on-accent-text role, and only the latter has to
+  // stay dark for legibility in Light mode.
+  c[ImGuiCol_FrameBg]              = col(kWell);
+  c[ImGuiCol_FrameBgHovered]       = lift(kWell, 0.10f);
+  c[ImGuiCol_FrameBgActive]        = lift(kWell, 0.18f);
 
-  c[ImGuiCol_TitleBg]              = col(kChromeDeep);
-  c[ImGuiCol_TitleBgActive]        = col(kChromeDeep);
-  c[ImGuiCol_TitleBgCollapsed]     = col(kChromeDeep);
+  c[ImGuiCol_TitleBg]              = col(kWell);
+  c[ImGuiCol_TitleBgActive]        = col(kWell);
+  c[ImGuiCol_TitleBgCollapsed]     = col(kWell);
   c[ImGuiCol_MenuBarBg]            = col(kChromeBase);
 
-  c[ImGuiCol_ScrollbarBg]          = col(kChromeDeep);
+  c[ImGuiCol_ScrollbarBg]          = col(kWell);
   c[ImGuiCol_ScrollbarGrab]        = col(kChromeMid);
   c[ImGuiCol_ScrollbarGrabHovered] = lift(kChromeMid, 0.15f);
   c[ImGuiCol_ScrollbarGrabActive]  = col(kAccent);
@@ -160,10 +235,12 @@ void applyAtelierTheme() {
   // Document tabs (docs/ui.md section 2's 34px strip): inactive tabs are the
   // strip's own chrome mid, the active one is chrome deep -- the design lists
   // "active tab" under chrome deep, so the selected tab is the one cut *into*
-  // the strip rather than raised out of it.
+  // the strip rather than raised out of it. `kWell`, not `kChromeDeep`
+  // itself, for the same reason as the panel wells above: this is a surface,
+  // not text.
   c[ImGuiCol_Tab]                  = col(kChromeMid);
   c[ImGuiCol_TabHovered]           = lift(kChromeMid, 0.15f);
-  c[ImGuiCol_TabSelected]          = col(kChromeDeep);
+  c[ImGuiCol_TabSelected]          = col(kWell);
 
   c[ImGuiCol_PlotLines]            = col(kTextSecondary);
   c[ImGuiCol_PlotLinesHovered]     = col(kAccent);

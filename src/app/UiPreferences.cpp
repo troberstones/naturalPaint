@@ -73,6 +73,31 @@ const char* gestureName(OneFingerGesture g) {
   return "pan";
 }
 
+const char* themeModeName(AtelierThemeMode m) {
+  switch (m) {
+    case AtelierThemeMode::Dark: return "dark";
+    case AtelierThemeMode::Light: return "light";
+    case AtelierThemeMode::System: return "system";
+  }
+  return "dark";
+}
+
+bool themeModeFromName(const std::string& name, AtelierThemeMode& out) {
+  if (name == "dark") {
+    out = AtelierThemeMode::Dark;
+    return true;
+  }
+  if (name == "light") {
+    out = AtelierThemeMode::Light;
+    return true;
+  }
+  if (name == "system") {
+    out = AtelierThemeMode::System;
+    return true;
+  }
+  return false;
+}
+
 bool gestureFromName(const std::string& name, OneFingerGesture& out) {
   if (name == "pan") {
     out = OneFingerGesture::Pan;
@@ -172,6 +197,11 @@ void UiPreferencesStore::parse(const std::string& text, UiPreferences& prefs) {
         prefs.uiScale = std::clamp(v, kUiScaleMin, kUiScaleMax);
       continue;
     }
+    if (key == "theme") {
+      AtelierThemeMode m = AtelierThemeMode::Dark;
+      if (themeModeFromName(rest, m)) prefs.theme = m;
+      continue;
+    }
     if (key == "oneFinger") {
       OneFingerGesture g = OneFingerGesture::Pan;
       if (gestureFromName(rest, g)) prefs.oneFinger = g;
@@ -209,6 +239,7 @@ std::string UiPreferencesStore::serialize(const UiPreferences& prefs) const {
   std::ostringstream out;
   out << kUiPreferencesFileHeader << ' ' << kUiPreferencesFileVersion << '\n';
   out << "uiScale " << f9(prefs.uiScale) << '\n';
+  out << "theme " << themeModeName(prefs.theme) << '\n';
   out << "oneFinger " << gestureName(prefs.oneFinger) << '\n';
   out << "oneFingerDebounceMs " << f9(prefs.oneFingerDebounceMs) << '\n';
   for (const std::string& line : unknownLines_) out << line << '\n';

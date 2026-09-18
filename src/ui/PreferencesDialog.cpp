@@ -4,6 +4,7 @@
 
 #include "app/AppState.hpp"
 #include "app/UiPreferences.hpp"
+#include "ui/AtelierTheme.hpp"
 #include "ui/Dialog.hpp"
 
 namespace np {
@@ -47,6 +48,14 @@ void applyUiScaleIfChanged(AppState& st) {
   st.uiScaleApplied = st.uiPreferences.uiScale;
 }
 
+void applyThemeIfChanged(AppState& st) {
+  ensureUiPreferencesLoaded(st.uiPreferencesStore, st.uiPreferencesLoaded, st.uiPreferences);
+  if (st.themeApplied == st.uiPreferences.theme) return;
+  setAtelierThemeMode(st.uiPreferences.theme);
+  applyAtelierTheme();
+  st.themeApplied = st.uiPreferences.theme;
+}
+
 void requestPreferencesDialog() { g_preferencesRequested = true; }
 
 void drawPreferencesDialog(AppState& st) {
@@ -70,6 +79,16 @@ void drawPreferencesDialog(AppState& st) {
   dialogHint(
       "Scales the whole interface -- text, padding and every control -- without changing the "
       "document or the brush. Takes effect immediately.");
+
+  const char* const themeItems[] = {"Dark", "Light", "Match system"};
+  int theme = static_cast<int>(st.uiPreferences.theme);
+  if (dialogCombo("Theme", &theme, themeItems, 3)) {
+    st.uiPreferences.theme = static_cast<AtelierThemeMode>(theme);
+    // Same next-frame handoff as the scale slider above, via
+    // `applyThemeIfChanged()` -- not applied here, for the same reason.
+    save(st);
+  }
+  dialogHint("Changes the interface's colours. \"Match system\" follows the OS's own light/dark setting.");
 
   dialogSection("Touch");
   const char* const gestureItems[] = {"Pan the canvas", "Pick a colour", "Do nothing"};

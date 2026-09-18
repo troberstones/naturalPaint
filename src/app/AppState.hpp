@@ -2093,6 +2093,12 @@ struct AppState {
   // every frame would compound without bound; the UI compares this against
   // `uiPreferences.uiScale` and only rebuilds the style when they differ.
   float uiScaleApplied = 0.0f;
+  // The theme mode that has actually been pushed into ImGui's style, mirroring
+  // `uiScaleApplied` above for the same reason: `applyAtelierTheme()` writes
+  // `ImGuiStyle::Colors[]` in place, so re-running it every frame would be
+  // wasted work rather than merely idempotent. Starts one past the real enum's
+  // range so the very first frame always counts as "changed".
+  AtelierThemeMode themeApplied = static_cast<AtelierThemeMode>(-1);
 
   // The dab library: a folder of brush tips, where dropping a file in IS the
   // import (app/DabLibrary.hpp). A sibling of the two stores above, for their
