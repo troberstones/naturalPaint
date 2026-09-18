@@ -29,6 +29,7 @@
 #include "app/Batch.hpp"
 #include "app/ProfileToggle.hpp"
 #include "app/ProfileVectorWarp.hpp"
+#include "ui/ProfileGalleryScan.hpp"
 #include "app/ProfileFlatsSolver.hpp"
 #include "app/PsdExportCli.hpp"
 #include "app/PsdReport.hpp"
@@ -2138,6 +2139,12 @@ int main(int argc, char** argv) {
   const char* profileTogglePath = nullptr;
   int profileToggleLayer = -1;
   int profileToggleIterations = 50;
+  // --profile-gallery-scan [count width height] : headless benchmark of the
+  // gallery thumbnail cache, see ui/ProfileGalleryScan.hpp.
+  bool profileGalleryScanRequested = false;
+  int profileGalleryScanCount = 0;
+  int profileGalleryScanWidth = 0;
+  int profileGalleryScanHeight = 0;
   // --profile-vector-warp [width height anchors iterations] : headless
   // benchmarking scaffold, see app/ProfileVectorWarp.hpp. Temporary.
   bool profileVectorWarpRequested = false;
@@ -2222,6 +2229,13 @@ int main(int argc, char** argv) {
       if (i + 1 < argc) profileTogglePath = argv[++i];
       if (i + 1 < argc) profileToggleLayer = std::atoi(argv[++i]);
       if (i + 1 < argc && argv[i + 1][0] != '-') profileToggleIterations = std::atoi(argv[++i]);
+    } else if (a == "--profile-gallery-scan") {
+      profileGalleryScanRequested = true;
+      if (i + 3 < argc && argv[i + 1][0] != '-') {
+        profileGalleryScanCount = std::atoi(argv[++i]);
+        profileGalleryScanWidth = std::atoi(argv[++i]);
+        profileGalleryScanHeight = std::atoi(argv[++i]);
+      }
     } else if (a == "--profile-vector-warp") {
       profileVectorWarpRequested = true;
       if (i + 4 < argc && argv[i + 1][0] != '-') {
@@ -3061,6 +3075,9 @@ int main(int argc, char** argv) {
   if (psdExportPath != nullptr) return np::runPsdExportDemo(psdExportPath, psdExportLayered);
   if (profileTogglePath != nullptr)
     return np::runProfileToggle(profileTogglePath, profileToggleLayer, profileToggleIterations);
+  if (profileGalleryScanRequested)
+    return np::runProfileGalleryScan(profileGalleryScanCount, profileGalleryScanWidth,
+                                     profileGalleryScanHeight);
   if (profileVectorWarpRequested)
     return np::runProfileVectorWarp(profileVectorWarpWidth, profileVectorWarpHeight,
                                     profileVectorWarpAnchors, profileVectorWarpIterations);

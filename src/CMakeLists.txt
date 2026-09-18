@@ -571,6 +571,7 @@ add_executable(naturalPaint
   ui/MenuModel.cpp
   ui/NewDocumentDialog.cpp
   ui/DocumentGallery.cpp
+  ui/ProfileGalleryScan.cpp
   ui/ToolCursor.cpp
   ui/TransformCompositeSplit.cpp
   ui/TransformPreviewTexture.cpp
