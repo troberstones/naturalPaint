@@ -1,6 +1,7 @@
 #include "app/selftest/Support.hpp"
 
 #include "app/CloseDecision.hpp"
+#include "core/Platform.hpp"
 
 namespace np {
 
@@ -125,6 +126,30 @@ bool runCloseDecisionTest() {
           "clean: closing the LAST document leaves an empty session, exactly as before");
   }
 
+#if NP_PLATFORM_IOS
+  // On iOS, `requestDocumentClose()` never raises the question at all (see
+  // CloseDecision.hpp) -- a dirty document is autosaved into the gallery and
+  // closed immediately, in the same call. Asserting the desktop question-flow
+  // here would be asserting behaviour this platform deliberately does not
+  // have, and every follow-on line in that flow dereferences the document
+  // through `session.at(0)` -- which is already gone on iOS, so that isn't a
+  // wrong assertion, it's a null dereference the desktop-only test never hit
+  // because it never built this branch.
+  std::printf("  -- B. a dirty document closes immediately, autosaved --\n");
+
+  {
+    DocumentSession session;
+    session.add(dirtyDoc("Study", "stroke"));
+    PendingClose pending;
+
+    const CloseOutcome out = requestDocumentClose(session, 0, pending);
+    check(out.closed && !out.questionRaised && session.empty(),
+          "dirty on iOS: the close happens in the same call -- no Save/Don't Save/Cancel "
+          "dialog, matching the platform's own document-picker convention");
+    check(!pending.active(),
+          "dirty on iOS: nothing is left pending, since no question was ever raised");
+  }
+#else
   std::printf("  -- B. a dirty document is asked about, not silently refused --\n");
 
   {
@@ -155,7 +180,15 @@ bool runCloseDecisionTest() {
               contains(second.status, "Study"),
           "dirty: a second question is refused while the first is up, naming the first");
   }
+#endif
 
+  // Sections C, D and the first three blocks of E all exercise
+  // `resolveDocumentClose()` on a dirty document that `requestDocumentClose()`
+  // left pending -- the desktop-only Save/Don't Save/Cancel decision. On iOS
+  // that state is unreachable: `requestDocumentClose()` (section B, above)
+  // already closes a dirty document in the same call, so there is never
+  // anything left for `resolveDocumentClose()` to answer.
+#if !NP_PLATFORM_IOS
   std::printf("  -- C. Cancel changes nothing at all --\n");
 
   {
@@ -279,6 +312,7 @@ bool runCloseDecisionTest() {
           "save: answering Save after Save As finishes the close and does NOT write the "
           "same bytes a second time");
   }
+#endif  // !NP_PLATFORM_IOS
 
   // The production saver is `saveDocument()` and not a second implementation.
   // Asserted through the one refusal only that function produces, which
@@ -292,6 +326,10 @@ bool runCloseDecisionTest() {
           "there is no second save path for the close dialog to drift from");
   }
 
+  // Both blocks of F depend on a dirty document's close staying pending
+  // across other session activity -- again unreachable on iOS, where the
+  // dirty document is already gone before anything else can happen to it.
+#if !NP_PLATFORM_IOS
   std::printf("  -- F. the pending close survives an unrelated close --\n");
 
   // **The assertion this section exists for.** The stale index is arranged to
@@ -368,6 +406,7 @@ bool runCloseDecisionTest() {
     check(!out.vanished && !out.closed && !pending.active(),
           "identity: cancelling a question whose document has gone is a plain success");
   }
+#endif  // !NP_PLATFORM_IOS
 
   std::printf("  -- G. Escape is Cancel, Enter is Save, and no key discards --\n");
 
