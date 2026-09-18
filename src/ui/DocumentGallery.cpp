@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cfloat>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -225,6 +226,19 @@ class GalleryAtlas {
 GalleryAtlas g_atlas;
 std::vector<GalleryEntry> g_entries;
 bool g_scanned = false;
+// Set after Delete erases an entry from `g_entries` in place (no rescan --
+// see that call site's own comment). Checked and cleared at the TOP of the
+// next `drawDocumentGallery()` call, same timing `g_scanned` already uses
+// and for the same reason: `GalleryAtlas::rebuild()` releases the CURRENT
+// WGPU texture view before creating the next one, and this frame's tile
+// loop has already recorded `AddImage()` calls against that view by the
+// time Delete's dialog commits (the loop runs first; the dialog is drawn
+// after it). Rebuilding right there destroyed a view this frame's own
+// already-recorded draw commands still pointed at -- reproduced on device
+// as `wgpu_core::storage::Storage::get` aborting with "TextureView is no
+// longer alive". Deferring to next frame's top, before any AddImage() call
+// exists yet, is what already makes the full-rescan path safe.
+bool g_atlasNeedsRebuild = false;
 // Empty means `iosDocumentsDirectory()` -- see setDocumentGalleryDirectory().
 std::string g_dirOverride;
 
@@ -256,7 +270,7 @@ void invalidateGalleryScan() {
 // Grid geometry. `kTileW`/`kTileH` size the whole tile including its
 // caption; the thumbnail itself is drawn at `kGalleryThumbPx` inside it, top
 // aligned, exactly as app/LayerThumbnail's cell sits inside a taller row.
-constexpr float kTileGap = kWindowPaddingX * 2.0f;  // 16 -- ui/AtelierTheme's own unit
+constexpr float kTileGap = kWindowPaddingX * 4.0f;  // 32 -- roomier than a bare 2x on a touch grid
 constexpr float kTileCaptionH = 40.0f;              // two text lines' worth
 constexpr float kTileW = static_cast<float>(kGalleryThumbPx);
 constexpr float kTileH = static_cast<float>(kGalleryThumbPx) + kTileCaptionH;
@@ -269,8 +283,11 @@ constexpr float kTileH = static_cast<float>(kGalleryThumbPx) + kTileCaptionH;
 // top row and the left column therefore drew their outer edge outside the
 // clip and lost it: measured as a jump straight from chrome (45) to the
 // paper's own antialiased edge (187) with no hairline (155) in between,
-// against four transition rows on an edge that is not clipped.
-constexpr float kGridInset = 4.0f;
+// against four transition rows on an edge that is not clipped. 4 px was the
+// bare minimum that fixed the clip; kept well past it here so the grid also
+// reads as having a real margin against the window's own edge rather than
+// sitting flush against it.
+constexpr float kGridInset = 24.0f;
 
 // What one tile reported this frame. A long press is a menu, not a tap, so
 // the two are separate answers rather than one `bool`.
@@ -285,16 +302,42 @@ struct TileInput {
 // button comes up.
 ImGuiID g_longPressFired = 0;
 
+// Draws one caption line at its normal size UNLESS it is wider than the
+// tile -- a document's name is arbitrary length, the tile is a fixed
+// `kTileW`, and at normal size a long name overran into the NEXT tile's
+// own thumbnail and caption rather than wrapping or stopping at the edge.
+// Left at its normal size (the common case: most names fit) rather than
+// shrinking everything uniformly, so a short name still reads at full
+// size. `kMinScale` is a readability floor, not what stops the overlap --
+// the clip rect is what actually guarantees a name can never bleed past
+// `maxWidth`, however long it is.
+void drawFitText(ImDrawList* dl, const ImVec2& at, ImU32 color, const char* text, float maxWidth) {
+  ImFont* font = ImGui::GetFont();
+  const float baseSize = ImGui::GetFontSize();
+  const ImVec2 full = font->CalcTextSizeA(baseSize, FLT_MAX, 0.0f, text);
+  constexpr float kMinScale = 0.62f;
+  const float size = full.x > maxWidth ? baseSize * std::max(kMinScale, maxWidth / full.x) : baseSize;
+  dl->PushClipRect(at, ImVec2(at.x + maxWidth, at.y + size + 2.0f), true);
+  dl->AddText(font, size, at, color, text);
+  dl->PopClipRect();
+}
+
 // One "+" or thumbnail tile: the clickable area, the paper ground, the frame,
 // and the label underneath. `paper` fills the thumbnail square with the
 // theme's canvas white before anything is drawn into it -- a document's
 // composite carries its own transparency, and against the dark chrome an
 // unpainted or partly-painted document read as a hole rather than as a sheet.
-TileInput drawTile(ImDrawList* dl, const ImVec2& at, const char* line1, const char* line2) {
+TileInput drawTile(ImDrawList* dl, const ImVec2& at, int stableId, const char* line1,
+                   const char* line2) {
   ImGui::SetCursorScreenPos(at);
-  // Stable per grid cell for this frame -- the screen position is unique
-  // across the tiles this function draws in one call.
-  ImGui::PushID(static_cast<int>(at.y * 100000.0f + at.x));
+  // Stable across frames by ENTRY, not by screen position -- touch scrolling
+  // (below) moves a tile's `at` every frame a drag is live, and an id derived
+  // from position would then change out from under a press already in
+  // progress, silently dropping its held/active state mid-gesture (breaking
+  // both the long-press timer and drag-to-scroll itself, which also needs a
+  // press to survive its own tile moving). `-1` for the one tile with no
+  // entry index (the "+" tile), never collides with a `size_t` cast to `int`.
+  ImGui::PushID(stableId);
   const bool clicked = ImGui::InvisibleButton("##tile", ImVec2(kTileW, kTileH + 6.0f));
   const ImGuiID id = ImGui::GetItemID();
   const bool hovered = ImGui::IsItemHovered();
@@ -308,7 +351,11 @@ TileInput drawTile(ImDrawList* dl, const ImVec2& at, const char* line1, const ch
     g_longPressFired = id;
     in.longPressed = true;
   }
-  in.clicked = clicked && g_longPressFired != id;
+  // Not a tap if this press ended up dragging: touch scrolling (below) is
+  // driven by the same press-and-move gesture, and without this guard every
+  // scroll's release would also open whatever tile happened to be under the
+  // finger when it lifted.
+  in.clicked = clicked && g_longPressFired != id && !ImGui::IsMouseDragging(ImGuiMouseButton_Left);
 
   const ImVec2 thumbLo = at;
   const ImVec2 thumbHi(at.x + kTileW, at.y + kTileW);
@@ -318,10 +365,10 @@ TileInput drawTile(ImDrawList* dl, const ImVec2& at, const char* line1, const ch
 
   if (line1 != nullptr) {
     const ImVec2 capAt(at.x, at.y + kTileW + 6.0f);
-    dl->AddText(capAt, atelierToken(kTextPrimary), line1);
+    drawFitText(dl, capAt, atelierToken(kTextPrimary), line1, kTileW);
     if (line2 != nullptr)
-      dl->AddText(ImVec2(capAt.x, capAt.y + ImGui::GetFontSize() + 2.0f),
-                  atelierToken(kTextSecondary), line2);
+      drawFitText(dl, ImVec2(capAt.x, capAt.y + ImGui::GetFontSize() + 2.0f),
+                  atelierToken(kTextSecondary), line2, kTileW);
   }
   return in;
 }
@@ -466,6 +513,10 @@ void drawDocumentGallery(AppState& st, GpuContext& gpu) {
     g_entries = scanDocumentGallery(g_dirOverride.empty() ? iosDocumentsDirectory() : g_dirOverride);
     g_atlas.rebuild(gpu, g_entries);
     g_scanned = true;
+    g_atlasNeedsRebuild = false;  // the rescan above already rebuilt it
+  } else if (g_atlasNeedsRebuild) {
+    g_atlas.rebuild(gpu, g_entries);
+    g_atlasNeedsRebuild = false;
   }
 
   ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -497,14 +548,105 @@ void drawDocumentGallery(AppState& st, GpuContext& gpu) {
   const bool popupWasOpen = ImGui::IsPopupOpen(kTileMenuPopup) ||
                             ImGui::IsPopupOpen(kRenamePopup) || ImGui::IsPopupOpen(kDeletePopup);
 
-  ImGui::BeginChild("##galleryGrid", ImVec2(0, 0), false, ImGuiWindowFlags_NoBackground);
+  // `NoScrollbar`: a touch gallery scrolls by dragging the content directly
+  // (below), the way every other iOS scroll view does -- a desktop-style
+  // scrollbar track is neither how a finger expects to scroll nor, at this
+  // grid's tile size, wide enough to be a reliable touch target of its own.
+  ImGui::BeginChild("##galleryGrid", ImVec2(0, 0), false,
+                    ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar);
   ImDrawList* dl = ImGui::GetWindowDrawList();
 
-  const float availW = ImGui::GetContentRegionAvail().x - kGridInset;
-  const int columns = std::max(1, static_cast<int>((availW + kTileGap) / (kTileW + kTileGap)));
+  // Touch (or mouse) drag-to-scroll. `g_scrollDragArmed` latches at the
+  // press that starts inside this child so a drag begun elsewhere (e.g. a
+  // dialog opened over the gallery) never hijacks this scroll, and unlatches
+  // the moment the button comes up -- the same shape as `g_longPressFired`
+  // just above. Applied every frame the drag has crossed ImGui's own click
+  // threshold (`IsMouseDragging`), which is also what `drawTile()` checks
+  // before honouring a tap or a long press, so the two never fight over the
+  // same gesture.
+  // `scrollVelocity` carries the fling: a blended estimate of the drag's own
+  // speed (not its raw last-frame delta, which touch delivery makes twitchy)
+  // that keeps scrolling on its own after release and decays toward zero.
+  // `galleryOverscroll` is the rubber band: ImGui clamps `ScrollY` itself to
+  // [0, ScrollMaxY] every frame, so a drag or a fling that reaches an edge
+  // has nowhere further to push `ScrollY` -- this is a SEPARATE render-time
+  // offset (applied below, where `origin` is built) that keeps moving past
+  // the edge, resisted, then springs back to zero once nothing is pulling on
+  // it any more. That spring is what a plain clamped drag was missing.
+  static bool scrollDragArmed = false;
+  static float scrollVelocity = 0.0f;
+  static float galleryOverscroll = 0.0f;
+  {
+    const float dt = ImGui::GetIO().DeltaTime;
+    const float maxY = ImGui::GetScrollMaxY();
+
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+      scrollDragArmed = true;
+      scrollVelocity = 0.0f;
+    }
+    if (scrollDragArmed && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+      const float deltaScroll = -ImGui::GetIO().MouseDelta.y;
+      const float scrollY = ImGui::GetScrollY();
+      // Resisted (0.4x): a real finger movement still stretches the band,
+      // just less than it scrolls in-bounds -- an unresisted 1:1 pull would
+      // not read as a band at all, just unclamped scrolling.
+      constexpr float kRubberBandResistance = 0.4f;
+      if ((scrollY <= 0.0f && deltaScroll < 0.0f) || (scrollY >= maxY && deltaScroll > 0.0f))
+        galleryOverscroll += deltaScroll * kRubberBandResistance;
+      else
+        ImGui::SetScrollY(scrollY + deltaScroll);
+      if (dt > 0.0f) scrollVelocity = scrollVelocity * 0.7f + (deltaScroll / dt) * 0.3f;
+    }
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) scrollDragArmed = false;
+
+    // Coasting: only once the finger is off the glass, decaying ~95% per
+    // second (iOS's own general feel, not its exact curve) and stopping
+    // outright once it is imperceptible or the content has run out to
+    // scroll in that direction.
+    if (!scrollDragArmed && scrollVelocity != 0.0f) {
+      const float scrollY = ImGui::GetScrollY();
+      if ((scrollY <= 0.0f && scrollVelocity < 0.0f) || (scrollY >= maxY && scrollVelocity > 0.0f)) {
+        // A fling that arrives at the edge still under speed presses into
+        // the band too, rather than just stopping dead against the clamp.
+        galleryOverscroll += scrollVelocity * dt * 0.4f;
+        scrollVelocity = 0.0f;
+      } else {
+        ImGui::SetScrollY(scrollY + scrollVelocity * dt);
+      }
+      scrollVelocity *= std::pow(0.05f, dt);
+      if (std::fabs(scrollVelocity) < 4.0f) scrollVelocity = 0.0f;
+    }
+
+    // The spring: snaps whatever is left back to zero on its own, whether
+    // that came from a drag still in progress or from a fling that pressed
+    // into the band. Fast (~98% gone in a quarter second) so it reads as a
+    // bounce, not a second, slower drift on top of the fling's own.
+    if (!(scrollDragArmed && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) && galleryOverscroll != 0.0f) {
+      galleryOverscroll *= std::pow(0.02f, dt / 0.25f);
+      if (std::fabs(galleryOverscroll) < 0.5f) galleryOverscroll = 0.0f;
+    }
+  }
+
+  // `kGridInset` reserved on BOTH edges (not just the left) so the grid gets
+  // a real margin all the way around, and `extraMargin` -- half of whatever
+  // width is left over once `columns` worth of tiles are laid out -- centres
+  // the grid in what remains rather than leaving that leftover as dead space
+  // against the right edge only.
+  const float totalW = ImGui::GetContentRegionAvail().x;
+  const float usableW = totalW - 2.0f * kGridInset;
+  const int columns = std::max(1, static_cast<int>((usableW + kTileGap) / (kTileW + kTileGap)));
+  const float usedW =
+      static_cast<float>(columns) * kTileW + static_cast<float>(std::max(0, columns - 1)) * kTileGap;
+  const float extraMargin = std::max(0.0f, (usableW - usedW) * 0.5f);
 
   const ImVec2 start = ImGui::GetCursorScreenPos();
-  const ImVec2 origin(start.x + kGridInset, start.y + kGridInset);
+  // `- galleryOverscroll`: same direction a `ScrollY` increase already moves
+  // content (up), so a rubber-band pull past the bottom (positive) keeps
+  // pushing tiles up past where `ScrollY`'s own clamp stopped, and a pull
+  // past the top (negative) pushes them back down, opening a gap above the
+  // first row -- the actual visible half of the spring above.
+  const ImVec2 origin(start.x + kGridInset + extraMargin, start.y + kGridInset - galleryOverscroll);
   int col = 0, row = 0;
   int tappedIndex = -1;   // index into g_entries, or -1
   int pressedIndex = -1;  // the entry a long press opened the menu for, or -1
@@ -517,7 +659,7 @@ void drawDocumentGallery(AppState& st, GpuContext& gpu) {
   // The "+" tile first -- "make something new" reads left-to-right as the
   // first choice, and it is the one tile that is always present, even in an
   // empty gallery (this function's own doc comment on a fresh install).
-  if (drawTile(dl, cellPos(col, row), "New Document", nullptr).clicked) tappedNew = true;
+  if (drawTile(dl, cellPos(col, row), -1, "New Document", nullptr).clicked) tappedNew = true;
   {
     // The plus glyph itself, centred in the tile drawn above. Chrome-mid, not
     // the secondary text grey: the tile's ground is now paper, and a #9b9797
@@ -536,7 +678,7 @@ void drawDocumentGallery(AppState& st, GpuContext& gpu) {
     const GalleryEntry& e = g_entries[i];
     const ImVec2 p = cellPos(col, row);
     const char* caption2 = e.modifiedLabel.empty() ? nullptr : e.modifiedLabel.c_str();
-    const TileInput in = drawTile(dl, p, e.displayName.c_str(), caption2);
+    const TileInput in = drawTile(dl, p, static_cast<int>(i), e.displayName.c_str(), caption2);
     if (in.clicked) tappedIndex = static_cast<int>(i);
     if (in.longPressed) pressedIndex = static_cast<int>(i);
 
@@ -699,7 +841,12 @@ void drawDocumentGallery(AppState& st, GpuContext& gpu) {
           g_entries.erase(std::remove_if(g_entries.begin(), g_entries.end(),
                                           [&](const GalleryEntry& e) { return e.path == g_menuPath; }),
                            g_entries.end());
-          g_atlas.rebuild(gpu, g_entries);
+          // NOT rebuilt here: this frame's tile loop (above, earlier in this
+          // same function call) already recorded AddImage() calls against
+          // the atlas view rebuild() is about to destroy -- see
+          // `g_atlasNeedsRebuild`'s own comment for the abort this caused on
+          // device. Deferred to the top of the NEXT call instead.
+          g_atlasNeedsRebuild = true;
           ImGui::CloseCurrentPopup();
         }
         break;
