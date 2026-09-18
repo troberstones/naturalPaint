@@ -69,6 +69,20 @@ constexpr LightEntry kLightPalette[] = {
     // `resolveAtelierToken()` returns the input unchanged, and both are
     // meant to read the same in either palette -- the accent is a brand
     // colour, and the canvas paper represents physical paper, not chrome.
+
+    // Three of ui/MacPaintUI.cpp's own "the token table does not carry
+    // these" row-state literals (that file's own comment, next to their
+    // definition) -- added here rather than left unmapped, per this
+    // header's "first pass" caveat, once Light mode showed exactly the
+    // failure that caveat predicted: a selected layer row's metadata line
+    // (opacity, blend mode) was drawn in 0xffd9d1, a pale rose chosen to
+    // read against the OLD dark-red kRowSelected -- against Light mode's
+    // pale-pink kRowSelected remap above, pale-on-pale was next to
+    // unreadable. `resolveAtelierToken()` only needs the literal value, not
+    // the symbol, so these don't require touching MacPaintUI.cpp at all.
+    {0x353232, 0xe2dede},  // kLayerRowHover: the hover wash on an unselected row
+    {0x4f4c4c, 0xa8a4a4},  // kLayerLockRest: the open padlock, at rest
+    {0xffd9d1, 0x8a4030},  // kLayerSelMeta: the metadata line on a selected row
 };
 
 }  // namespace

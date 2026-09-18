@@ -798,8 +798,14 @@ bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands,
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
       ImGui::SetTooltip("%s", name.c_str());
 
+    // `kWell`, not `kChromeDeep` itself: this is the same panel-surface role
+    // as a docked panel's body (ui/AtelierTheme.hpp's own comment on the
+    // token explains the split), not the on-accent-text role that has to
+    // stay dark in Light mode -- an active tab that stayed near-black while
+    // every panel around it went light was Light mode's other visible seam,
+    // caught alongside the docked-panel one.
     dl->AddRectFilled(ImVec2(x, top), ImVec2(x + tabW, top + h),
-                      active         ? atelierToken(kChromeDeep)
+                      active         ? atelierToken(kWell)
                       : hovered      ? atelierToken(kChromeBase)
                                      : atelierToken(kChromeMid));
     // A 2 px accent underline on the active tab. The design marks the active

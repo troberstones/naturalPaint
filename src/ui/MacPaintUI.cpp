@@ -15447,11 +15447,21 @@ void drawPanelBody(AppState& st, ControlsSection section, std::unique_ptr<PaintS
       // than the panels around it), and that reads as a band whether it is
       // welded to the window or docked to an edge -- so the token comes with
       // it rather than being left behind with the geometry.
+      //
+      // `kWell`, not `kChromeDeep` itself, for Light mode's sake: "a shade
+      // deeper than the panels around it" is a RELATIVE instruction, and
+      // kChromeDeep answers it only in Dark mode -- kChromeDeep is pinned
+      // dark in Light mode too (it also carries on-accent text), so this
+      // band stayed near-black while every panel around it went light,
+      // which read as broken chrome rather than as a deeper band. kWell is
+      // the token that already carries "deeper, but themed" everywhere else
+      // this same band-vs-panel relationship appears (a docked panel's own
+      // body against its dock's kChromeBase).
       {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 o = ImGui::GetWindowPos();
         const ImVec2 sz = ImGui::GetWindowSize();
-        dl->AddRectFilled(o, ImVec2(o.x + sz.x, o.y + sz.y), atelierToken(kChromeDeep));
+        dl->AddRectFilled(o, ImVec2(o.x + sz.x, o.y + sz.y), atelierToken(kWell));
       }
       // `GetWindowHeight()`, not `slot.h`. The rect handed to a panel body is
       // its CONTENT region -- the body padding already subtracted -- and that
