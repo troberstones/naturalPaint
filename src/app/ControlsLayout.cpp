@@ -75,7 +75,20 @@ const std::vector<ControlsSectionSpec>& controlsSections() {
        "the path, because the path's own layer is the source.\n\n"
        "The buttons grey out when the active layer is not a Vector layer. The panel stays\n"
        "where you docked it rather than vanishing, so its place on screen is yours to keep."},
-      {ControlsSection::Layers, R::Document, "LAYERS", true},
+      {ControlsSection::Layers, R::Document, "LAYERS", true,
+       "Each row is one layer in the document's own stack, top of the list drawn "
+       "first here to match what is on screen. A stroke on a Pigment layer paints "
+       "sim::PaintSim's own canvas, which has no layer awareness -- so that one "
+       "route alone leaves nothing here. Every other route writes the layer.\n\n"
+       "The filter changes which rows are DRAWN, nothing else: a hidden row stays "
+       "selected, so clearing the filter brings it back, and a Multi-selection "
+       "command acts only on the rows currently visible.",
+       // hasSettings: the filter row and the Multi-selection button both cost
+       // one row of this touch-first panel's limited height even when nobody
+       // uses them this session, plus the live layer count and the
+       // composite/GPU diagnostics that used to sit in a permanent strip --
+       // see ui/MacPaintUI.cpp's drawSectionSettings().
+       true},
       {ControlsSection::History, R::Document, "HISTORY", true},
       {ControlsSection::Comps, R::Document, "COMPS", true},
       {ControlsSection::Channels, R::Document, "CHANNELS", true,

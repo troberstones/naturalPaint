@@ -2900,116 +2900,57 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
 
   // --- The header band is gone; its content lives behind the "?" button -----
   //
-  // The layer count (`3/8` when the filter is hiding five rows) and the
-  // canvas-size/stroke-route tooltip that used to sit in a dedicated
-  // full-width strip here now live in the "Panel Info" popup a small "?"
-  // button opens, at the end of the filter row just below -- see that
-  // button's own comment. Diagnostics (composite/GPU stats) join it there
-  // too; see this function's tail, where they used to be drawn unconditionally.
+  // The layer count (`3/8` when the filter is hiding five rows), the
+  // canvas-size/stroke-route note, and the composite/GPU diagnostics that
+  // used to sit in a dedicated full-width strip here now live in the grip's
+  // own "?" popup (`drawPanelGrip()`, `ControlsSectionSpec::helpText`) and
+  // gear popover (`drawSectionSettings()`, `ControlsSectionSpec::hasSettings`)
+  // -- the SAME two buttons every other panel's title bar already has, not a
+  // second, bespoke pair drawn in this panel's own body. `showFilterRow`/
+  // `showMultiSelect` are toggled from that shared gear popover too; only
+  // their EFFECT (drawing or not drawing the filter controls and the
+  // Multi-selection button) lives down here.
 
-  // --- The filter band -----------------------------------------------------
+  // --- The filter band -------------------------------------------------
   //
   // app/LayerPanel.hpp states the filter's whole rule; the two halves visible
   // here are that a hidden row **stays selected** (so clearing the box brings
   // it back) and that `runLayerSetCommand()` restricts every gesture to the
-  // rows on screen.
-  {
-    // **The gear**: the one control this row always shows. Its popup is the
-    // on/off switch for the other two -- the filter (text + kind combo) and
-    // the Multi-selection button further down -- so a session that wants
-    // neither pays for nothing but this one small button.
-    if (ImGui::SmallButton(glyphOrFallback("\xE2\x9A\x99", "[Cfg]").c_str()))
-      ImGui::OpenPopup("layerPanelConfig");
-    ImGui::SetItemTooltip("Panel configuration: show or hide the filter\n"
-                        "row and the Multi-selection button.");
-    if (ImGui::BeginPopup("layerPanelConfig")) {
-      pushAtelierMono();
-      ImGui::TextDisabled("LAYERS PANEL");
-      popAtelierMono();
-      ImGui::Checkbox("Filter row", &g_layers.showFilterRow);
-      ImGui::Checkbox("Multi-selection button", &g_layers.showMultiSelect);
-      ImGui::EndPopup();
-    }
+  // rows on screen. Drawn only when the grip's gear popover has turned it
+  // on -- see `g_layers.showFilterRow` above.
+  if (g_layers.showFilterRow) {
+    const std::string kindLabel = layerKindFilterLabel(g_layers.filter.kind);
+    pushAtelierMono();
+    const float kindW = ImGui::CalcTextSize(kindLabel.c_str()).x + 26.0f;
+    popAtelierMono();
+    ImGui::SetNextItemWidth(std::max(60.0f, panelW - kindW - 6.0f));
+    if (ImGui::InputTextWithHint("##layerfilter", "Filter by name", g_layers.filterBuf,
+                                 sizeof(g_layers.filterBuf)))
+      g_layers.filter.text = g_layers.filterBuf;
+    ImGui::SetItemTooltip("Filters which rows are drawn -- nothing else.\n"
+                        "A hidden row stays selected, so clearing this\n"
+                        "brings it back, and a Multi-selection command\n"
+                        "acts only on the rows you can see.");
     ImGui::SameLine(0.0f, 6.0f);
-    if (g_layers.showFilterRow) {
-      const std::string kindLabel = layerKindFilterLabel(g_layers.filter.kind);
-      pushAtelierMono();
-      const float kindW = ImGui::CalcTextSize(kindLabel.c_str()).x + 26.0f;
-      popAtelierMono();
-      ImGui::SetNextItemWidth(std::max(60.0f, panelW - kindW - 6.0f));
-      if (ImGui::InputTextWithHint("##layerfilter", "Filter by name", g_layers.filterBuf,
-                                   sizeof(g_layers.filterBuf)))
-        g_layers.filter.text = g_layers.filterBuf;
-      ImGui::SetItemTooltip("Filters which rows are drawn -- nothing else.\n"
-                          "A hidden row stays selected, so clearing this\n"
-                          "brings it back, and a Multi-selection command\n"
-                          "acts only on the rows you can see.");
-      ImGui::SameLine(0.0f, 6.0f);
-      pushAtelierMono();
-      ImGui::SetNextItemWidth(kindW);
-      if (ImGui::BeginCombo("##layerkindfilter", kindLabel.c_str())) {
-        if (ImGui::Selectable(layerKindFilterLabel(std::nullopt).c_str(),
-                              !g_layers.filter.kind.has_value()))
-          g_layers.filter.kind.reset();
-        for (const NewLayerKindEntry& entry : newLayerKindMenu()) {
-          const bool on =
-              g_layers.filter.kind.has_value() && *g_layers.filter.kind == entry.kind;
-          // Every kind, including the four that cannot be *created*: a document
-          // that arrived carrying a Text layer (PRD I10) is exactly the case a
-          // user needs to filter for, and refusing to offer the kind here would
-          // make the one layer they cannot make the one layer they cannot find.
-          if (ImGui::Selectable(layerKindFilterLabel(entry.kind).c_str(), on))
-            g_layers.filter.kind = entry.kind;
-        }
-        ImGui::EndCombo();
+    pushAtelierMono();
+    ImGui::SetNextItemWidth(kindW);
+    if (ImGui::BeginCombo("##layerkindfilter", kindLabel.c_str())) {
+      if (ImGui::Selectable(layerKindFilterLabel(std::nullopt).c_str(),
+                            !g_layers.filter.kind.has_value()))
+        g_layers.filter.kind.reset();
+      for (const NewLayerKindEntry& entry : newLayerKindMenu()) {
+        const bool on =
+            g_layers.filter.kind.has_value() && *g_layers.filter.kind == entry.kind;
+        // Every kind, including the four that cannot be *created*: a document
+        // that arrived carrying a Text layer (PRD I10) is exactly the case a
+        // user needs to filter for, and refusing to offer the kind here would
+        // make the one layer they cannot make the one layer they cannot find.
+        if (ImGui::Selectable(layerKindFilterLabel(entry.kind).c_str(), on))
+          g_layers.filter.kind = entry.kind;
       }
-      popAtelierMono();
+      ImGui::EndCombo();
     }
-    // **"Panel Info"**: the layer count/filter effect (`3/8` when the filter
-    // is hiding five rows -- what used to be the header band's whole job) and
-    // the composite/GPU diagnostics (PRD A6, what used to be drawn
-    // unconditionally at the very bottom of this panel) -- both read-only,
-    // both worth keeping visible somewhere, neither worth a permanent band
-    // now that the panel is touch-first: a "?" costs one small button's
-    // width instead of a full-width strip, and reads on demand instead of on
-    // every frame.
-    ImGui::SameLine(0.0f, 6.0f);
-    if (ImGui::SmallButton("?")) ImGui::OpenPopup("layerPanelInfo");
-    ImGui::SetItemTooltip("Panel info: layer count and performance diagnostics.");
-    if (ImGui::BeginPopup("layerPanelInfo")) {
-      pushAtelierMono();
-      ImGui::TextDisabled("LAYERS");
-      popAtelierMono();
-      const std::string countText = layerPanelCountLabel(visibleRows.size(), count);
-      ImGui::TextUnformatted(countText.c_str());
-      // Verbatim, the header band's own tooltip: see the RGB-stroke-routes
-      // note in git history for why this is a narrower claim than "nothing
-      // paints here without a layer" -- `strokeRouteWritesLayer()`
-      // (app/StrokeSession.hpp) answers true for eight of the nine routes.
-      ImGui::TextWrapped("%d x %d, %zu layer(s).", doc.width, doc.height, doc.layers.size());
-      ImGui::TextWrapped(
-          "A stroke on a Pigment layer paints sim::PaintSim's own canvas, which has "
-          "no layer awareness -- so that one route alone leaves nothing here. Every "
-          "other route writes the layer.");
-      ImGui::Separator();
-      pushAtelierMono();
-      ImGui::TextDisabled("PERFORMANCE");
-      popAtelierMono();
-      // PRD A6 (P0) and the revision cache, in bytes: "only visible documents
-      // hold GPU textures, at most two" is a claim about memory, and a claim
-      // about memory that only `--selftest` can see is one a running session
-      // can drift away from unnoticed. `uploads` counts recomposites;
-      // `cached` counts frames that cost two integer comparisons.
-      ImGui::TextWrapped("composite: %llu upload(s), %llu cached, last %.2f ms",
-                        static_cast<unsigned long long>(g_documentTextures.uploads()),
-                        static_cast<unsigned long long>(g_documentTextures.cacheHits()),
-                        g_documentTextures.lastUploadMs());
-      ImGui::TextWrapped("GPU: %zu / %zu document(s) resident, %.1f MB",
-                        g_documentTextures.residentDocuments(), kVisibleDocumentCap,
-                        static_cast<double>(g_documentTextures.gpuTextureBytes()) /
-                            (1024.0 * 1024.0));
-      ImGui::EndPopup();
-    }
+    popAtelierMono();
   }
 
   // --- The selected layer's blend and opacity ------------------------------
@@ -4588,6 +4529,50 @@ void drawSectionSettings(ControlsSection section, AppState& st) {
           "chroma in every row and the ragged edge is the sRGB gamut's own shape.\n"
           "per row: every row spans its own gamut, so the grid fills but a column\n"
           "no longer means one chroma. Row luminance is exact either way.");
+      break;
+    }
+    case ControlsSection::Layers: {
+      // Two on/off switches -- the filter row and the Multi-selection button,
+      // both `drawLayersSection()` gates on `g_layers.showFilterRow` /
+      // `showMultiSelect` -- plus the live layer count and the composite/GPU
+      // diagnostics (PRD A6) that used to sit in a permanent strip at the top
+      // of the panel. All read-only or rarely touched, so none of it is worth
+      // its own row in a touch-first panel's cramped body; this popover is
+      // the same one COLOR's Munsell page settings use above.
+      ImGui::Checkbox("Filter row", &g_layers.showFilterRow);
+      ImGui::Checkbox("Multi-selection button", &g_layers.showMultiSelect);
+      ImGui::Separator();
+      const OpenDocument* od = st.documents.active();
+      if (od == nullptr) {
+        ImGui::TextDisabled("No document open.");
+        break;
+      }
+      const Document& doc = od->document;
+      size_t visible = 0;
+      for (const size_t i : layersMatchingFilter(doc, g_layers.filter))
+        if (!layerHiddenByCollapsedGroup(doc, i, g_layers.collapsedGroups)) ++visible;
+      pushAtelierMono();
+      ImGui::TextDisabled("LAYERS");
+      popAtelierMono();
+      const std::string countText = layerPanelCountLabel(visible, doc.layers.size());
+      ImGui::TextUnformatted(countText.c_str());
+      ImGui::TextWrapped("%d x %d, %zu layer(s).", doc.width, doc.height, doc.layers.size());
+      pushAtelierMono();
+      ImGui::TextDisabled("PERFORMANCE");
+      popAtelierMono();
+      // "only visible documents hold GPU textures, at most two" is a claim
+      // about memory, and a claim about memory that only `--selftest` can see
+      // is one a running session can drift away from unnoticed. `uploads`
+      // counts recomposites; `cached` counts frames that cost two integer
+      // comparisons.
+      ImGui::TextWrapped("composite: %llu upload(s), %llu cached, last %.2f ms",
+                        static_cast<unsigned long long>(g_documentTextures.uploads()),
+                        static_cast<unsigned long long>(g_documentTextures.cacheHits()),
+                        g_documentTextures.lastUploadMs());
+      ImGui::TextWrapped("GPU: %zu / %zu document(s) resident, %.1f MB",
+                        g_documentTextures.residentDocuments(), kVisibleDocumentCap,
+                        static_cast<double>(g_documentTextures.gpuTextureBytes()) /
+                            (1024.0 * 1024.0));
       break;
     }
     default:

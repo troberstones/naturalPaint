@@ -53,19 +53,23 @@ bool runPanelSettingsTest() {
     if (!cond) ok = false;
   };
 
-  // --- Part A: COLOR declares settings, and no other section does ---------
+  // --- Part A: exactly COLOR and LAYERS declare settings, no other section
+  //             does -------------------------------------------------------
   {
     size_t settingsCount = 0;
-    bool onlyColor = true;
+    bool onlyColorAndLayers = true;
     for (const ControlsSectionSpec& spec : controlsSections()) {
       if (!spec.hasSettings) continue;
       ++settingsCount;
-      if (spec.section != ControlsSection::Color) onlyColor = false;
+      if (spec.section != ControlsSection::Color && spec.section != ControlsSection::Layers)
+        onlyColorAndLayers = false;
     }
-    check(settingsCount == 1 && onlyColor,
-          "exactly one section (COLOR) declares hasSettings, by a scan of every section");
+    check(settingsCount == 2 && onlyColorAndLayers,
+          "exactly two sections (COLOR, LAYERS) declare hasSettings, by a scan of every section");
     check(controlsSectionSpec(ControlsSection::Color).hasSettings,
           "and the lookup agrees: controlsSectionSpec(Color).hasSettings is true");
+    check(controlsSectionSpec(ControlsSection::Layers).hasSettings,
+          "and the lookup agrees: controlsSectionSpec(Layers).hasSettings is true");
   }
 
   // --- Part B: the gear's codepoint reaches the actual font the grip draws
@@ -154,7 +158,8 @@ bool runPanelSettingsTest() {
         // Three specs, one shared title, differing only in helpText/
         // hasSettings -- section/role/defaultOpen play no part in
         // panelGripFor()'s title-fit arithmetic, so an arbitrary real
-        // section (Color) fills that slot.
+        // section (Color) fills that slot regardless of what its own real
+        // spec carries.
         ControlsSectionSpec specNeither{ControlsSection::Color, ControlsSectionRole::Tool,
                                          kProbeTitle, true};
         ControlsSectionSpec specSettingsOnly = specNeither;
