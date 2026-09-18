@@ -686,7 +686,20 @@ void drawDocumentGallery(AppState& st, GpuContext& gpu) {
           g_deleteStatus = ec ? ec.message() : std::string("The file could not be removed.");
         } else {
           g_galleryStatus = "Deleted \xe2\x80\x9c" + g_menuName + "\xe2\x80\x9d.";
-          invalidateGalleryScan();
+          // NOT invalidateGalleryScan(): that clears every entry and forces
+          // the next frame to re-read and re-thumbnail every SURVIVING
+          // document from disk, just to reflect the removal of one. A delete
+          // adds no new data to read -- every remaining entry's thumbnail is
+          // already sitting in `g_entries` -- so splicing this one path out
+          // and re-uploading the (now smaller) atlas from what is already in
+          // memory is the whole update. That is what made the dialog visibly
+          // hang on a gallery with more than a couple of documents: the
+          // rescan's cost is linear in how many documents were LEFT, not in
+          // the one being deleted.
+          g_entries.erase(std::remove_if(g_entries.begin(), g_entries.end(),
+                                          [&](const GalleryEntry& e) { return e.path == g_menuPath; }),
+                           g_entries.end());
+          g_atlas.rebuild(gpu, g_entries);
           ImGui::CloseCurrentPopup();
         }
         break;
