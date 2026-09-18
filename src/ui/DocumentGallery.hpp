@@ -120,7 +120,28 @@ struct GalleryEntry {
 // has been created; a permissions problem) returns an empty list rather than
 // failing -- the caller draws just the "+" tile, which is the correct
 // picture of "no documents yet," not an error.
-std::vector<GalleryEntry> scanDocumentGallery(const std::string& dir);
+//
+// **The thumbnail cache.** Decoding part 0 is still a full-resolution EXR
+// read per file, so with a non-empty `cacheDir` each finished tile is stored
+// there (one file per document, keyed on path + mtime + size) and a later
+// scan reuses it without touching the document. Any mismatch, corruption or
+// I/O failure falls back to the decode; the cache can only ever make a scan
+// faster, never wrong. After the scan, cache files for documents no longer in
+// `dir` are deleted -- so a `cacheDir` belongs to exactly one `dir`. Empty
+// `cacheDir` (the default) means no cache, read or write. `stats`, when
+// given, reports how the scan was served.
+struct GalleryScanStats {
+  int cacheHits = 0;  // tiles served from the cache
+  int decoded = 0;    // documents whose composite was decoded
+};
+std::vector<GalleryEntry> scanDocumentGallery(const std::string& dir,
+                                              const std::string& cacheDir = {},
+                                              GalleryScanStats* stats = nullptr);
+
+// Where the real gallery keeps its thumbnail cache: `$HOME/Library/Caches/
+// naturalPaint/gallery-thumbs` on Apple platforms (Caches is unbacked-up and
+// reclaimable, which suits data rebuilt on a miss), empty elsewhere.
+std::string galleryThumbCacheDirectory();
 
 // Draws the full-screen grid and acts on a tap. Call once per frame, in
 // place of `drawUI()`, exactly while `AppState::showDocumentGallery` is true

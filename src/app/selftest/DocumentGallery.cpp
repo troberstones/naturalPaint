@@ -20,6 +20,9 @@
 
 #include "ui/DocumentGallery.hpp"
 
+#include "core/Document.hpp"
+#include "io/NpaintFile.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -136,6 +139,216 @@ bool runDocumentGalleryTest() {
           "duplicate: every candidate stays in the source's own directory");
 
     fs::remove_all(dir, ec);
+  }
+
+  // ==========================================================================
+  // (d) The thumbnail cache. Real .npaint files and real cache files: a hit
+  // is proved by overwriting a source with garbage (same size, same mtime)
+  // and still getting its picture back, so it can only have come from the
+  // cache; a miss is proved by changing what the key covers.
+  // ==========================================================================
+  {
+    const fs::path root = fs::temp_directory_path() / "np-gallery-cache-selftest";
+    const fs::path docs = root / "docs";
+    const fs::path cache = root / "cache";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(docs, ec);
+
+    auto makeDoc = [&](const fs::path& p, float r, float g, float b) {
+      Document doc = Document::createBlank(256, 256, WorkingSpace{});
+      for (int32_t y = 0; y < 256; ++y) {
+        for (int32_t x = 0; x < 256; ++x) {
+          const PixelCoord at{x, y};
+          doc.layers[0].rgbTiles->getOrCreate(tileCoordAt(at))
+              .writePixel(tileLocalOffset(at), {r, g, b, 1.0f});
+        }
+      }
+      return saveNpaint(doc, p.string()).ok;
+    };
+    auto same = [](const GalleryThumbnail& a, const GalleryThumbnail& b) {
+      return !a.rgba.empty() && a.rgba == b.rgba && a.x == b.x && a.y == b.y && a.w == b.w &&
+             a.h == b.h;
+    };
+    auto cacheFiles = [&]() {
+      std::vector<fs::path> v;
+      std::error_code e2;
+      for (fs::directory_iterator it(cache, e2); !e2 && it != fs::directory_iterator();
+           it.increment(e2)) {
+        v.push_back(it->path());
+      }
+      return v;
+    };
+    auto byName = [](const std::vector<GalleryEntry>& es, const char* name) -> const GalleryEntry* {
+      for (const GalleryEntry& e : es) {
+        if (e.displayName == name) return &e;
+      }
+      return nullptr;
+    };
+
+    // Same name length on purpose, for the collision probe further down.
+    const fs::path a = docs / "AAAA.npaint";
+    const fs::path b = docs / "BBBB.npaint";
+    const bool made = makeDoc(a, 0.9f, 0.1f, 0.1f) && makeDoc(b, 0.1f, 0.1f, 0.9f);
+    check(made, "cache: two real .npaint files were written");
+
+    GalleryScanStats st1;
+    const auto cold = scanDocumentGallery(docs.string(), cache.string(), &st1);
+    check(cold.size() == 2 && st1.decoded == 2 && st1.cacheHits == 0,
+          "cache: a cold scan decodes every document and hits nothing");
+    check(byName(cold, "AAAA") && !byName(cold, "AAAA")->thumb.rgba.empty() && byName(cold, "BBBB") &&
+              !byName(cold, "BBBB")->thumb.rgba.empty(),
+          "cache: the cold scan's thumbnails are real pictures");
+    check(!same(byName(cold, "AAAA")->thumb, byName(cold, "BBBB")->thumb),
+          "cache: the two documents' thumbnails differ (so 'same' below means something)");
+    check(cacheFiles().size() == 2, "cache: the cold scan wrote one cache file per document");
+
+    GalleryScanStats st2;
+    const auto warm = scanDocumentGallery(docs.string(), cache.string(), &st2);
+    check(st2.cacheHits == 2 && st2.decoded == 0, "cache: a warm scan decodes nothing");
+    check(warm.size() == 2 && byName(warm, "AAAA") && byName(warm, "BBBB") &&
+              same(byName(warm, "AAAA")->thumb, byName(cold, "AAAA")->thumb) &&
+              same(byName(warm, "BBBB")->thumb, byName(cold, "BBBB")->thumb),
+          "cache: the warm scan's thumbnails are byte-identical to the cold scan's");
+
+    // The proof a hit came from the cache: the source is garbage now, with
+    // its size and mtime restored, and the picture still comes back.
+    {
+      const auto mtime = fs::last_write_time(a, ec);
+      const auto size = fs::file_size(a, ec);
+      {
+        std::ofstream f(a, std::ios::binary | std::ios::trunc);
+        f << std::string(static_cast<size_t>(size), 'X');
+      }
+      fs::last_write_time(a, mtime, ec);
+      GalleryScanStats st;
+      const auto es = scanDocumentGallery(docs.string(), cache.string(), &st);
+      check(st.cacheHits == 2 && st.decoded == 0 && byName(es, "AAAA") &&
+                same(byName(es, "AAAA")->thumb, byName(cold, "AAAA")->thumb),
+            "cache: a hit never opens the source (it is garbage, and the picture still comes back)");
+    }
+
+    // Changing what the key covers is a miss -- and the rebuilt picture is
+    // the NEW document, not the cached one.
+    {
+      const bool remade = makeDoc(a, 0.1f, 0.9f, 0.1f);
+      fs::last_write_time(a, fs::last_write_time(a, ec) + std::chrono::hours(1), ec);
+      GalleryScanStats st;
+      const auto es = scanDocumentGallery(docs.string(), cache.string(), &st);
+      check(remade && st.decoded == 1 && st.cacheHits == 1, "cache: an edited document is a miss, the other still a hit");
+      check(byName(es, "AAAA") && !byName(es, "AAAA")->thumb.rgba.empty() &&
+                !same(byName(es, "AAAA")->thumb, byName(cold, "AAAA")->thumb),
+            "cache: the edited document's tile is its new picture, not the stale one");
+      GalleryScanStats st3;
+      scanDocumentGallery(docs.string(), cache.string(), &st3);
+      check(st3.cacheHits == 2 && st3.decoded == 0, "cache: and the rebuilt tile is itself cached");
+    }
+
+    // Same mtime, different size: a miss on size alone.
+    {
+      const auto mtime = fs::last_write_time(b, ec);
+      {
+        std::ofstream f(b, std::ios::binary | std::ios::app);
+        f << "trailing";
+      }
+      fs::last_write_time(b, mtime, ec);
+      GalleryScanStats st;
+      scanDocumentGallery(docs.string(), cache.string(), &st);
+      check(st.decoded == 1 && st.cacheHits == 1, "cache: a changed file size alone is a miss");
+    }
+
+    // A cache file for the wrong document: AAAA's file dropped under BBBB's
+    // name. Same length path, so only the stored-path check can refuse it.
+    {
+      const auto files = cacheFiles();
+      fs::path aFile, bFile;
+      for (const fs::path& f : files) {
+        std::ifstream in(f, std::ios::binary);
+        std::string all((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        if (all.find(a.string()) != std::string::npos) aFile = f;
+        if (all.find(b.string()) != std::string::npos) bFile = f;
+      }
+      check(!aFile.empty() && !bFile.empty() && aFile != bFile,
+            "cache: each cache file records the path it was built for");
+      if (!aFile.empty() && !bFile.empty()) {
+        fs::copy_file(aFile, bFile, fs::copy_options::overwrite_existing, ec);
+        GalleryScanStats st;
+        const auto es = scanDocumentGallery(docs.string(), cache.string(), &st);
+        check(st.decoded >= 1 && byName(es, "BBBB") &&
+                  !same(byName(es, "BBBB")->thumb, byName(es, "AAAA")->thumb),
+              "cache: another document's cache file under this name is refused, not shown");
+      }
+    }
+
+    // Damage: truncated, and a flipped version byte. Each is a miss that
+    // rewrites a good file.
+    {
+      for (const bool truncate : {true, false}) {
+        const auto files = cacheFiles();
+        check(!files.empty(), "cache: there is a cache file to damage");
+        if (files.empty()) break;
+        if (truncate) {
+          fs::resize_file(files[0], fs::file_size(files[0], ec) / 2, ec);
+        } else {
+          std::fstream f(files[0], std::ios::binary | std::ios::in | std::ios::out);
+          f.seekp(4);
+          f.put('\x7f');
+        }
+        GalleryScanStats st;
+        scanDocumentGallery(docs.string(), cache.string(), &st);
+        check(st.decoded == 1 && st.cacheHits == 1,
+              truncate ? "cache: a truncated cache file is a miss, not a crash or a bad picture"
+                       : "cache: a wrong-version cache file is a miss");
+        GalleryScanStats healed;
+        scanDocumentGallery(docs.string(), cache.string(), &healed);
+        check(healed.cacheHits == 2 && healed.decoded == 0,
+              "cache: and the miss rewrote a good file");
+      }
+    }
+
+    // Pruning: a deleted document's cache file goes, a stray .tmp goes, and a
+    // file that is not ours stays.
+    {
+      {
+        std::ofstream f(cache / "deadbeef00000000.npthumb.tmp", std::ios::binary);
+        f << "x";
+        std::ofstream g(cache / "notes.txt", std::ios::binary);
+        g << "x";
+      }
+      fs::remove(b, ec);
+      scanDocumentGallery(docs.string(), cache.string());
+      size_t npthumbs = 0;
+      bool tmpLeft = false, notesLeft = false;
+      for (const fs::path& f : cacheFiles()) {
+        const std::string n = f.filename().string();
+        if (n == "notes.txt") notesLeft = true;
+        else if (n.find(".tmp") != std::string::npos) tmpLeft = true;
+        else if (n.size() > 8 && n.compare(n.size() - 8, 8, ".npthumb") == 0) ++npthumbs;
+      }
+      check(npthumbs == 1, "cache: a deleted document's cache file is pruned");
+      check(!tmpLeft, "cache: a stray .tmp from an interrupted write is pruned");
+      check(notesLeft, "cache: a file that is not a cache file is left alone");
+    }
+
+    // No cache directory: nothing is read or written.
+    {
+      const fs::path noCache = root / "never-made";
+      GalleryScanStats st;
+      const auto es = scanDocumentGallery(docs.string(), "", &st);
+      check(es.size() == 1 && st.decoded == 1 && st.cacheHits == 0 && !fs::exists(noCache),
+            "cache: an empty cache directory means every scan decodes and nothing is written");
+    }
+
+    // A missing source directory must not prune the cache: a transient
+    // failure to list Documents must not throw away every tile.
+    {
+      const size_t before = cacheFiles().size();
+      const auto es = scanDocumentGallery((root / "no-such-dir").string(), cache.string());
+      check(es.empty() && cacheFiles().size() == before,
+            "cache: an unreadable documents directory leaves the cache untouched");
+    }
+
+    fs::remove_all(root, ec);
   }
 
   return ok;

@@ -8,8 +8,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "imgui.h"
@@ -128,6 +132,149 @@ GalleryThumbnail buildThumbnail(const DecodedImage& composite) {
     }
   }
   return out;
+}
+
+// --- the on-disk thumbnail cache -------------------------------------------
+//
+// Decoding part 0 is a full-resolution half-float EXR read per document
+// (io/NpaintFile.hpp), so a scan without this pays that for every file on
+// every launch. One file per document holds the finished 160 px tile, keyed on
+// what would change it: the source's path, mtime and size, plus the tile size
+// and this format's version. Best-effort throughout -- any failure to read,
+// validate or write a cache file falls back to the decode, never to an error.
+
+constexpr char kCacheMagic[4] = {'N', 'P', 'T', 'H'};
+// Bump when buildThumbnail()'s output changes for the same composite, or the
+// on-disk layout below does -- every older file then reads as a miss.
+constexpr uint32_t kCacheVersion = 1;
+constexpr const char* kCacheExt = ".npthumb";
+
+// Fixed-width members ordered so there is no padding; written verbatim. The
+// cache is machine-local and never shared, so native endianness is fine.
+struct CacheHeader {
+  char magic[4];
+  uint32_t version;
+  uint32_t thumbPx;
+  uint32_t pathLen;
+  int64_t mtimeTicks;
+  uint64_t fileSize;
+  int32_t x, y, w, h;
+};
+static_assert(sizeof(CacheHeader) == 48, "CacheHeader must have no padding");
+
+uint64_t fnv1a64(const std::string& s) noexcept {
+  uint64_t h = 1469598103934665603ull;
+  for (const unsigned char c : s) {
+    h ^= c;
+    h *= 1099511628211ull;
+  }
+  return h;
+}
+
+std::string cacheFileName(const std::string& sourcePath) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%016llx%s", static_cast<unsigned long long>(fnv1a64(sourcePath)),
+                kCacheExt);
+  return std::string(buf);
+}
+
+CacheHeader makeCacheHeader(const std::string& sourcePath, int64_t mtimeTicks, uint64_t fileSize) {
+  CacheHeader h{};
+  std::memcpy(h.magic, kCacheMagic, sizeof(h.magic));
+  h.version = kCacheVersion;
+  h.thumbPx = static_cast<uint32_t>(kGalleryThumbPx);
+  h.pathLen = static_cast<uint32_t>(sourcePath.size());
+  h.mtimeTicks = mtimeTicks;
+  h.fileSize = fileSize;
+  return h;
+}
+
+bool readCachedThumbnail(const fs::path& cacheFile, const std::string& sourcePath, int64_t mtimeTicks,
+                         uint64_t fileSize, GalleryThumbnail& out) {
+  std::error_code ec;
+  const uintmax_t onDisk = fs::file_size(cacheFile, ec);
+  if (ec) return false;
+  const size_t pixelBytes = static_cast<size_t>(kGalleryThumbPx) * kGalleryThumbPx * 4;
+  if (onDisk != sizeof(CacheHeader) + sourcePath.size() + pixelBytes) return false;
+
+  std::ifstream in(cacheFile, std::ios::binary);
+  CacheHeader got{};
+  if (!in.read(reinterpret_cast<char*>(&got), sizeof(got))) return false;
+  const CacheHeader want = makeCacheHeader(sourcePath, mtimeTicks, fileSize);
+  if (std::memcmp(&got.magic, &want.magic, sizeof(want.magic)) != 0 || got.version != want.version ||
+      got.thumbPx != want.thumbPx || got.pathLen != want.pathLen || got.mtimeTicks != want.mtimeTicks ||
+      got.fileSize != want.fileSize) {
+    return false;
+  }
+  if (got.x < 0 || got.y < 0 || got.w <= 0 || got.h <= 0 || got.x + got.w > kGalleryThumbPx ||
+      got.y + got.h > kGalleryThumbPx) {
+    return false;
+  }
+  // The name is a hash of the path; storing the path itself makes a collision
+  // a miss instead of one document wearing another's picture.
+  std::string storedPath(got.pathLen, '\0');
+  if (!in.read(storedPath.data(), static_cast<std::streamsize>(storedPath.size())) ||
+      storedPath != sourcePath) {
+    return false;
+  }
+  std::vector<uint8_t> rgba(pixelBytes);
+  if (!in.read(reinterpret_cast<char*>(rgba.data()), static_cast<std::streamsize>(rgba.size()))) {
+    return false;
+  }
+  out.rgba = std::move(rgba);
+  out.x = got.x;
+  out.y = got.y;
+  out.w = got.w;
+  out.h = got.h;
+  return true;
+}
+
+void writeCachedThumbnail(const fs::path& cacheFile, const std::string& sourcePath, int64_t mtimeTicks,
+                          uint64_t fileSize, const GalleryThumbnail& thumb) {
+  std::error_code ec;
+  fs::create_directories(cacheFile.parent_path(), ec);
+  CacheHeader h = makeCacheHeader(sourcePath, mtimeTicks, fileSize);
+  h.x = thumb.x;
+  h.y = thumb.y;
+  h.w = thumb.w;
+  h.h = thumb.h;
+
+  // Temp then rename, so a launch killed mid-write leaves a stray .tmp (which
+  // pruning removes) and never a half-written cache file that reads as valid.
+  fs::path tmp = cacheFile;
+  tmp += ".tmp";
+  {
+    std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+    f.write(reinterpret_cast<const char*>(&h), sizeof(h));
+    f.write(sourcePath.data(), static_cast<std::streamsize>(sourcePath.size()));
+    f.write(reinterpret_cast<const char*>(thumb.rgba.data()),
+            static_cast<std::streamsize>(thumb.rgba.size()));
+    if (!f) {
+      f.close();
+      fs::remove(tmp, ec);
+      return;
+    }
+  }
+  fs::rename(tmp, cacheFile, ec);
+  if (ec) fs::remove(tmp, ec);
+}
+
+bool endsWith(const std::string& s, const std::string& suffix) noexcept {
+  return s.size() >= suffix.size() && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+// Deletes every cache file (and stray .tmp) whose name is not in `keep`: a
+// document deleted, renamed, or from a container path that no longer exists.
+void pruneThumbnailCache(const fs::path& cacheDir, const std::unordered_set<std::string>& keep) {
+  std::error_code ec;
+  fs::directory_iterator it(cacheDir, ec);
+  if (ec) return;
+  for (; it != fs::directory_iterator(); it.increment(ec)) {
+    if (ec) return;
+    const std::string name = it->path().filename().string();
+    const bool isCache = endsWith(name, kCacheExt) || endsWith(name, std::string(kCacheExt) + ".tmp");
+    if (isCache && keep.count(name) == 0) fs::remove(it->path(), ec);
+  }
 }
 
 std::string formatModifiedLabel(std::time_t t) {
@@ -449,11 +596,26 @@ std::string galleryDuplicatePath(const std::string& path) {
   return {};
 }
 
-std::vector<GalleryEntry> scanDocumentGallery(const std::string& dir) {
+std::string galleryThumbCacheDirectory() {
+#if defined(__APPLE__)
+  // Caches, not Application Support: the OS may reclaim it under storage
+  // pressure and it is not backed up, which is exactly right for something
+  // that is rebuilt from the documents on a miss.
+  const char* home = std::getenv("HOME");
+  if (home == nullptr || *home == '\0') return {};
+  return std::string(home) + "/Library/Caches/naturalPaint/gallery-thumbs";
+#else
+  return {};
+#endif
+}
+
+std::vector<GalleryEntry> scanDocumentGallery(const std::string& dir, const std::string& cacheDir,
+                                              GalleryScanStats* stats) {
   std::vector<GalleryEntry> out;
   std::error_code ec;
   fs::directory_iterator it(dir, ec);
-  if (ec) return out;  // no Documents dir yet (fresh install) -- an empty
+  if (ec) return out;
+  std::unordered_set<std::string> keptCacheFiles;  // no Documents dir yet (fresh install) -- an empty
                         // gallery is the correct picture, not a failure.
 
   for (const fs::directory_entry& entry : it) {
@@ -464,7 +626,8 @@ std::vector<GalleryEntry> scanDocumentGallery(const std::string& dir) {
     e.path = entry.path().string();
     e.displayName = entry.path().stem().string();
     const auto ftime = entry.last_write_time(ec);
-    if (!ec) {
+    const bool haveMtime = !ec;
+    if (haveMtime) {
       // `fs::file_time_type` is `file_clock`, not `system_clock`, and this
       // build's libc++ is not assumed to have C++20's `clock_cast`/`to_sys`
       // (the iOS toolchain here is the vcpkg/OpenColorIO chain
@@ -487,14 +650,39 @@ std::vector<GalleryEntry> scanDocumentGallery(const std::string& dir) {
     // existing): read part 0 only, never reconstruct the document. See
     // io/NpaintFile.hpp's own comment on `loadNpaintPreviewOnly()` for the
     // cost this avoids relative to `loadNpaint()`.
-    const NpaintPreviewResult preview = loadNpaintPreviewOnly(e.path);
-    // A file that fails to open or decode still gets an entry (empty
-    // thumbnail, drawn as a placeholder by the caller) -- see this header's
-    // own comment on why a file must never vanish from its own gallery.
-    if (preview.ok) e.thumb = buildThumbnail(preview.composite);
+    //
+    // Stat BEFORE the decode, so a file rewritten in between can only make the
+    // cache entry look older than the file, never newer.
+    const uintmax_t sizeNow = entry.file_size(ec);
+    const bool cacheable = !cacheDir.empty() && haveMtime && !ec;
+    const int64_t ticks = static_cast<int64_t>(ftime.time_since_epoch().count());
+    fs::path cacheFile;
+    if (cacheable) {
+      const std::string name = cacheFileName(e.path);
+      keptCacheFiles.insert(name);
+      cacheFile = fs::path(cacheDir) / name;
+    }
+
+    if (cacheable && readCachedThumbnail(cacheFile, e.path, ticks, sizeNow, e.thumb)) {
+      if (stats != nullptr) ++stats->cacheHits;
+    } else {
+      const NpaintPreviewResult preview = loadNpaintPreviewOnly(e.path);
+      if (stats != nullptr) ++stats->decoded;
+      // A file that fails to open or decode still gets an entry (empty
+      // thumbnail, drawn as a placeholder by the caller) -- see this header's
+      // own comment on why a file must never vanish from its own gallery. It
+      // is not cached: a file this build cannot read may be readable by the
+      // next one, and a miss on a damaged file fails fast anyway.
+      if (preview.ok) e.thumb = buildThumbnail(preview.composite);
+      if (cacheable && e.thumb.w > 0 && e.thumb.h > 0) {
+        writeCachedThumbnail(cacheFile, e.path, ticks, sizeNow, e.thumb);
+      }
+    }
 
     out.push_back(std::move(e));
   }
+
+  if (!cacheDir.empty()) pruneThumbnailCache(cacheDir, keptCacheFiles);
 
   std::sort(out.begin(), out.end(),
             [](const GalleryEntry& a, const GalleryEntry& b) { return a.mtimeEpoch > b.mtimeEpoch; });
@@ -510,7 +698,12 @@ void setDocumentGalleryDemoStage(GalleryDemoStage stage) { g_demoStage = stage; 
 
 void drawDocumentGallery(AppState& st, GpuContext& gpu) {
   if (!g_scanned) {
-    g_entries = scanDocumentGallery(g_dirOverride.empty() ? iosDocumentsDirectory() : g_dirOverride);
+    // The demo/override directory never touches the real cache: --gallery-demo
+    // and the golden views must render the same on every machine, and pruning
+    // against a scratch directory would wipe the real Documents' entries.
+    const bool overridden = !g_dirOverride.empty();
+    g_entries = scanDocumentGallery(overridden ? g_dirOverride : iosDocumentsDirectory(),
+                                    overridden ? std::string() : galleryThumbCacheDirectory());
     g_atlas.rebuild(gpu, g_entries);
     g_scanned = true;
     g_atlasNeedsRebuild = false;  // the rescan above already rebuilt it
