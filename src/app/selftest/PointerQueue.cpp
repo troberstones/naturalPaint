@@ -94,7 +94,7 @@ struct FakeSdlPen {
   }
 };
 
-enum class Backend { MacOS, Wayland, Windows, X11 };
+enum class Backend { MacOS, Wayland, Windows, X11, IOS };
 
 const char* backendName(Backend b) {
   switch (b) {
@@ -102,6 +102,7 @@ const char* backendName(Backend b) {
     case Backend::Wayland: return "Wayland";
     case Backend::Windows: return "Windows";
     case Backend::X11: return "X11";
+    case Backend::IOS: return "iOS";
   }
   return "?";
 }
@@ -139,6 +140,17 @@ void report(FakeSdlPen& s, Backend b, float px, float py, bool contact, float p)
       if (contact != s.touching) {
         s.beginReport();
         s.touch(contact);
+      }
+      break;
+    case Backend::IOS:  // press: Motion, axes, Touch(down); lift: Touch(up), Motion, axes
+      if (!contact && s.touching) {
+        s.touch(false);
+        s.motion(px, py);
+        s.allAxes(p);
+      } else {
+        s.motion(px, py);
+        s.allAxes(p);
+        if (contact) s.touch(true);
       }
       break;
   }
@@ -564,6 +576,146 @@ bool runPointerQueueTest() {
                 c.gestureCount(), c.size());
     check(c.gestureCount() <= PointerQueue::kMaxGestures && c.size() <= PointerQueue::kMaxGestures,
           "8. bound: 10 000 clicks ImGui never processed stay within kMaxGestures records");
+  }
+
+  // ==========================================================================
+  // 9. A pen contact's pressure is not known yet on iOS (section 4).
+  //    Measured on an iPad Pro 13-inch (M5) / Pencil Pro, iPadOS 26. UIKit
+  //    reports UITouch.force at touchesBegan: as an ESTIMATE -- a constant
+  //    0.0800 (1/3 N of 4.1667 N) on 23 strokes of 23, however hard the pen
+  //    was pressed -- and the reports after it ramp DOWN from that placeholder
+  //    (0.0800 -> 0.0400 = 1/6 N -> 0.0100) rather than measuring anything,
+  //    before settling on the truth (0.0006 for the lightest stroke captured).
+  //
+  //    The patched SDL (third_party/patches/sdl3-uikit-estimated-force.patch)
+  //    withholds every estimated pressure, so the contact report and the ramp
+  //    reports carry NO pressure axis at all, and the real value arrives later
+  //    from touchesEstimatedPropertiesUpdated:. These checks replay that
+  //    patched stream: the gesture must paint nothing until the real reading
+  //    lands, and then every sample it has held must carry that reading.
+  // ==========================================================================
+  {
+    const float kMeasured = 0.0006f;  // the first real reading, reports later
+    const float kStale = 0.5f;        // what the latch holds from the last stroke
+
+    // A report with NO pressure axis -- what patched SDL sends while UIKit
+    // still calls the force an estimate. The other axes keep moving, so a
+    // stroke released on one of THOSE would be caught.
+    auto reportNoPressure = [&](FakeSdlPen& s, float px, float py, bool contact) {
+      s.beginReport();
+      s.motion(px, py);
+      s.axis(PointerAxis::TiltX, 20.0f + px);
+      s.axis(PointerAxis::TiltY, -10.0f);
+      if (contact) s.touch(true);
+    };
+
+    // The corrected pressure, alone, bearing whatever timestamp UIKit chose.
+    auto correctedPressure = [&](FakeSdlPen& s, uint64_t ts, float v) {
+      s.q.push(PointerEvent{PointerEventKind::PenAxis, ts, s.uiSeq, s.x, s.y,
+                            PointerAxis::Pressure, v});
+    };
+
+    auto openContact = [&](PointerQueue& q, FakeSdlPen& s, uint64_t& contactTs) {
+      priorStrokeAndHover(s, Backend::IOS, 100.0f);
+      s.axis(PointerAxis::Pressure, kStale);  // a latch left over from before
+      uint64_t dead = 0;
+      frameTake(q, s.uiSeq, dead);            // retire the prior stroke
+      reportNoPressure(s, 100.0f, 100.0f, true);
+      contactTs = s.reportTs;
+    };
+
+    // --- the patched stream: nothing paints until the real reading lands.
+    {
+      PointerQueue q;
+      q.setContactPressureEstimated(true);
+      FakeSdlPen s{q};
+      uint64_t contactTs = 0;
+      openContact(q, s, contactTs);
+
+      uint64_t g = 0;
+      const std::vector<PointerSample> atContact = frameTake(q, s.uiSeq, g);
+      check(g != 0, "9. iOS: the stroke still claims its gesture on the contact frame");
+      check(atContact.empty(), "9. iOS: no sample is offered while the pressure is unknown");
+      check(q.contactPressurePending(), "9. iOS: the queue says it is waiting");
+
+      reportNoPressure(s, 100.5f, 100.0f, true);  // a ramp report: still no pressure
+      const std::vector<PointerSample> stillHeld = frameTake(q, s.uiSeq, g);
+      check(stillHeld.empty(), "9. iOS: a report with no pressure releases nothing");
+      check(q.contactPressurePending(), "9. iOS: moving tilt/position does not end the wait");
+
+      // touchesEstimatedPropertiesUpdated: re-reports the touch, and the
+      // timestamp it carries is the one the ORIGINAL contact event had. A
+      // rule that skipped the contact timestamp as "the estimate itself"
+      // would discard the very reading it is waiting for and hang the stroke
+      // until the safety valve fired -- this is that regression's tripwire.
+      correctedPressure(s, contactTs, kMeasured);
+      const std::vector<PointerSample> got = frameTake(q, s.uiSeq, g);
+      std::printf("  [measured] iOS light stroke -> %zu samples, pressures", got.size());
+      for (const PointerSample& ps : got) std::printf(" %.4f", static_cast<double>(ps.pressure));
+      std::printf("\n");
+      check(!q.contactPressurePending(),
+            "9. iOS: a correction bearing the CONTACT's own timestamp ends the wait");
+      check(!got.empty(), "9. iOS: the held samples are released once pressure is known");
+      bool allMeasured = !got.empty();
+      for (const PointerSample& ps : got) allMeasured = allMeasured && ps.pressure == kMeasured;
+      check(allMeasured, "9. iOS: every delivered sample carries the corrected pressure");
+      check(!got.empty() && got.front().pressure == kMeasured,
+            "9. iOS: the OPENING sample carries the corrected pressure, not the stale latch");
+      bool noneStale = !got.empty();  // an empty set must not pass this vacuously
+      for (const PointerSample& ps : got) noneStale = noneStale && ps.pressure != kStale;
+      check(noneStale, "9. iOS: not one delivered sample carries the stale latch");
+    }
+
+    // --- off (the default, every other backend): a backend that reports a
+    //     real pressure with its contact pays no latency for this rule.
+    {
+      PointerQueue q;
+      FakeSdlPen s{q};
+      priorStrokeAndHover(s, Backend::IOS, 100.0f);
+      uint64_t dead = 0;
+      frameTake(q, s.uiSeq, dead);
+      report(s, Backend::IOS, 100.0f, 100.0f, true, 0.25f);
+      uint64_t g = 0;
+      const std::vector<PointerSample> atContact = frameTake(q, s.uiSeq, g);
+      check(!atContact.empty() && atContact.front().pressure == 0.25f,
+            "9. flag off: the contact report's own pressure is delivered, on its own frame");
+    }
+
+    // --- a tap too quick for any correction: the lift releases it, so a
+    //     stationary click still paints (section 4's first way out).
+    {
+      PointerQueue q;
+      q.setContactPressureEstimated(true);
+      FakeSdlPen s{q};
+      uint64_t contactTs = 0;
+      openContact(q, s, contactTs);
+      report(s, Backend::IOS, 100.0f, 100.0f, false, 0.0f);
+      uint64_t g = 0;
+      const std::vector<PointerSample> got = frameTake(q, s.lastSynthUpSeq, g);
+      check(got.size() == 1,
+            "9. quick tap: the lift releases the held sample rather than swallowing the dab");
+    }
+
+    // --- a pen that reports no pressure at all: the valve releases it
+    //     (section 4's second way out) rather than freezing the stroke.
+    {
+      PointerQueue q;
+      q.setContactPressureEstimated(true);
+      FakeSdlPen s{q};
+      priorStrokeAndHover(s, Backend::IOS, 100.0f);
+      uint64_t dead = 0;
+      frameTake(q, s.uiSeq, dead);
+      uint64_t g = 0;
+      q.push(PointerEvent{PointerEventKind::PenDown, 9'000'000'000ull, s.uiSeq, 100.0f, 100.0f});
+      s.mouse(PointerEventKind::MouseMotion, false);
+      s.mouse(PointerEventKind::MouseButtonDown, true);
+      for (int i = 1; i <= PointerQueue::kContactPressureWaitReports; ++i)
+        q.push(PointerEvent{PointerEventKind::PenMotion, 9'000'000'000ull + uint64_t(i) * 8'000'000,
+                            s.uiSeq, 100.0f + float(i), 100.0f});
+      const std::vector<PointerSample> got = frameTake(q, s.uiSeq, g);
+      check(!q.contactPressurePending() && !got.empty(),
+            "9. no-pressure pen: the wait gives up after kContactPressureWaitReports reports");
+    }
   }
 
   std::printf("[selftest] pointer queue %s\n", ok ? "PASS" : "FAIL");

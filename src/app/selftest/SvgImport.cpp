@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <string>
 
 #include "color/Space.hpp"
@@ -95,6 +96,25 @@ bool runSvgImportTest() {
     std::printf("  %-70s %s\n", what, cond ? "pass" : "FAIL");
     if (!cond) ok = false;
   };
+
+  // NP_SVG_TEST_DIR (src/CMakeLists.txt) is a raw compile-time source-tree
+  // path, "a developer/CI-time test asset, never staged for a shipped build"
+  // by that comment's own words -- so on a platform whose sandbox has no
+  // access to the checkout that built it (iOS device install, or any binary
+  // copied away from its source tree) it cannot resolve, and every one of
+  // sections 12 and 13i's four fixture files would report a structural
+  // import failure that is actually "no such file", not an SVG-parsing
+  // defect. Checked once, here, rather than letting four blocks each
+  // rediscover the same absence as four unrelated-looking FAILs.
+  std::error_code svgFixtureEc;
+  const bool svgFixturesAvailable =
+      std::filesystem::exists(NP_SVG_TEST_DIR "/illustrator-logo.svg", svgFixtureEc) &&
+      !svgFixtureEc;
+  if (!svgFixturesAvailable)
+    std::printf(
+        "    (skipped: sections 12 and 13i's exporter-shaped fixtures -- " NP_SVG_TEST_DIR
+        " is not reachable from this binary, which is expected off the machine that built "
+        "it; see NP_SVG_TEST_DIR's own comment in src/CMakeLists.txt)\n");
 
   // --- 1. basic shapes: geometry --------------------------------------
 
@@ -500,7 +520,7 @@ bool runSvgImportTest() {
   // recognisable boilerplate -- see tests/svg/*.svg and this file's own
   // brief for what each one is standing in for.
 
-  {
+  if (svgFixturesAvailable) {
     const auto r = importSvgFile(NP_SVG_TEST_DIR "/illustrator-logo.svg");
     check(r.ok, "illustrator fixture: imports without a structural error");
     check(r.shapes.size() == 2, "illustrator fixture: circle + rect via CSS classes");
@@ -515,7 +535,7 @@ bool runSvgImportTest() {
             "illustrator fixture: frame rect bounds (viewBox is 1:1 with the viewport)");
     }
   }
-  {
+  if (svgFixturesAvailable) {
     const auto r = importSvgFile(NP_SVG_TEST_DIR "/inkscape-badge.svg");
     check(r.ok, "inkscape fixture: imports without a structural error");
     check(r.shapes.size() == 2, "inkscape fixture: plate rect + ribbon path");
@@ -906,7 +926,7 @@ bool runSvgImportTest() {
     }
 
     // --- 13i. two <text>-carrying fixtures, exporter-shaped -------------
-    {
+    if (svgFixturesAvailable) {
       const auto r = importSvgFile(NP_SVG_TEST_DIR "/illustrator-caption.svg");
       check(r.ok, "illustrator caption: imports without a structural error");
       check(r.shapes.size() == 1 && r.texts.size() == 1,
@@ -925,7 +945,7 @@ bool runSvgImportTest() {
               "unchanged now that `origin` is the baseline too");
       }
     }
-    {
+    if (svgFixturesAvailable) {
       const auto r = importSvgFile(NP_SVG_TEST_DIR "/inkscape-label.svg");
       constexpr float kMmToPx = 96.0f / 25.4f;  // io/SvgPath.hpp's own 96dpi basis
       check(r.ok, "inkscape label: imports without a structural error");

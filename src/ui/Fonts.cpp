@@ -117,6 +117,40 @@ ImFont* loadBundledUiFace(float sizePx, std::string* pathOut, std::string* tried
   return loadFirst(&candidate, 1, sizePx, pathOut, tried);
 }
 
+// The same idea as `loadBundledUiFace()` above, for `kCandidates` rather than
+// `kTextCandidates` -- but this one cannot go through `loadFirst()`, because
+// this merge (unlike the plain text face) has to land as a MergeMode font
+// with a restricted `GlyphRanges` onto the text face already in `Fonts[0]`,
+// exactly like the `kCandidates` loop in `installUiFonts()` below. `ranges`
+// and `pixelSnapH` are that loop's own values, passed in rather than
+// recomputed, so there is exactly one place that decides them.
+//
+// Liberation Sans (`loadBundledUiFace()`'s face) cannot stand in here too --
+// it covers 2 of the 16 codepoints this merge needs (measured); almost none
+// of geometric shapes, dingbats or U+2699 are in its charset. A 14 KiB DejaVu
+// Sans subset built to exactly the 16 codepoints `requiredUiCodepoints()`
+// asks for does (DejaVu already leads the Linux entry in `kCandidates`
+// above, so this is the same face family, just reachable without a system
+// install).
+ImFont* mergeBundledGlyphSource(float sizePx, bool pixelSnapH, const std::vector<ImWchar>& ranges,
+                                std::string* pathOut, std::string* tried) {
+  const std::string bundled = glyphSourceTtfPath();
+  if (bundled.empty()) return nullptr;
+  ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+  ImFontConfig config;
+  config.MergeMode = true;
+  config.PixelSnapH = pixelSnapH;
+  config.GlyphRanges = ranges.data();
+  ImFont* font = atlas->AddFontFromFileTTF(bundled.c_str(), sizePx, &config);
+  if (font == nullptr) {
+    if (!tried->empty()) *tried += "; ";
+    *tried += bundled + " (present, but ImGui refused it)";
+    return nullptr;
+  }
+  *pathOut = bundled;
+  return font;
+}
+
 }  // namespace
 
 const UiFonts& uiFonts() { return g_fonts; }
@@ -303,6 +337,14 @@ FontLoadResult installUiFonts(float sizePx) {
     merged = font;
     break;
   }
+
+  // Every entry in `kCandidates` above is a macOS/Linux system-font path, so
+  // this is the only candidate an iOS sandbox ever reaches -- see
+  // `mergeBundledGlyphSource()`'s own comment on why it cannot go through
+  // `loadFirst()` and why Liberation Sans (`loadBundledUiFace()`'s face)
+  // cannot stand in for it.
+  if (result.path.empty())
+    merged = mergeBundledGlyphSource(sizePx, result.textPath.empty(), ranges, &result.path, &tried);
 
   if (result.path.empty()) {
     result.missing = required;

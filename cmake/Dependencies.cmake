@@ -8,10 +8,19 @@ set(SDL_SHARED   OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC   ON  CACHE BOOL "" FORCE)
 set(SDL_TEST     OFF CACHE BOOL "" FORCE)
 set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+# PATCH: SDL's UIKit backend reports UITouch.force without asking UIKit whether
+# that force is still an ESTIMATE, so on iPad every pen stroke opens at a fixed
+# placeholder (1/3 N) and then ramps down to the real press over ~3 reports --
+# a fat opening dab followed by a thin one, whatever the user actually did.
+# The patch withholds the estimated pressure and reports the real one from
+# touchesEstimatedPropertiesUpdated:. Worth upstreaming; until then, bumping
+# GIT_TAG means re-checking this patch still applies (it will fail loudly).
 FetchContent_Declare(SDL3
   GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
   GIT_TAG        release-3.2.24
   GIT_SHALLOW    ON
+  PATCH_COMMAND  git apply --reverse --check "${CMAKE_CURRENT_LIST_DIR}/../third_party/patches/sdl3-uikit-estimated-force.patch" ||
+                 git apply "${CMAKE_CURRENT_LIST_DIR}/../third_party/patches/sdl3-uikit-estimated-force.patch"
 )
 
 # ---------------------------------------------------------------- Dear ImGui

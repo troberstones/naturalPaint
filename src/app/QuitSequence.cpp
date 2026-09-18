@@ -14,14 +14,16 @@ namespace {
 
 // Raise the next question, skipping anything that no longer needs one.
 //
-// Two kinds of skip, both ordinary rather than exceptional:
+// Three kinds of skip, all ordinary rather than exceptional:
 //
 //  * the document has gone (something else closed it while an earlier question
-//    was up), so there is nobody to ask about; and
+//    was up), so there is nobody to ask about;
 //  * the document is no longer dirty -- an undo behind the dialog walked the
 //    revision back to the saved one. It is **not** closed on the way past: a
 //    clean document has nothing to lose, and the process is about to exit
-//    anyway, so closing it would be work done for no one.
+//    anyway, so closing it would be work done for no one; and
+//  * on iOS, `requestDocumentClose()` already closed it -- see the `out.closed`
+//    check below.
 //
 // Returns `exitNow` when the queue empties, which is the only place in this
 // module that decides a quit is finished.
@@ -47,6 +49,16 @@ QuitStep pumpQuitSequence(DocumentSession& session, QuitSequence& seq, PendingCl
     if (out.questionRaised) {
       step.asking = true;
       return step;
+    }
+
+    // On iOS, `requestDocumentClose()` never raises a question for a dirty
+    // document at all -- it autosaves it to the gallery and closes it in this
+    // same call (app/CloseDecision.hpp). That is progress, not a stall: move on
+    // to whatever is left in the queue exactly as the "already gone" and
+    // "no longer dirty" skips above do.
+    if (out.closed) {
+      seq.remaining.erase(seq.remaining.begin());
+      continue;
     }
 
     // Unreachable in practice: the document was just confirmed to exist and to

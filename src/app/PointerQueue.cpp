@@ -117,6 +117,46 @@ void PointerQueue::patchAxis(const PointerEvent& e) noexcept {
   }
 }
 
+// Section 4. The first pressure reading to arrive at all is the first MEASURED
+// one; it replaces the stale value in every sample this gesture has queued so
+// far, and releases the gesture.
+//
+// **Any pressure event, with no timestamp exception.** This relies on the
+// patched SDL (`third_party/patches/`, section 4 of the header): UIKit's
+// estimated force is dropped at the backend, so a pressure axis reaching this
+// queue is by construction a real reading. The corrected value arrives from
+// `touchesEstimatedPropertiesUpdated:`, which can re-report the pen's ORIGINAL
+// contact timestamp -- an earlier version of this function skipped exactly
+// that timestamp as "the estimate itself" and would now discard the one
+// reading it is waiting for.
+//
+// **Every sample so far, not just the contact report's.** While this is
+// pending no pressure event has arrived at all -- that is what "pending"
+// means -- so every sample queued since the contact snapshotted the same
+// stale latch value, whether it belongs to the contact report or to a later
+// one. Patching only the contact report's own samples left the stale value in
+// the second report's, which on the measured device stream was the stroke's
+// second sample -- caught by `app/selftest/PointerQueue.cpp` section 9.
+void PointerQueue::resolveContactPressure(const PointerEvent& e) noexcept {
+  if (!contactPending_ || openPen_ == 0) return;
+  const float measured = clamp01(e.value);
+  for (PointerSample& s : samples_)
+    if (s.gesture == openPen_) s.pressure = measured;
+  contactPending_ = false;
+}
+
+// Section 4's safety valve: a position report that is neither the contact's
+// nor one already counted. A report is counted on its POSITION event, which
+// on every backend arrives before that report's own axes (section 2) -- so
+// the count is only ever consulted after `kContactPressureWaitReports` whole
+// reports have passed with no pressure among them, never mid-report.
+void PointerQueue::countContactWaitReport(const PointerEvent& e) noexcept {
+  if (!contactPending_ || openPen_ == 0) return;
+  if (e.timestamp == contactTs_ || e.timestamp == contactWaitTs_) return;
+  contactWaitTs_ = e.timestamp;
+  if (++contactWaitReports_ >= kContactPressureWaitReports) contactPending_ = false;
+}
+
 void PointerQueue::push(const PointerEvent& e) {
   // Unconditional, and before the switch below decides whether this event
   // gets a QUEUED sample -- see `latestPosition()`'s own comment for why a
@@ -132,6 +172,7 @@ void PointerQueue::push(const PointerEvent& e) {
         case PointerAxis::Other: break;
       }
       patchAxis(e);
+      if (e.axis == PointerAxis::Pressure) resolveContactPressure(e);
       break;
 
     case PointerEventKind::PenDown:
@@ -144,6 +185,13 @@ void PointerQueue::push(const PointerEvent& e) {
       // If pen mouse emulation is off there is none, ImGui never sees a pen
       // press either, and this provisional stamp is as good as any.
       penDownSeqPending_ = openPen_;
+      // Section 4: this report's pressure is the backend's estimate on iOS,
+      // so the gesture waits for a measured one before anything may paint
+      // with it. `contactTs_` is what `resolveContactPressure()` patches by.
+      contactPending_ = contactPressureEstimated_;
+      contactTs_ = e.timestamp;
+      contactWaitTs_ = 0;
+      contactWaitReports_ = 0;
       enqueue(e, /*pen=*/true, openPen_);
       break;
 
@@ -152,6 +200,9 @@ void PointerQueue::push(const PointerEvent& e) {
         endGesture(openPen_, e.uiSeq);
         penUpSeqPending_ = openPen_;
         openPen_ = 0;
+        // Section 4's first way out: a tap too quick to produce a second
+        // report still lays its stationary-click dab, with the estimate.
+        contactPending_ = false;
       }
       break;
 
@@ -159,6 +210,7 @@ void PointerQueue::push(const PointerEvent& e) {
       // Rule (b)'s report boundary: a position event, queued or not, starts
       // a new report on every backend.
       axisSinceMotion_.fill(false);
+      countContactWaitReport(e);
       // Hover (no open gesture) is never queued -- section 1.
       if (openPen_ != 0) enqueue(e, /*pen=*/true, openPen_);
       break;
@@ -217,6 +269,7 @@ std::vector<PointerSample> PointerQueue::takeForStroke(uint64_t gesture) {
   std::vector<PointerSample> out;
   const Gesture* g = find(gesture);
   if (g == nullptr || !processed(g->downSeq)) return out;
+  if (withheld(gesture)) return out;  // section 4
   auto keep = std::stable_partition(samples_.begin(), samples_.end(),
                                     [gesture](const PointerSample& s) { return s.gesture != gesture; });
   out.assign(keep, samples_.end());
@@ -230,6 +283,7 @@ void PointerQueue::endFrame() {
   samples_.erase(std::remove_if(samples_.begin(), samples_.end(),
                                 [this](const PointerSample& s) {
                                   const Gesture* g = find(s.gesture);
+                                  if (g != nullptr && withheld(s.gesture)) return false;
                                   return g == nullptr || processed(g->downSeq);
                                 }),
                  samples_.end());

@@ -954,6 +954,18 @@ target_compile_definitions(naturalPaint PRIVATE
   # the whole interface. Liberation Sans, SIL Open Font License 1.1 (the
   # licence travels with it in third_party/liberation/LICENSE).
   NP_UI_TEXT_TTF="${CMAKE_SOURCE_DIR}/third_party/liberation/LiberationSans-Regular.ttf"
+  # ui/Fonts.cpp's layer-kind glyph source (docs/ui.md 3.2), layer-command
+  # icons and settings gear. Same iOS motivation as NP_UI_TEXT_TTF above, but
+  # Liberation Sans does not cover these codepoints (measured: 2 of 16) -- a
+  # 14 KiB DejaVu Sans subset (public domain / Bitstream Vera license,
+  # third_party/dejavu/LICENSE) built with `fonttools subset` down to exactly
+  # the 16 codepoints requiredUiCodepoints() asks for does. Regenerate it if
+  # that list ever grows: `fonttools subset DejaVuSans.ttf
+  # --output-file=third_party/dejavu/DejaVuSans-GlyphSubset.ttf
+  # --unicodes=<comma-separated hex, no 0x prefix> --glyph-names
+  # --layout-features='' --no-hinting --desubroutinize --name-IDs='*'
+  # --notdef-glyph --notdef-outline`.
+  NP_GLYPH_SOURCE_TTF="${CMAKE_SOURCE_DIR}/third_party/dejavu/DejaVuSans-GlyphSubset.ttf"
   # app/selftest/SvgImport.cpp's two on-disk fixtures written to look like
   # real Inkscape and Illustrator exporter output (tests/svg/*.svg) -- a
   # source-tree-relative path, same convention as the four resources above,
@@ -1005,7 +1017,12 @@ add_custom_command(TARGET naturalPaint POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy
           "${CMAKE_SOURCE_DIR}/third_party/liberation/LiberationSans-Regular.ttf"
           "$<TARGET_FILE_DIR:naturalPaint>/third_party/liberation/LiberationSans-Regular.ttf"
-  COMMENT "naturalPaint: staging shaders/keymaps/mixbox-lut/lucide/ui-font beside the built executable (core/ResourcePaths tier 2)"
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          "$<TARGET_FILE_DIR:naturalPaint>/third_party/dejavu"
+  COMMAND ${CMAKE_COMMAND} -E copy
+          "${CMAKE_SOURCE_DIR}/third_party/dejavu/DejaVuSans-GlyphSubset.ttf"
+          "$<TARGET_FILE_DIR:naturalPaint>/third_party/dejavu/DejaVuSans-GlyphSubset.ttf"
+  COMMENT "naturalPaint: staging shaders/keymaps/mixbox-lut/lucide/ui-font/glyph-font beside the built executable (core/ResourcePaths tier 2)"
 )
 
 if(NP_USE_MIXBOX)

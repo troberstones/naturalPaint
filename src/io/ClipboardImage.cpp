@@ -60,12 +60,35 @@ ClipboardImageProbe probeClipboardImage() {
   size_t numTypes = 0;
   char** mimeTypes = SDL_GetClipboardMimeTypes(&numTypes);
   // SDL_GetClipboardMimeTypes() documents a NULL/empty result as "the
-  // clipboard is empty" -- not an error this needs to distinguish from any
-  // other empty-pasteboard case.
+  // clipboard is empty" -- but that is only true on a backend that actually
+  // populates SDL's mime-type list from the OS pasteboard, which is this
+  // header's own §0 case for macOS (Cocoa_GetClipboardData() bridges to
+  // NSPasteboard). **iOS does not**:
+  // `src/video/uikit/SDL_uikitclipboard.m`'s UIKit_SetClipboardText() writes
+  // straight to `[UIPasteboard generalPasteboard].string` through SDL's
+  // separate text-only hooks, never touching the mime-type-addressed path
+  // SDL_GetClipboardMimeTypes() reads (`_this->clipboard_mime_types`, only
+  // ever filled in by SDL_SetClipboardData()). So on iOS, text set the normal
+  // way (SDL_SetClipboardText(), which is what every other part of this
+  // application calls) makes `numTypes` read 0 even though the pasteboard is
+  // not empty -- which would misreport as Empty rather than NotAnImage.
+  // SDL_HasClipboardText() reads UIKit_HasClipboardText(), which DOES see the
+  // real pasteboard.string, so it is the one signal available here that
+  // tells the two apart on this platform; on a platform where the mime-type
+  // list already reflects the truth, this check is redundant but harmless --
+  // a truly empty pasteboard has no text either.
   if (numTypes == 0) {
+    if (mimeTypes) SDL_free(mimeTypes);
+    if (SDL_HasClipboardText()) {
+      out.status = ClipboardImageStatus::NotAnImage;
+      out.detail =
+          "the pasteboard holds text, not an image (seen via SDL_HasClipboardText() -- "
+          "this platform's SDL backend does not expose plain text through the mime-type "
+          "API SDL_GetClipboardMimeTypes() otherwise reads).";
+      return out;
+    }
     out.status = ClipboardImageStatus::Empty;
     out.detail = "the system pasteboard is empty.";
-    if (mimeTypes) SDL_free(mimeTypes);
     return out;
   }
 

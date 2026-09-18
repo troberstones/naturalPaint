@@ -2,6 +2,7 @@
 
 #include "app/ImportImage.hpp"
 #include "app/QuitSequence.hpp"
+#include "core/Platform.hpp"
 
 namespace np {
 
@@ -105,6 +106,12 @@ bool runQuitGuardTest() {
     int calls = 0;
     DocumentId lastId = 0;
   };
+  // Both `stubSaver` and its callers below drive `answerQuitQuestion()`'s
+  // Save/Don't Save/Cancel decision, which only sections F-I (desktop only,
+  // see below) reach: on iOS a dirty document is closed by
+  // `requestDocumentClose()` itself and never leaves anything for
+  // `answerQuitQuestion()` to answer.
+#if !NP_PLATFORM_IOS
   auto stubSaver = [](bool succeeds, SaveLog* log) -> DocumentSaver {
     return [succeeds, log](OpenDocument& doc) {
       DocumentOpResult r;
@@ -157,6 +164,7 @@ bool runQuitGuardTest() {
     run.ranAway = true;
     return run;
   };
+#endif  // !NP_PLATFORM_IOS
 
   std::printf("  -- A. an import adds one RGB layer, and it becomes active --\n");
 
@@ -322,6 +330,33 @@ bool runQuitGuardTest() {
           "quit clean: a session with no documents at all exits immediately too");
   }
 
+#if NP_PLATFORM_IOS
+  // On iOS, `requestDocumentClose()` never raises a question (app/CloseDecision
+  // .hpp) -- it autosaves and closes the document in the same call, and
+  // `pumpQuitSequence()` (app/QuitSequence.cpp) moves straight on when it sees
+  // that. So `beginQuit()` alone walks the whole queue and finishes the quit
+  // synchronously: no dialog ever reaches the screen, in session order, and the
+  // clean document is left untouched.
+  std::printf("  -- E. each dirty document closes immediately, autosaved, in order --\n");
+
+  {
+    DocumentSession session;
+    session.add(dirtyDoc("Alpha", "stroke"));
+    session.add(makeBlankOpenDocument(8, 8, WorkingSpace{}, "Beta"));  // clean
+    session.add(dirtyDoc("Gamma", "layer add"));
+    QuitSequence seq;
+    PendingClose pending;
+    const DocumentId beta = session.at(1)->id;
+
+    const QuitStep step = beginQuit(session, seq, pending);
+    check(step.exitNow && !step.asking && !seq.running && !pending.active(),
+          "quit dirty on iOS: the whole queue is closed in the one call -- no dialog, no "
+          "question left pending");
+    check(session.count() == 1 && session.at(0) != nullptr && session.at(0)->id == beta,
+          "quit dirty on iOS: both dirty documents are gone; the clean one is still open, "
+          "untouched, at the moment the process exits");
+  }
+#else
   std::printf("  -- E. each dirty document is asked about, in order, and only those --\n");
 
   {
@@ -359,7 +394,9 @@ bool runQuitGuardTest() {
   }
 
   // A quit cannot start on top of a question that is already up: two stacked
-  // modals about two documents is a dialog nobody can answer correctly.
+  // modals about two documents is a dialog nobody can answer correctly. Not
+  // reachable on iOS: a `requestDocumentClose()` on a dirty document never
+  // leaves a question up there in the first place (see the `#if` above).
   {
     DocumentSession session;
     session.add(dirtyDoc("Busy", "stroke"));
@@ -374,7 +411,12 @@ bool runQuitGuardTest() {
     check(pending.document == session.at(0)->id,
           "quit refused: the question that was already up is untouched");
   }
+#endif  // NP_PLATFORM_IOS
 
+  // Sections F-I all drive `answerQuitQuestion()`'s Save/Don't Save/Cancel
+  // decision, which is unreachable on iOS: a dirty document is never left
+  // waiting for one (section E, above).
+#if !NP_PLATFORM_IOS
   std::printf("  -- F. Cancel on any question abandons the whole quit --\n");
 
   {
@@ -589,6 +631,7 @@ bool runQuitGuardTest() {
           "keys: no key reaches Don't Save on the quit path either -- a quit dialog "
           "appearing under a held Return can never discard, however long it is held");
   }
+#endif  // !NP_PLATFORM_IOS
 
   // `abandonQuit()` is a no-op with no quit running, so the UI callers that
   // reach for it on a plain close cannot report an abandonment that never was.

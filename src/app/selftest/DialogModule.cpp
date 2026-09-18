@@ -112,8 +112,20 @@ bool runDialogModuleTest() {
 
   const std::filesystem::path uiDir = NP_UI_SOURCE_DIR;
   std::error_code ec;
-  check(std::filesystem::is_directory(uiDir, ec),
-        "dialog module: NP_UI_SOURCE_DIR is the src/ui this binary was built from");
+  const bool haveUiDir = std::filesystem::is_directory(uiDir, ec);
+  // NP_UI_SOURCE_DIR (src/CMakeLists.txt) is a raw compile-time source-tree
+  // path, "a developer/CI-time test asset, never staged for a shipped build"
+  // by that comment's own words -- ADR-0010's whole scan depends on reading
+  // src/ui's own .cpp/.mm files, which this platform's sandbox has no access
+  // to at all once the binary is off the machine that built it (an iOS
+  // device install, or any binary copied away from its source tree). Skipped
+  // rather than asserted false: the scan cannot run here, which is not the
+  // same claim as "the scan ran and found something wrong".
+  if (!haveUiDir)
+    std::printf(
+        "    (skipped: the src/ui source scan -- " NP_UI_SOURCE_DIR
+        " is not reachable from this binary, which is expected off the machine that built "
+        "it; see NP_UI_SOURCE_DIR's own comment in src/CMakeLists.txt)\n");
 
   struct Hit {
     std::string file;
@@ -125,32 +137,34 @@ bool runDialogModuleTest() {
   int filesScanned = 0;
   bool sawDialogCpp = false;
   int dialogCppModals = 0;
-  for (const auto& entry : std::filesystem::directory_iterator(uiDir, ec)) {
-    const std::string ext = entry.path().extension().string();
-    if (ext != ".cpp" && ext != ".mm") continue;
-    std::ifstream in(entry.path(), std::ios::binary);
-    if (!in) continue;
-    std::stringstream ss;
-    ss << in.rdbuf();
-    const std::string code = stripComments(ss.str());
-    ++filesScanned;
-    const Hit h{entry.path().filename().string(), countOccurrences(code, "BeginPopupModal("),
-                countOccurrences(code, "0.95f, 0.45f, 0.40f"),
-                countOccurrences(code, "0.92f, 0.78f, 0.35f")};
-    if (h.file == "Dialog.cpp") {
-      sawDialogCpp = true;
-      dialogCppModals = h.modals;
-      continue;
+  if (haveUiDir) {
+    for (const auto& entry : std::filesystem::directory_iterator(uiDir, ec)) {
+      const std::string ext = entry.path().extension().string();
+      if (ext != ".cpp" && ext != ".mm") continue;
+      std::ifstream in(entry.path(), std::ios::binary);
+      if (!in) continue;
+      std::stringstream ss;
+      ss << in.rdbuf();
+      const std::string code = stripComments(ss.str());
+      ++filesScanned;
+      const Hit h{entry.path().filename().string(), countOccurrences(code, "BeginPopupModal("),
+                  countOccurrences(code, "0.95f, 0.45f, 0.40f"),
+                  countOccurrences(code, "0.92f, 0.78f, 0.35f")};
+      if (h.file == "Dialog.cpp") {
+        sawDialogCpp = true;
+        dialogCppModals = h.modals;
+        continue;
+      }
+      if (h.modals > 0 || h.redLiteral > 0 || h.amberLiteral > 0) hits.push_back(h);
     }
-    if (h.modals > 0 || h.redLiteral > 0 || h.amberLiteral > 0) hits.push_back(h);
-  }
 
-  // The scan saw a real tree: as of ADR-0010 src/ui holds 24 translation
-  // units, and a directory that yields fewer than a dozen is the wrong
-  // directory, not a tidier one.
-  check(filesScanned >= 12, "dialog module: the scan covered a plausible src/ui (>= 12 files)");
-  check(sawDialogCpp && dialogCppModals == 1,
-        "dialog module: ui/Dialog.cpp holds exactly one BeginPopupModal() -- the module's own");
+    // The scan saw a real tree: as of ADR-0010 src/ui holds 24 translation
+    // units, and a directory that yields fewer than a dozen is the wrong
+    // directory, not a tidier one.
+    check(filesScanned >= 12, "dialog module: the scan covered a plausible src/ui (>= 12 files)");
+    check(sawDialogCpp && dialogCppModals == 1,
+          "dialog module: ui/Dialog.cpp holds exactly one BeginPopupModal() -- the module's own");
+  }
 
   // The rule itself, one line per offender so a FAIL names the file.
   bool clean = true;

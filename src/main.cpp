@@ -5064,6 +5064,16 @@ int main(int argc, char** argv) {
   st.screenshotCliActive = (screenshotPath != nullptr);
 
 #if NP_PLATFORM_IOS
+  // app/PointerQueue.hpp section 4: UIKit does not know the pen's pressure
+  // when the pen lands. The patched SDL reports no pressure at all until
+  // touchesEstimatedPropertiesUpdated: supplies the real one, so on this one
+  // backend a contact opens with NO pressure reading and the queue must hold
+  // the gesture until one arrives. Every other backend delivers a measured
+  // pressure with the contact itself and pays nothing for this rule.
+  st.pointerQueue.setContactPressureEstimated(true);
+#endif
+
+#if NP_PLATFORM_IOS
   // `SDL_EVENT_WILL_ENTER_BACKGROUND`/`LOW_MEMORY`/`TERMINATING` are each
   // documented by SDL3 as "must be handled in a callback set with
   // `SDL_AddEventWatch()`" -- and `SDL_SendAppEvent()`
