@@ -364,6 +364,13 @@ struct LayerEditorUiState {
   // survives it, and a command acts only on the rows that are visible.
   LayerFilter filter;
   char filterBuf[64] = "";
+  // **Panel config** (user request): the filter row and the Multi-selection
+  // button both cost one row of a touch-first panel's limited height even
+  // when nobody uses them this session, so both start hidden and the gear
+  // next to the "?" button turns them on -- same shape as the "?" popup
+  // itself, a control that costs nothing until opened.
+  bool showFilterRow = false;
+  bool showMultiSelect = false;
 
   // **Inline rename** (double-click a row's title). `renaming` is the model
   // index whose title is currently an edit field instead of a Selectable;
@@ -2459,6 +2466,10 @@ constexpr float kLayerRowGap     = 5.0f;   // between the leading controls
 constexpr float kLayerLineGap    = 1.0f;   // name -> metadata line
 constexpr float kLayerEyeW       = 14.0f;
 constexpr float kLayerLockW      = 12.0f;
+// The eye's TOUCH target, not its drawn size -- 14px was too small to hit
+// reliably with a finger or the Pencil's tip. Centred on the same glyph
+// (below), so the icon itself does not grow, just the area that toggles it.
+constexpr float kLayerEyeHitW    = 20.0f;
 // **`kLayerMaskChipW` is gone with the chip it sized.** The trailing half-filled
 // square that said "this layer has a mask" is now the mask THUMBNAIL at the
 // leading edge, which is a control rather than a status light -- see the row's
@@ -2485,8 +2496,7 @@ constexpr float kLayerDisclosureW  = 10.0f;  // the collapse/expand triangle, Gr
 constexpr uint32_t kLayerRowHover  = 0x353232;  // the hover wash on an unselected row
 constexpr uint32_t kLayerLockRest  = 0x4f4c4c;  // the open padlock, at rest
 constexpr uint32_t kLayerSelMeta   = 0xffd9d1;  // the metadata line on a selected row
-constexpr uint32_t kLayerRefusalBg = 0x4a1207;  // the refusal band's fill
-constexpr uint32_t kLayerWarnRail  = 0xd9c23d;  // the warning band's rail
+constexpr uint32_t kLayerWarnRail  = 0xd9c23d;  // the warning chip's text colour
 
 // The eye and the padlock, drawn rather than set as glyphs.
 //
@@ -2888,59 +2898,14 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
   for (const size_t i : layersMatchingFilter(doc, g_layers.filter))
     if (!layerHiddenByCollapsedGroup(doc, i, g_layers.collapsedGroups)) visibleRows.push_back(i);
 
-  // --- The header band -----------------------------------------------------
+  // --- The header band is gone; its content lives behind the "?" button -----
   //
-  // The design's tab strip, minus the tabs -- see this section's doc comment
-  // for why there are none. What is left is the strip's right-hand slot: the
-  // count, monospace and right-aligned like every numeric in this chrome
-  // (docs/ui.md section 1), reading `3/8` when the filter is hiding five rows
-  // so that neither number can be mistaken for the other.
-  //
-  // **The document name used to lead this band and no longer does**
-  // (`docs/testing-issues.md` T26, reported as "what is the first UI item, it
-  // seems to show the document name -- remove it"). It was redundant three
-  // ways over: the tab strip above the canvas names every open document and
-  // marks the active one, the title band names it again, and this panel is
-  // unambiguously about whatever document is active. A third copy in the
-  // panel's first row bought nothing and cost the row its only real job.
-  //
-  // **The count stays, and that is not the same question.** It is the slot the
-  // design actually specifies here, and it is the ONLY place the filter's
-  // effect is visible -- with five rows hidden, `3/8` is what distinguishes
-  // "this document has three layers" from "this box is hiding five of them".
-  // Removing it would delete feedback rather than a duplicate.
-  {
-    const float h = ImGui::GetTextLineHeight() + 4.0f;
-    const ImVec2 at = ImGui::GetCursorScreenPos();
-    pushAtelierMono();
-    const std::string countText = layerPanelCountLabel(visibleRows.size(), count);
-    const ImVec2 sz = ImGui::CalcTextSize(countText.c_str());
-    dl->AddText(ImVec2(at.x + panelW - sz.x, at.y + 2.0f), mutedCol, countText.c_str());
-    popAtelierMono();
-    ImGui::Dummy(ImVec2(panelW, h));
-    // **This tooltip used to end with a claim that has been false since the RGB
-    // stroke routes landed**: "a stroke reaches no layer and nothing painted
-    // appears here." `strokeRouteWritesLayer()` (app/StrokeSession.hpp) now
-    // answers true for eight of the nine routes -- CpuDeposit, RgbDeposit,
-    // RgbErase, PigmentErase, PencilDeposit, TonalBrush, CloneStamp and
-    // Smudge. Only `PaintSim`, the solver route a Pigment layer takes, still
-    // paints somewhere this panel cannot show.
-    //
-    // Left as a narrower, true statement rather than deleted, because the
-    // surprise it was written to prevent is real and still happens -- it is
-    // just no longer the general case. The predicate is named here rather than
-    // the route list being retyped, so the next route to arrive updates this
-    // sentence's meaning without anyone having to remember to edit it.
-    ImGui::SetItemTooltip("%d x %d, %zu layer(s).\n"
-                        "A stroke on a Pigment layer paints sim::PaintSim's own canvas,\n"
-                        "which has no layer awareness -- so that one route alone leaves\n"
-                        "nothing here. Every other route writes the layer.",
-                        doc.width, doc.height, doc.layers.size());
-    // docs/ui.md section 1's 2px rule, closing the header against the controls.
-    dl->AddLine(ImVec2(at.x, at.y + h), ImVec2(at.x + panelW, at.y + h), ruleCol,
-                kRuleThickness);
-    ImGui::Dummy(ImVec2(panelW, kRuleThickness));
-  }
+  // The layer count (`3/8` when the filter is hiding five rows) and the
+  // canvas-size/stroke-route tooltip that used to sit in a dedicated
+  // full-width strip here now live in the "Panel Info" popup a small "?"
+  // button opens, at the end of the filter row just below -- see that
+  // button's own comment. Diagnostics (composite/GPU stats) join it there
+  // too; see this function's tail, where they used to be drawn unconditionally.
 
   // --- The filter band -----------------------------------------------------
   //
@@ -2949,38 +2914,102 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
   // it back) and that `runLayerSetCommand()` restricts every gesture to the
   // rows on screen.
   {
-    const std::string kindLabel = layerKindFilterLabel(g_layers.filter.kind);
-    pushAtelierMono();
-    const float kindW = ImGui::CalcTextSize(kindLabel.c_str()).x + 26.0f;
-    popAtelierMono();
-    ImGui::SetNextItemWidth(std::max(60.0f, panelW - kindW - 6.0f));
-    if (ImGui::InputTextWithHint("##layerfilter", "Filter by name", g_layers.filterBuf,
-                                 sizeof(g_layers.filterBuf)))
-      g_layers.filter.text = g_layers.filterBuf;
-    ImGui::SetItemTooltip("Filters which rows are drawn -- nothing else.\n"
-                        "A hidden row stays selected, so clearing this\n"
-                        "brings it back, and a Multi-selection command\n"
-                        "acts only on the rows you can see.");
-    ImGui::SameLine(0.0f, 6.0f);
-    pushAtelierMono();
-    ImGui::SetNextItemWidth(kindW);
-    if (ImGui::BeginCombo("##layerkindfilter", kindLabel.c_str())) {
-      if (ImGui::Selectable(layerKindFilterLabel(std::nullopt).c_str(),
-                            !g_layers.filter.kind.has_value()))
-        g_layers.filter.kind.reset();
-      for (const NewLayerKindEntry& entry : newLayerKindMenu()) {
-        const bool on =
-            g_layers.filter.kind.has_value() && *g_layers.filter.kind == entry.kind;
-        // Every kind, including the four that cannot be *created*: a document
-        // that arrived carrying a Text layer (PRD I10) is exactly the case a
-        // user needs to filter for, and refusing to offer the kind here would
-        // make the one layer they cannot make the one layer they cannot find.
-        if (ImGui::Selectable(layerKindFilterLabel(entry.kind).c_str(), on))
-          g_layers.filter.kind = entry.kind;
-      }
-      ImGui::EndCombo();
+    // **The gear**: the one control this row always shows. Its popup is the
+    // on/off switch for the other two -- the filter (text + kind combo) and
+    // the Multi-selection button further down -- so a session that wants
+    // neither pays for nothing but this one small button.
+    if (ImGui::SmallButton(glyphOrFallback("\xE2\x9A\x99", "[Cfg]").c_str()))
+      ImGui::OpenPopup("layerPanelConfig");
+    ImGui::SetItemTooltip("Panel configuration: show or hide the filter\n"
+                        "row and the Multi-selection button.");
+    if (ImGui::BeginPopup("layerPanelConfig")) {
+      pushAtelierMono();
+      ImGui::TextDisabled("LAYERS PANEL");
+      popAtelierMono();
+      ImGui::Checkbox("Filter row", &g_layers.showFilterRow);
+      ImGui::Checkbox("Multi-selection button", &g_layers.showMultiSelect);
+      ImGui::EndPopup();
     }
-    popAtelierMono();
+    ImGui::SameLine(0.0f, 6.0f);
+    if (g_layers.showFilterRow) {
+      const std::string kindLabel = layerKindFilterLabel(g_layers.filter.kind);
+      pushAtelierMono();
+      const float kindW = ImGui::CalcTextSize(kindLabel.c_str()).x + 26.0f;
+      popAtelierMono();
+      ImGui::SetNextItemWidth(std::max(60.0f, panelW - kindW - 6.0f));
+      if (ImGui::InputTextWithHint("##layerfilter", "Filter by name", g_layers.filterBuf,
+                                   sizeof(g_layers.filterBuf)))
+        g_layers.filter.text = g_layers.filterBuf;
+      ImGui::SetItemTooltip("Filters which rows are drawn -- nothing else.\n"
+                          "A hidden row stays selected, so clearing this\n"
+                          "brings it back, and a Multi-selection command\n"
+                          "acts only on the rows you can see.");
+      ImGui::SameLine(0.0f, 6.0f);
+      pushAtelierMono();
+      ImGui::SetNextItemWidth(kindW);
+      if (ImGui::BeginCombo("##layerkindfilter", kindLabel.c_str())) {
+        if (ImGui::Selectable(layerKindFilterLabel(std::nullopt).c_str(),
+                              !g_layers.filter.kind.has_value()))
+          g_layers.filter.kind.reset();
+        for (const NewLayerKindEntry& entry : newLayerKindMenu()) {
+          const bool on =
+              g_layers.filter.kind.has_value() && *g_layers.filter.kind == entry.kind;
+          // Every kind, including the four that cannot be *created*: a document
+          // that arrived carrying a Text layer (PRD I10) is exactly the case a
+          // user needs to filter for, and refusing to offer the kind here would
+          // make the one layer they cannot make the one layer they cannot find.
+          if (ImGui::Selectable(layerKindFilterLabel(entry.kind).c_str(), on))
+            g_layers.filter.kind = entry.kind;
+        }
+        ImGui::EndCombo();
+      }
+      popAtelierMono();
+    }
+    // **"Panel Info"**: the layer count/filter effect (`3/8` when the filter
+    // is hiding five rows -- what used to be the header band's whole job) and
+    // the composite/GPU diagnostics (PRD A6, what used to be drawn
+    // unconditionally at the very bottom of this panel) -- both read-only,
+    // both worth keeping visible somewhere, neither worth a permanent band
+    // now that the panel is touch-first: a "?" costs one small button's
+    // width instead of a full-width strip, and reads on demand instead of on
+    // every frame.
+    ImGui::SameLine(0.0f, 6.0f);
+    if (ImGui::SmallButton("?")) ImGui::OpenPopup("layerPanelInfo");
+    ImGui::SetItemTooltip("Panel info: layer count and performance diagnostics.");
+    if (ImGui::BeginPopup("layerPanelInfo")) {
+      pushAtelierMono();
+      ImGui::TextDisabled("LAYERS");
+      popAtelierMono();
+      const std::string countText = layerPanelCountLabel(visibleRows.size(), count);
+      ImGui::TextUnformatted(countText.c_str());
+      // Verbatim, the header band's own tooltip: see the RGB-stroke-routes
+      // note in git history for why this is a narrower claim than "nothing
+      // paints here without a layer" -- `strokeRouteWritesLayer()`
+      // (app/StrokeSession.hpp) answers true for eight of the nine routes.
+      ImGui::TextWrapped("%d x %d, %zu layer(s).", doc.width, doc.height, doc.layers.size());
+      ImGui::TextWrapped(
+          "A stroke on a Pigment layer paints sim::PaintSim's own canvas, which has "
+          "no layer awareness -- so that one route alone leaves nothing here. Every "
+          "other route writes the layer.");
+      ImGui::Separator();
+      pushAtelierMono();
+      ImGui::TextDisabled("PERFORMANCE");
+      popAtelierMono();
+      // PRD A6 (P0) and the revision cache, in bytes: "only visible documents
+      // hold GPU textures, at most two" is a claim about memory, and a claim
+      // about memory that only `--selftest` can see is one a running session
+      // can drift away from unnoticed. `uploads` counts recomposites;
+      // `cached` counts frames that cost two integer comparisons.
+      ImGui::TextWrapped("composite: %llu upload(s), %llu cached, last %.2f ms",
+                        static_cast<unsigned long long>(g_documentTextures.uploads()),
+                        static_cast<unsigned long long>(g_documentTextures.cacheHits()),
+                        g_documentTextures.lastUploadMs());
+      ImGui::TextWrapped("GPU: %zu / %zu document(s) resident, %.1f MB",
+                        g_documentTextures.residentDocuments(), kVisibleDocumentCap,
+                        static_cast<double>(g_documentTextures.gpuTextureBytes()) /
+                            (1024.0 * 1024.0));
+      ImGui::EndPopup();
+    }
   }
 
   // --- The selected layer's blend and opacity ------------------------------
@@ -3090,41 +3119,45 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
   // the 3 px rule + `Dummy` and its spacing, the two `SmallButton` command
   // rows, and the collapsed "Multi-selection" `CollapsingHeader`.
   //
-  // An error/warning band is counted only on the frames one is actually
-  // present -- `messageBand()` draws between the child and the command row,
-  // so leaving it out would let a one-frame refusal shove the command row
-  // down the panel, which is the very motion this change exists to stop.
-  // Reserving unconditionally was the wrong other half of that trade: it
-  // would shrink the list permanently for a state that is usually absent.
-  const float messageReserve = [&]() -> float {
-    if (g_layers.lastError.empty() && g_layers.lastWarnings.empty()) return 0.0f;
-    const float wrapW = panelW - 14.0f;
-    const float dismissLineH = ImGui::GetTextLineHeightWithSpacing();
-    float h = 0.0f;
-    if (!g_layers.lastError.empty()) {
-      h += ImGui::CalcTextSize(g_layers.lastError.c_str(), nullptr, false, wrapW).y + 10.0f;
-      h += dismissLineH;
-    }
-    if (!g_layers.lastWarnings.empty()) {
-      for (const std::string& w : g_layers.lastWarnings)
-        h += ImGui::CalcTextSize(w.c_str(), nullptr, false, wrapW).y + 10.0f;
-      h += dismissLineH;
-    }
-    return h;
-  }();
+  // An error/warning chip is counted only on the frames one is actually
+  // present -- it draws between the child and the command row, so leaving it
+  // out would let a one-frame refusal shove the command row down the panel,
+  // which is the very motion this change exists to stop. Reserving
+  // unconditionally was the wrong other half of that trade: it would shrink
+  // the list permanently for a state that is usually absent.
   //
-  // **The last term is `GetFrameHeight()`, not `GetFrameHeightWithSpacing()`,
-  // and the 6 px difference is the whole of what used to be left over.**
-  // Nothing is drawn inline after the "Multi-selection" header, and Dear ImGui
-  // does not count an item's trailing `ItemSpacing` in a window's content size
-  // (`ItemSize()`: `CursorMaxPos.y = ImMax(CursorMaxPos.y, CursorPos.y -
-  // ItemSpacing.y)`), so reserving for spacing after the last item reserves for
-  // room the panel will never use. Measured, not reasoned: with the spacing
-  // counted, the cursor finished at 306.00 against a content region max of
-  // 306.00 -- flush, but with the content itself ending at 300.00.
+  // **A single, fixed line now, not text wrapped to however many lines a
+  // refusal happened to need.** The chip is a `SmallButton`, the same control
+  // the command row below already reserves for with
+  // `GetTextLineHeightWithSpacing()`, so this reuses that exact term instead
+  // of measuring wrapped text that no longer draws inline at all -- the full
+  // message lives in the popup the chip opens.
+  const float messageReserve =
+      (g_layers.lastError.empty() && g_layers.lastWarnings.empty())
+          ? 0.0f
+          : ImGui::GetTextLineHeightWithSpacing();
+  //
+  // **The last term is `GetTextLineHeight()`, not `...WithSpacing()`, and the
+  // gap between them is the whole of what used to be left over.** Nothing is
+  // drawn inline after the "Multi-selection" button (its own body is a
+  // popup, which draws in a separate overlay list and costs the panel's
+  // layout nothing), and Dear ImGui does not count an item's trailing
+  // `ItemSpacing` in a window's content size (`ItemSize()`: `CursorMaxPos.y =
+  // ImMax(CursorMaxPos.y, CursorPos.y - ItemSpacing.y)`), so reserving for
+  // spacing after the last item reserves for room the panel will never use.
+  // A `SmallButton` (Multi-selection's own control now, same family as the
+  // two command rows above it) rather than the `GetFrameHeight()` a
+  // `CollapsingHeader` needed -- measure again if this panel's bottom ever
+  // develops the same few-pixel gap `GetFrameHeightWithSpacing()` once left
+  // here, the same shape as the fix that measured 306.00 against 306.00.
+  // The Multi-selection button's own row is reserved only when the gear
+  // popup has it turned on -- see `g_layers.showMultiSelect` -- the same
+  // "only reserve for what actually draws" rule `messageReserve` above
+  // already follows for the error/warning chip.
   const float reserveBelowChild = 3.0f + ImGui::GetStyle().ItemSpacing.y +
                                   ImGui::GetTextLineHeightWithSpacing() * 2.0f +
-                                  ImGui::GetFrameHeight() + messageReserve;
+                                  (g_layers.showMultiSelect ? ImGui::GetTextLineHeight() : 0.0f) +
+                                  messageReserve;
   const float childH =
       layerRowsChildHeight(ImGui::GetContentRegionAvail().y, reserveBelowChild, rowH,
                            ImGui::GetStyle().WindowPadding.y, visibleRows.size());
@@ -3393,6 +3426,10 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
                                          : atelierToken(kLayerLockRest);
       const float iconY = o.y + rowH * 0.5f;
       const ImVec2 eyeAt(x, o.y + (rowH - kLayerEyeW) * 0.5f);
+      // Centred on the glyph `eyeAt` positions, not on `eyeAt` itself --
+      // see `kLayerEyeHitW`'s own comment.
+      const ImVec2 eyeHitAt(eyeAt.x - (kLayerEyeHitW - kLayerEyeW) * 0.5f,
+                            eyeAt.y - (kLayerEyeHitW - kLayerEyeW) * 0.5f);
       drawEyeGlyph(dl, ImVec2(x + kLayerEyeW * 0.5f, iconY), kLayerEyeW, eyeCol, layer.visible);
       x += kLayerEyeW + kLayerRowGap;
       const ImVec2 lockAt(x, o.y + (rowH - kLayerLockW) * 0.5f);
@@ -3660,8 +3697,8 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
       // honestly is a stable per-layer id -- `Layer::id`, which is 0 on every
       // layer this build creates (app/StrokeSession §5) -- and that is a
       // different piece of work.
-      ImGui::SetCursorScreenPos(eyeAt);
-      if (ImGui::InvisibleButton("##vis", ImVec2(kLayerEyeW, kLayerEyeW)))
+      ImGui::SetCursorScreenPos(eyeHitAt);
+      if (ImGui::InvisibleButton("##vis", ImVec2(kLayerEyeHitW, kLayerEyeHitW)))
         run(setLayerVisible(doc, i, !layer.visible));
       ImGui::SetItemTooltip("Visibility. Allowed even on a locked layer --\n"
                           "hiding a layer changes nothing about it.");
@@ -3736,6 +3773,44 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
                                                   : "Collapse group -- hide its members");
       }
 
+      // `rowClicked` (`IsItemClicked()` on an `AllowOverlap` item -- see
+      // `SetNextItemAllowOverlap()` above) needs a SECOND press before it ever
+      // fires for a pointer that was not already hovering this row last
+      // frame: Dear ImGui's own overlap-hover rule requires the row to
+      // already have BEEN last frame's hovered id before a press on it
+      // counts at all (imgui.cpp's `ItemHoverable()`, "AllowOverlap mode
+      // ... requires previous frame HoveredId to be null or to match").
+      // True for a mouse, which hovers continuously before it clicks -- the
+      // row was already last frame's hovered id by the time the click lands.
+      // Never true for a pen or a finger, which goes from not-touching to
+      // pressed inside one frame with no hover-only frame beforehand: the
+      // first tap only sets this frame's hover (the grey wash), and the
+      // press it also carries is refused; a second, separate tap is what
+      // finally lands on a row already primed as last frame's hovered id.
+      //
+      // `rowClickedRaw` is a geometry-only fallback with none of that
+      // machinery -- `rowHovered` above is a plain `IsMouseHoveringRect()`,
+      // not an item-interaction query -- so it fires on the first tap.
+      // Excluded from every sub-control's own rect so it cannot ALSO select
+      // the row through a click the eye, the padlock, a thumbnail or the
+      // disclosure triangle already claimed for itself; each is a small
+      // region nested inside the row's own, so this row-only test only
+      // needs to name and exclude them, not the reverse.
+      const bool overSubControl =
+          ImGui::IsMouseHoveringRect(eyeHitAt,
+                                     ImVec2(eyeHitAt.x + kLayerEyeHitW, eyeHitAt.y + kLayerEyeHitW)) ||
+          ImGui::IsMouseHoveringRect(lockAt, ImVec2(lockAt.x + kLayerLockW, lockAt.y + kLayerLockW)) ||
+          ImGui::IsMouseHoveringRect(
+              contentThumbAt, ImVec2(contentThumbAt.x + kLayerThumbPx, contentThumbAt.y + kLayerThumbPx)) ||
+          (layer.mask.has_value() &&
+           ImGui::IsMouseHoveringRect(maskThumbAt,
+                                      ImVec2(maskThumbAt.x + kLayerThumbPx, maskThumbAt.y + kLayerThumbPx))) ||
+          (isGroupRow &&
+           ImGui::IsMouseHoveringRect(discAt,
+                                      ImVec2(discAt.x + kLayerDisclosureW, discAt.y + kLayerDisclosureW)));
+      const bool rowClickedRaw =
+          rowHovered && !overSubControl && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+
       // Selection, decided after the icon buttons so that a click they claimed is
       // not also a click on the row. Multi-select (PRD C12): plain click replaces
       // the selection, ctrl-click (cmd-click on this platform) toggles one row,
@@ -3746,7 +3821,7 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
       // controls above the list always describe a row the user just touched --
       // that is a separate question from where the range starts, see the field
       // comment on `shiftAnchor`.
-      if (rowClicked) {
+      if (rowClicked || rowClickedRaw) {
         const ImGuiIO& io = ImGui::GetIO();
         std::vector<size_t> next;
         if (io.KeyShift) {
@@ -3790,43 +3865,57 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
   ImGui::EndChild();
   ImGui::PopStyleVar();
 
-  // --- The messages --------------------------------------------------------
+  // --- The messages: a chip, not a full-width band --------------------------
   //
-  // The refusal, verbatim. core/LayerOps' and core/Merge's sentences already
-  // name the layer and say what to do about it, so there is no second
-  // vocabulary here to drift from the model's -- the same rule
-  // drawExportAsDialog() follows for io/Export's messages. Shared with the
-  // `Layer` menu: a command refused from the menu bar is answered here, because
-  // this is where a user is looking at the layer it was refused on.
-  //
-  // The design's own two examples are a refusal and a warning, and the two are
-  // drawn differently for the reason they are kept in different members: a
-  // refusal means nothing happened, a warning means something did and something
-  // that was adjustable a moment ago is not any more (core/Merge.hpp §3).
+  // The refusal, verbatim, and the warning(s), verbatim -- core/LayerOps' and
+  // core/Merge's sentences already name the layer and say what to do about
+  // it, so there is no second vocabulary here to drift from the model's, and
+  // that has not changed. What changed is where they read: a variable-height
+  // band here used to shove the command row down the panel by however many
+  // lines a refusal happened to wrap to (`messageReserve`, below, existed
+  // entirely to compensate for that). A one-line SmallButton -- coloured by
+  // kind, the same distinction the old bands drew with fill colour -- costs a
+  // FIXED height whether it is present or not, and the full text (plus
+  // Dismiss) lives in the popup it opens instead of inline.
   {
     const ImU32 accentCol = atelierToken(kAccent);
-    auto messageBand = [&](const std::string& text, ImU32 fill, ImU32 rail, ImU32 body) {
-      const float wrapW = panelW - 14.0f;
-      const ImVec2 at = ImGui::GetCursorScreenPos();
-      const float h = ImGui::CalcTextSize(text.c_str(), nullptr, false, wrapW).y + 10.0f;
-      dl->AddRectFilled(at, ImVec2(at.x + panelW, at.y + h), fill);
-      dl->AddRectFilled(at, ImVec2(at.x + kLayerRailW, at.y + h), rail);
-      ImGui::SetCursorScreenPos(ImVec2(at.x + kLayerRailW + 6.0f, at.y + 5.0f));
-      ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + wrapW);
-      ImGui::PushStyleColor(ImGuiCol_Text, body);
-      ImGui::TextWrapped("%s", text.c_str());
-      ImGui::PopStyleColor();
-      ImGui::PopTextWrapPos();
-      ImGui::SetCursorScreenPos(ImVec2(at.x, at.y + h));
-    };
     if (!g_layers.lastError.empty()) {
-      messageBand(g_layers.lastError, atelierToken(kLayerRefusalBg), accentCol, textCol);
-      if (ImGui::SmallButton("Dismiss")) g_layers.lastError.clear();
+      ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(accentCol));
+      const bool clicked = ImGui::SmallButton("Error \xe2\x80\x94 ?");
+      ImGui::PopStyleColor();
+      if (clicked) ImGui::OpenPopup("layerErrorPopup");
+      ImGui::SetItemTooltip("%s", g_layers.lastError.c_str());
+      if (ImGui::BeginPopup("layerErrorPopup")) {
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 20.0f);
+        ImGui::TextUnformatted(g_layers.lastError.c_str());
+        ImGui::PopTextWrapPos();
+        if (ImGui::SmallButton("Dismiss")) {
+          g_layers.lastError.clear();
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+      }
     }
     if (!g_layers.lastWarnings.empty()) {
-      for (const std::string& w : g_layers.lastWarnings)
-        messageBand(w, atelierToken(kChromeDeep), atelierToken(kLayerWarnRail), mutedCol);
-      if (ImGui::SmallButton("Dismiss##layerwarnings")) g_layers.lastWarnings.clear();
+      if (!g_layers.lastError.empty()) ImGui::SameLine();
+      ImGui::PushStyleColor(ImGuiCol_Text,
+                            ImGui::ColorConvertU32ToFloat4(atelierToken(kLayerWarnRail)));
+      char label[48];
+      std::snprintf(label, sizeof(label), "%zu warning(s) \xe2\x80\x94 ?##layerwarnbtn",
+                    g_layers.lastWarnings.size());
+      const bool clicked = ImGui::SmallButton(label);
+      ImGui::PopStyleColor();
+      if (clicked) ImGui::OpenPopup("layerWarningsPopup");
+      if (ImGui::BeginPopup("layerWarningsPopup")) {
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 20.0f);
+        for (const std::string& w : g_layers.lastWarnings) ImGui::TextUnformatted(w.c_str());
+        ImGui::PopTextWrapPos();
+        if (ImGui::SmallButton("Dismiss##layerwarnings")) {
+          g_layers.lastWarnings.clear();
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+      }
     }
   }
 
@@ -3911,18 +4000,31 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
 
   // --- Multi-selection (PLAN.md Phase 5 step 11) ---------------------------
   //
-  // Below the command row rather than above the list, so the design's band
-  // order -- filter, active-layer controls, rows, messages, commands -- is
-  // unbroken. Every set command, walked from `core::allLayerSetCommands()` --
-  // the same list the `Layer` > Selection menu walks, so the panel and the menu
-  // cannot offer different sets. One button per line rather than a packed grid:
-  // these labels are long, a 322 px panel clips them, and a clipped label is
-  // the exact failure app/ControlsLayout exists to have fixed once. Collapsed
-  // by default, so a single-selection session never sees it.
-  // --controls-all-open opens this one too, so `--screenshot` can photograph a
-  // section whose default state is closed.
-  if (st.controlsAllOpen) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-  if (ImGui::CollapsingHeader("Multi-selection")) {
+  // A flyout popup instead of an inline section: even COLLAPSED, a
+  // `CollapsingHeader` still occupies a row's height in the panel
+  // permanently -- for a feature a single-selection session, the common
+  // case, never opens. The button below costs that same one row; the
+  // popup it opens draws nowhere in the panel's own layout at all, hidden
+  // until asked for rather than merely closed. Every set command inside it
+  // is still walked from `core::allLayerSetCommands()` -- the same list the
+  // `Layer` > Selection menu walks, so the panel and the menu cannot offer
+  // different sets. One button per line rather than a packed grid: these
+  // labels are long, a 322 px panel clips them, and a clipped label is the
+  // exact failure app/ControlsLayout exists to have fixed once.
+  // --controls-all-open opens this popup too, so `--screenshot` can
+  // photograph it even though its own default is closed.
+  // The button itself only draws when the gear's popup has turned it on
+  // (see `g_layers.showMultiSelect` above); `--controls-all-open` still
+  // forces the popup open regardless, so `--screenshot` can photograph it
+  // without also having to toggle the config popup first.
+  if (g_layers.showMultiSelect) {
+    char multiSelLabel[64];
+    std::snprintf(multiSelLabel, sizeof(multiSelLabel), "Multi-selection (%zu)##multiselbtn",
+                  g_layers.selection.size());
+    if (ImGui::SmallButton(multiSelLabel)) ImGui::OpenPopup("layerMultiSelect");
+  }
+  if (st.controlsAllOpen) ImGui::OpenPopup("layerMultiSelect");
+  if (ImGui::BeginPopup("layerMultiSelect")) {
     ImGui::TextDisabled("%zu layer(s) selected -- ctrl-click a row to add,",
                         g_layers.selection.size());
     ImGui::TextDisabled("shift-click to extend.");
@@ -3988,6 +4090,7 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
       if (ImGui::SmallButton(layerSetCommandLabel(command))) runLayerSetCommand(st, command);
       ImGui::EndDisabled();
     }
+    ImGui::EndPopup();
   }
 
   // --- Layer Properties (Krita's own dialog, opened by the gear above) -----
@@ -4156,25 +4259,10 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
     endDialog();
   }
 
-  // --- The diagnostics, below the panel rather than above it ---------------
-  //
-  // PRD **A6** (P0) and the revision cache, in bytes, on screen. The design's
-  // panel has nothing like these and they are deliberately last rather than
-  // deleted: "only visible documents hold GPU textures, at most two" is a claim
-  // about memory, and a claim about memory that only `--selftest` can see is
-  // one a running session can drift away from unnoticed. `uploads` counts
-  // recomposites; `cached` counts frames that cost two integer comparisons. In
-  // a still window the second number climbs at the frame rate and the first
-  // does not move at all.
-  ImGui::Dummy(ImVec2(0.0f, 4.0f));
-  textDisabledWrapped("composite: %llu upload(s), %llu cached, last %.2f ms",
-                      static_cast<unsigned long long>(g_documentTextures.uploads()),
-                      static_cast<unsigned long long>(g_documentTextures.cacheHits()),
-                      g_documentTextures.lastUploadMs());
-  textDisabledWrapped("GPU: %zu / %zu document(s) resident, %.1f MB",
-                      g_documentTextures.residentDocuments(), kVisibleDocumentCap,
-                      static_cast<double>(g_documentTextures.gpuTextureBytes()) /
-                          (1024.0 * 1024.0));
+  // The diagnostics that used to be drawn unconditionally here (PRD A6:
+  // composite upload/cache counters, GPU-resident document count) now live in
+  // the "Panel Info" popup the "?" button opens on the filter row above --
+  // still on screen on demand, not on every frame a document is open.
 }
 
 // --- The simulation sections ----------------------------------------------
