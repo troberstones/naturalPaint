@@ -2496,7 +2496,6 @@ constexpr float kLayerDisclosureW  = 10.0f;  // the collapse/expand triangle, Gr
 constexpr uint32_t kLayerRowHover  = 0x353232;  // the hover wash on an unselected row
 constexpr uint32_t kLayerLockRest  = 0x4f4c4c;  // the open padlock, at rest
 constexpr uint32_t kLayerSelMeta   = 0xffd9d1;  // the metadata line on a selected row
-constexpr uint32_t kLayerWarnRail  = 0xd9c23d;  // the warning chip's text colour
 
 // The eye and the padlock, drawn rather than set as glyphs.
 //
@@ -2817,10 +2816,7 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
   // difference is that the menu bar carries the escape hatches -- Undo, Save,
   // Quit -- and a panel of layer buttons carries none.
   const char* transformWhy = transformModalRefusal(st);
-  ImGui::BeginDisabled(transformWhy != nullptr);
-  struct LayersDisabledScope {
-    ~LayersDisabledScope() { ImGui::EndDisabled(); }
-  } layersDisabledScope;
+  ScopedDisabled layersDisabledScope(transformWhy != nullptr);
   if (transformWhy != nullptr) {
     // Above the list, not below it: the panel is grey from its first pixel and
     // the reason has to be the first thing read, or it looks broken.
@@ -3819,28 +3815,18 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
   // FIXED height whether it is present or not, and the full text (plus
   // Dismiss) lives in the popup it opens instead of inline.
   {
-    const ImU32 accentCol = atelierToken(kAccent);
-    if (!g_layers.lastError.empty()) {
-      ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(accentCol));
-      const bool clicked = ImGui::SmallButton("Error \xe2\x80\x94 ?");
-      ImGui::PopStyleColor();
-      if (clicked) ImGui::OpenPopup("layerErrorPopup");
-      ImGui::SetItemTooltip("%s", g_layers.lastError.c_str());
-      if (ImGui::BeginPopup("layerErrorPopup")) {
-        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 20.0f);
-        ImGui::TextUnformatted(g_layers.lastError.c_str());
-        ImGui::PopTextWrapPos();
-        if (ImGui::SmallButton("Dismiss")) {
-          g_layers.lastError.clear();
-          ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-      }
-    }
+    // The error fits `drawMessageChip()`'s `std::string&` contract exactly.
+    const bool hadError = !g_layers.lastError.empty();
+    drawMessageChip("layerErr", kError, g_layers.lastError);
+    // Warnings are a `std::vector<std::string>` (PLAN.md Phase 5 step 10: a
+    // merge can raise more than one at once), so they stay bespoke rather
+    // than forced through a single-string helper -- only the colour token
+    // (kWarning, not the one-off kLayerWarnRail this used to be) is shared
+    // with the rest of the app now.
     if (!g_layers.lastWarnings.empty()) {
-      if (!g_layers.lastError.empty()) ImGui::SameLine();
+      if (hadError) ImGui::SameLine();
       ImGui::PushStyleColor(ImGuiCol_Text,
-                            ImGui::ColorConvertU32ToFloat4(atelierToken(kLayerWarnRail)));
+                            ImGui::ColorConvertU32ToFloat4(atelierToken(kWarning)));
       char label[48];
       std::snprintf(label, sizeof(label), "%zu warning(s) \xe2\x80\x94 ?##layerwarnbtn",
                     g_layers.lastWarnings.size());
@@ -3886,9 +3872,7 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
                         "because the kinds exist and their content does not.");
     if (ImGui::BeginPopup("newLayerKind")) {
       const ImVec2 metrics = newLayerKindMenuMetrics();
-      pushAtelierMono();
-      ImGui::TextDisabled("NEW LAYER");
-      popAtelierMono();
+      atelierCapsLabel("NEW LAYER");
       ImGui::Separator();
       for (const NewLayerKindEntry& entry : newLayerKindMenu())
         if (newLayerKindMenuItem(entry, metrics.x, metrics.y)) {
@@ -4509,9 +4493,7 @@ void drawSectionSettings(ControlsSection section, AppState& st) {
       // tooltips; only the width arithmetic is gone, because a popover is
       // free to size itself rather than fighting a 294 px column for space.
       BrushState& br = st.brush;
-      pushAtelierMono();
-      ImGui::TextDisabled("n");
-      popAtelierMono();
+      atelierCapsLabel("n");
       ImGui::SameLine();
       ImGui::SetNextItemWidth(140.0f);
       if (ImGui::SliderInt("##munsellsteps", &br.munsellSteps, kMinPageSteps, kMaxPageSteps))
@@ -4551,15 +4533,11 @@ void drawSectionSettings(ControlsSection section, AppState& st) {
       size_t visible = 0;
       for (const size_t i : layersMatchingFilter(doc, g_layers.filter))
         if (!layerHiddenByCollapsedGroup(doc, i, g_layers.collapsedGroups)) ++visible;
-      pushAtelierMono();
-      ImGui::TextDisabled("LAYERS");
-      popAtelierMono();
+      atelierCapsLabel("LAYERS");
       const std::string countText = layerPanelCountLabel(visible, doc.layers.size());
       ImGui::TextUnformatted(countText.c_str());
       ImGui::TextWrapped("%d x %d, %zu layer(s).", doc.width, doc.height, doc.layers.size());
-      pushAtelierMono();
-      ImGui::TextDisabled("PERFORMANCE");
-      popAtelierMono();
+      atelierCapsLabel("PERFORMANCE");
       // "only visible documents hold GPU textures, at most two" is a claim
       // about memory, and a claim about memory that only `--selftest` can see
       // is one a running session can drift away from unnoticed. `uploads`
@@ -6921,12 +6899,7 @@ void drawHistorySection(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext
   // core/LayerOps' sentence verbatim: app/HistoryPanel's refusals already name
   // the counts and say what did not happen, so there is no second vocabulary
   // here to drift from theirs.
-  if (!lastError.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 120, 110, 255));
-    ImGui::TextWrapped("%s", lastError.c_str());
-    ImGui::PopStyleColor();
-    if (ImGui::SmallButton("Dismiss##historyerror")) lastError.clear();
-  }
+  drawMessageChip("historyError", kError, lastError);
 }
 
 // ------------------------------------------------------------------- comps
@@ -7117,16 +7090,8 @@ void drawCompsSection(AppState& st) {
   // core/LayerCompOps writes it, so the panel has no second vocabulary to drift
   // from the model's -- the rule drawLayersSection() and drawHistorySection()
   // both already follow for their refusals.
-  if (!lastSummary.empty()) {
-    ImGui::TextWrapped("%s", lastSummary.c_str());
-    if (ImGui::SmallButton("Dismiss##compsummary")) lastSummary.clear();
-  }
-  if (!lastError.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 120, 110, 255));
-    ImGui::TextWrapped("%s", lastError.c_str());
-    ImGui::PopStyleColor();
-    if (ImGui::SmallButton("Dismiss##compserror")) lastError.clear();
-  }
+  drawMessageChip("compsSummary", kTextSecondary, lastSummary);
+  drawMessageChip("compsError", kError, lastError);
 }
 
 // ------------------------------------------------------ The CHANNELS panel
@@ -7232,12 +7197,7 @@ void drawChannelsSection(AppState& st) {
     run(deleteChannelCommand(rows[deleteIdx].name));
   }
 
-  if (!lastError.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 120, 110, 255));
-    ImGui::TextWrapped("%s", lastError.c_str());
-    ImGui::PopStyleColor();
-    if (ImGui::SmallButton("Dismiss##channelserror")) lastError.clear();
-  }
+  drawMessageChip("channelsError", kError, lastError);
 }
 
 // ------------------------------------------------------- The ACTIONS panel
@@ -7324,7 +7284,7 @@ void drawActionsSection(AppState& st) {
       ImGui::PushID(static_cast<int>(row.index));
       // An unknown step is drawn in the refusal colour rather than omitted:
       // a shorter list would make the action look shorter than it is.
-      if (!row.known) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 120, 110, 255));
+      if (!row.known) ImGui::PushStyleColor(ImGuiCol_Text, atelierToken(kError));
       if (ImGui::Selectable(row.text.c_str(), row.selected) && v.stepsEditable)
         panel.selected = row.index;
       if (!row.known) ImGui::PopStyleColor();
@@ -7351,7 +7311,7 @@ void drawActionsSection(AppState& st) {
   // command, the reason and the fix (app/Recorder.hpp §4) -- and never
   // summarised into a count.
   if (!v.refusals.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 120, 110, 255));
+    ImGui::PushStyleColor(ImGuiCol_Text, atelierToken(kError));
     for (const std::string& refusal : v.refusals) ImGui::TextWrapped("%s", refusal.c_str());
     ImGui::PopStyleColor();
   }
@@ -7433,12 +7393,7 @@ void drawActionsSection(AppState& st) {
   }
 
   if (!panel.status.empty()) textDisabledWrapped("%s", panel.status.c_str());
-  if (!g_actionsError.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 120, 110, 255));
-    ImGui::TextWrapped("%s", g_actionsError.c_str());
-    ImGui::PopStyleColor();
-    if (ImGui::SmallButton("Dismiss##actionserror")) g_actionsError.clear();
-  }
+  drawMessageChip("actionsError", kError, g_actionsError);
 }
 
 // ------------------------------------------------------- The two export dialogs
@@ -15750,9 +15705,7 @@ AtelierRect drawPanelGrip(AppState& st, ControlsSection section, const AtelierRe
 
   if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) ImGui::OpenPopup("##panelctx");
   if (ImGui::BeginPopup("##panelctx")) {
-    pushAtelierMono();
-    ImGui::TextDisabled("%s", spec.title);
-    popAtelierMono();
+    atelierCapsLabel("%s", spec.title);
     ImGui::Separator();
     if (drawPanelPlacementItems(st, section)) *layoutChanged = true;
     ImGui::EndPopup();
@@ -16036,9 +15989,7 @@ AtelierRect drawStackGrip(AppState& st, const PanelSlot& slot, const AtelierRect
 
     if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) ImGui::OpenPopup("##tabctx");
     if (ImGui::BeginPopup("##tabctx")) {
-      pushAtelierMono();
-      ImGui::TextDisabled("%s", spec.title);
-      popAtelierMono();
+      atelierCapsLabel("%s", spec.title);
       ImGui::Separator();
       if (ImGui::MenuItem("Unstack into its own slot")) {
         st.panels.unstack(section);

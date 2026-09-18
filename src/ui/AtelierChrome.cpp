@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -141,6 +142,78 @@ void pushAtelierMono() {
 }
 void popAtelierMono() {
   if (uiFonts().mono != nullptr) ImGui::PopFont();
+}
+
+void atelierCapsLabel(const char* fmt, ...) {
+  char buf[256];
+  va_list args;
+  va_start(args, fmt);
+  std::vsnprintf(buf, sizeof(buf), fmt, args);
+  va_end(args);
+  pushAtelierMono();
+  ImGui::TextDisabled("%s", buf);
+  popAtelierMono();
+}
+
+namespace {
+// Shared by drawMessageChip()/drawAlertBanner() so the two tiers cannot
+// silently diverge on what "id" or "dismiss" mean.
+void drawMessagePopupBody(const char* popupId, std::string& message) {
+  if (ImGui::BeginPopup(popupId)) {
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24.0f);
+    ImGui::TextUnformatted(message.c_str());
+    ImGui::PopTextWrapPos();
+    if (ImGui::SmallButton("Dismiss")) {
+      message.clear();
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+}
+}  // namespace
+
+bool drawMessageChip(const char* imguiId, uint32_t colorToken, std::string& message) {
+  if (message.empty()) return false;
+  ImGui::PushID(imguiId);
+  char label[96];
+  // The first line only, in the chip's own label -- the popup carries the
+  // rest. A refusal's own sentence is often one line anyway (core/LayerOps
+  // et al. already write them that way), so this rarely truncates more than
+  // trailing punctuation.
+  const size_t firstLine = message.find('\n');
+  const std::string preview = firstLine == std::string::npos ? message : message.substr(0, firstLine);
+  std::snprintf(label, sizeof(label), "%.60s -- ?", preview.c_str());
+  ImGui::PushStyleColor(ImGuiCol_Text, atelierToken(colorToken));
+  if (ImGui::SmallButton(label)) ImGui::OpenPopup("##chipPopup");
+  ImGui::PopStyleColor();
+  drawMessagePopupBody("##chipPopup", message);
+  ImGui::PopID();
+  return true;
+}
+
+bool drawAlertBanner(const char* imguiId, uint32_t colorToken, std::string& message) {
+  if (message.empty()) return false;
+  ImGui::PushID(imguiId);
+  ImGui::PushStyleColor(ImGuiCol_Text, atelierToken(colorToken));
+  ImGui::TextWrapped("%s", message.c_str());
+  ImGui::PopStyleColor();
+  if (ImGui::SmallButton("Dismiss")) message.clear();
+  ImGui::PopID();
+  return true;
+}
+
+float messageChipReserve(const std::string& message) {
+  return message.empty() ? 0.0f : ImGui::GetTextLineHeightWithSpacing();
+}
+
+float alertBannerReserve(const std::string& message) {
+  if (message.empty()) return 0.0f;
+  // TextWrapped's height is not knowable without laying it out -- an alert
+  // is rare enough (see AtelierChrome.hpp's own comment on when one fires)
+  // that a caller reserving a conservative multi-line budget rather than an
+  // exact figure is the right trade; three lines covers every refusal
+  // sentence this codebase writes today.
+  return ImGui::GetTextLineHeightWithSpacing() * 3.0f;
 }
 
 ImU32 atelierToken(uint32_t rgb) noexcept {

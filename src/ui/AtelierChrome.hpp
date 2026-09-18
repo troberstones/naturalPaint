@@ -377,6 +377,73 @@ ImU32 atelierToken(uint32_t rgb) noexcept;
 void pushAtelierMono();
 void popAtelierMono();
 
+// **`atelierCapsLabel()`** -- the caps-label idiom used ~10+ places across
+// ui/MacPaintUI.cpp verbatim: mono face, `TextDisabled`, pop the face. One
+// call instead of the three-line push/label/pop sequence, so the sequence
+// itself can't be copy-pasted with the pop forgotten or the wrong text
+// style used on one of the copies.
+void atelierCapsLabel(const char* fmt, ...) IM_FMTARGS(1);
+
+// **RAII for `BeginDisabled()`/`EndDisabled()`.** The pattern
+// ui/MacPaintUI.cpp's `drawLayersSection()` introduced by hand (a
+// `LayersDisabledScope` local struct) generalised: a bare `EndDisabled()`
+// paired by eye with its `BeginDisabled()` is exactly the kind of pairing an
+// early return can silently skip, the same class of bug `pushAtelierMono`/
+// `popAtelierMono` already risk (nothing enforces the pop happens). This
+// scope guard makes the pairing the compiler's problem instead of the
+// reader's.
+struct ScopedDisabled {
+  explicit ScopedDisabled(bool disabled) : active(disabled) {
+    if (active) ImGui::BeginDisabled();
+  }
+  ~ScopedDisabled() {
+    if (active) ImGui::EndDisabled();
+  }
+  ScopedDisabled(const ScopedDisabled&) = delete;
+  ScopedDisabled& operator=(const ScopedDisabled&) = delete;
+  bool active;
+};
+
+// **One canonical "this section has something to say" widget**, replacing
+// the ~6 hand-rolled copies across drawHistorySection()/drawCompsSection()/
+// drawChannelsSection()/drawActionsSection() (a `PushStyleColor` + `TextWrapped`
+// + `PopStyleColor` + a `Dismiss` `SmallButton`, each with its own literal
+// `IM_COL32(230, 120, 110, 255)`) and the newer chip+popup style
+// drawLayersSection() shipped for its error/warnings.
+//
+// Two tiers, not one style forced everywhere (per-message severity is a real
+// distinction, not just decoration):
+//  - `drawMessageChip()`: the common case -- a routine refusal or a
+//    transient warning, tap-to-read, costs one small button's width. This is
+//    the style every existing call site's message actually is.
+//  - `drawAlertBanner()`: reserved for a message where something the user
+//    could lose work over just happened (a failed save, journal trouble) --
+//    always visible, not dismissible by an accidental tap.
+//
+// Both take the message BY REFERENCE and clear it on dismiss, matching every
+// existing `lastError`/`lastWarnings` call site's own contract, and both
+// return whether they drew anything so a caller's layout reserve can never
+// disagree with what was actually drawn (see `MessageReserve` below --
+// that mismatch is exactly what happened to `drawLayersSection()`'s
+// `reserveBelowChild` earlier this session).
+//
+// `imguiId` must be distinct per call site in the same window -- each
+// function does its own `PushID`/`PopID` internally, but two sections
+// drawing a chip with the same literal id in the same frame would still
+// collide on OTHER state (e.g. two `##dismissiblePopup` popups). Pass
+// something already unique to the section (e.g. "history", "comps-error").
+bool drawMessageChip(const char* imguiId, uint32_t colorToken, std::string& message);
+bool drawAlertBanner(const char* imguiId, uint32_t colorToken, std::string& message);
+
+// The reserve a not-yet-drawn `drawMessageChip()`/`drawAlertBanner()` call
+// will need below it THIS frame, computed from the same inputs the draw call
+// itself will read (mainly: is `message` empty). A caller sizes a bounded
+// scroll child against this BEFORE calling the draw function, so the two can
+// never independently drift the way a hand-maintained `messageReserve` float
+// already has.
+float messageChipReserve(const std::string& message);
+float alertBannerReserve(const std::string& message);
+
 // The 2px `#201e1d` rules between major regions (docs/ui.md section 1). Drawn
 // on the foreground draw list, after every band's window, so that a rule is
 // never covered by the window it borders.
