@@ -5927,10 +5927,24 @@ int main(int argc, char** argv) {
     switch (np::textInputAction(np::textSessionActive(st.textEdit),
                                 SDL_TextInputActive(window),
                                 ImGui::GetIO().WantTextInput, textInputStartedHere)) {
-      case np::TextInputAction::Start:
-        SDL_StartTextInput(window);
+      case np::TextInputAction::Start: {
+        // Plain SDL_StartTextInput() leaves SDL_PROP_TEXTINPUT_AUTOCORRECT_BOOLEAN
+        // at its default of true (SDL_video.c), which on iOS turns on UIKit
+        // predictive-text/autocorrect on the hidden proxy UITextField SDL types
+        // into. That backend derives every SDL_EVENT_TEXT_INPUT from a diff
+        // against the field's previous contents (SDL_uikitviewcontroller.m), and
+        // a multi-character autocorrect/predictive replacement can straddle that
+        // diff and the field's own backspace-detection padding, surfacing as
+        // spurious extra spaces landing in the document with no matching
+        // keystroke. Cocoa's backend never reads this property, so turning it
+        // off costs nothing on macOS.
+        SDL_PropertiesID props = SDL_CreateProperties();
+        SDL_SetBooleanProperty(props, SDL_PROP_TEXTINPUT_AUTOCORRECT_BOOLEAN, false);
+        SDL_StartTextInputWithProperties(window, props);
+        SDL_DestroyProperties(props);
         textInputStartedHere = true;
         break;
+      }
       case np::TextInputAction::Stop:
         SDL_StopTextInput(window);
         textInputStartedHere = false;
