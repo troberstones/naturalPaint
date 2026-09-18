@@ -257,6 +257,49 @@ bool runDocumentGalleryTest() {
       check(st.decoded == 1 && st.cacheHits == 1, "cache: a changed file size alone is a miss");
     }
 
+    // Same size, new mtime: a miss on mtime alone (a re-save often keeps the
+    // size, so the edit above proves nothing about this field).
+    {
+      fs::last_write_time(b, fs::last_write_time(b, ec) + std::chrono::minutes(1), ec);
+      GalleryScanStats st;
+      scanDocumentGallery(docs.string(), cache.string(), &st);
+      check(st.decoded == 1 && st.cacheHits == 1, "cache: a changed mtime alone is a miss");
+    }
+
+    // Two documents with identical bytes AND identical mtime: every field of
+    // the key matches except the path, so only the stored path can refuse the
+    // other's cache file. The pictures are identical too, so the scan stats
+    // are the only way to see it.
+    {
+      const fs::path c = docs / "CCCC.npaint";
+      const fs::path d = docs / "DDDD.npaint";
+      fs::copy_file(a, c, ec);
+      fs::copy_file(a, d, ec);
+      const auto t = fs::last_write_time(a, ec);
+      fs::last_write_time(c, t, ec);
+      fs::last_write_time(d, t, ec);
+      scanDocumentGallery(docs.string(), cache.string());  // warm both
+      fs::path cFile, dFile;
+      for (const fs::path& f : cacheFiles()) {
+        std::ifstream in(f, std::ios::binary);
+        std::string all((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        if (all.find(c.string()) != std::string::npos) cFile = f;
+        if (all.find(d.string()) != std::string::npos) dFile = f;
+      }
+      if (!cFile.empty() && !dFile.empty()) {
+        fs::copy_file(cFile, dFile, fs::copy_options::overwrite_existing, ec);
+        GalleryScanStats st;
+        scanDocumentGallery(docs.string(), cache.string(), &st);
+        check(st.decoded == 1,
+              "cache: a cache file differing only in its stored path is refused (hash collision)");
+      } else {
+        check(false, "cache: CCCC and DDDD each have a cache file");
+      }
+      fs::remove(c, ec);
+      fs::remove(d, ec);
+      scanDocumentGallery(docs.string(), cache.string());  // prune theirs
+    }
+
     // A cache file for the wrong document: AAAA's file dropped under BBBB's
     // name. Same length path, so only the stored-path check can refuse it.
     {
