@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "core/Platform.hpp"
 #include "ui/AppIcon.hpp"
 
 namespace np {
@@ -27,13 +28,25 @@ bool runAppIconTest() {
   check(img.rgba.size() == 512u * 512u * 4u, "app icon: decoded buffer is 512*512*4 bytes");
 
   // 2. A stale generated include would otherwise ship an old icon, all green.
+  // NP_APP_ICON_PNG (src/CMakeLists.txt) is a raw compile-time source-tree
+  // path -- a developer/CI-time consistency check, same family as
+  // NP_SVG_TEST_DIR and NP_UI_SOURCE_DIR (see their own selftest files),
+  // never staged for a shipped build. Unreachable once this binary is off
+  // the machine that built it, which is expected rather than a stale icon.
   {
     std::ifstream f(NP_APP_ICON_PNG, std::ios::binary);
-    const std::vector<unsigned char> onDisk((std::istreambuf_iterator<char>(f)),
-                                            std::istreambuf_iterator<char>());
-    const bool same = !onDisk.empty() && onDisk.size() == appIconPngSize() &&
-                      std::equal(onDisk.begin(), onDisk.end(), appIconPngData());
-    check(same, "app icon: embedded bytes == icons/linux/hicolor 512 px PNG");
+    if (!f) {
+      std::printf(
+          "    (skipped: " NP_APP_ICON_PNG
+          " is not reachable from this binary, which is expected off the machine that built "
+          "it)\n");
+    } else {
+      const std::vector<unsigned char> onDisk((std::istreambuf_iterator<char>(f)),
+                                              std::istreambuf_iterator<char>());
+      const bool same = !onDisk.empty() && onDisk.size() == appIconPngSize() &&
+                        std::equal(onDisk.begin(), onDisk.end(), appIconPngData());
+      check(same, "app icon: embedded bytes == icons/linux/hicolor 512 px PNG");
+    }
   }
 
   // 3. The artwork's pixels: an opaque white ground, the brush's brown at the
@@ -71,8 +84,20 @@ bool runAppIconTest() {
     check(same, "app icon: surface is RGBA32, 512 x 512, pixels == decode");
   }
 
-  // 5. main.cpp installs it on the real window before the suite runs.
+  // 5. main.cpp installs it on the real window before the suite runs -- but
+  // per main.cpp's own comment at that call site ("Dock / taskbar / Wayland
+  // icon ... Never fatal"), iOS has none of those: SDL's UIKit backend wires
+  // no SetWindowIcon hook at all (src/video/uikit has no such file), so
+  // SDL_SetWindowIcon() there always returns SDL_Unsupported(). The real iOS
+  // app icon is the asset catalog src/CMakeLists.txt wires through
+  // NP_IOS_APPICONSET, set at install time, entirely outside this call.
+#if NP_PLATFORM_IOS
+  check(!appIconInstalled(),
+        "app icon: installAppIcon() correctly reports unsupported on iOS -- SDL_SetWindowIcon() "
+        "has no UIKit backend, and the real icon comes from the asset catalog instead");
+#else
   check(appIconInstalled(), "app icon: installAppIcon() succeeded on the window");
+#endif
 
   std::printf("[selftest] app icon %s\n", ok ? "PASS" : "FAIL");
   return ok;

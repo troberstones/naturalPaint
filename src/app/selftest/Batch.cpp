@@ -143,15 +143,23 @@ bool runBatchTest() {
     check(pathsNameTheSameFile(root + "/in/plate00.png", "./" + a),
           "predicate: a leading './' does not make a second file");
 
-    // Case. Which answer is correct depends on the volume this build is on,
-    // so the volume is asked rather than assumed -- an assertion that hard-
-    // coded "case-insensitive" would be a claim about the tester's disk.
+    // Case. This is deliberately NOT "the volume's own answer, either way" --
+    // app/Batch.hpp §1 is explicit that only the `fs::equivalent()` branch
+    // (both paths exist) defers to the volume; the lexical-fallback branch
+    // below (this case: `shouted` does not exist as a distinct file on a
+    // case-sensitive volume, so `equivalent()` is never reached) folds ASCII
+    // case UNCONDITIONALLY, on purpose, as the documented safety margin --
+    // "the gap costs a spurious run rather than a destroyed file". So the
+    // predicate reports a collision here regardless of what the volume itself
+    // does with the two names; printing which this volume is is diagnostic
+    // context for the run, not something the assertion below varies with.
     const std::string shouted = inDir + "/PLATE00.PNG";
     const bool caseInsensitiveVolume = fs::exists(fs::path(shouted), ec) && !ec;
     std::printf("     (this volume is case-%s for filenames)\n",
                 caseInsensitiveVolume ? "INsensitive" : "sensitive");
-    check(pathsNameTheSameFile(shouted, a) == caseInsensitiveVolume,
-          "predicate: a case difference collides iff the volume says it does");
+    check(pathsNameTheSameFile(shouted, a),
+          "predicate: a case difference collides even when the lexical-fallback branch is "
+          "the one deciding, by the documented safety margin -- not by asking the volume");
 
     // Neither exists -> the lexical branch, which is the one the `equivalent`
     // branch can never stand in for.
