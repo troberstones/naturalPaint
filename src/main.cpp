@@ -91,6 +91,7 @@
 #include "ui/AtelierLayout.hpp"
 #include "ui/AtelierTheme.hpp"
 #include "ui/DocumentGallery.hpp"
+#include "ui/PreferencesDialog.hpp"
 
 #include "core/Platform.hpp"
 
@@ -6802,6 +6803,17 @@ int main(int argc, char** argv) {
     // is "this frame is the one that processed the click."
     const uint64_t revisionBeforeUI =
         frameTrace && st.documents.active() ? st.documents.active()->revision : 0;
+
+    // The interface scale, before either branch below measures a single
+    // widget against the style it changes -- moved here from drawUI() itself
+    // because the gallery branch never called drawUI() at all, so on iOS a
+    // scale saved in a previous session (or the gallery's own touch-target
+    // sizing) took effect only once a document had been opened and drawUI()
+    // ran for the first time; returning to the gallery afterwards looked
+    // right only because ImGui's style is global and stayed scaled from
+    // there. A no-op on every frame the setting has not moved -- see
+    // `applyUiScaleIfChanged()`.
+    applyUiScaleIfChanged(st);
 
     // iOS's gallery replaces drawUI() entirely while it is showing -- there
     // is no document open yet for the canvas/panels drawUI() draws to have

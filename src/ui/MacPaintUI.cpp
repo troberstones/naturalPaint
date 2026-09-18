@@ -16596,12 +16596,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // it would let a crosshair outlive the pointer being over the canvas.
   g_canvasCursor.reset();
   g_canvasBitmapTool.reset();  // same reasoning, ui/ToolCursor.hpp §7
-  // The interface scale, before a single widget is measured against the style
-  // it changes. A no-op on every frame the setting has not moved -- see
-  // `applyUiScaleIfChanged()` -- and the lazy load inside it is what makes a
-  // scale saved in a previous session take effect on frame one rather than
-  // only once the Preferences window has been opened.
-  applyUiScaleIfChanged(st);
+  // The interface scale is applied once per frame in main.cpp, before the
+  // choice between this function and ui/DocumentGallery's own draw call --
+  // see that call site's comment for why it moved there.
   // And the same again for the text-frame handle: the block that computes it
   // runs only while the Text tool is active over a Text layer, so a stale one
   // would leave a handle drawn lit after the pointer had gone.
